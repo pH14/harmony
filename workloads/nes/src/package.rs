@@ -204,7 +204,7 @@ where
                 G::Milestones::default(),
                 &input.actions,
                 RetentionPolicy::Unprobed,
-                true,
+                searcher::search::rollout::RolloutStop::new(true),
             )?;
             if result.actions.len() != input.actions.len()
                 || game.execution_disposition(&target).is_terminal()

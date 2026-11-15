@@ -63,6 +63,7 @@ export function nativePanel(options, catalog, gameId) {
     ceiling = element("p", { className: "native-note" }),
     message = element("p", { className: "native-message", role: "status" }),
     list = element("ul", { className: "native-runs" }),
+    empty = element("p", { className: "native-empty", textContent: "No searches are running. Pick a game, choose a machine under Run on, then a level, and start one." }),
     preview = element("div", { className: "native-preview" }),
     summary = element("p", { className: "native-summary-text" }),
     back = element("button", { type: "button", className: "native-back", textContent: "← Levels" });
@@ -90,15 +91,17 @@ export function nativePanel(options, catalog, gameId) {
     element("div", { className: "native-submit" }, start, ceiling),
     message,
   );
-  const title = element("h3", { className: "native-runs-title", textContent: "Running now" });
-  const root = element("div", { className: "native-panel-body" }, form, title, list);
+  const root = element("div", { className: "native-panel-body" }, form),
+    runsRoot = element("div", { className: "native-panel-body" }, empty, list);
   let timer = 0, launched = null;
   const draw = (runs) => {
     const mine = runs.find((run) => run.id === launched);
     if (mine?.state === "running" && mine.watch) location.assign(mine.watch);
     if (mine?.state === "failed") message.textContent = mine.message;
-    const active = runs.filter((run) => run.state === "running" || run.state === "starting");
-    title.hidden = list.hidden = !active.length;
+    const active = runs.filter((run) => run.state === "running" || run.state === "starting" || run.id === launched);
+    empty.hidden = !!active.length;
+    list.hidden = !active.length;
+    api.onActive?.(active.filter((run) => run.state === "running" || run.state === "starting").length);
     list.replaceChildren(
       ...active.map((run) => {
         const actions = element("span", { className: "native-actions" });
@@ -144,11 +147,12 @@ export function nativePanel(options, catalog, gameId) {
       seed: Number(seed.value),
       hours: Number(hours.value),
     })
-      .then((run) => ((launched = run.id), refresh()), (error) => (message.textContent = error.message))
+      .then((run) => ((launched = run.id), refresh(), api.onStarted?.(run)), (error) => (message.textContent = error.message))
       .finally(() => (start.disabled = false));
   };
-  return {
+  const api = {
     element: root,
+    runsElement: runsRoot,
     machines: options.machines.map((machine) => machine.name),
     available: (id) => available.has(id),
     setLevel(id, level, image, onBack) {
@@ -172,4 +176,5 @@ export function nativePanel(options, catalog, gameId) {
       clearInterval(timer);
     },
   };
+  return api;
 }

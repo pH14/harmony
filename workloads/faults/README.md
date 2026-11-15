@@ -15,10 +15,21 @@ in the platform supervisor's bundle format:
 |---|---|
 | `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
+| `heal <id>` | names the declared hook that lifts every fault the other hooks leave in force, such as a network partition |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
+| `disk <node> <path> <size> [checksummed]` | gives that node an ext4 filesystem at `path`, sized `16M` through `1G` in whole 4 KiB pages, which power-loss and disk actions act on |
+
+A `disk` line names a node declared by a `node` line, and each node has at most
+one disk. The image must contain `mkfs.ext4`. The `checksummed` flag declares
+that the node's software checksums the data it stores there and claims to
+detect a corrupted block. Only a checksummed disk draws `DiskCorrupt`. A flipped
+bit breaks a durable-write check on any storage that does not checksum its
+data, so a finding from it on an unflagged disk says nothing about the software. The
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md#node-disks)
+describes how the disk is built, replayed and faulted.
 
 [`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
 bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
@@ -41,6 +52,8 @@ rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
 derives the bundle and event attestation from those same archived bytes. A
 staged file changed between scanning and packing cannot make admission name
 different executable or bundle bytes from the guest image.
+The scan decodes each distinct executable digest once, largest first, on every
+CPU the process may use, and reports files in path order.
 
 Packaging temporarily grants host read and directory search permission while
 copying staged files, then restores their original modes. The archived scan
@@ -188,21 +201,99 @@ instrumented target.
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
 10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
 search draws one duration per suffix from the adaptive duration policy, and
-every action in the suffix takes it. Each action also records a coverage
+every action in the suffix takes it. Half of those draws repeat the parent's
+last duration while jobs from the parent still keep states, so a lineage keeps
+one fault rate across jobs. Job length follows the suffix reach in the
+[searcher README](../../dissonance/searcher/README.md). It starts at 64
+actions and stays there while most actions open slots no state has held
+before. Fault actions often do, because the edge bucket is part of the holder
+identity. With every fault kind, later actions of long jobs open fewer novel
+slots, and most jobs return to one action. A worker ends its job at the
+search's wall-time limit, as the searcher README describes.
+An action's planned cost is its guest ticks plus 256 ticks for the host work
+around it, so planned finishes follow wall time. On etcd with KVM, a job takes
+about 0.18 seconds of wall time per action plus 0.076 seconds per guest second,
+so an action's host work costs as much as about 240 ticks of guest time.
+Each action also records a coverage
 quantum: the number of coverage callbacks an instrumented thread makes between
 VM exits during the action's window. It is drawn log-uniform over powers of two
-from 1 through 32768, and it is part of the action's archive key. Replay serves
-the same quantum, so busy-loop scheduling replays along with fault timing:
+from 1 through 32768, and it is part of the action's archive key. Virtual time
+per callback is the same at every quantum, so the quantum sets how soon after a
+timer deadline a busy thread exits, and leaves CPU speed unchanged. A thread
+with no scheduling choice exits only near its next timer deadline, so a small
+quantum costs no more wall time than a large one. Replay
+serves the same quantum, so busy-loop scheduling replays along with fault
+timing:
 
 | action | effect |
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
-| `Kill(node, ticks)` | the node stays down for the window |
+| `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
+| `KillAll(ticks)` | every node goes down, as in a host crash, and every node starts when the window closes; drawn only for bundles with more than one node |
+| `PowerLoss(node, ticks)` | the node goes down for the window as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
+| `PowerLossAll(ticks)` | every node goes down for the window as in `KillAll`, and every disk loses its unflushed writes the same way, each with its own prefix; drawn only for bundles with a `disk` line and more than one node |
+| `DiskError(node, ticks)` | every read, write and flush on the node's disk fails with `EIO` for the window; drawn only for a node with a `disk` line |
+| `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
+| `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
-| `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
+| `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
+| `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
+
+Every fault that takes a node down brings it back when its window closes, so
+one action holds the fault, its hold and the heal, and the next action starts
+with every such node running or starting. The hold is
+the action's duration, which the adaptive duration policy draws. The package
+installs a kill as a process restart window over the whole action window, and
+a power loss as a power-loss window plus a restart window over the same span.
+Two adjacent kills of one node join into one longer hold.
+
+Each drawn job also takes a draw profile from its mutation seed, as in swarm
+testing. The profile keeps each offered fault kind with probability one half,
+or every offered kind when it keeps none. It weighs `Wait` against each kept
+kind by a power of two from 1 through 64, drawn uniformly over the exponents.
+Every action of the job draws its kind from that profile. A job with a heavy
+`Wait` weight leaves quiet time between faults, so the check can run while the
+cluster recovers. A job with weight 1 draws `Wait` as one more kind.
+
+A drawn clock action changes either the offset or the rate. The offset is a
+power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
+The rate is 1,000 ppm times a power of two from 1 through 4,096, with a
+random sign. A negative rate at or below -1,000,000 ppm becomes a stopped
+clock. The
+shift covers CLOCK_REALTIME, CLOCK_REALTIME_COARSE and CLOCK_TAI, which Go's
+`time.Now` wall reading, `gettimeofday` and `time` use. CLOCK_MONOTONIC stays
+on guest time, so Go's monotonic durations and timers are unchanged. The
+platform supervisor applies the shift through a per-node time namespace with a
+realtime offset (see [`patches`](../../consonance/harmony-linux/linux/patches)).
+UML kernels have no time namespaces, so a UML vocabulary has the clock
+capability off and the search never draws a clock action there.
+
+A search can leave out fault kinds. The faults package option
+`exclude_faults` (in `[workload.options]` of `harmony.toml`) lists them by
+name: `kill`, `kill_all`, `pause`, `restart`, `hook`, `power_loss`,
+`power_loss_all`, `disk_error`, `disk_stall`, `disk_corrupt`, `event_kill`,
+`event_park`, `clock` and `clock_all`. The search then never draws them. `Wait` is always drawn. The
+search records the excluded kinds in its vocabulary identifier, so a resumed
+search keeps them. A replay of recorded actions runs every action it is given.
+
+Every action also records a 64-bit `choice`, drawn when the search draws the
+action and kept when a retained action is reused. Each action starts with a
+branch, and the branch reseeds the host-served SDK entropy stream
+(`fuzz_get_random`, read through `/dev/harmony`) from the campaign's guest
+seed mixed with that choice. A workload driver that takes its decisions from
+that stream therefore makes different decisions in each continuation of a
+snapshot, and replay installs the same choices. The choice is part of the
+action's key, so two choices never share a cached snapshot. A choice of zero
+keeps the unmixed seed. A power-loss action also uses its choice to pick how
+many unflushed writes each disk keeps; a choice of zero keeps none. A
+`DiskCorrupt` action uses its choice to pick the write, byte and bit it
+corrupts. The guest kernel's `getrandom` state is restored with
+the snapshot and is not reseeded, so decisions drawn from it repeat across
+continuations.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
@@ -226,7 +317,8 @@ retained across actions.
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
-moment, so an input is fully described by its encoded window list and one
+moment, plus the windows that closed after the previous poll moment the question
+carries. An input is fully described by its encoded window list and one
 branch installs it. A hold still running when an event-park window closes
 continues after the window, so the next actions can overlap the held thread.
 The park counts as a pending fault until that hold ends.
@@ -243,8 +335,16 @@ to the action's horizon deadline, and snapshots the exact stopped endpoint. A te
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
-most 32 past the setup snapshot. Every sealed prefix is published to the
+most 32 past the setup snapshot. A session publishes sealed prefixes to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+For its first 64 captures it publishes every prefix. After that it publishes
+only prefixes whose depth is a multiple of a spacing `n`, a power of two up to
+16. A larger `n` saves publish time, and each later import reruns about `n / 2`
+more actions. The session doubles `n` while `(2n)^2` stays at most
+`2 * publish * captures / (lookups * action)`. Here `publish` is the mean publish
+time, `action` the mean host time per captured action, `captures` the captured
+prefixes, and `lookups` the imports and misses plus one. Each published prefix
+stores its pages as a delta from the nearest published ancestor in the chain.
 Publishing an action prefix already cached with a different target state
 quarantines its namespace before the fault controller seals a link. A shared
 integrity check invalidates the campaign, including work already running from
@@ -266,24 +366,46 @@ prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
 missing prefix is rebuilt from the chain's longest matching link.
 One memory budget covers the shared cache and every worker's local snapshot
-store. It is the free memory left after a 1 GiB reserve and each worker's guest
-RAM plus 512 MiB; the worker count drops until each worker also has room for a
-store as large as its guest RAM. On macOS a search runs at most four workers.
+store. It is the free memory left after a 1 GiB reserve, the coordinator's 512 MiB
+search state, one guest RAM for a worker's import (its decompressed pages and
+the pages it adds to the store before the next report), and each worker's guest
+RAM plus 256 MiB for the rest of the worker process. The worker count drops
+until each worker also has room for a store as large as its guest RAM. With a
+1 GiB guest and four workers on etcd in a 14 GiB cgroup, a store holds about
+330 MiB once it has the setup snapshot, and a median of 0.85 to 1.2 GiB during a
+search. On macOS a search runs at most four workers.
+During the search the cache measures free memory again. The budget falls when
+memory it does not count, such as the pages a snapshot import or export holds,
+grows past this plan, and rises back toward the plan when that memory is free
+(see the [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's resident bytes to the cache, which evicts entries to keep the total in
+store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
+its newest prefix, and then drops back to the setup snapshot. While the total
+is over budget, every other worker also drops prefix snapshots until its store
+is no larger than at its last report that fit the budget, so the stores stop
+growing while the largest store's worker is busy. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`. It samples the shared index once under
 `snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
 counts and wait/hold nanoseconds; worker/session totals never sum this shared
 owner. `stats` reads have their own site. These host-time diagnostics do not affect
 budget policy or certificates.
-A fault search keeps sixteen reservations per worker in its admission window.
-Each action draws its own
-duration, so one execution can run a hundred times longer than the median, and
-the other workers keep running the jobs behind it until it is admitted.
+A fault search keeps one reservation per worker in its admission window, the
+same window as every other workload. Each selection sees the archive as of the
+last admission, so a wider window makes each new state wait more admissions
+before a job can start from it, and the deepest chain grows that much slower.
+The search stops at the `--for` limit and on the first SIGINT or SIGTERM. A
+search that does not resume a checkpoint also stops at its first admitted
+finding. It drops the jobs in flight and writes its report.
+While a job's session waits for a worker reply, it checks the job's cancel flag
+every 20 ms. On a stop it retires that session worker, so the search exits
+within a few seconds of the stop. Each finding's confirmation replay still runs
+before `report.json` is written. `report.json` records `jobs_cancelled` and
+`interrupted`. A second SIGINT or SIGTERM exits at once with status 128 plus
+the signal number and writes no report. Session workers ignore SIGINT and
+SIGTERM, so only the search process decides the stop.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
@@ -398,6 +520,16 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
+A harness check that stops checking some keys at its step budget writes
+`{"harmony_check":{"undecided_keys":N}}`. The host keeps the count from the
+process that ran the check, and the completed check's evidence carries it as
+`undecided_keys`, so a replay's `check` object shows it. `undecided_checks` in
+`campaign-summary.json` and `report.json` has `executions`, the number of
+executions whose latest completed check left at least one key undecided, and
+`keys`, the sum of those checks' counts. An execution that starts from an
+archived state and completes no check of its own counts that state's latest
+check. `harmony show` prints `undecided keys: K in E executions` when `keys`
+is above zero.
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
 `park_reads` counts, by landing site, the holds after which the held thread
 read shared memory that another process changed during the hold.
@@ -496,7 +628,13 @@ image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
-lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
+That digest is the page-digest state hash that `vmm-core` describes: BLAKE3
+over per-page BLAKE3 digests of guest RAM, then the VM-state suffix.
+`"engine_digest"` marks reports from earlier versions, whose engine digest was
+SHA-256 over all of guest RAM and the same suffix. The two encodings never
+compare equal, so replay checks refuse to match a report against one written
+with the other encoding.
 UML outcomes instead have an empty `state_hash` and
 `state_hash_encoding: "unavailable"`: their guest memory has no canonical
 cross-process state digest. Search still confirms a bug when the fresh replay
@@ -512,20 +650,55 @@ The session records `watchdog_cutoffs` when a guest action or parent
 reconstruction exceeds its host progress bound, including fresh and in-place
 UML restores. Typed session infrastructure errors and abandoned sessions carry
 an independent `infrastructure_failure` flag; they do not increment the timeout
-counter. Neither cause is guest bug evidence. A campaign treats either cause as
-infrastructure incompleteness:
-the affected reservation returns an error before admission, result certification,
-selection accounting, mixture updates or duration feedback. If a suffix already
-completed some actions, none of that job's actions or candidates are admitted.
-Bootstrap, branch-prefix replay and shared-cache imports preserve the same
-infrastructure-failure classification.
-The campaign stops with an explicit incomplete error instead of writing a
+counter. Neither cause is guest bug evidence.
+
+A watchdog cutoff inside a campaign job makes that job a hung job. The job
+result carries the actions it attempted, up to and including the action that
+hung, and no admitted actions. A cutoff during the job's parent reconstruction
+or parent replay records no attempted suffix actions. The searcher counts the
+hung job, writes its stream record with no decisions, and keeps running for the
+rest of the budget. The hung job's end state never enters the archive, and it
+adds no selection, mixture or duration feedback. Result certification accepts a
+hung result only when the target recorded the cutoff, and replay reruns the job
+and must hang again at the same place.
+
+Each hung job's full input, including the branch root's actions, becomes a
+`hang-N.json` file in the run directory (at most 64 per campaign). A hang is a
+separate record rather than a finding: the cutoff is a host-time bound, so one
+cutoff cannot show whether the guest hung or the host was slow, and a confirmed
+finding ends the campaign while a hang should not. The reports'
+`watchdog_cutoffs` field and the summary's `hung_jobs` field count hung jobs.
+
+An action that fails in the guest ends its execution, for example when the
+fault agent reports an infrastructure failure. The reports'
+`execution_failures` field counts these executions. Each one's full input, up
+to and including the failing action and with the branch root's actions,
+becomes a `failure-N.json` file in the run directory (at most 64 per campaign),
+and the search prints the file name. `harmony debug run --actions
+failure-N.json` replays the input, and its console shows the guest's error.
+
+The searcher stops the campaign when the current run of consecutive hung jobs
+is too long for the hang rate seen before it. With `h` hangs in the `n` jobs
+before the run, the estimated rate is `(h + 1) / (n + 2)`. The campaign stops
+when a run of `k` hangs has a chance below 1 in 1000 under that rate, that is
+when `rate^(k - 1) < 1/1000`. With no earlier jobs this stops after 11 hangs in
+a row. The jobs in flight finish, and the run directory gets `report.json`,
+`campaign-summary.json` and the `hang-N.json` files as for any other run. Both
+reports carry `hang_stop`, a message that names both counts, and the search
+prints it and exits `2`.
+
+Infrastructure failures remain incomplete: the affected reservation returns an
+error before admission, result certification, selection accounting, mixture
+updates or duration feedback. Cutoffs during bootstrap, branch-prefix replay and
+shared-cache imports are incomplete in the same way, since the campaign has no
+job to record them against.
+The campaign then stops with an explicit incomplete error instead of writing a
 completed report. Previously admitted stream records are flushed and existing
 search checkpoints remain available; the incomplete stream has no successful
 completion record. A later search can resume an earlier complete checkpoint.
-The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
+The recorded `host_failure_policy = host_incomplete_v3` binds this behavior;
 streams and checkpoints with an absent or different policy are refused, including
-the earlier watchdog-only policy. The execution and endpoint-certificate identities
+earlier policies. The execution and endpoint-certificate identities
 also advance because observations now encode the distinct infrastructure flag. The
 combined replay endpoint uses certificate domain v4, binding ordinary assurance,
 ordered event history and infrastructure-marked observations under one schema. Reading ordered history
@@ -538,9 +711,7 @@ continuation. These checks also cover receipt reconstruction and imported roots.
 Execution identity v11 binds this combined contract and its assurance identity;
 earlier identities that omitted either cannot be reused. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
-also an infrastructure failure. Completed reports still expose
-`execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
-either counter in a successfully completed campaign. A supervisor
+also an infrastructure failure. A supervisor
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 
@@ -773,9 +944,12 @@ retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
-Every replay run boots a session no earlier run has touched, so no snapshot
-another run cached can stand in for guest execution: each run reaches the
-sealed setup point and executes the recorded actions itself. Each run records
+Every replay run starts from a session no earlier run has touched, and executes
+the recorded actions itself, so no snapshot another run cached can stand in for
+an action. The setup point comes from the host boot cache
+(`SessionConfig::with_boot_cache`, under `HARMONY_CACHE_DIR/boot`) when an
+earlier boot with the same image, executable, configuration and host stored
+it, and from a fresh boot otherwise; both give the same setup state hash. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
 equal when nothing came from a cache. A search replays every bug it records the
 same way, and reports the bug as confirmed only when the replay reproduced the
@@ -791,7 +965,9 @@ Search also writes
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
 finding's actions when one exists; otherwise it holds the first recorded
-candidate's actions.
+candidate's actions. Each `hang-N.json` and `failure-N.json` has the same
+`actions` and `standing` fields, so `harmony debug run --actions` and replay
+accept it as input.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two
@@ -852,8 +1028,10 @@ arm64 MMIO console wrapper.
 
 The package can prepare a recorded prefix for guest debugging and export the
 resulting state as a durable root. A root binds the prepared boot identity to a
-cache extent containing pages and device/service sidecars, plus the standing
-fault windows still active at its snapshot moment. Import validates that
+cache extent containing pages and device/service sidecars, plus every standing
+fault window that started by its snapshot moment. A closed window stays in the
+root because the supervisor's next poll may still ask for windows that closed
+after its previous poll. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
 The CLI verifies and loads the saved root once before starting a search, then
 passes those bytes to every worker. Later action prefixes/checkpoints
@@ -885,16 +1063,19 @@ result. macOS target Drop defers to that active scope, preserving session reuse
 inside it. The faults CLI's own replay commands use FaultTarget directly and do
 not enter this generic replay scope.
 
-The standing service declares inactive debug questions local to the installed
-deterministic handler. The attached debug handler declares them external even
-when no message is supplied. The supervisor still makes each actual debug SDK
-request: attachment after a standing reply is delivered at the same next debug
-request, without a dormant flag or an extra tick. Local answering removes only
-an external Decision/resolution exchange; guest doorbells and mandatory guards
-remain. Both handlers decode debug Status before answering. Rejecting malformed
-inactive Status is an intentional tightening: the prior standing handler returned
-empty bytes without decoding it. Standing and debug identities are respectively
-faults-standing-coverage-v3 and faults-debug-terminal-v2.
+The standing service declares standing questions and inactive debug questions
+local to the installed deterministic handler, so the VMM answers them without a
+Decision stop and a resolution round trip to the coordinator. A question asked
+at or after the run deadline still stops the run unanswered, and the next
+action's handler answers it. The attached debug handler declares no local
+services, so standing and debug questions both take the external path while it
+is installed. The supervisor still makes each actual debug SDK request:
+attachment after a standing reply is delivered at the same next debug request,
+without a dormant flag or an extra tick. Local answering removes only the
+external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Standing and debug
+identities are respectively faults-standing-coverage-v5 and
+faults-debug-terminal-v2.
 
 The generic local-answer capability requires unchanged captured handler state;
 the inactive standing debug response satisfies it. Stateful local responses are

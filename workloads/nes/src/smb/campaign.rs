@@ -482,7 +482,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 1)],
                 crate::search::archive::RetentionPolicy::Unprobed,
-                true,
+                searcher::search::rollout::RolloutStop::new(true),
             )
             .expect("execute room action");
         let candidate = result.actions[0]
@@ -542,7 +542,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .expect("execute job on first instance");
         let on_second = game
@@ -554,7 +554,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                false,
+                searcher::search::rollout::RolloutStop::new(false),
             )
             .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -592,7 +592,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 4)],
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-                true,
+                searcher::search::rollout::RolloutStop::new(true),
             )
             .expect("execute job");
         assert!(result.actions.is_empty());
@@ -1105,7 +1105,7 @@ mod tests {
     #[test]
     fn recorded_prefix_rebuilds_without_a_live_checkpoint() {
         let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca04, 4, 32);
+        let config = genesis_config(0x5eed_ca04, 2, 32);
         let mut stream = Vec::new();
         run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign");
@@ -1271,7 +1271,7 @@ mod tests {
             .filter_map(|record| match record {
                 SmbCampaignStreamRecord::Job(job) => job.draw_checkpoint_before,
                 SmbCampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
-                SmbCampaignStreamRecord::End(_) => None,
+                SmbCampaignStreamRecord::Cancel(_) | SmbCampaignStreamRecord::End(_) => None,
             })
             .collect::<Vec<_>>();
         assert!(

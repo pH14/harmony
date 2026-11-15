@@ -1,0 +1,2525 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use super::{config::Explain, investigate, runs::Manifest, shrink, terminal};
+use crate::{adapters::Request, config::Result};
+use faults_workload::{
+    FaultAction, FaultOperation, consonance::FaultTarget, package::ReplaySummary,
+    target::SUPERVISOR_TICK_MICROS,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
+    fs,
+    num::NonZeroU16,
+    path::Path,
+};
+
+const MARK: &str = "@@harmony-explain";
+const LOG_LIMIT: u64 = 1 << 20;
+const NOVEL_LINES: usize = 30;
+const FAMILIAR_LINES: usize = 5;
+const DATA_ENTRIES: usize = 40;
+const HISTORY_LINES: usize = 200;
+const COPY_LIMIT: u64 = 16 << 20;
+
+fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+fn patterns(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| quote(path))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn script(settings: &Explain, history: bool) -> String {
+    let mut text =
+        format!("IFS='\n'\nm={MARK}\nsizes=\necho \"$m clock $(cat /proc/uptime 2>/dev/null)\"\n");
+    if !settings.logs.is_empty() {
+        let _ = write!(
+            text,
+            "for p in {}; do\n  for f in $p; do\n    [ -f \"$f\" ] && sizes=\"$sizes$(($(wc -c < \"$f\"))) $f\n\"\n  done\ndone\n",
+            patterns(&settings.logs)
+        );
+    }
+    if !settings.data.is_empty() {
+        let _ = write!(
+            text,
+            "for p in {}; do\n  for d in $p; do\n    [ -d \"$d\" ] || continue\n    echo \"$m data $d\"\n    find \"$d\" -type f -exec cksum {{}} + 2>/dev/null\n    echo \"$m end\"\n  done\ndone\n",
+            patterns(&settings.data)
+        );
+    }
+    text.push_str("echo \"$m settled $(cat /proc/uptime 2>/dev/null)\"\n");
+    let copies = settings.copies();
+    if history && !copies.is_empty() {
+        let _ = write!(
+            text,
+            "files=$(find {paths} -type f 2>/dev/null) || echo \"$m unlisted\"\nfor f in $files; do\n  if ! size=$(wc -c 2>&1 < \"$f\"); then\n    echo \"$m unreadable $f\"\n    echo \"$size\"\n    echo \"$m end\"\n    continue\n  fi\n  size=$(($size))\n  if [ \"$size\" -gt {COPY_LIMIT} ]; then\n    echo \"$m skip $size $f\"\n    continue\n  fi\n  echo \"$m file $size $f\"\n  head -c \"$size\" \"$f\" | base64\n  echo \"$m end\"\ndone\necho \"$m copied\"\n",
+            paths = patterns(&copies)
+        );
+    }
+    if !settings.logs.is_empty() {
+        let _ = write!(
+            text,
+            "for e in $sizes; do\n  size=${{e%% *}}\n  f=${{e#* }}\n  start=0\n  [ \"$size\" -gt {LOG_LIMIT} ] && start=$((size - {LOG_LIMIT}))\n  echo \"$m log $size $start $f\"\n  tail -c +$((start + 1)) \"$f\" | head -c $((size - start))\n  echo\n  echo \"$m end\"\ndone\n"
+        );
+    }
+    if let Some(command) = settings.history.as_ref().filter(|_| history) {
+        let _ = write!(
+            text,
+            "echo \"$m history\"\n(\nunset IFS\n{command}\n) 2>&1\necho\necho \"$m end\"\n"
+        );
+    }
+    text
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LogPart {
+    pub size: u64,
+    pub start: u64,
+    pub text: String,
+}
+
+pub type Files = BTreeMap<String, (u64, u64)>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Uncopied {
+    pub path: String,
+    pub reason: String,
+}
+
+impl Uncopied {
+    fn new(path: &str, reason: impl Into<String>) -> Self {
+        Self {
+            path: path.to_owned(),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Capture {
+    pub uptime: Option<f64>,
+    pub settled: Option<f64>,
+    pub logs: BTreeMap<String, LogPart>,
+    pub data: BTreeMap<String, Files>,
+    pub history: Option<String>,
+    pub history_finished: bool,
+    pub files: BTreeMap<String, Vec<u8>>,
+    pub skipped: Vec<Uncopied>,
+    pub copies_finished: bool,
+}
+
+pub fn decode(text: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut buffer, mut bits) = (0_u32, 0_u32);
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' | b'\n' | b'\r' | b' ' => continue,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(bytes)
+}
+
+fn copied(size: &str, body: &[&str], finished: bool) -> std::result::Result<Vec<u8>, String> {
+    let size = size
+        .parse::<usize>()
+        .map_err(|_| format!("the guest printed size {size:?}"))?;
+    if !finished {
+        return Err(format!(
+            "the copy of {size} bytes ended before its end marker"
+        ));
+    }
+    let bytes = decode(&body.concat()).ok_or("the copy is not valid base64")?;
+    if bytes.len() != size {
+        return Err(format!(
+            "the copy decoded to {} of {size} bytes",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+pub fn parse(output: &str) -> Capture {
+    let text = output.replace("\r\n", "\n");
+    let end = format!("{MARK} end");
+    let mut capture = Capture::default();
+    let mut lines = text.split('\n');
+    while let Some(line) = lines.next() {
+        let Some(rest) = line
+            .strip_prefix(MARK)
+            .and_then(|rest| rest.strip_prefix(' '))
+        else {
+            continue;
+        };
+        let (kind, arguments) = rest.split_once(' ').unwrap_or((rest, ""));
+        if matches!(kind, "clock" | "settled") {
+            let value = arguments
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse().ok());
+            if kind == "clock" {
+                capture.uptime = value;
+            } else {
+                capture.settled = value;
+            }
+            continue;
+        }
+        if kind == "copied" {
+            capture.copies_finished = true;
+            continue;
+        }
+        if kind == "skip" {
+            let (size, path) = arguments.split_once(' ').unwrap_or(("", arguments));
+            capture.skipped.push(Uncopied::new(
+                path,
+                format!("{size} bytes, over the {} MiB copy limit", COPY_LIMIT >> 20),
+            ));
+            continue;
+        }
+        if kind == "unlisted" {
+            capture.skipped.push(Uncopied::new(
+                "the files under the copied paths",
+                "the guest could not list all of them",
+            ));
+            continue;
+        }
+        if !matches!(kind, "log" | "data" | "history" | "file" | "unreadable") {
+            continue;
+        }
+        let mut body = Vec::new();
+        let mut finished = false;
+        for line in lines.by_ref() {
+            if line == end {
+                finished = true;
+                break;
+            }
+            body.push(line);
+        }
+        if kind == "file" {
+            let (size, path) = arguments.split_once(' ').unwrap_or(("", arguments));
+            match copied(size, &body, finished) {
+                Ok(bytes) => {
+                    capture.files.insert(path.to_owned(), bytes);
+                }
+                Err(reason) => capture.skipped.push(Uncopied::new(path, reason)),
+            }
+            continue;
+        }
+        if kind == "unreadable" {
+            capture.skipped.push(Uncopied::new(
+                arguments,
+                format!("the guest could not read it: {}", body.join(" ").trim()),
+            ));
+            continue;
+        }
+        if !finished && kind != "history" {
+            continue;
+        }
+        match kind {
+            "log" => {
+                let mut fields = arguments.splitn(3, ' ');
+                if let (Some(size), Some(start), Some(path)) =
+                    (fields.next(), fields.next(), fields.next())
+                    && let (Ok(size), Ok(start)) = (size.parse(), start.parse())
+                {
+                    capture.logs.insert(
+                        path.to_owned(),
+                        LogPart {
+                            size,
+                            start,
+                            text: body.join("\n"),
+                        },
+                    );
+                }
+            }
+            "data" => {
+                let files = body
+                    .iter()
+                    .filter_map(|line| {
+                        let mut fields = line.splitn(3, ' ');
+                        let crc = fields.next()?.parse().ok()?;
+                        let size = fields.next()?.parse().ok()?;
+                        Some((fields.next()?.to_owned(), (crc, size)))
+                    })
+                    .collect();
+                capture.data.insert(arguments.to_owned(), files);
+            }
+            _ => {
+                let mut history = body.join("\n");
+                history.truncate(history.trim_end().len());
+                capture.history = Some(history);
+                capture.history_finished = finished;
+            }
+        }
+    }
+    capture
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Log {
+    pub size: u64,
+    pub text: String,
+    pub partial: bool,
+}
+
+pub fn logs(parts: BTreeMap<String, LogPart>) -> BTreeMap<String, Log> {
+    parts
+        .into_iter()
+        .map(|(path, part)| {
+            let log = Log {
+                size: part.size,
+                partial: part.start != 0,
+                text: part.text,
+            };
+            (path, log)
+        })
+        .collect()
+}
+
+pub fn template(line: &str) -> String {
+    let mut out = String::new();
+    let mut token = String::new();
+    let flush = |token: &mut String, out: &mut String| {
+        if token.is_empty() {
+            return;
+        }
+        let digits = token.chars().any(|c| c.is_ascii_digit());
+        let mixed = token.len() >= 6
+            && token.chars().skip(1).any(char::is_uppercase)
+            && token.chars().any(char::is_lowercase);
+        out.push_str(if digits || mixed { "#" } else { token });
+        token.clear();
+    };
+    for c in line.chars() {
+        if c.is_alphanumeric() {
+            token.push(c);
+        } else {
+            flush(&mut token, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut token, &mut out);
+    out
+}
+
+pub fn appended<'a>(before: &str, after: &'a str) -> &'a str {
+    if let Some(rest) = after.strip_prefix(before) {
+        return rest;
+    }
+    let common = before
+        .split_inclusive('\n')
+        .zip(after.split_inclusive('\n'))
+        .take_while(|(old, new)| old == new && old.ends_with('\n'))
+        .map(|(old, _)| old.len())
+        .sum::<usize>();
+    if common > 0 {
+        return &after[common..];
+    }
+    let last = before.trim_end_matches('\n').rsplit('\n').next();
+    if let Some(last) = last.filter(|line| !line.is_empty())
+        && let Some(at) = after.rfind(last)
+    {
+        return after[at + last.len()..].trim_start_matches('\n');
+    }
+    after
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Line {
+    pub text: String,
+    pub count: usize,
+    pub novel: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Excerpt {
+    pub file: String,
+    pub new_lines: usize,
+    pub novel_lines: usize,
+    pub partial: bool,
+    pub lines: Vec<Line>,
+}
+
+pub fn excerpts(before: &BTreeMap<String, Log>, after: &BTreeMap<String, Log>) -> Vec<Excerpt> {
+    let baseline = before
+        .values()
+        .flat_map(|log| log.text.lines())
+        .map(template)
+        .collect::<BTreeSet<_>>();
+    after
+        .iter()
+        .filter_map(|(file, log)| {
+            let prior = before.get(file);
+            let new = appended(prior.map_or("", |log| log.text.as_str()), &log.text);
+            let mut groups: Vec<(String, Line)> = Vec::new();
+            let mut new_lines = 0;
+            for line in new.lines().filter(|line| !line.trim().is_empty()) {
+                new_lines += 1;
+                let key = template(line);
+                if let Some((_, group)) = groups.iter_mut().find(|(seen, _)| *seen == key) {
+                    group.count += 1;
+                } else {
+                    let novel = !baseline.contains(&key);
+                    groups.push((
+                        key,
+                        Line {
+                            text: line.to_owned(),
+                            count: 1,
+                            novel,
+                        },
+                    ));
+                }
+            }
+            if new_lines == 0 {
+                return None;
+            }
+            let novel = groups
+                .iter()
+                .filter(|(_, line)| line.novel)
+                .map(|(_, line)| line.clone())
+                .collect::<Vec<_>>();
+            let novel_lines = novel.iter().map(|line| line.count).sum();
+            let mut lines = novel.into_iter().take(NOVEL_LINES).collect::<Vec<_>>();
+            if lines.len() < FAMILIAR_LINES {
+                let mut familiar = groups
+                    .into_iter()
+                    .map(|(_, line)| line)
+                    .filter(|line| !line.novel)
+                    .collect::<Vec<_>>();
+                familiar.sort_by_key(|line| line.count);
+                lines.extend(familiar.into_iter().take(FAMILIAR_LINES - lines.len()));
+            }
+            Some(Excerpt {
+                file: file.clone(),
+                new_lines,
+                novel_lines,
+                partial: log.partial || prior.is_some_and(|log| log.partial),
+                lines,
+            })
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Entry {
+    pub path: String,
+    pub files: usize,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Change {
+    pub path: String,
+    pub before: u64,
+    pub after: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct DataChanges {
+    pub root: String,
+    pub present_before: bool,
+    pub present_after: bool,
+    pub added: Vec<Entry>,
+    pub removed: Vec<Entry>,
+    pub changed: Vec<Change>,
+}
+
+impl DataChanges {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.present_before == self.present_after
+            && self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+    }
+}
+
+fn under<'a>(files: &'a Files, directory: &'a str) -> impl Iterator<Item = &'a String> + 'a {
+    files
+        .keys()
+        .filter(move |path| path.starts_with(directory) && path[directory.len()..].starts_with('/'))
+}
+
+fn collapse(root: &str, moved: &BTreeSet<&String>, side: &Files, other: &Files) -> Vec<Entry> {
+    let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
+    for path in moved {
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        let mut key = (*path).clone();
+        let mut directory = root.trim_end_matches('/').to_owned();
+        let parts = relative
+            .trim_start_matches('/')
+            .split('/')
+            .collect::<Vec<_>>();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            directory.push('/');
+            directory.push_str(part);
+            if under(side, &directory).all(|file| moved.contains(file))
+                && under(other, &directory).next().is_none()
+            {
+                key = format!("{directory}/");
+                break;
+            }
+        }
+        let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
+            path: key,
+            ..Entry::default()
+        });
+        entry.files += 1;
+        entry.bytes += side.get(*path).map_or(0, |(_, size)| *size);
+    }
+    entries.into_values().collect()
+}
+
+pub fn data_changes(root: &str, before: Option<&Files>, after: Option<&Files>) -> DataChanges {
+    let empty = Files::new();
+    let (old, new) = (before.unwrap_or(&empty), after.unwrap_or(&empty));
+    let removed = old
+        .keys()
+        .filter(|path| !new.contains_key(*path))
+        .collect::<BTreeSet<_>>();
+    let added = new
+        .keys()
+        .filter(|path| !old.contains_key(*path))
+        .collect::<BTreeSet<_>>();
+    DataChanges {
+        root: root.to_owned(),
+        present_before: before.is_some(),
+        present_after: after.is_some(),
+        added: collapse(root, &added, new, old),
+        removed: collapse(root, &removed, old, new),
+        changed: old
+            .iter()
+            .filter_map(|(path, (crc, size))| {
+                let (new_crc, new_size) = new.get(path)?;
+                (new_crc != crc || new_size != size).then(|| Change {
+                    path: path.clone(),
+                    before: *size,
+                    after: *new_size,
+                })
+            })
+            .collect(),
+    }
+}
+
+pub fn declared(bundle: &str) -> Explain {
+    let mut declared = Explain::default();
+    for line in bundle.lines() {
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next(), fields.next()) {
+            (Some("log"), Some(_), Some(path)) => declared.logs.push(path.to_owned()),
+            (Some("disk"), Some(_), Some(path)) => declared.data.push(path.to_owned()),
+            _ => {}
+        }
+    }
+    declared
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Names {
+    pub nodes: Vec<String>,
+    pub hooks: BTreeMap<u32, String>,
+}
+
+pub fn names(bundle: &str) -> Names {
+    let mut names = Names::default();
+    for line in bundle.lines() {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("node") => {
+                if let Some(name) = fields.next() {
+                    names.nodes.push(name.to_owned());
+                }
+            }
+            Some("hook") => {
+                if let Some(Ok(id)) = fields.next().map(str::parse) {
+                    names.hooks.insert(id, fields.collect::<Vec<_>>().join(" "));
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn seconds(ticks: u64) -> String {
+    format!("{:.2} s", (ticks * SUPERVISOR_TICK_MICROS) as f64 / 1e6)
+}
+
+pub fn describe(operation: &FaultOperation, names: &Names) -> String {
+    let node = |index: u16| {
+        names
+            .nodes
+            .get(usize::from(index))
+            .cloned()
+            .unwrap_or_else(|| format!("node {index}"))
+    };
+    let span = |ticks: NonZeroU16| seconds(u64::from(ticks.get()));
+    match *operation {
+        FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
+        FaultOperation::Kill(index, ticks) => format!("kill {} for {}", node(index), span(ticks)),
+        FaultOperation::KillAll(ticks) => format!("kill every node for {}", span(ticks)),
+        FaultOperation::Pause(index, ticks) => format!("pause {} for {}", node(index), span(ticks)),
+        FaultOperation::Restart(index, ticks) => format!(
+            "restart {} (back after {})",
+            node(index),
+            seconds((u64::from(ticks.get()) / 4).max(1))
+        ),
+        FaultOperation::Hook(id, _) => match names.hooks.get(&id) {
+            Some(command) => format!("run hook {id} `{command}`"),
+            None => format!("run hook {id}"),
+        },
+        FaultOperation::EventKill {
+            node: index,
+            rarity,
+            ..
+        } => format!(
+            "kill {} at an instrumented event (rarity {rarity})",
+            node(index)
+        ),
+        FaultOperation::EventPark {
+            node: index,
+            edges,
+            hold_us,
+            ..
+        } => format!("park {} after {edges} edges for {hold_us} us", node(index)),
+        FaultOperation::PowerLoss(index, ticks) => format!(
+            "cut power to {} for {} (unflushed writes lost)",
+            node(index),
+            span(ticks)
+        ),
+        FaultOperation::PowerLossAll(ticks) => format!(
+            "cut power to every node for {} (unflushed writes lost)",
+            span(ticks)
+        ),
+        FaultOperation::DiskError(index, ticks) => {
+            format!("fail {}'s disk I/O for {}", node(index), span(ticks))
+        }
+        FaultOperation::DiskStall(index, ticks) => {
+            format!("stall {}'s disk I/O for {}", node(index), span(ticks))
+        }
+        FaultOperation::DiskCorrupt(index, _) => format!(
+            "flip one bit of a write on {}'s disk and restart it",
+            node(index)
+        ),
+        FaultOperation::Clock {
+            node: index,
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "{} on {} for {}",
+            clock_shift(offset_ms, rate_ppm),
+            node(index),
+            span(ticks)
+        ),
+        FaultOperation::ClockAll {
+            offset_ms,
+            rate_ppm,
+            ticks,
+        } => format!(
+            "{} on every node, scaled per node, for {}",
+            clock_shift(offset_ms, rate_ppm),
+            span(ticks)
+        ),
+    }
+}
+
+fn clock_shift(offset_ms: i32, rate_ppm: i32) -> String {
+    if rate_ppm <= process_proto::CLOCK_RATE_STOPPED_PPM {
+        format!("stop the wall clock after a {offset_ms} ms step")
+    } else {
+        format!("step the wall clock {offset_ms} ms, then drift {rate_ppm} ppm")
+    }
+}
+
+pub fn alive(mask: u64, names: &Names) -> Vec<String> {
+    (0..64_u16)
+        .filter(|index| mask >> index & 1 == 1)
+        .map(|index| {
+            names
+                .nodes
+                .get(usize::from(index))
+                .cloned()
+                .unwrap_or_else(|| format!("node {index}"))
+        })
+        .collect()
+}
+
+pub fn fault_indices(actions: &[FaultAction]) -> Vec<usize> {
+    actions
+        .iter()
+        .enumerate()
+        .filter(|(_, action)| !matches!(action.operation, FaultOperation::Wait(_)))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Point {
+    pub step: usize,
+    pub labels: Vec<String>,
+    pub history: bool,
+}
+
+pub fn plan(actions: &[FaultAction], violation: usize) -> Vec<Point> {
+    let mut points: BTreeMap<usize, Point> = BTreeMap::new();
+    let mut add = |step: usize, label: String, history: bool| {
+        let point = points.entry(step).or_insert(Point {
+            step,
+            labels: Vec::new(),
+            history: false,
+        });
+        point.labels.push(label);
+        point.history |= history;
+    };
+    let faults = fault_indices(actions);
+    if faults.is_empty() {
+        add(0, "start".into(), false);
+    }
+    for (number, index) in faults.into_iter().enumerate() {
+        add(index, format!("before fault {}", number + 1), false);
+        add(index + 1, format!("after fault {}", number + 1), false);
+    }
+    add(violation, "violation".into(), true);
+    points.into_values().collect()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct Span {
+    pub title: String,
+    pub from: usize,
+    pub to: usize,
+}
+
+pub fn spans(actions: &[FaultAction], violation: usize, names: &Names) -> Vec<Span> {
+    let faults = fault_indices(actions);
+    let mut spans = Vec::new();
+    for (number, &index) in faults.iter().enumerate() {
+        spans.push(Span {
+            title: format!(
+                "Fault {}: {}",
+                number + 1,
+                describe(&actions[index].operation, names)
+            ),
+            from: index,
+            to: index + 1,
+        });
+        if let Some(&next) = faults.get(number + 1)
+            && next > index + 1
+        {
+            spans.push(Span {
+                title: format!("Between fault {} and fault {}", number + 1, number + 2),
+                from: index + 1,
+                to: next,
+            });
+        }
+    }
+    let last = faults.last().map_or(0, |index| index + 1);
+    if violation > last {
+        spans.push(Span {
+            title: if faults.is_empty() {
+                "From the start to the violation".into()
+            } else {
+                "From the last fault to the violation".into()
+            },
+            from: last,
+            to: violation,
+        });
+    }
+    spans
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Observed {
+    pub step: usize,
+    pub uptime: Option<f64>,
+    pub settled: Option<f64>,
+    pub logs: BTreeMap<String, Log>,
+    pub data: BTreeMap<String, Files>,
+    pub history: Option<String>,
+    pub history_finished: bool,
+    pub copied: Vec<String>,
+    pub skipped: Vec<Uncopied>,
+    pub copies_finished: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Fault {
+    pub number: usize,
+    pub step: usize,
+    pub operation: FaultOperation,
+    pub description: String,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub guest_clock_seconds: Option<f64>,
+    pub running_after: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Window {
+    pub title: String,
+    pub from_step: usize,
+    pub to_step: usize,
+    pub from_seconds: f64,
+    pub to_seconds: f64,
+    pub missing: Vec<String>,
+    pub logs: Vec<Excerpt>,
+    pub data: Vec<DataChanges>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Commands {
+    pub replay: String,
+    pub fix_check: String,
+    pub branch: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Explanation {
+    pub promise: Vec<String>,
+    pub violation_step: usize,
+    pub violation_seconds: f64,
+    pub faults_before_shrink: Option<usize>,
+    pub shrink_replays: Option<usize>,
+    pub faults: Vec<Fault>,
+    pub guest_clock_offset_seconds: Option<f64>,
+    pub capture_seconds: Option<f64>,
+    pub history: Option<String>,
+    pub history_error: Option<String>,
+    pub copied: Vec<String>,
+    pub skipped_copies: Vec<Uncopied>,
+    #[serde(default)]
+    pub copy_error: Option<String>,
+    #[serde(default)]
+    pub host_history: Option<HostHistory>,
+    pub windows: Vec<Window>,
+    pub commands: Commands,
+    pub probes: usize,
+    pub probe_replays: usize,
+    pub reference_matches: bool,
+    pub unverified_probes: Vec<usize>,
+    pub shrink_seconds: u64,
+    pub probe_seconds: u64,
+    pub settings: Explain,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct HostHistory {
+    pub command: String,
+    pub status: Option<i32>,
+    pub output: String,
+    #[serde(default)]
+    pub partial: bool,
+}
+
+pub struct Inputs<'a> {
+    pub out: &'a Path,
+    pub actions: &'a [FaultAction],
+    pub bundle: &'a str,
+    pub image: &'a str,
+    pub seed: u64,
+    pub expected: &'a ReplaySummary,
+    pub violation: usize,
+    pub observed: &'a BTreeMap<usize, Observed>,
+    pub settings: &'a Explain,
+}
+
+fn moments(expected: &ReplaySummary) -> BTreeMap<usize, (u64, u64)> {
+    let mut moments = BTreeMap::new();
+    for step in &expected.timeline {
+        moments
+            .entry(step.step as usize)
+            .or_insert((step.observation.moment, step.observation.alive));
+    }
+    moments
+}
+
+pub fn explanation(inputs: &Inputs<'_>) -> Explanation {
+    let actions = inputs.actions;
+    let names = names(inputs.bundle);
+    let moments = moments(inputs.expected);
+    let at = |step: usize| {
+        moments
+            .get(&step)
+            .map_or(0.0, |(moment, _)| *moment as f64 / 1e9)
+    };
+    let violation = inputs.observed.get(&inputs.violation);
+    let offset = inputs
+        .observed
+        .values()
+        .find_map(|observed| Some(at(observed.step) - observed.uptime?));
+    let faults = fault_indices(actions)
+        .into_iter()
+        .enumerate()
+        .map(|(number, index)| Fault {
+            number: number + 1,
+            step: index + 1,
+            operation: actions[index].operation,
+            description: describe(&actions[index].operation, &names),
+            start_seconds: at(index),
+            end_seconds: at(index + 1),
+            guest_clock_seconds: offset.map(|offset| at(index) - offset),
+            running_after: moments
+                .get(&(index + 1))
+                .map(|(_, mask)| alive(*mask, &names))
+                .unwrap_or_default(),
+        })
+        .collect();
+    let windows = spans(actions, inputs.violation, &names)
+        .into_iter()
+        .map(|span| {
+            let before = inputs.observed.get(&span.from);
+            let after = inputs.observed.get(&span.to);
+            let mut missing = Vec::new();
+            for (step, observed) in [(span.from, before), (span.to, after)] {
+                match observed {
+                    None => missing.push(format!("step {step} was not probed")),
+                    Some(Observed {
+                        error: Some(error), ..
+                    }) => missing.push(format!("probe at step {step} failed: {error}")),
+                    _ => {}
+                }
+            }
+            let empty = Observed::default();
+            let (before, after) = (before.unwrap_or(&empty), after.unwrap_or(&empty));
+            let roots = before
+                .data
+                .keys()
+                .chain(after.data.keys())
+                .collect::<BTreeSet<_>>();
+            Window {
+                title: span.title,
+                from_step: span.from,
+                to_step: span.to,
+                from_seconds: at(span.from),
+                to_seconds: at(span.to),
+                missing,
+                logs: excerpts(&before.logs, &after.logs),
+                data: roots
+                    .into_iter()
+                    .map(|root| data_changes(root, before.data.get(root), after.data.get(root)))
+                    .filter(|changes| !changes.is_empty())
+                    .collect(),
+            }
+        })
+        .collect();
+    let out = inputs.out.display();
+    let seed = inputs.seed;
+    let run = |image: &str, suffix: &str| {
+        format!(
+            "harmony debug run {image} --config {out}/resolved.toml --seed {seed} --actions {out}/actions.json --out {out}-{suffix}"
+        )
+    };
+    Explanation {
+        promise: inputs.expected.violations.clone(),
+        violation_step: inputs.violation,
+        violation_seconds: at(inputs.violation),
+        faults_before_shrink: None,
+        shrink_replays: None,
+        faults,
+        guest_clock_offset_seconds: offset,
+        capture_seconds: inputs
+            .observed
+            .values()
+            .filter_map(|observed| Some(observed.settled? - observed.uptime?))
+            .reduce(f64::max),
+        history: violation.and_then(|observed| observed.history.clone()),
+        history_error: violation
+            .filter(|observed| {
+                inputs.settings.history.is_some()
+                    && !(observed.history.is_some() && observed.history_finished)
+            })
+            .map(|observed| {
+                observed
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "the probe printed no history".into())
+            }),
+        copied: violation.map_or_else(Vec::new, |observed| observed.copied.clone()),
+        skipped_copies: violation.map_or_else(Vec::new, |observed| observed.skipped.clone()),
+        copy_error: if inputs.settings.copies().is_empty() {
+            None
+        } else {
+            match violation {
+                None => Some(format!("step {} was not probed", inputs.violation)),
+                Some(observed) if !observed.copies_finished => Some(
+                    observed
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "its output ended before the copies finished".into()),
+                ),
+                Some(_) => None,
+            }
+        },
+        host_history: None,
+        windows,
+        commands: Commands {
+            replay: run(inputs.image, "replay"),
+            fix_check: run("FIXED.oci", "fixed"),
+            branch: format!(
+                "harmony branch {out} --step {} --shell --name {}-inspect",
+                inputs.violation,
+                inputs
+                    .out
+                    .file_name()
+                    .map_or("explain".into(), |name| name.to_string_lossy())
+            ),
+        },
+        probes: inputs.observed.len(),
+        probe_replays: 0,
+        reference_matches: false,
+        unverified_probes: Vec::new(),
+        shrink_seconds: 0,
+        probe_seconds: 0,
+        settings: inputs.settings.clone(),
+    }
+}
+
+const PARTIAL: &str = "This check read only the copied files. Its verdict and the keys and operations it names describe that subset of the history, and a check of the full history can differ.";
+
+fn copy_gap(explanation: &Explanation) -> Option<String> {
+    let mut parts = explanation
+        .skipped_copies
+        .iter()
+        .map(|uncopied| format!("`{}` ({})", uncopied.path, uncopied.reason))
+        .collect::<Vec<_>>();
+    if let Some(error) = &explanation.copy_error {
+        parts.push(format!(
+            "the files the probe did not reach, because the probe at step {} failed: {error}",
+            explanation.violation_step
+        ));
+    }
+    (!parts.is_empty()).then(|| format!("Not copied: {}.", parts.join("; ")))
+}
+
+fn pretty_history(history: &str) -> String {
+    let text = history
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .filter(serde_json::Value::is_object)
+                .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                .unwrap_or_else(|| line.to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.len() > HISTORY_LINES {
+        format!(
+            "{}\n... {} more lines in explain.json",
+            lines[..HISTORY_LINES].join("\n"),
+            lines.len() - HISTORY_LINES
+        )
+    } else {
+        text
+    }
+}
+
+fn fence(text: &str) -> String {
+    let mut ticks = 3;
+    while text.contains(&"`".repeat(ticks)) {
+        ticks += 1;
+    }
+    let fence = "`".repeat(ticks);
+    format!("{fence}\n{text}\n{fence}\n")
+}
+
+fn render_data(text: &mut String, changes: &DataChanges) {
+    let _ = write!(text, "- `{}`:", changes.root);
+    if changes.present_before != changes.present_after {
+        let _ = write!(
+            text,
+            " {}",
+            if changes.present_after {
+                "appeared"
+            } else {
+                "disappeared"
+            }
+        );
+    }
+    text.push('\n');
+    let mut shown = 0;
+    let mut line = |text: &mut String, entry: String| {
+        if shown < DATA_ENTRIES {
+            let _ = writeln!(text, "  - {entry}");
+        }
+        shown += 1;
+    };
+    for entry in &changes.removed {
+        line(
+            text,
+            format!(
+                "removed `{}` ({} files, {} bytes)",
+                entry.path, entry.files, entry.bytes
+            ),
+        );
+    }
+    for entry in &changes.added {
+        line(
+            text,
+            format!(
+                "added `{}` ({} files, {} bytes)",
+                entry.path, entry.files, entry.bytes
+            ),
+        );
+    }
+    for change in &changes.changed {
+        line(
+            text,
+            format!(
+                "changed `{}` ({} -> {} bytes)",
+                change.path, change.before, change.after
+            ),
+        );
+    }
+    if shown > DATA_ENTRIES {
+        let _ = writeln!(
+            text,
+            "  - {} more changes in explain.json",
+            shown - DATA_ENTRIES
+        );
+    }
+}
+
+pub fn render(explanation: &Explanation) -> String {
+    let mut text = String::new();
+    let promise = explanation.promise.join("; ");
+    let _ = writeln!(text, "# Explanation: {promise}\n");
+    let _ = writeln!(
+        text,
+        "- Broken promise: `{promise}`, first observed at step {} ({:.2} s virtual time).",
+        explanation.violation_step, explanation.violation_seconds
+    );
+    match (explanation.faults_before_shrink, explanation.shrink_replays) {
+        (Some(before), Some(replays)) => {
+            let _ = writeln!(
+                text,
+                "- Minimal faults: {} of {before}, found in {replays} replays. Every other fault is a wait of the same length.",
+                explanation.faults.len()
+            );
+        }
+        _ => {
+            let _ = writeln!(
+                text,
+                "- Minimal faults: {} (the input was already shrunk).",
+                explanation.faults.len()
+            );
+        }
+    }
+    let power_cuts = explanation
+        .faults
+        .iter()
+        .filter(|fault| {
+            matches!(
+                fault.operation,
+                FaultOperation::PowerLoss(..) | FaultOperation::PowerLossAll(_)
+            )
+        })
+        .map(|fault| fault.number.to_string())
+        .collect::<Vec<_>>();
+    if !power_cuts.is_empty() {
+        let _ = writeln!(
+            text,
+            "- Power loss: fault {} cuts power, and a node loses every write it had not synced to disk. A system that acknowledges a write before it syncs it loses acknowledged writes this way by design. A replay on a build that syncs every write can diverge from this run, so search that build to tell that loss from a bug.",
+            power_cuts.join(", ")
+        );
+    }
+    if let Some(capture) = explanation.capture_seconds {
+        let _ = writeln!(
+            text,
+            "- Capture: each probe recorded log sizes and data checksums within {capture:.2} s of guest time after its boundary. The guest keeps running during a probe, without the next fault."
+        );
+    }
+    if let Some(offset) = explanation.guest_clock_offset_seconds {
+        let _ = writeln!(
+            text,
+            "- Guest clock: CLOCK_MONOTONIC reads virtual time minus {offset:.2} s."
+        );
+    }
+    let _ = write!(
+        text,
+        "- Probes: {} points in {} replays. ",
+        explanation.probes, explanation.probe_replays
+    );
+    let _ = if !explanation.reference_matches {
+        writeln!(
+            text,
+            "The probe-free reference replay DOES NOT match the reduced replay, so the probes may describe a different execution."
+        )
+    } else if explanation.unverified_probes.is_empty() {
+        writeln!(
+            text,
+            "Each probe saw the same whole-state certificate as a probe-free reference replay that matches the reduced replay."
+        )
+    } else {
+        writeln!(
+            text,
+            "The probes at steps {} saw a different state from the probe-free reference replay; their excerpts may describe a different execution.",
+            explanation
+                .unverified_probes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    if explanation.settings.host_history.is_some()
+        && let Some(gap) = copy_gap(explanation)
+    {
+        let _ = writeln!(text, "- Host check: partial. {gap}");
+    }
+    let _ = writeln!(
+        text,
+        "- Time: shrink {} s, probes {} s.\n",
+        explanation.shrink_seconds, explanation.probe_seconds
+    );
+    text.push_str("## Fault sequence\n\n");
+    text.push_str(
+        "| # | step | fault | starts (s) | ends (s) | guest clock (s) | running after |\n",
+    );
+    text.push_str("|---|---|---|---|---|---|---|\n");
+    for fault in &explanation.faults {
+        let _ = writeln!(
+            text,
+            "| {} | {} | {} | {:.2} | {:.2} | {} | {} |",
+            fault.number,
+            fault.step,
+            fault.description,
+            fault.start_seconds,
+            fault.end_seconds,
+            fault
+                .guest_clock_seconds
+                .map_or("-".into(), |value| format!("{value:.2}")),
+            if fault.running_after.is_empty() {
+                "none".into()
+            } else {
+                fault.running_after.join(", ")
+            }
+        );
+    }
+    text.push_str("\nTimes are virtual seconds since boot. The guest clock column is the same instant on the guest's CLOCK_MONOTONIC, which client histories use.\n\n");
+    text.push_str("## Client-visible symptom\n\n");
+    for violation in &explanation.promise {
+        let _ = writeln!(text, "- Failed check: `{violation}`");
+    }
+    let step = explanation.violation_step;
+    let history = explanation
+        .history
+        .as_ref()
+        .filter(|history| !history.trim().is_empty());
+    if let Some(history) = history {
+        let _ = write!(
+            text,
+            "\nOutput of the history command at step {step}:\n\n{}",
+            fence(&pretty_history(history))
+        );
+    }
+    if let Some(error) = &explanation.history_error {
+        let _ = writeln!(
+            text,
+            "\nThe history command at step {step} did not finish: {error}.{}",
+            if history.is_some() {
+                " The output above is partial."
+            } else {
+                ""
+            }
+        );
+    }
+    if !explanation.copied.is_empty() {
+        let _ = writeln!(
+            text,
+            "\nCopied {} guest files at step {step} into `copied/` in the run directory.",
+            explanation.copied.len()
+        );
+    }
+    if let Some(gap) = copy_gap(explanation) {
+        let _ = writeln!(text, "\n{gap}");
+    }
+    match (&explanation.host_history, &explanation.settings.host_history) {
+        (Some(host), _) => {
+            let _ = write!(
+                text,
+                "\nOutput of `{}` on the host{}{}:\n\n{}",
+                host.command,
+                host.status
+                    .map_or(", ended by a signal".into(), |status| format!(
+                        ", exit status {status}"
+                    )),
+                if host.partial {
+                    ", from a partial copy"
+                } else {
+                    ""
+                },
+                fence(&pretty_history(&host.output))
+            );
+            if host.partial {
+                text.push_str(PARTIAL);
+                text.push('\n');
+            }
+        }
+        (None, Some(_)) => text.push_str("\nThe host history command has not run.\n"),
+        (None, None) if explanation.settings.history.is_none() => text.push_str(
+            "\nNo history command is configured. Set `history` or `host_history` in `[workload.options.explain]`, or pass `--history` or `--host-history`.\n",
+        ),
+        (None, None) => {}
+    }
+    text.push('\n');
+    for window in &explanation.windows {
+        let _ = writeln!(
+            text,
+            "## {} (steps {} to {}, {:.2} s to {:.2} s)\n",
+            window.title, window.from_step, window.to_step, window.from_seconds, window.to_seconds
+        );
+        for missing in &window.missing {
+            let _ = writeln!(text, "- {missing}");
+        }
+        if window.logs.is_empty() {
+            text.push_str("No new log lines.\n\n");
+        }
+        for excerpt in &window.logs {
+            let _ = writeln!(
+                text,
+                "`{}`: {} new lines, {} with a pattern not seen before step {}{}.\n",
+                excerpt.file,
+                excerpt.new_lines,
+                excerpt.novel_lines,
+                window.from_step,
+                if excerpt.partial {
+                    " (log capture truncated)"
+                } else {
+                    ""
+                }
+            );
+            let lines = excerpt
+                .lines
+                .iter()
+                .map(|line| {
+                    let mark = if line.novel { "+" } else { " " };
+                    if line.count > 1 {
+                        format!("{mark} {} (x{})", line.text, line.count)
+                    } else {
+                        format!("{mark} {}", line.text)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            text.push_str(&fence(&lines));
+            text.push('\n');
+        }
+        if window.data.is_empty() {
+            if !explanation.settings.data.is_empty() {
+                text.push_str("No data file changes.\n\n");
+            }
+        } else {
+            text.push_str("Data file changes:\n\n");
+            for changes in &window.data {
+                render_data(&mut text, changes);
+            }
+            text.push('\n');
+        }
+    }
+    text.push_str("## Reproduce and check a fix\n\n");
+    let _ = write!(
+        text,
+        "Replay the reduced actions on the recorded image, then on a fixed image. A changed binary changes guest timing, so a clean replay is evidence for a fix, not proof.\n\n{}\nInspect the state at the violation:\n\n{}",
+        fence(&format!(
+            "{}\n{}",
+            explanation.commands.replay, explanation.commands.fix_check
+        )),
+        fence(&explanation.commands.branch)
+    );
+    text.push_str("\nLines marked `+` have a pattern (digits and identifiers removed) that no captured log showed before the window. Data changes compare file lists, sizes and checksums.\n");
+    text
+}
+
+struct Worker<'a> {
+    out: &'a Path,
+    settings: &'a Explain,
+    observed: Vec<Observed>,
+}
+
+impl Worker<'_> {
+    fn probe(&mut self, point: &Point, target: &mut FaultTarget) {
+        let script = script(self.settings, point.history);
+        let directory = self.out.join("probes").join(point.step.to_string());
+        let ran = (|| -> Result<()> {
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("probe.sh"), &script)?;
+            let code =
+                target.probe(|target| terminal::capture(target, &directory, script.as_bytes()))?;
+            if code != 0 {
+                return Err(format!("the probe script exited with {code}").into());
+            }
+            Ok(())
+        })();
+        let output = fs::read(directory.join("terminal.log"))
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default();
+        let capture = parse(&output);
+        let mut observed = Observed {
+            step: point.step,
+            logs: logs(capture.logs),
+            data: capture.data,
+            uptime: capture.uptime,
+            settled: capture.settled,
+            history: capture.history,
+            history_finished: capture.history_finished,
+            skipped: capture.skipped,
+            copies_finished: capture.copies_finished,
+            error: ran.err().map(|error| error.to_string()),
+            ..Observed::default()
+        };
+        for (path, bytes) in capture.files {
+            match store(&self.out.join("copied"), &path, &bytes) {
+                Ok(()) => observed.copied.push(path),
+                Err(error) => observed
+                    .skipped
+                    .push(Uncopied::new(&path, error.to_string())),
+            }
+        }
+        self.observed.push(observed);
+    }
+}
+
+pub fn store(root: &Path, path: &str, bytes: &[u8]) -> Result<()> {
+    let relative = path
+        .strip_prefix('/')
+        .filter(|relative| {
+            !relative.contains('\0')
+                && relative
+                    .split('/')
+                    .all(|part| !part.is_empty() && part != "." && part != "..")
+        })
+        .ok_or("not a plain absolute guest path")?;
+    let target = root.join(relative);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(target, bytes)?;
+    Ok(())
+}
+
+#[cfg(feature = "frontend")]
+fn localize(command: &str) -> String {
+    let mut local = String::new();
+    let mut last = 0;
+    for range in Explain::guest_paths(command) {
+        local.push_str(&command[last..range.start - 1]);
+        local.push_str("copied/");
+        local.push_str(&command[range.start + 1..range.end]);
+        last = range.end;
+    }
+    local.push_str(&command[last..]);
+    local
+}
+
+#[cfg(feature = "frontend")]
+pub fn host_history(out: &Path) -> Result<()> {
+    if !out.join("explain.json").is_file() {
+        return Ok(());
+    }
+    let out = out.canonicalize()?;
+    let path = out.join("explain.json");
+    let mut explanation: Explanation = serde_json::from_slice(&fs::read(&path)?)?;
+    let Some(command) = explanation.settings.host_history.clone() else {
+        return Ok(());
+    };
+    let command = localize(&command);
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(&out)
+        .output()?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let errors = String::from_utf8_lossy(&output.stderr);
+    if !errors.trim().is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&errors);
+    }
+    text.truncate(text.trim_end().len());
+    let partial = copy_gap(&explanation);
+    explanation.host_history = Some(HostHistory {
+        command,
+        status: output.status.code(),
+        output: text,
+        partial: partial.is_some(),
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&explanation)?)?;
+    fs::write(out.join("explain.md"), render(&explanation))?;
+    match partial {
+        Some(gap) => println!(
+            "ran the host history command on a partial copy: {}\n{gap}",
+            out.join("explain.md").display()
+        ),
+        None => println!(
+            "ran the host history command: {}",
+            out.join("explain.md").display()
+        ),
+    }
+    Ok(())
+}
+
+struct Replayed {
+    summary: ReplaySummary,
+    observed: Vec<Observed>,
+    certificates: BTreeMap<usize, [u8; 32]>,
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn replay_one(
+    out: &Path,
+    manifest: &Manifest,
+    artifacts: &faults_workload::Artifacts,
+    options: &faults_workload::package::Options,
+    settings: &Explain,
+    name: &str,
+    share: Option<&BTreeMap<usize, Point>>,
+) -> std::result::Result<Replayed, String> {
+    let mut options = options.clone();
+    options.output = out.join("probes").join(name);
+    fs::create_dir_all(&options.output).map_err(|error| error.to_string())?;
+    let mut worker = Worker {
+        out,
+        settings,
+        observed: Vec::new(),
+    };
+    let mut certificates = BTreeMap::new();
+    let summary = faults_workload::package::execute_visiting(
+        artifacts,
+        &manifest.actions,
+        &options,
+        manifest.settle,
+        &mut |step, target| {
+            let step = step as usize;
+            let point = share.and_then(|share| share.get(&step));
+            if (share.is_none() || point.is_some())
+                && let Some(certificate) = target.endpoint_certificate()
+            {
+                certificates.insert(step, certificate);
+            }
+            if let Some(point) = point {
+                worker.probe(point, target);
+            }
+            Ok(())
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let record = serde_json::json!({
+        "probes": share.map(|share| share.keys().copied().collect::<Vec<_>>()).unwrap_or_default(),
+        "certificates": certificates
+            .iter()
+            .map(|(step, certificate)| (step.to_string(), hex(certificate)))
+            .collect::<BTreeMap<_, _>>(),
+        "summary": summary,
+    });
+    fs::write(
+        options.output.join("replay.json"),
+        serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Replayed {
+        summary,
+        observed: worker.observed,
+        certificates,
+    })
+}
+
+fn probe_all(
+    out: &Path,
+    manifest: &Manifest,
+    settings: &Explain,
+    points: &[Point],
+    jobs: usize,
+) -> Result<(Replayed, Vec<Replayed>)> {
+    let artifacts = manifest.fault_artifacts(out)?;
+    let options = manifest.options(out)?;
+    let probers = jobs.saturating_sub(1).clamp(1, points.len().max(1));
+    let shares = (0..probers)
+        .map(|worker| {
+            points
+                .iter()
+                .skip(worker)
+                .step_by(probers)
+                .map(|point| (point.step, point.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .collect::<Vec<_>>();
+    let tasks = std::iter::once(None)
+        .chain(shares.iter().map(Some))
+        .collect::<Vec<_>>();
+    let threads = jobs.clamp(1, tasks.len());
+    let mut outcomes = std::thread::scope(|scope| {
+        let handles = (0..threads)
+            .map(|thread| {
+                let (artifacts, options, tasks) = (&artifacts, &options, &tasks);
+                scope.spawn(move || {
+                    (thread..tasks.len())
+                        .step_by(threads)
+                        .map(|index| {
+                            let name = if index == 0 {
+                                "reference".to_owned()
+                            } else {
+                                format!("replay-{index}")
+                            };
+                            (
+                                index,
+                                replay_one(
+                                    out,
+                                    manifest,
+                                    artifacts,
+                                    options,
+                                    settings,
+                                    &name,
+                                    tasks[index],
+                                ),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    vec![(usize::MAX, Err("an explain probe replay panicked".into()))]
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    outcomes.sort_by_key(|(index, _)| *index);
+    let mut replayed = outcomes
+        .into_iter()
+        .map(|(_, outcome)| outcome.map_err(Into::into))
+        .collect::<Result<Vec<_>>>()?;
+    let reference = replayed.remove(0);
+    Ok((reference, replayed))
+}
+
+fn unverified(reference: &Replayed, probes: &[Replayed]) -> Vec<usize> {
+    let mut steps = probes
+        .iter()
+        .flat_map(|replayed| {
+            replayed.observed.iter().filter_map(|observed| {
+                let seen = replayed.certificates.get(&observed.step);
+                (seen.is_none() || seen != reference.certificates.get(&observed.step))
+                    .then_some(observed.step)
+            })
+        })
+        .collect::<Vec<_>>();
+    steps.sort_unstable();
+    steps
+}
+
+#[allow(clippy::disallowed_methods)]
+fn clock() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[cfg(feature = "frontend")]
+pub fn explain(request: Request) -> Result<u8> {
+    let saved = crate::runs::Saved::read(
+        &request
+            .selection
+            .as_ref()
+            .ok_or("select a search or branch")?
+            .run,
+    )?;
+    explain_saved(request, saved)
+}
+
+pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> {
+    let selection = request
+        .selection
+        .clone()
+        .ok_or("select a search or branch")?;
+    if request.skip_shrink && selection.finding.is_some() {
+        return Err("--no-shrink probes a recorded run; omit --finding".into());
+    }
+    let shrunk = request.skip_shrink
+        || (selection.finding.is_none() && saved.path.join("shrink.json").is_file());
+    let source = shrink::source(saved, selection.finding, "explain")?;
+    let settings = request
+        .explain
+        .or(&source.manifest.config.explain)
+        .or(&declared(
+            source.manifest.bundle.as_deref().unwrap_or_default(),
+        ));
+    settings.validate()?;
+    let out = request.destination.create()?;
+    let mut manifest = source.manifest.inherit(&source.path, &out, "replay")?;
+    manifest.actions = if shrunk {
+        source.manifest.actions.clone()
+    } else {
+        source.actions.clone()
+    };
+    manifest.save(&out)?;
+    let result = (|| -> Result<u8> {
+        let started = clock();
+        let (report, reduction) = if shrunk {
+            (investigate::recorded_report(&source.manifest)?, None)
+        } else {
+            let reduced =
+                shrink::shrink_into(&out, &manifest, &source, selection.finding, request.jobs)?;
+            manifest.actions = reduced.actions.clone();
+            (
+                reduced.report,
+                Some((reduced.faults_before, reduced.replays)),
+            )
+        };
+        report.write(&out)?;
+        manifest.pin_outcome(&report)?;
+        fs::write(
+            out.join("actions.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({ "actions": manifest.actions }))?,
+        )?;
+        let shrink_seconds = started.elapsed().as_secs();
+        let expected = report
+            .replays
+            .first()
+            .cloned()
+            .ok_or("the reduced replay has no result")?;
+        let (_, _, violation) = investigate::trajectory(&expected, true);
+        let points = plan(&manifest.actions, violation);
+        println!(
+            "probing {} points of the reduced execution with {} replays",
+            points.len(),
+            request.jobs.clamp(1, points.len())
+        );
+        let started = clock();
+        let (reference, probed) = probe_all(&out, &manifest, &settings, &points, request.jobs)?;
+        let probe_seconds = started.elapsed().as_secs();
+        let reference_matches = investigate::equivalent(&expected, &reference.summary);
+        let unverified_probes = unverified(&reference, &probed);
+        let observed = probed
+            .iter()
+            .flat_map(|replayed| replayed.observed.iter().cloned())
+            .map(|observed| (observed.step, observed))
+            .collect::<BTreeMap<_, _>>();
+        let mut explanation = explanation(&Inputs {
+            out: &out,
+            actions: &manifest.actions,
+            bundle: manifest.bundle.as_deref().unwrap_or_default(),
+            image: manifest.config.image.as_deref().unwrap_or("IMAGE"),
+            seed: manifest.config.seed,
+            expected: &expected,
+            violation,
+            observed: &observed,
+            settings: &settings,
+        });
+        if let Some((before, replays)) = reduction {
+            explanation.faults_before_shrink = Some(before);
+            explanation.shrink_replays = Some(replays);
+        }
+        explanation.probe_replays = probed.len() + 1;
+        explanation.reference_matches = reference_matches;
+        explanation.unverified_probes = unverified_probes.clone();
+        explanation.shrink_seconds = shrink_seconds;
+        explanation.probe_seconds = probe_seconds;
+        fs::write(
+            out.join("explain.json"),
+            serde_json::to_vec_pretty(&explanation)?,
+        )?;
+        fs::write(out.join("explain.md"), render(&explanation))?;
+        println!(
+            "explained {} with {} faults: {}",
+            explanation.promise.join("; "),
+            explanation.faults.len(),
+            out.join("explain.md").display()
+        );
+        if !reference_matches {
+            return Err(format!(
+                "the probe-free reference replay differs from the reduced replay; compare {} with report.json",
+                out.join("probes/reference/replay.json").display()
+            )
+            .into());
+        }
+        if !unverified_probes.is_empty() {
+            return Err(format!(
+                "the probes at steps {unverified_probes:?} saw a different state from the reference replay"
+            )
+            .into());
+        }
+        Ok(0)
+    })();
+    super::workflow::finish(&out, &mut manifest, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faults_workload::{
+        package::ReplayStep,
+        target::{FaultObservations, FaultStop},
+    };
+
+    fn ticks(value: u16) -> NonZeroU16 {
+        NonZeroU16::new(value).unwrap()
+    }
+
+    #[cfg(feature = "frontend")]
+    #[test]
+    fn a_guest_path_becomes_one_relative_argument_in_every_shell_context() {
+        let root = tempfile::tempdir().unwrap();
+        let copy = root.path().join("copied/tmp");
+        fs::create_dir_all(&copy).unwrap();
+        fs::write(copy.join("j"), "J").unwrap();
+        for command in [
+            "cat @/tmp/j",
+            "cat \"@/tmp/j\"",
+            "cat '@/tmp/j'",
+            "echo \"x $(cat @/tmp/j) y\"",
+            "echo \"x `cat @/tmp/j` y\"",
+            "unset H; echo \"x ${H:-\"$(cat @/tmp/j)\"} y\"",
+            "# the client's history\ncat @/tmp/j",
+            "cat <<EOF\nit's @/tmp/j\nEOF",
+        ] {
+            let local = localize(command);
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&local)
+                .current_dir(root.path())
+                .output()
+                .unwrap();
+            let text = String::from_utf8(output.stdout).unwrap();
+            let wanted = if command.contains("EOF") {
+                "it's copied/tmp/j\n"
+            } else if command.contains("echo") {
+                "x J y\n"
+            } else {
+                "J"
+            };
+            assert_eq!(text, wanted, "{command} became {local}");
+        }
+    }
+
+    fn action(operation: FaultOperation) -> FaultAction {
+        FaultAction::new(operation, NonZeroU16::MIN)
+    }
+
+    fn schedule() -> Vec<FaultAction> {
+        vec![
+            action(FaultOperation::Kill(1, ticks(256))),
+            action(FaultOperation::Wait(ticks(256))),
+            action(FaultOperation::KillAll(ticks(256))),
+            action(FaultOperation::Restart(0, ticks(256))),
+            action(FaultOperation::Wait(ticks(256))),
+        ]
+    }
+
+    const BUNDLE: &str = "node n1 /app/node 1\nnode n2 /app/node 2\nnode n3 /app/node 3\nhook 1 /app/net partition\n";
+
+    #[test]
+    fn bundle_disks_and_logs_fill_only_the_settings_left_empty() {
+        let bundle = format!(
+            "{BUNDLE}disk n1 /data/n1 64M\ndisk n2 /data/n2 64M checksummed\nlog n1 /logs/n1.log\nlog n2 /logs/n2.log\n"
+        );
+        let declared = declared(&bundle);
+        assert_eq!(declared.logs, ["/logs/n1.log", "/logs/n2.log"]);
+        assert_eq!(declared.data, ["/data/n1", "/data/n2"]);
+        assert_eq!(declared.history, None);
+        let given = Explain {
+            logs: vec!["/other/*.log".into()],
+            ..Explain::default()
+        };
+        let settings = given.or(&Explain::default()).or(&declared);
+        assert_eq!(settings.logs, ["/other/*.log"]);
+        assert_eq!(settings.data, ["/data/n1", "/data/n2"]);
+        assert!(super::declared(BUNDLE).is_empty());
+    }
+
+    fn log(text: &str) -> Log {
+        Log {
+            size: text.len() as u64,
+            text: text.into(),
+            partial: false,
+        }
+    }
+
+    fn shell(script: &str) -> String {
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .replace('\n', "\r\n")
+    }
+
+    #[test]
+    fn the_probe_script_reports_new_log_bytes_data_files_and_history() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().display().to_string();
+        fs::create_dir_all(root.path().join("n1/streams/S")).unwrap();
+        fs::write(root.path().join("n1/streams/S/1.blk"), b"block").unwrap();
+        fs::write(root.path().join("n1/meta.inf"), b"meta").unwrap();
+        fs::write(root.path().join("n1.log"), "start\nleader elected\n").unwrap();
+        fs::write(root.path().join("n2.log"), "start").unwrap();
+        let settings = Explain {
+            logs: vec![format!("{base}/n*.log"), format!("{base}/missing.log")],
+            data: vec![format!("{base}/n1")],
+            history: Some("echo '{\"lost\":[7]}'; echo $((1 + 1))".into()),
+            host_history: Some(format!("harness-check @{base}/n1/streams")),
+        };
+        let first = parse(&shell(&script(&settings, true)));
+        assert!(first.history_finished);
+        assert!(first.copies_finished);
+        assert_eq!(
+            first.files,
+            BTreeMap::from([(format!("{base}/n1/streams/S/1.blk"), b"block".to_vec())])
+        );
+        assert_eq!(first.logs.len(), 2);
+        assert_eq!(
+            first.logs[&format!("{base}/n1.log")].text,
+            "start\nleader elected\n"
+        );
+        assert_eq!(first.logs[&format!("{base}/n2.log")].text, "start");
+        assert_eq!(first.history.as_deref(), Some("{\"lost\":[7]}\n2"));
+        assert_eq!(first.settled.is_some(), first.uptime.is_some());
+        assert!(first.settled >= first.uptime);
+        let files = &first.data[&format!("{base}/n1")];
+        assert_eq!(
+            files.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                format!("{base}/n1/meta.inf"),
+                format!("{base}/n1/streams/S/1.blk")
+            ]
+        );
+        assert_eq!(files[&format!("{base}/n1/meta.inf")].1, 4);
+
+        let before = logs(first.logs);
+        fs::write(
+            root.path().join("n1.log"),
+            "start\nleader elected\nstream S removed\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("n2.log"), "new").unwrap();
+        fs::remove_dir_all(root.path().join("n1/streams")).unwrap();
+        let second = parse(&shell(&script(&settings, false)));
+        assert_eq!(second.history, None);
+        assert!(second.files.is_empty());
+        let after = logs(second.logs);
+        let n1 = format!("{base}/n1.log");
+        assert_eq!(after[&n1].text, "start\nleader elected\nstream S removed\n");
+        assert_eq!(
+            appended(&before[&n1].text, &after[&n1].text),
+            "stream S removed\n"
+        );
+        assert_eq!(after[&format!("{base}/n2.log")].text, "new");
+        let changes = data_changes(
+            &format!("{base}/n1"),
+            Some(files),
+            second.data.get(&format!("{base}/n1")),
+        );
+        assert_eq!(
+            changes.removed,
+            vec![Entry {
+                path: format!("{base}/n1/streams/"),
+                files: 1,
+                bytes: 5
+            }]
+        );
+    }
+
+    #[test]
+    fn a_capped_capture_is_marked_partial() {
+        let parts = BTreeMap::from([(
+            "a".to_owned(),
+            LogPart {
+                size: 100,
+                start: 90,
+                text: "tail\n".into(),
+            },
+        )]);
+        let logs = logs(parts);
+        assert!(logs["a"].partial);
+        assert_eq!(logs["a"].text, "tail\n");
+    }
+
+    #[test]
+    fn templates_ignore_numbers_and_generated_identifiers() {
+        assert_eq!(
+            template(
+                "[41] 2026/10/19 23:01:02.123 [INF] JetStream cluster new stream leader for 'S > xYqTzwLbQ'"
+            ),
+            template(
+                "[87] 2026/10/19 23:05:09.981 [INF] JetStream cluster new stream leader for 'S > PmKdhQrstV'"
+            )
+        );
+        assert_ne!(
+            template("[INF] Self is new JetStream cluster metadata leader"),
+            template("[WRN] Detected orphaned stream 'S'")
+        );
+    }
+
+    #[test]
+    fn appended_text_follows_the_earlier_capture() {
+        assert_eq!(appended("a\nb\n", "a\nb\nc\n"), "c\n");
+        assert_eq!(appended("x\nb\n", "b\nc\n"), "c\n");
+        assert_eq!(appended("", "c\n"), "c\n");
+        assert_eq!(appended("gone\n", "fresh\n"), "fresh\n");
+        assert_eq!(
+            appended("a\nb\nlost\n", "a\nb\nlater\nmore\n"),
+            "later\nmore\n"
+        );
+    }
+
+    #[test]
+    fn excerpts_rank_lines_with_new_patterns_first() {
+        let before = BTreeMap::from([
+            (
+                "n1.log".to_owned(),
+                log("[1] heartbeat 1\n[1] heartbeat 2\n"),
+            ),
+            ("n2.log".to_owned(), log("[2] heartbeat 3\n")),
+        ]);
+        let after = BTreeMap::from([
+            (
+                "n1.log".to_owned(),
+                log(
+                    "[1] heartbeat 1\n[1] heartbeat 2\n[1] heartbeat 4\n[1] stream S deleted\n[1] stream S deleted\n",
+                ),
+            ),
+            ("n2.log".to_owned(), log("[2] heartbeat 3\n")),
+            ("n3.log".to_owned(), log("[3] heartbeat 5\n")),
+        ]);
+        let excerpts = excerpts(&before, &after);
+        assert_eq!(
+            excerpts.iter().map(|e| e.file.as_str()).collect::<Vec<_>>(),
+            vec!["n1.log", "n3.log"]
+        );
+        assert_eq!(excerpts[0].new_lines, 3);
+        assert_eq!(excerpts[0].novel_lines, 2);
+        assert_eq!(
+            excerpts[0].lines[0],
+            Line {
+                text: "[1] stream S deleted".into(),
+                count: 2,
+                novel: true
+            }
+        );
+        assert!(!excerpts[0].lines[1].novel);
+        assert!(!excerpts[1].lines[0].novel);
+    }
+
+    #[test]
+    fn data_changes_report_whole_removed_directories_once() {
+        let file = |crc, size| (crc, size);
+        let before = Files::from([
+            ("/d/meta/snap".to_owned(), file(1, 10)),
+            ("/d/streams/S/1.blk".to_owned(), file(2, 20)),
+            ("/d/streams/S/obs/c".to_owned(), file(3, 30)),
+            ("/d/streams/T/1.blk".to_owned(), file(4, 40)),
+        ]);
+        let after = Files::from([
+            ("/d/meta/snap".to_owned(), file(9, 0)),
+            ("/d/streams/T/1.blk".to_owned(), file(4, 40)),
+            ("/d/streams/U/1.blk".to_owned(), file(5, 50)),
+        ]);
+        let changes = data_changes("/d", Some(&before), Some(&after));
+        assert_eq!(
+            changes.removed,
+            vec![Entry {
+                path: "/d/streams/S/".into(),
+                files: 2,
+                bytes: 50
+            }]
+        );
+        assert_eq!(
+            changes.added,
+            vec![Entry {
+                path: "/d/streams/U/".into(),
+                files: 1,
+                bytes: 50
+            }]
+        );
+        assert_eq!(
+            changes.changed,
+            vec![Change {
+                path: "/d/meta/snap".into(),
+                before: 10,
+                after: 0
+            }]
+        );
+        assert!(data_changes("/d", Some(&after), Some(&after)).is_empty());
+        assert!(!data_changes("/d", Some(&after), None).is_empty());
+    }
+
+    #[test]
+    fn the_plan_probes_both_sides_of_each_fault_and_the_violation() {
+        let points = plan(&schedule(), 5);
+        assert_eq!(
+            points.iter().map(|point| point.step).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5]
+        );
+        assert_eq!(points[3].labels, vec!["after fault 2", "before fault 3"]);
+        assert!(
+            points
+                .iter()
+                .all(|point| point.history == (point.step == 5))
+        );
+        let titles = spans(&schedule(), 5, &names(BUNDLE))
+            .into_iter()
+            .map(|span| (span.title, span.from, span.to))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            titles,
+            vec![
+                ("Fault 1: kill n2 for 2.56 s".into(), 0, 1),
+                ("Between fault 1 and fault 2".into(), 1, 2),
+                ("Fault 2: kill every node for 2.56 s".into(), 2, 3),
+                ("Fault 3: restart n1 (back after 0.64 s)".into(), 3, 4),
+                ("From the last fault to the violation".into(), 4, 5),
+            ]
+        );
+        let waits = vec![action(FaultOperation::Wait(ticks(1)))];
+        assert_eq!(plan(&waits, 1).len(), 2);
+        assert_eq!(spans(&waits, 1, &Names::default())[0].from, 0);
+    }
+
+    #[test]
+    fn descriptions_name_nodes_and_hooks_from_the_bundle() {
+        let names = names(BUNDLE);
+        assert_eq!(
+            describe(&FaultOperation::Pause(2, ticks(128)), &names),
+            "pause n3 for 1.28 s"
+        );
+        assert_eq!(
+            describe(&FaultOperation::Hook(1, ticks(256)), &names),
+            "run hook 1 `/app/net partition`"
+        );
+        assert_eq!(
+            describe(&FaultOperation::Kill(7, ticks(1)), &names),
+            "kill node 7 for 0.01 s"
+        );
+        assert_eq!(
+            describe(&FaultOperation::DiskStall(0, ticks(64)), &names),
+            "stall n1's disk I/O for 0.64 s"
+        );
+        assert_eq!(
+            describe(
+                &FaultOperation::Clock {
+                    node: 1,
+                    offset_ms: 0,
+                    rate_ppm: process_proto::CLOCK_RATE_STOPPED_PPM,
+                    ticks: ticks(128),
+                },
+                &names
+            ),
+            "stop the wall clock after a 0 ms step on n2 for 1.28 s"
+        );
+        assert_eq!(alive(0b101, &names), vec!["n1", "n3"]);
+    }
+
+    fn summary(actions: &[FaultAction]) -> ReplaySummary {
+        let mut summary =
+            ReplaySummary::from_observation(&FaultObservations::default(), Some([0; 32]), 0, 0);
+        summary.violations = vec!["log: every acknowledged append is in every later read".into()];
+        summary.timeline = (0..=actions.len())
+            .map(|step| ReplayStep {
+                step: step as u64,
+                action: step.checked_sub(1).map(|index| actions[index]),
+                observation: FaultObservations {
+                    moment: 14_000_000_000 + step as u64 * 2_560_000_000,
+                    alive: if step >= 3 { 0b001 } else { 0b101 },
+                    stop: FaultStop::Deadline,
+                    ..FaultObservations::default()
+                },
+                console: String::new(),
+                settlement: false,
+            })
+            .collect();
+        summary
+    }
+
+    #[test]
+    fn a_probe_is_verified_only_when_its_state_matches_the_reference() {
+        let replayed = |certificates: &[(usize, u8)], steps: &[usize]| Replayed {
+            summary: summary(&[]),
+            observed: steps
+                .iter()
+                .map(|&step| Observed {
+                    step,
+                    ..Observed::default()
+                })
+                .collect(),
+            certificates: certificates
+                .iter()
+                .map(|&(step, byte)| (step, [byte; 32]))
+                .collect(),
+        };
+        let reference = replayed(&[(0, 1), (1, 2), (2, 3)], &[]);
+        let probes = [replayed(&[(0, 1), (2, 9)], &[0, 2]), replayed(&[], &[1])];
+        assert_eq!(unverified(&reference, &probes), vec![1, 2]);
+        assert!(unverified(&reference, &[replayed(&[(1, 2)], &[1])]).is_empty());
+    }
+
+    #[test]
+    fn the_report_names_the_promise_faults_symptom_evidence_and_commands() {
+        let actions = schedule();
+        let expected = summary(&actions);
+        let mut observed = BTreeMap::new();
+        for step in 0..=5 {
+            let mut point = Observed {
+                step,
+                uptime: Some(14.0 + step as f64 * 2.56 - 0.5),
+                ..Observed::default()
+            };
+            let text = if step < 4 {
+                "[1] ready\n".to_owned()
+            } else {
+                "[1] ready\n[1] removed stream S\n".to_owned()
+            };
+            point.logs.insert("/tmp/n1.log".into(), log(&text));
+            point.data.insert(
+                "/tmp/n1".into(),
+                if step < 4 {
+                    Files::from([("/tmp/n1/streams/S/1.blk".to_owned(), (1, 9))])
+                } else {
+                    Files::new()
+                },
+            );
+            observed.insert(step, point);
+        }
+        observed.get_mut(&5).unwrap().history = Some("{\"missing\":3}".into());
+        observed.get_mut(&2).unwrap().error = Some("guest refused".into());
+        let settings = Explain {
+            logs: vec!["/tmp/*.log".into()],
+            data: vec!["/tmp/n1".into()],
+            history: Some("check".into()),
+            host_history: Some("harness-check -family register @/tmp/harness/journal".into()),
+        };
+        observed.get_mut(&5).unwrap().history_finished = true;
+        observed.get_mut(&5).unwrap().copied = vec!["/tmp/harness/journal/a.jsonl".into()];
+        observed.get_mut(&5).unwrap().copies_finished = true;
+        let mut explanation = explanation(&Inputs {
+            out: Path::new("/runs/x"),
+            actions: &actions,
+            bundle: BUNDLE,
+            image: "app.oci",
+            seed: 51,
+            expected: &expected,
+            violation: 5,
+            observed: &observed,
+            settings: &settings,
+        });
+        explanation.probe_replays = 2;
+        explanation.reference_matches = true;
+        assert_eq!(explanation.faults.len(), 3);
+        assert_eq!(explanation.faults[1].step, 3);
+        assert_eq!(explanation.faults[1].start_seconds, 19.12);
+        assert_eq!(explanation.faults[1].running_after, vec!["n1"]);
+        assert!((explanation.guest_clock_offset_seconds.unwrap() - 0.5).abs() < 1e-9);
+        assert_eq!(
+            explanation.commands.fix_check,
+            "harmony debug run FIXED.oci --config /runs/x/resolved.toml --seed 51 --actions /runs/x/actions.json --out /runs/x-fixed"
+        );
+        let restart = &explanation.windows[3];
+        assert_eq!(restart.logs[0].lines[0].text, "[1] removed stream S");
+        assert_eq!(restart.data[0].removed[0].path, "/tmp/n1/streams/");
+        assert!(explanation.windows[1].missing[0].contains("guest refused"));
+        let text = render(&explanation);
+        for expected in [
+            "# Explanation: log: every acknowledged append is in every later read",
+            "| 2 | 3 | kill every node for 2.56 s | 19.12 | 21.68 | 18.62 | n1 |",
+            "\"missing\": 3",
+            "+ [1] removed stream S",
+            "removed `/tmp/n1/streams/` (1 files, 9 bytes)",
+            "harmony debug run app.oci --config /runs/x/resolved.toml --seed 51",
+            "probe at step 2 failed: guest refused",
+            "Each probe saw the same whole-state certificate as a probe-free reference replay",
+            "Copied 1 guest files at step 5 into `copied/` in the run directory.",
+            "The host history command has not run.",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+        }
+        assert!(!text.contains("- Power loss:"), "{text}");
+        let mut cut = explanation.clone();
+        cut.faults[1].operation = FaultOperation::PowerLossAll(ticks(256));
+        assert!(
+            render(&cut).contains("- Power loss: fault 2 cuts power, and a node loses every write it had not synced to disk."),
+            "{}",
+            render(&cut)
+        );
+        assert_eq!(explanation.history_error, None);
+        explanation.host_history = Some(HostHistory {
+            command: "harness-check -family register '/runs/x/copied/tmp/harness/journal'".into(),
+            status: Some(3),
+            output: "{\"violations\":1}".into(),
+            partial: false,
+        });
+        let text = render(&explanation);
+        assert!(text.contains("on the host, exit status 3:"), "{text}");
+        assert!(text.contains("\"violations\": 1"), "{text}");
+        assert!(!text.contains("partial"), "{text}");
+        let mut partial = explanation.clone();
+        partial.skipped_copies = vec![Uncopied::new(
+            "/tmp/harness/journal/drive-1.jsonl",
+            "the copy decoded to 3 of 9 bytes",
+        )];
+        partial.host_history.as_mut().unwrap().partial = true;
+        let text = render(&partial);
+        for expected in [
+            "- Host check: partial. Not copied: `/tmp/harness/journal/drive-1.jsonl` (the copy decoded to 3 of 9 bytes).\n",
+            "on the host, exit status 3, from a partial copy:",
+            PARTIAL,
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in\n{text}");
+        }
+        partial.skipped_copies.clear();
+        assert!(!render(&partial).contains("Not copied"));
+        partial.copy_error = Some("guest command exceeded its five-minute host limit".into());
+        assert!(render(&partial).contains(
+            "Not copied: the files the probe did not reach, because the probe at step 5 failed: guest command exceeded its five-minute host limit."
+        ));
+
+        let point = observed.get_mut(&5).unwrap();
+        point.history_finished = false;
+        point.error = Some("host command limit of 300 s reached".into());
+        let explanation = super::explanation(&Inputs {
+            out: Path::new("/runs/x"),
+            actions: &actions,
+            bundle: BUNDLE,
+            image: "app.oci",
+            seed: 51,
+            expected: &expected,
+            violation: 5,
+            observed: &observed,
+            settings: &settings,
+        });
+        assert_eq!(
+            explanation.history_error.as_deref(),
+            Some("host command limit of 300 s reached")
+        );
+        assert!(render(&explanation).contains(
+            "The history command at step 5 did not finish: host command limit of 300 s reached. The output above is partial."
+        ));
+        assert_eq!(explanation.copy_error, None);
+        let mut explanation = explanation;
+        explanation.history = Some("\n".into());
+        let text = render(&explanation);
+        assert!(text.contains("did not finish: host command limit of 300 s reached.\n"));
+        assert!(!text.contains("Output of the history command"));
+
+        let copy_error = |observed: &BTreeMap<usize, Observed>| {
+            super::explanation(&Inputs {
+                out: Path::new("/runs/x"),
+                actions: &actions,
+                bundle: BUNDLE,
+                image: "app.oci",
+                seed: 51,
+                expected: &expected,
+                violation: 5,
+                observed,
+                settings: &settings,
+            })
+            .copy_error
+        };
+        observed.get_mut(&5).unwrap().copies_finished = false;
+        assert_eq!(
+            copy_error(&observed).as_deref(),
+            Some("host command limit of 300 s reached")
+        );
+        observed.remove(&5);
+        assert_eq!(
+            copy_error(&observed).as_deref(),
+            Some("step 5 was not probed")
+        );
+    }
+
+    #[test]
+    fn copies_decode_and_land_under_their_guest_path() {
+        assert_eq!(decode("aGVs\nbG8=").unwrap(), b"hello");
+        assert_eq!(decode("YQ==").unwrap(), b"a");
+        assert_eq!(decode("a$b"), None);
+        let root = tempfile::tempdir().unwrap();
+        store(root.path(), "/tmp/j/a.jsonl", b"{}").unwrap();
+        assert_eq!(fs::read(root.path().join("tmp/j/a.jsonl")).unwrap(), b"{}");
+        for bad in ["tmp/a", "/tmp/../a", "/tmp//a", "/./a"] {
+            assert!(store(root.path(), bad, b"x").is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_history_is_kept_and_an_unterminated_log_is_dropped() {
+        let capture = parse(&format!(
+            "{MARK} log 4 0 /a.log\nabc\n{MARK} end\n{MARK} history\n{{\"ops\":1}}\n"
+        ));
+        assert_eq!(capture.logs["/a.log"].text, "abc");
+        assert_eq!(capture.history.as_deref(), Some("{\"ops\":1}"));
+        assert!(!capture.history_finished);
+        let capture = parse(&format!("{MARK} log 4 0 /a.log\nabc\n"));
+        assert!(capture.logs.is_empty());
+        let capture = parse(&format!(
+            "{MARK} file 3 /j/a\nYWJj\n{MARK} end\n{MARK} file 9 /j/b\nYWJj\n{MARK} end\n{MARK} skip 99999999 /j/c\n{MARK} file 3 /j/d\nY$Jj\n{MARK} end\n{MARK} unreadable /j/e\nsh: can't open /j/e: Permission denied\n{MARK} end\n{MARK} unlisted\n{MARK} file 3 /j/f\nYW\n"
+        ));
+        assert_eq!(
+            capture.files,
+            BTreeMap::from([("/j/a".to_owned(), b"abc".to_vec())])
+        );
+        assert_eq!(
+            capture.skipped,
+            vec![
+                Uncopied::new("/j/b", "the copy decoded to 3 of 9 bytes"),
+                Uncopied::new("/j/c", "99999999 bytes, over the 16 MiB copy limit"),
+                Uncopied::new("/j/d", "the copy is not valid base64"),
+                Uncopied::new(
+                    "/j/e",
+                    "the guest could not read it: sh: can't open /j/e: Permission denied"
+                ),
+                Uncopied::new(
+                    "the files under the copied paths",
+                    "the guest could not list all of them"
+                ),
+                Uncopied::new("/j/f", "the copy of 3 bytes ended before its end marker"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_that_grows_during_the_probe_copies_the_bytes_it_measured() {
+        use std::{
+            io::Write as _,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+        };
+        let root = tempfile::tempdir().unwrap();
+        let journal = root.path().join("journal");
+        fs::create_dir_all(&journal).unwrap();
+        let path = journal.join("drive-1.jsonl");
+        fs::write(&path, "{\"t\":\"invoke\"}\n".repeat(4096)).unwrap();
+        fs::write(journal.join("check-1.jsonl"), "{\"t\":\"ok\"}\n").unwrap();
+        let settings = Explain {
+            host_history: Some(format!("harness-check @{}", journal.display())),
+            ..Explain::default()
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, path) = (Arc::clone(&stop), path.clone());
+            std::thread::spawn(move || {
+                let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+                let line = "{\"t\":\"ok\"}\n".repeat(64);
+                while !stop.load(Ordering::Relaxed) {
+                    file.write_all(line.as_bytes()).unwrap();
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+            })
+        };
+        let captures = (0..10)
+            .map(|_| parse(&shell(&script(&settings, true))))
+            .collect::<Vec<_>>();
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        let full = fs::read(&path).unwrap();
+        let drive = path.display().to_string();
+        for capture in captures {
+            assert!(capture.copies_finished);
+            assert_eq!(capture.skipped, Vec::new());
+            assert_eq!(capture.files.len(), 2);
+            let copy = &capture.files[&drive];
+            assert!(copy.len() >= 4096 * 14, "{}", copy.len());
+            assert_eq!(copy[..], full[..copy.len()]);
+        }
+    }
+
+    #[cfg(feature = "frontend")]
+    #[test]
+    fn the_host_history_runs_on_the_copied_files() {
+        let root = tempfile::tempdir().unwrap();
+        let actions = schedule();
+        let expected = summary(&actions);
+        let settings = Explain {
+            host_history: Some("wc -c < @/tmp/j/a.jsonl; ls @/tmp/j; exit 3".into()),
+            ..Explain::default()
+        };
+        let explanation = explanation(&Inputs {
+            out: root.path(),
+            actions: &actions,
+            bundle: BUNDLE,
+            image: "app.oci",
+            seed: 51,
+            expected: &expected,
+            violation: 5,
+            observed: &BTreeMap::from([(
+                5,
+                Observed {
+                    step: 5,
+                    copies_finished: true,
+                    ..Observed::default()
+                },
+            )]),
+            settings: &settings,
+        });
+        fs::write(
+            root.path().join("explain.json"),
+            serde_json::to_vec(&explanation).unwrap(),
+        )
+        .unwrap();
+        store(&root.path().join("copied"), "/tmp/j/a.jsonl", b"abcd").unwrap();
+        host_history(&root.path().join("missing")).unwrap();
+        host_history(root.path()).unwrap();
+        let saved: Explanation =
+            serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
+        let host = saved.host_history.clone().unwrap();
+        assert!(!host.partial);
+        let mut gap = saved;
+        gap.skipped_copies = vec![Uncopied::new(
+            "/tmp/j/b.jsonl",
+            "the copy is not valid base64",
+        )];
+        fs::write(
+            root.path().join("explain.json"),
+            serde_json::to_vec(&gap).unwrap(),
+        )
+        .unwrap();
+        host_history(root.path()).unwrap();
+        let saved: Explanation =
+            serde_json::from_slice(&fs::read(root.path().join("explain.json")).unwrap()).unwrap();
+        let host = saved.host_history.unwrap();
+        assert!(host.partial);
+        assert!(
+            fs::read_to_string(root.path().join("explain.md"))
+                .unwrap()
+                .contains("exit status 3, from a partial copy:")
+        );
+        assert_eq!(host.status, Some(3));
+        assert_eq!(
+            host.output.split_whitespace().collect::<Vec<_>>(),
+            vec!["4", "a.jsonl"]
+        );
+        assert!(!host.command.contains('@'));
+        assert!(
+            fs::read_to_string(root.path().join("explain.md"))
+                .unwrap()
+                .contains("exit status 3")
+        );
+    }
+}

@@ -71,6 +71,7 @@ fn timing() -> VirtualTimeTiming {
         trapped_time_read_vns: 2,
         architectural_control_vns: 3,
         execution_tick_vns: 11,
+        coverage_callback_vns: 13,
     }
 }
 

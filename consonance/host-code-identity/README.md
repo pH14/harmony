@@ -14,15 +14,43 @@ not share the dynamic-host identity format.
 
 This primitive requires a static musl host and an executable memfd with all
 four required seals. A normal on-disk binary, dynamic loader, shared library,
-JIT, or manually created executable mapping fails closed. It is an admission
-measurement of the current process, not an attestation against arbitrary
-injected code or a guarantee about maps added after measurement. Callers must
-control launch and recheck at relevant operation boundaries. The strict guard
-retains the admission-time full-file digest only while the same device, inode,
-length, and immutable seals remain. Each recheck still compares every live
-executable byte with the sealed file, measures the vDSO, and repeats the
-executable-map census. Public Session and Recording APIs require this strict
-host boundary.
+JIT, or manually created executable mapping fails closed. Admission compares
+every live code byte with the sealed file, hashes the live code, the full file
+and the vDSO, and requires every live code and vDSO page to be unwritten, as
+defined below. The full-file digest is computed once per process and reused
+while the sealed file keeps the same device, inode and length; the seals keep
+its bytes fixed. Admission measures the current process and does not attest
+against code that already runs inside it. Callers must control launch and
+recheck at relevant operation boundaries. Public Session and Recording APIs
+require this strict host boundary.
+
+A recheck proves that the live code still equals the admitted code without
+reading the code. The code mapping is a private mapping of the write-sealed
+memfd, so each of its pages is either a page of that memfd, which the seals
+keep unchanged, or an anonymous copy. The vDSO is a private mapping of fixed
+kernel pages and behaves the same way. The kernel makes such a copy on every
+write to a private page, including ptrace and `/proc/pid/mem` writes, writes
+after `mprotect`, and uprobe breakpoints. The copy stays after the original
+bytes are written back. A page is unwritten when it is not present and not
+swapped, or when the kernel reports it as file-backed.
+
+The guard has two rechecks. `check_code` requires every page of the admitted
+code and vDSO ranges to be unwritten. It uses the `PAGEMAP_SCAN` ioctl on
+`/proc/self/pagemap` (Linux 6.7 and later) to find the first anonymous present
+or swapped page, and reads the page-map entries directly on older kernels. The
+`/proc/self/pagemap` descriptor stays open for the life of the process and is
+reopened after a fork. `check` also requires the same sealed file device,
+inode, length and seals, the same code and vDSO address ranges and vsyscall
+presence, and an unchanged executable-map census before and after the page
+check. The census uses the `PROCMAP_QUERY` ioctl on `/proc/self/maps`
+(Linux 6.11 and later) to list only executable mappings, and parses the
+`/proc/self/maps` text on older kernels. The ioctl does not report the
+vsyscall gateway, so `check` compares the gateway recorded at admission.
+Either recheck detects every code write since admission, including one whose
+bytes were later restored. A copy can disappear in two ways:
+`madvise(MADV_DONTNEED)` called by code inside the process, and removal of a
+uprobe, which restores the file page. Both need code inside the process or
+kernel privilege.
 
 On Linux, `mapped_executable_sha256` reads the bytes currently mapped with
 execute permission in its own process through `/proc/self/mem`. It includes the
@@ -132,11 +160,14 @@ executable page that dyld does not report remains outside this image census;
 the hardened runtime without executable-memory exceptions is required to
 prevent such code from entering this process.
 
-`StrictExecutableGuard::capture_measured` and `check_measured` accept caller-owned
+`StrictExecutableGuard::capture_measured`, `check_measured` and
+`check_code_measured` accept caller-owned
 `GuardMeasurement` totals. Attempts, errors and elapsed host nanoseconds include
 refusals; partial work remains available after an error. Linux byte fields count
 successful bytes returned by the actual code/vDSO and sealed-file reads, including
-partial reads before EOF or another error. Hash bytes count only buffers actually
+partial reads before EOF or another error. A recheck reads no code or vDSO
+bytes; `code_page_entries` counts the code and vDSO pages it checked, whether
+scanned or read. Hash bytes count only buffers actually
 fed to SHA-256. Comparison input bytes count each compared pair's length once
 (N for two N-byte buffers), including a mismatching pair; they do not estimate CPU
 comparison instructions. Admission-only whole-file reads/hashes are separate from

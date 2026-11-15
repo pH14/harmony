@@ -11,7 +11,7 @@ use std::fs;
 use crate::selection::Point;
 pub use crate::selection::Selection;
 
-fn recorded_report(manifest: &Manifest) -> Result<Report> {
+pub(super) fn recorded_report(manifest: &Manifest) -> Result<Report> {
     Ok(serde_json::from_value(
         manifest.record.payload["outcome"].clone(),
     )?)
@@ -54,11 +54,11 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
     }
 }
 
-fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
+pub(super) fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
     report_witness(&recorded_report(manifest)?, bug)
 }
 
-fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
+pub(super) fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
     expected.state_hash_encoding != StateHashEncoding::Unavailable
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash
@@ -347,6 +347,15 @@ pub fn prefix(
 }
 
 #[cfg(feature = "frontend")]
+fn undecided_line(undecided: &serde_json::Value) -> Option<String> {
+    let keys = undecided["keys"].as_u64().filter(|keys| *keys > 0)?;
+    Some(format!(
+        "undecided keys: {keys} in {} executions (the check reached its step budget)",
+        undecided["executions"].as_u64().unwrap_or_default()
+    ))
+}
+
+#[cfg(feature = "frontend")]
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
@@ -392,6 +401,12 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             for violation in replay["violations"].as_array().into_iter().flatten() {
                 println!("  violation: {}", violation.as_str().unwrap_or_default());
             }
+            if let Some(keys) = replay["check"]["undecided_keys"]
+                .as_u64()
+                .filter(|keys| *keys > 0)
+            {
+                println!("  undecided keys in the latest check: {keys}");
+            }
         };
         if let Some(bug) = selection.finding {
             println!(
@@ -425,6 +440,9 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
             }
             for assertion in selected["never_satisfied"].as_array().into_iter().flatten() {
                 println!("unmet reachability assertion: {assertion}");
+            }
+            if let Some(line) = undecided_line(&selected["undecided_checks"]) {
+                println!("{line}");
             }
             if !bugs.is_empty() {
                 println!(
@@ -573,6 +591,20 @@ mod tests {
     use std::num::NonZeroU16;
 
     #[test]
+    fn undecided_keys_show_only_when_a_check_left_keys_undecided() {
+        let line = undecided_line(&serde_json::json!({"executions": 2, "keys": 5}));
+        assert_eq!(
+            line.as_deref(),
+            Some("undecided keys: 5 in 2 executions (the check reached its step budget)")
+        );
+        assert_eq!(
+            undecided_line(&serde_json::json!({"executions": 0, "keys": 0})),
+            None
+        );
+        assert_eq!(undecided_line(&serde_json::Value::Null), None);
+    }
+
+    #[test]
     fn exact_replay_rejects_changed_timeline_and_console() {
         use faults_workload::{package::ReplayStep, target::FaultObservations};
         let mut expected =
@@ -609,6 +641,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "replay",
@@ -750,6 +783,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -768,7 +802,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),
@@ -827,6 +861,7 @@ mod tests {
             uml_profile: None,
             root: None,
             checkpoint_owner: None,
+            boot_cache: None,
         };
         let mut report = Report::new(
             "search",
@@ -845,7 +880,7 @@ mod tests {
             violations: vec!["2".into()],
             sometimes: Vec::new(),
             state_hash: String::new(),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash_encoding: StateHashEncoding::EnginePageDigest,
             confirmed: false,
             replay: Some(ReplaySummary::from_observation(
                 &FaultObservations::default(),

@@ -228,6 +228,7 @@ where
             work_budget: request.frames,
             checkpoints,
             placement: None,
+            interrupt: None,
         },
         watch,
     )?;

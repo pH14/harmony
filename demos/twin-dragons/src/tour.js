@@ -95,11 +95,11 @@ export class GuidedTour {
       e.preventDefault();
       this.finish();
     });
-    document.addEventListener("focusin", (e) => {
+    this.onFocusIn = (e) => {
       if (this.open && this.interactive && !this.allowed.some((node) => node.contains(e.target)))
         this.find("tour-next").focus({ preventScroll: true });
-    });
-    document.addEventListener("keydown", (e) => {
+    };
+    this.onKeyDown = (e) => {
       if (!this.open || !this.interactive) return;
       if (e.key === "Escape") {
         e.preventDefault();
@@ -113,7 +113,9 @@ export class GuidedTour {
         e.preventDefault();
         controls[(index + direction + controls.length) % controls.length].focus({ preventScroll: true });
       }
-    }, true);
+    };
+    document.addEventListener("focusin", this.onFocusIn);
+    document.addEventListener("keydown", this.onKeyDown, true);
     this.dialog.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -121,6 +123,14 @@ export class GuidedTour {
         this.finish();
       }
     });
+  }
+  dispose() {
+    cancelAnimationFrame(this.animation);
+    document.removeEventListener("focusin", this.onFocusIn);
+    document.removeEventListener("keydown", this.onKeyDown, true);
+    this.restoreInteraction();
+    this.clearStage();
+    this.dialog.remove();
   }
   restoreInteraction() {
     for (const [node, inert] of this.disabled || []) node.inert = inert;

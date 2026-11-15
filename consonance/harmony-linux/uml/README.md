@@ -41,7 +41,9 @@ The guest TASK_SIZE remains in the console for diagnosis.
   `CONFIG_HARMONY_UML_CLOCK_READ_VNS` (1 ns). Kernel clock reads, host events
   and context switches cost nothing. An idle guest jumps to its next timer
   deadline, and timers due at the same moment fire in the order they were
-  armed. `profile.json` records both costs under `virtual_time`.
+  armed. `profile.json` records both costs under `virtual_time`. A coverage
+  exchange is one ioctl and costs one system call, so a busy UML thread still
+  runs faster at a larger quantum.
 - Preemption comes from the timer tick that these costs drive. A guest loop
   with no system calls never advances time, so it holds the CPU until the
   wall-clock limit stops it.

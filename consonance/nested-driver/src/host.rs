@@ -732,7 +732,7 @@ mod tests {
             0,
             &[7],
             RetentionPolicy::Unprobed,
-            true,
+            searcher::search::rollout::RolloutStop::new(true),
         )
         .unwrap();
         assert!(result.actions.is_empty());
@@ -760,6 +760,7 @@ mod tests {
                 terminal_endpoints: 0,
                 terminal_objectives: 0,
                 execution_failures: 1,
+                hung_jobs: 0,
                 selector: Default::default(),
             },
         );

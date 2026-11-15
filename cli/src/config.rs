@@ -28,20 +28,25 @@ pub struct Runner {
     pub backend: Option<String>,
     pub options: toml::Table,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Search {
     pub seed: u64,
-    pub executions: u64,
+    pub executions: Option<u64>,
     pub wall_seconds: Option<u64>,
 }
-impl Default for Search {
-    fn default() -> Self {
-        Self {
-            seed: 0,
-            executions: 1000,
-            wall_seconds: None,
-        }
+pub const DEFAULT_EXECUTIONS: u64 = 1000;
+pub const UNBOUNDED_EXECUTIONS: u64 = i64::MAX as u64;
+pub fn execution_limit(executions: Option<u64>, wall_seconds: Option<u64>) -> u64 {
+    executions.unwrap_or(if wall_seconds.is_some() {
+        UNBOUNDED_EXECUTIONS
+    } else {
+        DEFAULT_EXECUTIONS
+    })
+}
+impl Search {
+    pub fn execution_limit(&self) -> u64 {
+        execution_limit(self.executions, self.wall_seconds)
     }
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -55,7 +60,7 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         for (name, value) in [
             ("seed", self.search.seed),
-            ("executions", self.search.executions),
+            ("executions", self.search.executions.unwrap_or(0)),
             ("wall_seconds", self.search.wall_seconds.unwrap_or(0)),
         ] {
             if value > i64::MAX as u64 {
@@ -64,7 +69,7 @@ impl Config {
                 );
             }
         }
-        if self.search.executions == 0 || self.search.wall_seconds == Some(0) {
+        if self.search.executions == Some(0) || self.search.wall_seconds == Some(0) {
             return Err("search budgets must be positive".into());
         }
         Ok(())
@@ -119,7 +124,7 @@ impl Budget {
             config.search.seed = value;
         }
         if let Some(value) = self.executions {
-            config.search.executions = value;
+            config.search.executions = Some(value);
         }
         if let Some(value) = self.wall_seconds {
             config.search.wall_seconds = Some(value);
@@ -329,6 +334,63 @@ mod override_tests {
         assert_eq!(
             Path::new(c.runner.options["core"].as_str().unwrap()),
             root.path().canonicalize().unwrap().join("core.so")
+        );
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    fn limit(config_toml: &str, budget: Budget) -> u64 {
+        let mut config: Config = toml::from_str(config_toml).unwrap();
+        budget.apply(&mut config).unwrap();
+        config.search.execution_limit()
+    }
+    #[test]
+    fn wall_time_alone_removes_the_execution_cap() {
+        let budget = Budget {
+            wall_seconds: Some(1800),
+            ..Default::default()
+        };
+        assert_eq!(limit("", budget), UNBOUNDED_EXECUTIONS);
+    }
+    #[test]
+    fn executions_alone_keep_the_execution_cap() {
+        let budget = Budget {
+            executions: Some(50),
+            ..Default::default()
+        };
+        assert_eq!(limit("", budget), 50);
+    }
+    #[test]
+    fn both_budgets_apply_together() {
+        let budget = Budget {
+            executions: Some(50),
+            wall_seconds: Some(1800),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        budget.apply(&mut config).unwrap();
+        assert_eq!(config.search.execution_limit(), 50);
+        assert_eq!(config.search.wall_seconds, Some(1800));
+    }
+    #[test]
+    fn neither_budget_keeps_the_default() {
+        assert_eq!(limit("", Budget::default()), DEFAULT_EXECUTIONS);
+    }
+    #[test]
+    fn config_file_executions_count_as_given() {
+        let budget = Budget {
+            wall_seconds: Some(1800),
+            ..Default::default()
+        };
+        assert_eq!(limit("[search]\nexecutions = 1000", budget), 1000);
+    }
+    #[test]
+    fn config_file_wall_time_without_executions_is_unbounded() {
+        assert_eq!(
+            limit("[search]\nwall_seconds = 600", Budget::default()),
+            UNBOUNDED_EXECUTIONS
         );
     }
 }

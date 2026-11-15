@@ -58,6 +58,18 @@ check.
 write nested records directly into their destination instead of allocating and
 copying an intermediate buffer. Neither method changes the captured state.
 
+The VMM clones a `RecordedEnv` for each service transaction and captures its
+state after each answer, so these copies must stay cheap as the recording
+grows. Clones and captures share the recorded answers. The answers live in a
+shared sorted map plus a small map of recent answers; the recent map merges
+into a fresh shared copy once it holds more than the square root of the shared
+size. A clone or capture copies only the recent map. `RecordedEnv` and
+`RecordedState` also keep the encoded size and unbound count of their answers,
+and `InputSpec` keeps its full encoded length. Snapshot and reproducer size
+limits are checked from those totals, and
+`InputSpec::projected_reproducer_len_with_binding_reserve` sizes a reproducer
+with pending effects, reseeds and one more bound answer without encoding it.
+
 `ServiceHandler::respond` receives the virtual moment the question surfaced at
 alongside the question. A client may use it to propose an explicit recorded
 resolution, but guest execution does not call it for an unrecorded custom
@@ -119,6 +131,10 @@ so repeated callbacks do not grow the answer tape. A custom contract without
 either answer stops as an explicit decision before the scheduler selection,
 threshold, or guest response commits. Generic opcode-3 service questions with
 numeric service ID 4 do not consult the coverage schedule.
+`decide_coverage` takes the callbacks until the guest's next timer deadline
+from the VM. With a runnable width of 1, `coverage_span` extends the next
+threshold to the last whole quantum before that deadline, capped at
+`COVERAGE_SKIP_LIMIT` callbacks.
 
 `ServiceHandler::local_services` declares at most 32 strictly increasing, unique
 namespace IDs above the core and coverage supplies (IDs 1–4). Empty means

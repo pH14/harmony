@@ -1,0 +1,96 @@
+Add a single-call coverage exchange to the SDK device
+
+A coverage exchange through write and read takes two system calls, and each
+system call entry rings the virtual-time execution tick. The HARMONY_IOC_COVERAGE
+ioctl carries the same SDK coverage request and response in one call, which the
+architecture syscall entries exempt from the tick. The host instead charges the
+exchange by the number of coverage callbacks it covers.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/misc/harmony.c
++++ b/drivers/misc/harmony.c
+@@ -19,6 +19,7 @@
+ #include <linux/string.h>
+ #include <linux/uaccess.h>
+ #include <linux/unaligned.h>
++#include <uapi/linux/harmony.h>
+ #if IS_ENABLED(CONFIG_HARMONY_DEVICE_KUNIT_TEST)
+ #include <kunit/test.h>
+ #include <linux/completion.h>
+@@ -248,6 +249,38 @@
+ 	return 0;
+ }
+ 
++static int harmony_coverage_locked(void *context)
++{
++	struct harmony_ioc_coverage *coverage = context;
++	u32 response_len = 0;
++	int ret;
++
++	ret = harmony_exchange(HC_SERVICE_SDK, HC_OPCODE_COVERAGE,
++			       coverage->request, sizeof(coverage->request),
++			       coverage->response, sizeof(coverage->response),
++			       &response_len);
++	if (!ret && response_len != sizeof(coverage->response))
++		ret = -EPROTO;
++	return ret;
++}
++
++static long harmony_ioctl_coverage(void __user *argp)
++{
++	struct harmony_ioc_coverage coverage;
++	int ret;
++
++	if (copy_from_user(&coverage, argp, sizeof(coverage)))
++		return -EFAULT;
++	if (coverage.reserved != 0)
++		return -EINVAL;
++	ret = harmony_run_serialized(harmony_coverage_locked, &coverage);
++	if (ret)
++		return ret;
++	if (copy_to_user(argp, &coverage, sizeof(coverage)))
++		return -EFAULT;
++	return 0;
++}
++
+ static int harmony_request_coverage(struct harmony_file *state,
+ 				    const char __user *user)
+ {
+@@ -580,6 +613,8 @@
+ 
+ 	if (command == HARMONY_IOC_REGION)
+ 		return harmony_region_create(file, argp);
++	if (command == HARMONY_IOC_COVERAGE)
++		return harmony_ioctl_coverage(argp);
+ 	if (command != HARMONY_IOC_EXCHANGE)
+ 		return -ENOTTY;
+ 	if (copy_from_user(&exchange, argp, sizeof(exchange)))
+--- /dev/null
++++ b/include/uapi/linux/harmony.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_HARMONY_H
++#define _UAPI_LINUX_HARMONY_H
++
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++/*
++ * One coverage exchange in a single system call. The request holds the
++ * thread, observed threshold and runnable width of the SDK coverage request;
++ * the response holds the next threshold and the selected thread. Guest
++ * kernels charge this call no execution tick, because the host charges the
++ * coverage callbacks it reports instead.
++ */
++struct harmony_ioc_coverage {
++	__u8 request[16];
++	__u8 response[12];
++	__u32 reserved;
++};
++
++#define HARMONY_IOC_COVERAGE _IOWR('H', 3, struct harmony_ioc_coverage)
++
++#endif /* _UAPI_LINUX_HARMONY_H */

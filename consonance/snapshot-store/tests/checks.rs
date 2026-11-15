@@ -84,7 +84,7 @@ fn recycling_released_pages_preserves_live_branches_and_rejects_old_handles() {
     let mut out = page(0);
     s.read_page(leaf, 0, &mut out).unwrap();
     s.release(base).unwrap();
-    assert_eq!(s.gc(), 0);
+    assert_eq!(s.gc(), 1);
 
     for seed in 2..100 {
         let mut builder = s.derive(leaf).unwrap();
@@ -106,7 +106,7 @@ fn recycling_released_pages_preserves_live_branches_and_rejects_old_handles() {
     }
 
     s.release(leaf).unwrap();
-    assert_eq!(s.gc(), PAGE_SIZE as u64 + 2);
+    assert_eq!(s.gc(), PAGE_SIZE as u64 + 1);
     assert_eq!(s.store_stats().bytes_resident, 0);
 }
 
@@ -133,6 +133,39 @@ fn abandoned_rewrites_do_not_change_live_content_or_page_accounting() {
 }
 
 #[test]
+fn rewriting_a_page_down_a_released_chain_keeps_only_reachable_pages() {
+    let depth = if cfg!(miri) { 16 } else { 1024 };
+    let mut s = store(2);
+    let mut builder = s.begin_base();
+    builder.write_page(0, &page(1)).unwrap();
+    builder.write_page(1, &page(2)).unwrap();
+    let mut tip = builder.seal(vec![0]);
+    let sibling = s.derive(tip).unwrap().seal(vec![0]);
+    for step in 1..depth {
+        let mut builder = s.derive(tip).unwrap();
+        builder
+            .write_page(0, &page((step % 200 + 3) as u8))
+            .unwrap();
+        let next = builder.seal(vec![0]);
+        s.release(tip).unwrap();
+        s.gc();
+        tip = next;
+        assert!(s.store_stats().stored_unique_pages <= 3);
+    }
+    s.release(sibling).unwrap();
+    s.gc();
+    let stats = s.store_stats();
+    assert_eq!(stats.snapshots, 1);
+    assert_eq!(stats.stored_unique_pages, 2);
+    assert_eq!(s.stats(tip).unwrap().chain_len, 1);
+    let mut out = page(0);
+    s.read_page(tip, 0, &mut out).unwrap();
+    assert_eq!(out, page(((depth - 1) % 200 + 3) as u8));
+    s.read_page(tip, 1, &mut out).unwrap();
+    assert_eq!(out, page(2));
+}
+
+#[test]
 fn collection_reclaims_a_released_chain_without_losing_its_live_tip() {
     let depth = if cfg!(miri) { 16 } else { 4096 };
     let mut s = store(1);
@@ -142,19 +175,20 @@ fn collection_reclaims_a_released_chain_without_losing_its_live_tip() {
     for _ in 1..depth {
         let next = s.derive(tip).unwrap().seal(vec![1]);
         s.release(tip).unwrap();
-        assert_eq!(s.gc(), 0);
+        assert_eq!(s.gc(), 1);
         assert_eq!(s.store_stats().snapshots, 1);
+        assert_eq!(s.stats(next).unwrap().chain_len, 1);
         tip = next;
     }
     let mut out = page(0);
     s.read_page(tip, 0, &mut out).unwrap();
     assert_eq!(out, page(7));
-    assert_eq!(s.store_stats().bytes_resident, PAGE_SIZE as u64 + depth);
+    assert_eq!(s.store_stats().bytes_resident, PAGE_SIZE as u64 + 1);
     s.retain(tip).unwrap();
     assert_eq!(s.release(tip).unwrap(), 1);
     assert_eq!(s.gc(), 0);
     assert_eq!(s.release(tip).unwrap(), 0);
-    assert_eq!(s.gc(), PAGE_SIZE as u64 + depth);
+    assert_eq!(s.gc(), PAGE_SIZE as u64 + 1);
     assert_eq!(s.gc(), 0);
     assert_eq!(s.store_stats().snapshots, 0);
     assert_eq!(s.store_stats().stored_unique_pages, 0);
@@ -321,11 +355,7 @@ fn gc_preserves_live_chains_then_reclaims() {
     let c = d.seal(b"C".to_vec());
 
     s.release(b_snap).unwrap();
-    assert_eq!(
-        s.gc(),
-        0,
-        "B is an ancestor of live C; nothing may be freed"
-    );
+    assert_eq!(s.gc(), 1, "B folds into live C; only its state is freed");
     assert_eq!(s.store_stats().snapshots, 2);
     assert_eq!(s.store_stats().stored_unique_pages, 3);
 
@@ -337,7 +367,7 @@ fn gc_preserves_live_chains_then_reclaims() {
 
     s.release(c).unwrap();
     let freed = s.gc();
-    assert_eq!(freed, 2 * PAGE_SIZE as u64 + 2);
+    assert_eq!(freed, 2 * PAGE_SIZE as u64 + 1);
     let stats = s.store_stats();
     assert_eq!(stats.snapshots, 1);
     assert_eq!(stats.stored_unique_pages, 1);
@@ -380,7 +410,12 @@ fn gc_with_shared_ancestor_fanout() {
         s.release(kid).unwrap();
     }
     let freed = s.gc();
-    assert_eq!(freed, 3 * PAGE_SIZE as u64, "three children's unique pages");
+    assert_eq!(
+        freed,
+        3 * PAGE_SIZE as u64 + b"base-vm-state".len() as u64,
+        "three children's unique pages, then the base folds into the last child"
+    );
+    assert_eq!(s.stats(kids[3]).unwrap().chain_len, 1);
     s.read_page(kids[3], 0, &mut out).unwrap();
     assert_eq!(out, page(1));
 }

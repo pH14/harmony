@@ -1,0 +1,32 @@
+arm64: ring no execution tick for the coverage exchange ioctl
+
+The host charges each HARMONY_IOC_COVERAGE exchange by the coverage callbacks
+it covers. Ringing the syscall-entry tick as well would add a fixed 100 us to
+every exchange and make guest speed depend on the coverage quantum.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/arm64/kernel/syscall.c
++++ b/arch/arm64/kernel/syscall.c
+@@ -7,6 +7,7 @@
+ #include <linux/ptrace.h>
+ #include <linux/randomize_kstack.h>
+ #include <linux/syscalls.h>
++#include <uapi/linux/harmony.h>
+ 
+ #include <asm/arch_timer.h>
+ #include <asm/debug-monitors.h>
+@@ -77,7 +78,10 @@
+ 	unsigned long flags = read_thread_flags();
+ 
+ #ifdef CONFIG_HARMONY_ARM_PVCLOCK
+-	harmony_arm_virtual_time_tick();
++	/* The host charges a coverage exchange by the callbacks it reports. */
++	if (sc_nr != __NR_syscalls || scno != __NR_ioctl ||
++	    (u32)regs->regs[1] != HARMONY_IOC_COVERAGE)
++		harmony_arm_virtual_time_tick();
+ #endif
+ 
+ 	regs->orig_x0 = regs->regs[0];

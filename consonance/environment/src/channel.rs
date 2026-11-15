@@ -13,7 +13,7 @@ use std::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::Moment;
+use crate::{Moment, shared_map::SharedMap};
 
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
@@ -511,7 +511,7 @@ impl HandlerSnapshot {
 pub struct RecordedState {
     stream_state: u64,
     moment: Moment,
-    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
+    overrides: Overrides,
     payloads: Option<Vec<Vec<u8>>>,
     coverage_schedule: Option<CoverageSchedule>,
     handler: HandlerSnapshot,
@@ -534,10 +534,8 @@ impl RecordedState {
 
     pub fn capture<H: ServiceHandler>(environment: &RecordedEnv<H>) -> Result<Self, ChannelError> {
         environment.ensure_healthy()?;
-        for record in environment.overrides.values() {
-            if let Answer::Data(bytes) = &record.answer {
-                check_len(bytes.len())?;
-            }
+        if environment.overrides.oversized != 0 {
+            return Err(ChannelError::TooLarge);
         }
         let state = Self {
             stream_state: environment.stream_state,
@@ -555,16 +553,7 @@ impl RecordedState {
     }
 
     fn encoded_len(&self) -> usize {
-        let mut size = 44usize;
-        for record in self.overrides.values() {
-            size = size.saturating_add(19);
-            if record.request_sha256.is_some() {
-                size = size.saturating_add(32);
-            }
-            if let Answer::Data(bytes) = &record.answer {
-                size = size.saturating_add(4).saturating_add(bytes.len());
-            }
-        }
+        let mut size = 44usize.saturating_add(self.overrides.encoded_bytes);
         if let Some(entries) = &self.payloads {
             size = size.saturating_add(4);
             for entry in entries {
@@ -594,7 +583,7 @@ impl RecordedState {
         put_u64(out, self.stream_state);
         put_u64(out, self.moment);
         put_len(out, self.overrides.len());
-        for (key, record) in &self.overrides {
+        for (key, record) in self.overrides.iter() {
             put_u64(out, key.moment);
             put_u16(out, key.service);
             put_u64(out, key.request_id);
@@ -650,7 +639,7 @@ impl RecordedState {
         let stream_state = reader.u64()?;
         let moment = reader.u64()?;
         let override_count = reader.count(19)?;
-        let mut overrides = BTreeMap::new();
+        let mut overrides = Overrides::default();
         let mut previous = None;
         for _ in 0..override_count {
             let key = DecisionKey {
@@ -785,7 +774,7 @@ impl ServiceHandler for NominalHandler {
 
 pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
-    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
+    overrides: Overrides,
     moment: Moment,
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
@@ -877,7 +866,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     pub fn new(seed: u64, handler: H) -> Self {
         let mut environment = Self {
             stream_state: normalize_seed(seed),
-            overrides: BTreeMap::new(),
+            overrides: Overrides::default(),
             moment: 0,
             payloads: None,
             payload_cursor: 0,
@@ -1044,18 +1033,25 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             service: question.service(),
             request_id: question.request_id(),
         };
-        if let Some(record) = self.overrides.get_mut(&key) {
-            let digest: [u8; 32] = Sha256::digest(question.payload()).into();
-            match record.request_sha256 {
-                Some(bound) if bound != digest => {
-                    return Err(ChannelError::RequestIdentityMismatch);
-                }
-                Some(_) => {}
-                None => record.request_sha256 = Some(digest),
+        let Some(record) = self.overrides.get(&key) else {
+            return Ok(None);
+        };
+        let digest: [u8; 32] = Sha256::digest(question.payload()).into();
+        let (answer, binding) = (record.answer.clone(), record.request_sha256);
+        match binding {
+            Some(bound) if bound != digest => Err(ChannelError::RequestIdentityMismatch),
+            Some(_) => Ok(Some(answer)),
+            None => {
+                self.overrides.insert(
+                    key,
+                    RecordedAnswer {
+                        answer: answer.clone(),
+                        request_sha256: Some(digest),
+                    },
+                );
+                Ok(Some(answer))
             }
-            return Ok(Some(record.answer.clone()));
         }
-        Ok(None)
     }
 
     pub fn decide(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError>
@@ -1134,11 +1130,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn snapshot_state_with_binding_reserve(&self) -> Result<RecordedState, ChannelError> {
         let state = self.snapshot_state()?;
-        let unbound = state
-            .overrides
-            .values()
-            .filter(|record| record.request_sha256.is_none())
-            .count();
+        let unbound = state.overrides.unbound;
         if state
             .encoded_len()
             .saturating_add(unbound.saturating_mul(Sha256::output_size()))
@@ -1321,6 +1313,60 @@ struct DecisionKey {
 struct RecordedAnswer {
     answer: Answer,
     request_sha256: Option<[u8; 32]>,
+}
+
+impl RecordedAnswer {
+    fn encoded_len(&self) -> usize {
+        let binding = if self.request_sha256.is_some() { 32 } else { 0 };
+        let data = match &self.answer {
+            Answer::Nominal => 0,
+            Answer::Data(bytes) => 4 + bytes.len(),
+        };
+        19 + binding + data
+    }
+
+    fn is_oversized(&self) -> bool {
+        matches!(&self.answer, Answer::Data(bytes) if bytes.len() > MAX_CHANNEL_BYTES)
+    }
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+struct Overrides {
+    records: SharedMap<DecisionKey, RecordedAnswer>,
+    encoded_bytes: usize,
+    unbound: usize,
+    oversized: usize,
+}
+
+impl Overrides {
+    fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    fn get(&self, key: &DecisionKey) -> Option<&RecordedAnswer> {
+        self.records.get(key)
+    }
+
+    fn iter(&self) -> crate::shared_map::Iter<'_, DecisionKey, RecordedAnswer> {
+        self.records.iter()
+    }
+
+    fn insert(&mut self, key: DecisionKey, record: RecordedAnswer) {
+        self.encoded_bytes += record.encoded_len();
+        self.unbound += usize::from(record.request_sha256.is_none());
+        self.oversized += usize::from(record.is_oversized());
+        if let Some(previous) = self.records.insert(key, record) {
+            self.encoded_bytes -= previous.encoded_len();
+            self.unbound -= usize::from(previous.request_sha256.is_none());
+            self.oversized -= usize::from(previous.is_oversized());
+        }
+    }
+}
+
+impl fmt::Debug for Overrides {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.records.fmt(formatter)
+    }
 }
 
 struct Reader<'a> {
@@ -2192,6 +2238,52 @@ mod tests {
 
         let mut replay = RecordedEnv::nominal(17);
         assert_eq!(replay.decide(&question), Ok(expected));
+    }
+
+    #[test]
+    fn snapshot_size_tracks_replaced_and_bound_answers_across_clones() {
+        let mut env = RecordedEnv::nominal(5);
+        let mut held = Vec::new();
+        for step in 0..3_000_u64 {
+            let moment = step % 700;
+            let answer = if step % 3 == 0 {
+                Answer::Nominal
+            } else {
+                Answer::Data(vec![step as u8; (step % 11) as usize])
+            };
+            if step % 2 == 0 {
+                env.record_service_request(moment, 7, step % 5, answer);
+            } else {
+                let question =
+                    Question::with_request_id(step % 5, 7, step.to_le_bytes().to_vec()).unwrap();
+                env.record_question(moment, &question, answer);
+            }
+            if step % 9 == 0 {
+                let question = Question::with_request_id(step % 5, 7, vec![1]).unwrap();
+                env.set_moment(moment);
+                let _ = env.recorded_override(&question);
+            }
+            if step % 101 == 0 {
+                held.push(env.checked_clone().unwrap());
+            }
+        }
+        for candidate in held.iter().chain([&env]) {
+            let state = candidate.snapshot_state().unwrap();
+            let bytes = state.encode();
+            assert_eq!(state.encoded_len(), bytes.len());
+            assert_eq!(
+                state.overrides.unbound,
+                state.answers().count() - state.request_bindings().count()
+            );
+            let decoded = RecordedState::decode(&bytes).unwrap();
+            assert_eq!(decoded, state);
+            assert_eq!(decoded.encoded_len(), bytes.len());
+            assert_eq!(decoded.overrides.unbound, state.overrides.unbound);
+        }
+        env.record(1, Answer::Data(vec![0; MAX_CHANNEL_BYTES + 1]));
+        assert_eq!(env.snapshot_state(), Err(ChannelError::TooLarge));
+        env.record(1, Answer::Nominal);
+        assert!(env.snapshot_state().is_ok());
     }
 
     #[test]

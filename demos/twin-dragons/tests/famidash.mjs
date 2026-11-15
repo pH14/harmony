@@ -105,8 +105,8 @@ await page.locator("#level-picker[open]").waitFor({ timeout: 60000 });
 const homebrew = await page.locator("#homebrew-games button").allInnerTexts();
 assert.deepEqual(homebrew.slice(0, 3), ["Twin Dragons", "Famidash", "Tobu Tobu Girl Deluxe"], "Famidash sits between Twin Dragons and Tobu Tobu Girl");
 await page.locator("#homebrew-games button", { hasText: "Famidash" }).click();
+await page.waitForFunction(() => document.documentElement.dataset.game === "famidash", null, { timeout: 60000 });
 await page.locator("#level-grid:not([hidden]) button").first().waitFor({ timeout: 60000 });
-assert.equal(await page.locator("html").getAttribute("data-game"), "famidash");
 assert.deepEqual(await page.locator("#level-grid h3").allInnerTexts(), FAMIDASH.map((group) => group.group.toUpperCase()), "The level selector groups Famidash levels by side");
 assert.deepEqual(
   (await page.locator("#level-grid button").allInnerTexts()).map((text) => text.trim()),

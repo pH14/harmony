@@ -1,0 +1,44 @@
+credentials:
+  users:
+    guest:
+      roles: [super]
+    replicator:
+      password: harmony # pragma: allowlist secret
+      roles: [replication]
+iproto:
+  advertise:
+    peer:
+      login: replicator
+replication:
+  failover: election
+  election_timeout: 1
+database:
+  use_mvcc_engine: true
+memtx:
+  memory: 67108864
+wal:
+  mode: fsync
+  dir: /tmp/tarantool/{{ instance_name }}
+snapshot:
+  dir: /tmp/tarantool/{{ instance_name }}
+vinyl:
+  dir: /tmp/tarantool/{{ instance_name }}
+app:
+  file: /opt/tarantool/harness.lua
+groups:
+  g:
+    replicasets:
+      rs:
+        instances:
+          n1:
+            iproto:
+              listen:
+              - uri: 10.77.0.1:3301
+          n2:
+            iproto:
+              listen:
+              - uri: 10.77.0.2:3301
+          n3:
+            iproto:
+              listen:
+              - uri: 10.77.0.3:3301

@@ -101,6 +101,7 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
         trapped_time_read_vns: vns(c.vtime_time_read_vns, "vtime-time-read-vns"),
         architectural_control_vns: vns(c.vtime_arch_control_vns, "vtime-arch-control-vns"),
         execution_tick_vns: vns(c.vtime_execution_tick_vns, "vtime-execution-tick-vns"),
+        coverage_callback_vns: vns(c.vtime_coverage_callback_vns, "vtime-coverage-callback-vns"),
     };
     assert!(
         timing.execution_tick_vns < clockevent_period_vns(),
@@ -235,6 +236,7 @@ mod tests {
         assert_eq!(timing.trapped_time_read_vns, 1);
         assert_eq!(timing.architectural_control_vns, 10_000);
         assert_eq!(timing.execution_tick_vns, 100_000);
+        assert_eq!(timing.coverage_callback_vns, 12);
     }
 
     #[test]
@@ -436,11 +438,11 @@ mod tests {
         assert_ne!(old_hash, contract_hash());
         assert_eq!(
             format!("{:x}", Sha256::digest(old_form.as_bytes())),
-            "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d"
+            "9e7a36cf58546cda2df298004fba0e028360f795220dce3adad62cb624d0c6a3"
         );
         assert_eq!(
             format!("{:x}", Sha256::digest(new_form.as_bytes())),
-            "ff709857c440731ab2b30d16cf04434c4a8cf086834b74bf3a09d89f893d4311"
+            "70fbc28cd9e597c2bd374d8efca5255cebc28bf5cadc66b74695ea5ba25fd487"
         );
         println!(
             "X86_CONTRACT_REVISION old={:x} new={:x}",
@@ -464,6 +466,7 @@ mod tests {
             "vtime-time-read-vns=1\n",
             "vtime-arch-control-vns=10000\n",
             "vtime-execution-tick-vns=100000\n",
+            "vtime-coverage-callback-vns=12\n",
             "vtime-clockevent-period-vns=10000000\n",
         )));
         assert!(form.contains(

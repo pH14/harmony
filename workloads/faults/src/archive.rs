@@ -18,14 +18,16 @@ use searcher::search::{
 };
 
 use crate::assertion::{AssertionSet, Assertions};
-use crate::bundle::FaultVocabulary;
+use crate::bundle::{FaultKind, FaultVocabulary};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_goals_reached_tiers_assertion_ids_held_park_armed_kill_places_liveness_edge_buckets_identity_v11";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
-pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
+pub const REPLACEMENT_IDENTIFIER: &str = "fewest_planned_ticks";
+
+pub const ACTION_HOST_TICKS: u64 = 256;
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -170,7 +172,32 @@ pub fn merge_progress_watermark(
 
 #[must_use]
 pub fn action_cost(action: &FaultAction) -> u64 {
-    crate::target::action_ticks(action)
+    crate::target::action_ticks(action).saturating_add(ACTION_HOST_TICKS)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrawProfile {
+    pub kinds: u64,
+    pub wait_weight: usize,
+}
+
+pub const QUIET_WEIGHT_EXPONENTS: usize = 7;
+
+impl DrawProfile {
+    pub const EVERY_KIND: Self = Self {
+        kinds: u64::MAX,
+        wait_weight: 1,
+    };
+
+    pub fn draw(rand: &mut RomuDuoJrRand) -> Result<Self, Box<dyn Error>> {
+        let kinds = rand.next_u64();
+        let exponent = rand
+            .below(NonZeroUsize::new(QUIET_WEIGHT_EXPONENTS).ok_or("empty quiet weight range")?);
+        Ok(Self {
+            kinds,
+            wait_weight: 1 << exponent,
+        })
+    }
 }
 
 pub fn sample_action(
@@ -180,19 +207,71 @@ pub fn sample_action(
     ticks: NonZeroU16,
     view: Option<DrawView<'_, FaultAction>>,
 ) -> Result<FaultAction, Box<dyn Error>> {
+    sample_profiled_action(
+        rand,
+        vocabulary,
+        event_ready,
+        ticks,
+        view,
+        DrawProfile::EVERY_KIND,
+    )
+}
+
+pub fn sample_profiled_action(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+    event_ready: u64,
+    ticks: NonZeroU16,
+    view: Option<DrawView<'_, FaultAction>>,
+    profile: DrawProfile,
+) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    let mut alternatives = vec![0, 1, 2, 3];
-    if !vocabulary.hooks().is_empty() {
-        alternatives.push(4);
-    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
-    if vocabulary.instrumented_events() && event_ready != 0 {
-        alternatives.extend([5, 6]);
-    }
+    let several = vocabulary.nodes() > 1;
+    let disks = !vocabulary.disks().is_empty();
+    let events = vocabulary.instrumented_events() && event_ready != 0;
+    let offered = [
+        (FaultKind::Kill, 1, true),
+        (FaultKind::Pause, 2, true),
+        (FaultKind::Restart, 3, true),
+        (FaultKind::Hook, 4, !vocabulary.hooks().is_empty()),
+        (FaultKind::KillAll, 7, several),
+        (FaultKind::PowerLoss, 8, disks),
+        (FaultKind::DiskError, 10, disks),
+        (FaultKind::DiskStall, 11, disks),
+        (
+            FaultKind::DiskCorrupt,
+            12,
+            !vocabulary.checksummed().is_empty(),
+        ),
+        (FaultKind::PowerLossAll, 9, disks && several),
+        (FaultKind::Clock, 13, vocabulary.clock_faults()),
+        (
+            FaultKind::ClockAll,
+            14,
+            vocabulary.clock_faults() && several,
+        ),
+        (FaultKind::EventKill, 5, events),
+        (FaultKind::EventPark, 6, events),
+    ]
+    .into_iter()
+    .filter(|&(kind, _, offered)| offered && vocabulary.draws(kind))
+    .map(|(_, alternative, _)| alternative)
+    .collect::<Vec<_>>();
+    let kept = offered
+        .iter()
+        .copied()
+        .filter(|&alternative| profile.kinds & (1 << alternative) != 0)
+        .collect::<Vec<_>>();
+    let faults = if kept.is_empty() { offered } else { kept };
+    let drawn = pick(rand, profile.wait_weight + faults.len())?;
+    let alternative = drawn
+        .checked_sub(profile.wait_weight)
+        .map_or(0, |index| faults[index]);
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
         let mut bits = event_ready;
@@ -201,7 +280,13 @@ pub fn sample_action(
         }
         Ok(u16::try_from(bits.trailing_zeros())?)
     };
-    let action = match alternatives[pick(rand, alternatives.len())?] {
+    let disk = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
+        Ok(vocabulary.disks()[pick(rand, vocabulary.disks().len())?])
+    };
+    let checksummed = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
+        Ok(vocabulary.checksummed()[pick(rand, vocabulary.checksummed().len())?])
+    };
+    let action = match alternative {
         0 => FaultOperation::Wait(ticks),
         1 => FaultOperation::Kill(node, ticks),
         2 => FaultOperation::Pause(node, ticks),
@@ -210,6 +295,29 @@ pub fn sample_action(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
             ticks,
         ),
+        7 => FaultOperation::KillAll(ticks),
+        8 => FaultOperation::PowerLoss(disk(rand)?, ticks),
+        9 => FaultOperation::PowerLossAll(ticks),
+        10 => FaultOperation::DiskError(disk(rand)?, ticks),
+        11 => FaultOperation::DiskStall(disk(rand)?, ticks),
+        12 => FaultOperation::DiskCorrupt(checksummed(rand)?, ticks),
+        13 => {
+            let (offset_ms, rate_ppm) = clock_shift(rand)?;
+            FaultOperation::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            }
+        }
+        14 => {
+            let (offset_ms, rate_ppm) = clock_shift(rand)?;
+            FaultOperation::ClockAll {
+                offset_ms,
+                rate_ppm,
+                ticks,
+            }
+        }
         5 => FaultOperation::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
@@ -238,13 +346,40 @@ pub fn sample_action(
         rand,
         std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
     );
-    Ok(FaultAction::new(
-        action,
-        NonZeroU16::new(u16::try_from(quantum)?).unwrap(),
-    ))
+    Ok(
+        FaultAction::new(action, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
+            .with_choice(rand.next_u64()),
+    )
 }
 
 const PARK_EDGE_EXPONENTS: u32 = 14;
+
+const CLOCK_OFFSET_EXPONENTS: u32 = 19;
+
+const CLOCK_RATE_EXPONENTS: u32 = 13;
+
+const CLOCK_RATE_UNIT_PPM: i32 = 1_000;
+
+fn clock_shift(rand: &mut RomuDuoJrRand) -> Result<(i32, i32), Box<dyn Error>> {
+    let mut below = |len: u32| -> Result<u32, Box<dyn Error>> {
+        Ok(u32::try_from(rand.below(
+            NonZeroUsize::new(usize::try_from(len)?).ok_or("empty clock range")?,
+        ))?)
+    };
+    let rate = below(2)? == 1;
+    let negative = below(2)? == 1;
+    let magnitude = if rate {
+        CLOCK_RATE_UNIT_PPM << below(CLOCK_RATE_EXPONENTS)?
+    } else {
+        1_i32 << below(CLOCK_OFFSET_EXPONENTS)?
+    };
+    let signed = if negative { -magnitude } else { magnitude };
+    Ok(if rate {
+        (0, signed.max(fault_policy::CLOCK_RATE_STOPPED_PPM))
+    } else {
+        (signed, 0)
+    })
+}
 
 const PARK_TARGET_LEVELS: usize = 8;
 
@@ -318,6 +453,22 @@ pub struct FaultBugRecord {
     pub observations: FaultObservations,
 }
 
+pub const MAX_RECORDED_HANGS: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultHangRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
+pub const MAX_RECORDED_FAILURES: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultFailureRecord {
+    pub execution: u64,
+    pub input: FaultInput,
+}
+
 #[must_use]
 pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     (
@@ -344,6 +495,10 @@ pub struct FaultArchiveReport {
     pub watchdog_cutoffs: u64,
     pub bugs: Vec<FaultBugRecord>,
     #[serde(default)]
+    pub hangs: Vec<FaultHangRecord>,
+    #[serde(default)]
+    pub failures: Vec<FaultFailureRecord>,
+    #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
     pub assertions: Assertions,
@@ -353,12 +508,20 @@ pub struct FaultArchiveReport {
     pub park_reads: BTreeMap<u64, u64>,
     #[serde(default)]
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
+    #[serde(default)]
+    pub undecided_checks: UndecidedChecks,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParkThresholds {
     pub armed: u64,
     pub fired: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UndecidedChecks {
+    pub executions: u64,
+    pub keys: u64,
 }
 
 #[must_use]
@@ -622,6 +785,14 @@ mod tests {
             FaultOperation::Hook(..) => 4,
             FaultOperation::EventKill { .. } => 5,
             FaultOperation::EventPark { .. } => 6,
+            FaultOperation::KillAll(_) => 7,
+            FaultOperation::PowerLoss(..) => 8,
+            FaultOperation::PowerLossAll(_) => 9,
+            FaultOperation::DiskError(..) => 10,
+            FaultOperation::DiskStall(..) => 11,
+            FaultOperation::DiskCorrupt(..) => 12,
+            FaultOperation::Clock { .. } => 13,
+            FaultOperation::ClockAll { .. } => 14,
         };
         for _ in 0..2_000 {
             let action =
@@ -629,7 +800,17 @@ mod tests {
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action.operation {
-                FaultOperation::Wait(_) => {}
+                FaultOperation::Wait(_)
+                | FaultOperation::KillAll(_)
+                | FaultOperation::PowerLossAll(_) => {}
+                FaultOperation::PowerLoss(node, _)
+                | FaultOperation::DiskError(node, _)
+                | FaultOperation::DiskStall(node, _) => {
+                    assert!(vocabulary.disks().contains(&node));
+                }
+                FaultOperation::DiskCorrupt(node, _) => {
+                    assert!(vocabulary.checksummed().contains(&node));
+                }
                 FaultOperation::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
@@ -655,6 +836,9 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                 }
                 FaultOperation::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
+                FaultOperation::Clock { .. } | FaultOperation::ClockAll { .. } => {
+                    panic!("a vocabulary without clock faults drew one")
+                }
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
@@ -801,6 +985,270 @@ mod tests {
     }
 
     #[test]
+    fn only_a_bundle_with_several_nodes_draws_a_whole_cluster_kill() {
+        let count = |nodes| {
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new()).expect("vocabulary");
+            let mut rand = RomuDuoJrRand::with_seed(8);
+            (0..2_000)
+                .filter(|_| {
+                    matches!(
+                        sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                            .expect("draw")
+                            .operation,
+                        FaultOperation::KillAll(_)
+                    )
+                })
+                .count()
+        };
+        assert_eq!(count(1), 0);
+        assert!(count(3) > 0);
+    }
+
+    #[test]
+    fn only_a_node_with_a_disk_draws_a_disk_fault() {
+        let draws = |nodes, disks: Vec<u16>| {
+            let checksummed = disks.clone();
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new())
+                .and_then(|vocabulary| vocabulary.with_disks(disks))
+                .and_then(|vocabulary| vocabulary.with_checksummed(checksummed))
+                .expect("vocabulary");
+            let mut rand = RomuDuoJrRand::with_seed(9);
+            (0..2_000)
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                        .expect("draw")
+                        .operation
+                })
+                .collect::<Vec<_>>()
+        };
+        let disk_node = |operation: &FaultOperation| match *operation {
+            FaultOperation::PowerLoss(node, _) => Some((0, node)),
+            FaultOperation::DiskError(node, _) => Some((1, node)),
+            FaultOperation::DiskStall(node, _) => Some((2, node)),
+            FaultOperation::DiskCorrupt(node, _) => Some((3, node)),
+            _ => None,
+        };
+        let none = draws(3, Vec::new());
+        assert!(!none.iter().any(|operation| disk_node(operation).is_some()
+            || matches!(operation, FaultOperation::PowerLossAll(_))));
+        let some = draws(3, vec![1, 2]);
+        let drawn = some.iter().filter_map(disk_node).collect::<BTreeSet<_>>();
+        assert_eq!(
+            drawn,
+            (0..4)
+                .flat_map(|kind| [(kind, 1), (kind, 2)])
+                .collect::<BTreeSet<_>>()
+        );
+        assert!(
+            some.iter()
+                .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
+        );
+        assert!(
+            !draws(1, vec![0])
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::PowerLossAll(_)))
+        );
+    }
+
+    fn draw_operations(vocabulary: &FaultVocabulary, seed: u64) -> Vec<FaultOperation> {
+        let mut rand = RomuDuoJrRand::with_seed(seed);
+        (0..2_000)
+            .map(|_| {
+                sample_action(&mut rand, vocabulary, 0b111, TICKS, None)
+                    .expect("draw")
+                    .operation
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_a_checksummed_disk_draws_a_corruption() {
+        let vocabulary = |checksummed: Vec<u16>| {
+            FaultVocabulary::new(3, Vec::new())
+                .and_then(|vocabulary| vocabulary.with_disks(vec![0, 1, 2]))
+                .and_then(|vocabulary| vocabulary.with_checksummed(checksummed))
+                .expect("vocabulary")
+        };
+        let corrupted = |operations: &[FaultOperation]| {
+            operations
+                .iter()
+                .filter_map(|operation| match *operation {
+                    FaultOperation::DiskCorrupt(node, _) => Some(node),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let plain = draw_operations(&vocabulary(Vec::new()), 12);
+        assert!(corrupted(&plain).is_empty());
+        for wanted in [
+            |operation: &FaultOperation| matches!(operation, FaultOperation::DiskError(..)),
+            |operation: &FaultOperation| matches!(operation, FaultOperation::DiskStall(..)),
+            |operation: &FaultOperation| matches!(operation, FaultOperation::PowerLoss(..)),
+        ] {
+            assert!(plain.iter().any(wanted));
+        }
+        assert_eq!(
+            corrupted(&draw_operations(&vocabulary(vec![1]), 12)),
+            BTreeSet::from([1])
+        );
+    }
+
+    #[test]
+    fn an_excluded_fault_kind_is_never_drawn() {
+        let full = FaultVocabulary::new(3, vec![1])
+            .and_then(|vocabulary| vocabulary.with_disks(vec![0, 1, 2]))
+            .and_then(|vocabulary| vocabulary.with_checksummed(vec![0, 1, 2]))
+            .expect("vocabulary")
+            .with_instrumented_events(true)
+            .with_clock_faults(true);
+        let kind = |operation: &FaultOperation| match operation {
+            FaultOperation::Wait(_) => None,
+            FaultOperation::Kill(..) => Some(FaultKind::Kill),
+            FaultOperation::KillAll(_) => Some(FaultKind::KillAll),
+            FaultOperation::Pause(..) => Some(FaultKind::Pause),
+            FaultOperation::Restart(..) => Some(FaultKind::Restart),
+            FaultOperation::Hook(..) => Some(FaultKind::Hook),
+            FaultOperation::PowerLoss(..) => Some(FaultKind::PowerLoss),
+            FaultOperation::PowerLossAll(_) => Some(FaultKind::PowerLossAll),
+            FaultOperation::DiskError(..) => Some(FaultKind::DiskError),
+            FaultOperation::DiskStall(..) => Some(FaultKind::DiskStall),
+            FaultOperation::DiskCorrupt(..) => Some(FaultKind::DiskCorrupt),
+            FaultOperation::EventKill { .. } => Some(FaultKind::EventKill),
+            FaultOperation::EventPark { .. } => Some(FaultKind::EventPark),
+            FaultOperation::Clock { .. } => Some(FaultKind::Clock),
+            FaultOperation::ClockAll { .. } => Some(FaultKind::ClockAll),
+        };
+        let drawn = |vocabulary: &FaultVocabulary| {
+            draw_operations(vocabulary, 13)
+                .iter()
+                .filter_map(kind)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(drawn(&full), BTreeSet::from(FaultKind::ALL));
+        for excluded in FaultKind::ALL {
+            let mut expected = BTreeSet::from(FaultKind::ALL);
+            expected.remove(&excluded);
+            assert_eq!(drawn(&full.clone().excluding(&[excluded])), expected);
+        }
+        let only_waits = full.excluding(&FaultKind::ALL);
+        assert!(
+            draw_operations(&only_waits, 14)
+                .iter()
+                .all(|operation| matches!(operation, FaultOperation::Wait(_)))
+        );
+    }
+
+    #[test]
+    fn only_a_vocabulary_with_clock_faults_draws_a_clock_shift() {
+        let draws = |nodes, clock| {
+            let vocabulary = FaultVocabulary::new(nodes, Vec::new())
+                .expect("vocabulary")
+                .with_clock_faults(clock);
+            let mut rand = RomuDuoJrRand::with_seed(12);
+            (0..4_000)
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary, 0, TICKS, None)
+                        .expect("draw")
+                        .operation
+                })
+                .collect::<Vec<_>>()
+        };
+        let shifts = |operations: &[FaultOperation]| {
+            operations
+                .iter()
+                .filter_map(|operation| match *operation {
+                    FaultOperation::Clock {
+                        offset_ms,
+                        rate_ppm,
+                        ..
+                    }
+                    | FaultOperation::ClockAll {
+                        offset_ms,
+                        rate_ppm,
+                        ..
+                    } => Some((offset_ms, rate_ppm)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(shifts(&draws(3, false)).is_empty());
+        let single = draws(1, true);
+        assert!(
+            !single
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::ClockAll { .. }))
+        );
+        assert!(!shifts(&single).is_empty());
+        let several = draws(3, true);
+        assert!(
+            several
+                .iter()
+                .any(|operation| matches!(operation, FaultOperation::ClockAll { .. }))
+        );
+        let shifts = shifts(&several);
+        for &(offset_ms, rate_ppm) in &shifts {
+            assert!((offset_ms == 0) != (rate_ppm == 0));
+            assert!(offset_ms.unsigned_abs() < 1 << CLOCK_OFFSET_EXPONENTS);
+            assert!(rate_ppm >= fault_policy::CLOCK_RATE_STOPPED_PPM);
+        }
+        assert!(shifts.iter().any(|&(offset, _)| offset < 0));
+        assert!(shifts.iter().any(|&(offset, _)| offset > 0));
+        assert!(
+            shifts
+                .iter()
+                .any(|&(_, rate)| rate == fault_policy::CLOCK_RATE_STOPPED_PPM)
+        );
+        assert!(shifts.iter().any(|&(_, rate)| rate > 0));
+    }
+
+    #[test]
+    fn a_profile_draws_only_its_kinds_and_weights_waits() {
+        let vocabulary = FaultVocabulary::new(3, vec![1]).expect("vocabulary");
+        let draw = |profile| {
+            let mut rand = RomuDuoJrRand::with_seed(17);
+            (0..4_000)
+                .map(|_| {
+                    sample_profiled_action(&mut rand, &vocabulary, 0, TICKS, None, profile)
+                        .expect("draw")
+                        .operation
+                })
+                .collect::<Vec<_>>()
+        };
+        let kill_only = draw(DrawProfile {
+            kinds: 1 << 1,
+            wait_weight: 4,
+        });
+        assert!(kill_only.iter().all(|operation| matches!(
+            operation,
+            FaultOperation::Wait(_) | FaultOperation::Kill(..)
+        )));
+        let waits = kill_only
+            .iter()
+            .filter(|operation| matches!(operation, FaultOperation::Wait(_)))
+            .count();
+        assert!((3_000..3_400).contains(&waits));
+        let none_kept = draw(DrawProfile {
+            kinds: 0,
+            wait_weight: 1,
+        });
+        assert_eq!(
+            none_kept,
+            draw(DrawProfile::EVERY_KIND),
+            "a profile that keeps no offered kind draws every kind"
+        );
+        let mut rand = RomuDuoJrRand::with_seed(5);
+        let weights = (0..2_000)
+            .map(|_| DrawProfile::draw(&mut rand).unwrap().wait_weight)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            weights,
+            (0..QUIET_WEIGHT_EXPONENTS)
+                .map(|exponent| 1 << exponent)
+                .collect()
+        );
+    }
+
+    #[test]
     fn a_bundle_with_no_hook_never_draws_one() {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
@@ -850,15 +1298,18 @@ mod tests {
     }
 
     #[test]
-    fn action_costs_charge_the_recorded_guest_duration() {
+    fn action_costs_charge_the_recorded_guest_duration_and_the_host_work_per_action() {
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::MIN).into()),
-            1
+            1 + ACTION_HOST_TICKS
         );
-        assert_eq!(action_cost(&FaultOperation::Kill(4, TICKS).into()), 50);
+        assert_eq!(
+            action_cost(&FaultOperation::Kill(4, TICKS).into()),
+            50 + ACTION_HOST_TICKS
+        );
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
-            8192
+            8192 + ACTION_HOST_TICKS
         );
     }
 }

@@ -70,6 +70,40 @@ kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
 or nonzero exit status proves the child ended independently before the kill
 took effect, even when that exit is reaped after the kill decision.
 
+The exemption above lets a restarted node fail while the system is still
+recovering, so a node that never recovers would go unreported. A second
+built-in Always assertion covers that case:
+`workload becomes ready within 30 seconds after faults end`. Once no fault
+window is active and no injected fault is pending for 30 seconds of virtual
+time, measured on the standing answer's moment rather than by counting polls, with a
+fault replayed in one catch-up poll restarting the count at its end, a readiness generation that has still not passed its `ready` probe
+violates it, once per generation. The 30 seconds count from the later of the
+end of faults and the restart that last made a ready workload unready. A
+restart long after faults end therefore gets its own 30 seconds, and a node
+that keeps restarting before the probe passes keeps the earlier start. A node
+that a kill or power-loss window left down counts as a fault still in effect:
+both keep their node down until a later restart window, so the 30 seconds
+start only once every node is meant to run.
+A bundle's `heal` line names the hook that lifts the faults its other hooks
+leave in force. In such a bundle every other hook is a cut, and each cut launch
+counts as a fault still in effect until a heal hook launched after it exits
+successfully, so a cluster still partitioned by a hook does not start the 30
+seconds. A heal launched while a cut hook still runs never counts, because the cut can
+install its fault after the heal; the heal that runs when the last cut window
+closes does. Without a `heal` line, a hook counts only while its window is active.
+
+The supervisor heals a cut when its window closes, as it restarts a killed node
+when the kill window closes. When the last open cut window closes, it drops cut
+requests still queued for readiness, waits for running cut hooks to exit, and
+then runs the heal hook if a cut is still in force. The heal does not wait for
+readiness, because a cut can be what keeps the workload unready. The supervisor
+sees only standing windows and no end of faults, so window close is the
+point it can act on, and each `Hook` action then holds its cut for its own
+window. A shrunk input that keeps a cut and drops the heal action still heals.
+The 30 seconds above start only after the heal succeeds. The details give
+the generation and the quiet time in nanoseconds. A node that crash-loops after an injected kill, or a cluster that never
+regains readiness after a restart, reports through this assertion.
+
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
 continuously. The supervisor publishes the checks-started register before it
@@ -79,9 +113,14 @@ spanned. The host treats the Sometimes and Reachable assertions that pid passed
 after that start as the check's evidence; a check that passed none leaves the
 prior evidence intact. Process transitions and accepted instrumentation reports
 advance the disturbance generation, which keeps stale pre-fault evidence
-distinct from a check completed after recovery. Each check receives its starting
-generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to
-invalidate cached results without importing process-fault semantics.
+distinct from a check completed after recovery. Starting a cut hook and the heal that lifts it
+also advance it. Each check receives its starting generation in
+`HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to invalidate
+cached results without importing process-fault semantics. Each check also
+receives `HARMONY_FAULTS_IN_FORCE`: `1` when, at the check's start, a fault
+window is active, an injected fault is pending, a node is held down or a cut is
+unhealed, and `0` otherwise. This is the condition that holds the recovery
+clock, so a convergence check can wait for the same end of faults.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
@@ -104,7 +143,12 @@ pending-fault fence. A protocol failure while work is outstanding marks the
 execution as an infrastructure failure. A kill or restart retires the node's
 channel before it signals the process. The killed process can close its
 descriptors before the supervisor reaps it, so a retired channel ignores a
-closed transport.
+closed transport. A node that exits on its own also closes its descriptors
+before it can be reaped, and its exit can take many ticks, for example while the
+kernel releases a file system held by the node's mount namespace. A closed
+transport therefore stays pending while the node's process is exiting or is a
+zombie, as `/proc/<pid>/stat` reports it. The closure is an infrastructure
+failure only when the process is still running a tick after it.
 
 Each tick, a ready channel with nothing in flight also asks its runtime for
 edge-coverage status. The supervisor adds each node's new bucket crossings and
@@ -112,12 +156,44 @@ digest change to the edge-crossings and edge-digest registers. These are
 coverage evidence only: they do not advance the disturbance generation or the
 pending-fault fence.
 
+A process window addressed to node `EVERY_NODE` (`u16::MAX`) applies its
+kill, pause, restart or power loss to every node at once.
+
+A clock window shifts one node's wall clock. When the guest kernel has time
+namespaces, the supervisor starts every node in its own time namespace. Each
+tick it computes the window's offset plus its rate in parts per million times
+the guest time since the window start, and writes any change to
+`/proc/PID/timens_offsets` as a `realtime` offset. The offset returns to zero
+when the window ends. A node that starts during a window gets the offset in
+effect at its start edge before it executes, even when the supervisor replays
+later edges in the same poll. The supervisor never moves a node's clock before
+the epoch. A clock window for `EVERY_NODE` with a nonzero spread scales the
+offset and rate for each node by a factor in [-1, 1] derived from the spread
+and the node index. Start and end of a clock window advance the disturbance
+generation, and an active clock window counts toward the pending-fault fence.
+A clock window on a kernel without time namespaces is an infrastructure
+failure. Hooks, the workload and the check stay on guest time.
+
+Each standing poll sends the moment of the previous answer
+(`encode_standing_question` in `process-proto`). The host answers with the
+windows open at the new moment and the windows that closed after the previous
+one. The supervisor ([`Standing::steps`](src/reconcile.rs)) then takes every
+window start and end between the two moments in time order and applies the
+changes at each one as a separate poll would. A slow loop iteration, such as a
+power loss that rebuilds a disk for two seconds of guest time, therefore drops
+no window: a restart, a kill or another node's fault that opened and closed
+meanwhile takes effect in order when the loop returns. Such a window lasts only
+as long as the supervisor takes to apply the changes after it. The first poll
+has no previous moment and sees only the open windows. The actions depend only
+on the answers and the poll moments, so the same execution repeats them.
+
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `reconcile`, `recovery`, and `supervise` are portable library
-modules. Linux device and process wiring is isolated to the binary. The
+`bundle`, `disk`, `reconcile`, `recovery`, and `supervise` are portable library
+modules. Linux block-device wiring lives in the Linux-only `blockdev` module,
+and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 
 ```sh
@@ -125,13 +201,133 @@ cargo test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
 cargo clippy --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --all-targets -- -D warnings
 ```
 
-Miri covers the portable parsing and reconciliation modules. Process integration
+Miri covers the portable parsing, reconciliation, and write-log replay modules.
+The device-mapper and block-device ioctls in `blockdev` need a guest kernel and
+run only in guest executions. Process integration
 tests run natively: Miri cannot execute the credential, spawn, and wait syscalls.
 The native suite checks process-group isolation, descendant cleanup, and readiness
 probes alongside running nodes; the OCI fixture checks guest credentials. Linux
 event-channel socket regressions run natively because the pinned Miri interpreter
 does not support their nonblocking ioctl. Descriptor duplication and ownership
 remain covered under Miri.
+
+## Node disks
+
+A bundle line `disk <node> <path> <size> [checksummed]` gives the named node
+its own ext4 filesystem mounted at `path`. The supervisor accepts the optional
+`checksummed` flag and ignores it; the faults search reads it to decide which
+disks draw corruption faults. Sizes take a `K`, `M` or `G` suffix and must be
+whole 4 KiB pages from `16M` through `1G`; a bundle has at most five disks. The
+supervisor builds each disk before the setup command runs:
+
+1. Three guest RAM disks (`brd`, 1 GiB each, pages allocated on write) hold the
+   data, the write log, and the replay base. The guest kernels set
+   `CONFIG_BLK_DEV_RAM_COUNT=16` and `CONFIG_BLK_DEV_RAM_SIZE=1048576`.
+2. A `dm-log-writes` device named `harmony-log-<node>-<generation>` writes
+   through to the data disk and logs every completed write, flush, FUA write and
+   discard, with the flags of each.
+3. A linear device named `harmony-disk-<node>-<generation>` maps the whole log
+   device. The filesystem lives on this device, and disk fault windows swap its
+   table.
+4. The image's `mkfs.ext4` formats it with the execution uid and gid as root
+   owner. The supervisor mounts it with shared propagation, removes
+   `lost+found`, syncs, and adds a `harmony-formatted` mark to the log.
+
+A power-loss window (`PowerLoss { choice }` in `process-proto`) kills its node
+as a kill window does and keeps it down until a later restart window. It then
+cuts the disk:
+
+1. It suspends both devices without flushing or freezing the filesystem and
+   swaps in `error` tables. Unwritten page cache never reaches the data disk,
+   and the old `dm-log-writes` target writes its end mark.
+2. It detaches the mount and requests deferred device removals, so other
+   nodes' mount namespaces can let go of the old filesystem later.
+3. It reads the log ([`disk`](src/disk.rs)). Every write before the last flush
+   and every FUA write is kept. Of the other writes after that flush, a prefix
+   in log order is kept: its length is the choice, mixed with the node index,
+   modulo the number of such writes plus one. A choice of zero keeps none.
+4. It applies the kept writes to the replay base, which then holds the disk as
+   it would be after the power cut, and copies the base back over every range a
+   dropped write touched. The data disk then equals the base.
+5. It zeroes and discards the log, attaches new devices under the next
+   generation's names, and remounts. ext4 replays its journal on mount.
+
+A log that fills its RAM disk stops logging and has no end mark; the supervisor
+reports that as an infrastructure error. A power-loss window for a node without
+a disk acts as a kill. Every disk and log page lives in guest memory, so each
+disk can cost up to twice its size plus the writes since the last power loss;
+raise the guest RAM (`ram_mib`) to match. A guest that runs out of memory
+ends the execution: the supervisor reads the `oom_kill` counter in
+`/proc/vmstat` whenever a node exits and once a second, and reports the first
+kernel OOM kill as an infrastructure error. The guest kernels charge one
+execution tick for each page-allocation retry, so an allocation that reclaim
+cannot satisfy still lets timers fire and the OOM killer run. The OCI runtime
+allows the container every block device and `/dev/mapper/control`; the
+supervisor creates the device nodes itself.
+
+### Disk faults
+
+Three more windows act on a node's disk:
+
+- A disk error window (`DiskError`) loads an `error` table. Every read, write
+  and flush fails with `EIO` until the window closes and the linear table
+  returns. The error target fails a request inside the guest without an exit,
+  so the guest kernels charge one execution tick (100 us of virtual time) for
+  each request it fails. A task that retries a failed read without bound, as a
+  page fault under `MAP_POPULATE` does, then still reaches its timer deadlines,
+  and the window closes on time. When a journal write fails, ext4 aborts the
+  journal and marks the filesystem read-only. The 6.18 kernels set ext4's emergency read-only flag,
+  which leaves `ST_RDONLY` clear in `statvfs` and shows as `emergency_ro` in
+  the superblock options of `/proc/self/mountinfo`, so the supervisor checks
+  both. ext4 may notice an aborted journal only at a later write, so when the
+  window closes the supervisor also opens the mount and calls `syncfs`, which
+  fails with `EIO` on an aborted journal. If the sync fails with `EIO` or
+  `EROFS`, or the filesystem is read-only, the supervisor treats the close as
+  a host reboot after a transient disk fault. A filesystem that syncs cleanly
+  keeps running, so the error stays transient. It kills the node if it still runs and cuts the disk as a corruption
+  does, keeping every logged write and flipping no bit. It then remounts the
+  disk and starts the node as a restart after a fault. Writes that failed
+  during the window stay lost, as unwritten page cache is lost in a reboot.
+  Before each start of a node whose disk had a fault, the supervisor checks the
+  read-only signals again and remounts a read-only filesystem the same way.
+- A disk stall window (`DiskStall { hold_nanos }`) loads a `dm-delay` table
+  that holds every request for the window's length, at least 50 ms. dm-delay
+  serves shorter delays from a polling kernel thread instead of a timer. When the window closes, the
+  linear table returns and dm-delay submits the held requests at once. Before
+  the supervisor starts a node again, it releases the held requests so the
+  old process can exit.
+- A disk corruption window (`DiskCorrupt { choice }`) acts as a restart window:
+  the node is killed when it opens and started when it closes. In between, the
+  supervisor syncs the filesystem, cuts the disk as a power loss does but keeps
+  every logged write, and flips one bit in the data disk and the replay base.
+  The bit lies in a plain write logged after the format mark or the last cut: a
+  write with no flush, FUA, discard or metadata flag. ext4 tags its journal
+  writes as metadata, so the bit lands in file data or in metadata written back
+  in place. The choice, mixed with the node index, picks the write, the sector
+  within it, the byte and the bit. If the disk then fails to mount, the
+  supervisor formats a new filesystem on it and logs the mount error.
+
+When an error and a stall window overlap, the disk returns errors. A power loss
+or corruption remounts the disk with the linear table and then loads the table
+of any open disk window. After any of these windows, the supervisor does not
+report the node exiting on its own for the rest of the execution, because a
+node may stop on purpose when its disk fails. A node that exits during an
+error or stall window stays down until the window closes, then restarts after
+a fault. For a node without a disk, error and stall windows do nothing and a
+corruption window only restarts the node.
+
+A power loss, corruption or read-only remount runs inside the supervisor's
+poll loop and takes from about 200 ms to a few seconds of guest time, growing
+with the log. Windows
+that open and close in that time take effect in order when it ends, as the
+standing poll description above explains.
+
+## Node logs
+
+A bundle line `log <node> <path>` names a log file the named node writes. The
+path is absolute and may be a glob. The supervisor checks the node and the path
+and otherwise ignores the line. `harmony explain` reads these paths, and the
+`disk` paths as data directories, when its own settings name none.
 
 ## Investigation terminal
 

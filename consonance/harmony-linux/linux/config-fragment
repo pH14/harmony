@@ -147,9 +147,11 @@ CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
 # The package-neutral guest network substrate is built in so workloads can
 # create private network namespaces and apply deterministic directional netem
-# faults without loading modules or depending on a richer host kernel.
+# faults without loading modules or depending on a richer host kernel. Time
+# namespaces give each supervised node its own wall-clock offset.
 CONFIG_NAMESPACES=y
 CONFIG_NET_NS=y
+CONFIG_TIME_NS=y
 CONFIG_NET=y
 CONFIG_UNIX=y
 CONFIG_INET=y
@@ -187,3 +189,15 @@ CONFIG_X86_IOPL_IOPERM=y
 # ships no CONFIG_DEVMEM at all ("/dev/mem: No such file or directory").
 # Same interim status and determinism argument as IOPL above.
 CONFIG_DEVMEM=y
+# RAM-backed node disks for power-loss faults: a bundle `disk` line gives a node
+# an ext4 filesystem on a dm-log-writes device whose data, log, and replay base
+# are brd RAM disks (BLK_DEV_RAM and EXT4_FS come from the Kata base). Sixteen
+# 1 GiB brd devices allocate pages only on write.
+CONFIG_BLK_DEV_RAM_COUNT=16
+CONFIG_BLK_DEV_RAM_SIZE=1048576
+CONFIG_MD=y
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_LOG_WRITES=y
+# dm-delay holds a node disk's requests for a DiskStall window. Its delays of
+# 50 ms or more run on guest jiffies timers.
+CONFIG_DM_DELAY=y
