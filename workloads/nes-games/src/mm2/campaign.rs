@@ -14,11 +14,12 @@ use sha2::{Digest, Sha256};
 use crate::{
     chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD},
     mm2::{
+        action::Mm2Action,
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, Mm2ArchiveKey, Mm2ArchiveReport,
             Mm2MilestoneInputs, Mm2MilestoneTimes, Mm2Milestones, Mm2ProgressWatermark,
-            REPLACEMENT_IDENTIFIER, archive_key, chord_time, merge_milestones,
-            merge_progress_watermark, milestone_key, milestones, progress_watermark,
+            REPLACEMENT_IDENTIFIER, archive_key, merge_milestones, merge_progress_watermark,
+            milestone_key, milestones, progress_watermark,
         },
         progress::{FirstSeen, NamedProgress, is_route_milestone},
         target::{
@@ -52,7 +53,8 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
-const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_start_taps_no_select_v2";
+const CONTROLLER_VOCABULARY_IDENTIFIER: &str =
+    "directions9_times_ab4_no_start_no_select_weapon_switch_1_in_12_v3";
 const STAGE_TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated";
 const WHOLE_GAME_TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending";
 
@@ -67,19 +69,18 @@ pub type Mm2Machines<M> = Box<dyn Fn() -> Result<M, MachineError> + Send + Sync>
 pub struct Mm2Game<M: NesBackend<Vec<u8>> + NesMemory> {
     rom_sha256: String,
     machines: Mm2Machines<M>,
-    prefix: Vec<ButtonChord>,
+    prefix: Vec<Mm2Action>,
     route: Mm2Route,
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
 }
 
-fn chords_sha256(chords: &[ButtonChord]) -> String {
-    let mut digest = Sha256::new();
-    for chord in chords {
-        digest.update([chord.buttons, chord.hold_frames]);
-    }
-    format!("{:x}", digest.finalize())
+fn actions_sha256(actions: &[Mm2Action]) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(postcard::to_allocvec(actions).unwrap_or_default())
+    )
 }
 
 fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
@@ -125,7 +126,10 @@ impl Mm2Game<QuickNesMachine> {
             core_path,
             core_sha256,
             execution_sha256,
-            crate::mm2::target::power_on_walk(),
+            crate::mm2::target::power_on_walk()
+                .into_iter()
+                .map(Mm2Action::from)
+                .collect(),
             stage,
         )
     }
@@ -136,7 +140,7 @@ impl Mm2Game<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<Mm2Action>,
         stage: Mm2Stage,
     ) -> Self {
         Self::at_stage_after(
@@ -155,7 +159,7 @@ impl Mm2Game<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        root: Vec<ButtonChord>,
+        root: Vec<Mm2Action>,
     ) -> Self {
         Self::whole_game(
             rom,
@@ -173,7 +177,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
         rom: &[u8],
         core: &str,
         core_sha256: &str,
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<Mm2Action>,
         stage: Mm2Stage,
         machines: Mm2Machines<M>,
     ) -> Self {
@@ -182,7 +186,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
             &format!(
                 "mm2-stage-select-v2:{}:prefix-sha256={}",
                 stage.number(),
-                chords_sha256(&prefix)
+                actions_sha256(&prefix)
             ),
             core_sha256,
         );
@@ -194,7 +198,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
         rom: &[u8],
         core: &str,
         core_sha256: &str,
-        root: Vec<ButtonChord>,
+        root: Vec<Mm2Action>,
         machines: Mm2Machines<M>,
     ) -> Self {
         let order = ROBOT_MASTER_ORDER
@@ -206,7 +210,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
             core,
             &format!(
                 "mm2-whole-game-v1:order={order}:root-sha256={}",
-                chords_sha256(&root)
+                actions_sha256(&root)
             ),
             core_sha256,
         );
@@ -215,7 +219,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
 
     fn with_machines(
         rom: &[u8],
-        prefix: Vec<ButtonChord>,
+        prefix: Vec<Mm2Action>,
         route: Mm2Route,
         identity: String,
         machines: Mm2Machines<M>,
@@ -267,9 +271,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
 
     pub fn walk_to_stage_select(
         &self,
-        chords: &[ButtonChord],
+        actions: &[Mm2Action],
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        Ok(walk_to_stage_select((self.machines)()?, chords)?)
+        Ok(walk_to_stage_select((self.machines)()?, actions)?)
     }
 
     fn publish_champion(&self, input: &Mm2Input) -> Result<(), Box<dyn Error>> {
@@ -280,7 +284,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
     }
 
     #[must_use]
-    pub fn prefix(&self) -> &[ButtonChord] {
+    pub fn prefix(&self) -> &[Mm2Action] {
         &self.prefix
     }
 
@@ -385,7 +389,7 @@ pub type Mm2CampaignOrigin<M> = CampaignOrigin<Mm2Game<M>>;
 pub type Mm2CampaignCheckpoint = CampaignCheckpoint<Mm2Snapshot>;
 pub type Mm2SnapshotCheckpoint = SnapshotCheckpoint<Mm2Snapshot>;
 pub type Mm2CampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type Mm2CampaignModeReport = CampaignModeReport<ButtonChord, Mm2ArchiveReport>;
+pub type Mm2CampaignModeReport = CampaignModeReport<Mm2Action, Mm2ArchiveReport>;
 pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 pub type Mm2CampaignActionResult<M> = CampaignActionResult<Mm2Game<M>>;
 pub type Mm2CampaignJobResult<M> = CampaignJobResult<Mm2Game<M>>;
@@ -431,13 +435,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     target: &mut Mm2Target<M>,
     genesis_weapons: u8,
     parent_milestones: Mm2Milestones,
-    suffix: &[ButtonChord],
+    suffix: &[Mm2Action],
     retention: RetentionPolicy,
     stop: searcher::search::rollout::RolloutStop,
 ) -> Result<Mm2CampaignJobResult<M>, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
+        doomed: false,
         objective_reached: target.exit_kind() == ExitKind::Ok && target.objective_reached(),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
@@ -474,6 +479,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             ExecutionDisposition::Runnable
         };
         let outcome = Outcome {
+            doomed: false,
             objective_reached,
             disposition,
         };
@@ -546,7 +552,7 @@ fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKe
 impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for Mm2Game<M> {
     type JobObservation = ();
     type Target = Mm2Target<M>;
-    type Action = ButtonChord;
+    type Action = Mm2Action;
     type Key = Mm2ArchiveKey;
     type Milestones = Mm2Milestones;
     type Progress = Mm2ProgressWatermark;
@@ -753,16 +759,16 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for Mm2Game<M> {
     fn sample_alphabet(
         &self,
         _run: &Mm2CampaignRun,
-        previous: Option<&ButtonChord>,
+        previous: Option<&Mm2Action>,
         rand: &mut RomuDuoJrRand,
-    ) -> Result<ButtonChord, Box<dyn Error>> {
-        crate::mm2::archive::CHORDS.draw(rand, previous)
+    ) -> Result<Mm2Action, Box<dyn Error>> {
+        Mm2Action::draw(rand, previous)
     }
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
-        chord_time
+    fn action_cost_fn(&self) -> fn(&Mm2Action) -> u64 {
+        Mm2Action::planned_frames
     }
 
     fn snapshot_memory_charge(snapshot: &Mm2Snapshot) -> usize {
@@ -799,7 +805,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
     fn apply_action(
         &self,
         target: &mut Mm2Target<M>,
-        action: &ButtonChord,
+        action: &Mm2Action,
         aggregate: &mut Mm2Milestones,
     ) -> Result<(), Box<dyn Error>> {
         let genesis_weapons = target.genesis_weapons();
@@ -1015,10 +1021,14 @@ mod tests {
     #[test]
     fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
         let mut evidence = Mm2CampaignEvidence::default();
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 3,
-            hold_frames: 7,
-        });
+        evidence
+            .champion_input
+            .actions
+            .push(Mm2Action::Chord(ButtonChord {
+                buttons: 3,
+                hold_frames: 7,
+            }));
+        evidence.champion_input.actions.push(Mm2Action::Switch(9));
         evidence.best_health.insert("health λ".into(), (3, 5));
         evidence.best_energy.insert("energy".into(), (9, 11));
         evidence.genesis_screen = Some(4);

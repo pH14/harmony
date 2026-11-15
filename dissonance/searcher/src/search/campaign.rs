@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
-    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
-    retention_policy_identifier,
+    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SavedStateRecord,
+    SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
+    retention_policy_from_identifier, retention_policy_identifier, saved_state_entries,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
@@ -112,6 +112,7 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 const ORIGIN_SEARCH_CHECKPOINT: &str = "search_checkpoint";
+const ORIGIN_SAVED_STATES: &str = "saved_states";
 
 #[derive(Clone, Debug, Default)]
 pub struct CampaignExecutionOptions {
@@ -654,7 +655,11 @@ pub trait Evaluation: CampaignTypes {
         Ok(crate::search::rollout::Outcome {
             objective_reached: self.objective_reached(run, target)?,
             disposition: self.execution_disposition(target),
+            doomed: false,
         })
+    }
+    fn is_doomed(&self, _target: &Self::Target) -> bool {
+        false
     }
     fn merge_preparation_failure(
         &self,
@@ -732,6 +737,7 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub rejected: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
     pub hung_jobs: u64,
     pub selector: SelectorAccounting,
@@ -751,6 +757,52 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
         path: PathBuf,
         expected_sha256: Option<String>,
     },
+    SavedStates {
+        states: SavedStates<G>,
+    },
+}
+
+pub struct SavedStates<G: CampaignTypes + ?Sized> {
+    path: String,
+    file_sha256: String,
+    header: CheckpointHeader,
+    entries: Vec<ArchiveEntryReport<G::Action, (), G::Milestones>>,
+    snapshots: BTreeMap<u64, G::Snapshot>,
+}
+
+impl<G: Workload> SavedStates<G> {
+    pub fn open(workload: &G, path: &Path) -> Result<Self, Box<dyn Error>> {
+        let mut reader = CheckpointReader::open(path)?;
+        if reader.header.workload_identity_sha256 != workload.workload_identity_sha256() {
+            return Err("saved states belong to a different workload".into());
+        }
+        let records: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
+        let entries = saved_state_entries(records)?;
+        let snapshots = if reader.header.executable_identity == workload.executable_identity()? {
+            reader.snapshots::<G::Snapshot>()?.into_iter().collect()
+        } else {
+            BTreeMap::new()
+        };
+        Ok(Self {
+            path: path.display().to_string(),
+            file_sha256: reader.file_sha256.clone(),
+            header: reader.header.clone(),
+            entries,
+            snapshots,
+        })
+    }
+
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 #[derive(Clone)]
@@ -1123,6 +1175,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub probe_refused: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
     #[serde(default)]
     pub hung_jobs: u64,
@@ -1627,6 +1681,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
     hung_jobs: u64,
     hang_streak: u64,
@@ -1669,6 +1724,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             record_progress: true,
             terminal_endpoints: 0,
             terminal_objectives: 0,
+            doomed_endpoints: 0,
             execution_failures: 0,
             hung_jobs: 0,
             hang_streak: 0,
@@ -1759,8 +1815,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 self.curve_interval,
                 self.bounded_progress_curve,
                 self.record_progress,
-                self.terminal_endpoints,
-                self.terminal_objectives,
+                (
+                    self.terminal_endpoints,
+                    self.terminal_objectives,
+                    self.doomed_endpoints,
+                ),
                 self.execution_failures,
                 self.hung_jobs,
                 self.hang_streak,
@@ -1787,6 +1846,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.record_progress = state.record_progress;
         self.terminal_endpoints = state.terminal_endpoints;
         self.terminal_objectives = state.terminal_objectives;
+        self.doomed_endpoints = state.doomed_endpoints;
         self.execution_failures = state.execution_failures;
         self.hung_jobs = state.hung_jobs;
         self.hang_streak = state.hang_streak;
@@ -1807,7 +1867,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         target: &mut G::Target,
     ) -> Result<(), Box<dyn Error>> {
         workload.reset(target);
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("campaign genesis target failed before execution".into());
         }
@@ -1850,7 +1910,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Result<(), Box<dyn Error>> {
         let snapshot = validate_snapshot_root_checkpoint(workload, checkpoint)?;
         workload.restore(target, snapshot)?;
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("snapshot-root checkpoint restores a failed target".into());
         }
@@ -1899,23 +1959,65 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(checkpoint) = checkpoint {
             validate_archive_checkpoint_entries(workload, source, checkpoint)?;
         }
-        let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
-        self.archive.preserve_inactive_snapshots(true)?;
-        self.bootstrap(workload, run, target)?;
-        let genesis_id = 0;
         let checkpointed = checkpoint
             .map(|checkpoint| {
                 checkpoint
                     .entries
                     .iter()
                     .map(|entry| (entry.id, entry.snapshot.clone()))
-                    .collect::<Vec<_>>()
+                    .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
-        let checkpointed = checkpointed.into_iter().collect::<BTreeMap<_, _>>();
+        let counts = self.import_entries(
+            workload,
+            run,
+            target,
+            workload.source_entries(source),
+            &checkpointed,
+        )?;
+        workload.merge_origin_evidence(&mut self.evidence, source);
+        Ok(counts)
+    }
+
+    pub(crate) fn import_saved_states(
+        &mut self,
+        workload: &G,
+        run: &G::Run,
+        target: &mut G::Target,
+        states: &SavedStates<G>,
+    ) -> Result<TreeImportCounts, Box<dyn Error>> {
+        workload.reset(target);
+        let genesis = workload.snapshot_identity_sha256(&workload.snapshot(target)?)?;
+        let saved_genesis = states
+            .entries
+            .iter()
+            .find(|entry| entry.input.actions.is_empty())
+            .and_then(|entry| states.snapshots.get(&entry.id))
+            .map(|snapshot| workload.snapshot_identity_sha256(snapshot))
+            .transpose()?;
+        let rebuilt = BTreeMap::new();
+        let snapshots = if saved_genesis.as_deref() == Some(genesis.as_str()) {
+            &states.snapshots
+        } else {
+            &rebuilt
+        };
+        self.import_entries(workload, run, target, &states.entries, snapshots)
+    }
+
+    fn import_entries<K>(
+        &mut self,
+        workload: &G,
+        run: &G::Run,
+        target: &mut G::Target,
+        source_entries: &[ArchiveEntryReport<G::Action, K, G::Milestones>],
+        checkpointed: &BTreeMap<u64, G::Snapshot>,
+    ) -> Result<TreeImportCounts, Box<dyn Error>> {
+        let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
+        self.archive.preserve_inactive_snapshots(true)?;
+        self.bootstrap(workload, run, target)?;
+        let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
-        let source_entries = workload.source_entries(source);
         let mut imported: Vec<Option<usize>> = Vec::with_capacity(source_entries.len());
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
@@ -1990,8 +2092,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 for (index, action) in suffix.iter().enumerate() {
                     captured_endpoint =
                         workload.apply_action_and_snapshot(target, action, &mut milestones)?;
-                    if workload
-                        .rollout_outcome(run, target)?
+                    if crate::search::rollout::classify(workload, run, target)?
                         .disposition
                         .is_terminal()
                     {
@@ -2040,8 +2141,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
-                if workload
-                    .rollout_outcome(run, target)?
+                if crate::search::rollout::classify(workload, run, target)?
                     .disposition
                     .is_terminal()
                 {
@@ -2105,7 +2205,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         self.archive
             .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
-        workload.merge_origin_evidence(&mut self.evidence, source);
         Ok(counts)
     }
 
@@ -2203,6 +2302,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 Ok(input)
             })?;
             match action.outcome.disposition {
+                crate::search::rollout::ExecutionDisposition::Terminal if action.outcome.doomed => {
+                    self.doomed_endpoints = self.doomed_endpoints.saturating_add(1);
+                }
                 crate::search::rollout::ExecutionDisposition::Terminal => {
                     self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
                     if action.outcome.objective_reached {
@@ -2408,6 +2510,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 rejected: self.archive.rejected,
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
+                doomed_endpoints: self.doomed_endpoints,
                 execution_failures: self.execution_failures,
                 hung_jobs: self.hung_jobs,
                 selector,
@@ -2467,9 +2570,38 @@ fn resolve_origin<G: Workload>(
             resume_actions: 0,
         });
     }
+    if let CampaignOrigin::SavedStates { states } = origin {
+        let expected = search_checkpoint_header(
+            workload,
+            config,
+            executable_identity,
+            &states.header.reason,
+            0,
+            0,
+            0,
+            0,
+        );
+        let resume_input_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&Input::<G::Action>::default())?)
+        );
+        return Ok(CampaignOriginRecord {
+            kind: ORIGIN_SAVED_STATES.to_owned(),
+            path: None,
+            archive_sha256: None,
+            checkpoint_path: Some(states.path.clone()),
+            checkpoint_sha256: Some(states.file_sha256.clone()),
+            checkpoint_policy_changes: saved_state_policy_changes(&states.header, &expected),
+            resume_input_sha256,
+            resume_actions: 0,
+        });
+    }
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
         CampaignOrigin::SearchCheckpoint { .. } => {
             return Err("a search checkpoint origin was not opened".into());
+        }
+        CampaignOrigin::SavedStates { .. } => {
+            return Err("a saved-state origin has no archive source".into());
         }
         CampaignOrigin::Genesis => (
             ORIGIN_GENESIS.to_owned(),
@@ -2867,6 +2999,7 @@ fn build_report<G: Workload>(
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
     let terminal_objectives = core.terminal_objectives;
+    let doomed_endpoints = core.doomed_endpoints;
     let execution_failures = core.execution_failures;
     let hung_jobs = core.hung_jobs;
     let hang_stop = core.hang_stop.clone();
@@ -2940,6 +3073,7 @@ fn build_report<G: Workload>(
         probe_refused,
         terminal_endpoints,
         terminal_objectives,
+        doomed_endpoints,
         execution_failures,
         hung_jobs,
         hang_stop,
@@ -3108,6 +3242,7 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
     hung_jobs: u64,
     hang_streak: u64,
@@ -3322,6 +3457,8 @@ pub struct CampaignProgressRecord<K> {
     pub terminal_endpoints: u64,
     #[serde(default)]
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     #[serde(default)]
     pub execution_failures: u64,
     #[serde(default)]
@@ -3439,6 +3576,7 @@ fn progress_record<G: Workload>(
         objectives_reached: core.objectives_reached,
         terminal_endpoints: core.terminal_endpoints,
         terminal_objectives: core.terminal_objectives,
+        doomed_endpoints: core.doomed_endpoints,
         execution_failures: core.execution_failures,
         hung_jobs: core.hung_jobs,
         search_elapsed_millis: Some(telemetry_started)
@@ -3508,6 +3646,9 @@ fn bootstrap_core<G: Workload>(
         CampaignOrigin::SearchCheckpoint { .. } => {
             Err("a search checkpoint restores its archive instead of bootstrapping one".into())
         }
+        CampaignOrigin::SavedStates { states } => Ok(Some(
+            core.import_saved_states(workload, run, target, states)?,
+        )),
     }
 }
 
@@ -4029,6 +4170,43 @@ fn search_checkpoint_header<G: Workload>(
     }
 }
 
+fn saved_state_policy_changes(
+    header: &CheckpointHeader,
+    expected: &CheckpointHeader,
+) -> BTreeMap<String, PolicyChange> {
+    let absent = String::new();
+    let mut changes = header
+        .policies
+        .keys()
+        .chain(expected.policies.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|field| {
+            let checkpoint = header.policies.get(field).unwrap_or(&absent);
+            let run = expected.policies.get(field).unwrap_or(&absent);
+            (checkpoint != run).then(|| {
+                (
+                    field.clone(),
+                    PolicyChange {
+                        checkpoint: checkpoint.clone(),
+                        run: run.clone(),
+                    },
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    if header.executable_identity != expected.executable_identity {
+        changes.insert(
+            "executable_identity".to_owned(),
+            PolicyChange {
+                checkpoint: header.executable_identity.clone(),
+                run: expected.executable_identity.clone(),
+            },
+        );
+    }
+    changes
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_checkpoint_policy_changes(
     header: &CheckpointHeader,
@@ -4103,6 +4281,7 @@ fn restore_search_checkpoint<G: Workload>(
         return Err("search checkpoint limits differ from the campaign".into());
     }
     let changes = search_checkpoint_policy_changes(&header, &expected)?;
+    let _: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
     let state: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
     let evidence: Vec<u8> = reader.next()?;
@@ -4216,6 +4395,7 @@ fn write_search_checkpoint<G: Workload>(
         reason,
         core.archive.resident_snapshot_entries(),
         |out| {
+            postcard::to_io(&core.archive.saved_state_records()?, &mut *out)?;
             core.write_checkpoint_state(&mut *out)?;
             postcard::to_io(&core.archive, &mut *out)?;
             super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
@@ -4347,32 +4527,34 @@ fn fold_draw_sources<'a, A: Copy + Ord + Serialize + 'a>(
     Ok(())
 }
 
+pub(crate) fn source_suffixes<A: Ord, K, M>(entries: &[ArchiveEntryReport<A, K, M>]) -> Vec<&[A]> {
+    let parent_len: BTreeMap<u64, usize> = entries
+        .iter()
+        .map(|entry| (entry.id, entry.input.actions.len()))
+        .collect();
+    entries
+        .iter()
+        .map(|entry| {
+            let prefix = entry
+                .parent_id
+                .and_then(|parent| parent_len.get(&parent).copied())
+                .unwrap_or(0);
+            entry.input.actions.get(prefix..).unwrap_or(&[])
+        })
+        .collect()
+}
+
 fn initial_draw_state<G: Workload>(
     workload: &G,
     run: &G::Run,
-    origin: Option<(&str, &G::ArchiveReport)>,
+    origin: Option<(&str, Vec<&[G::Action]>)>,
 ) -> Result<InitialDrawState<G>, Box<dyn Error>> {
     let parameters = workload.draw_table_parameters(run);
     let mut tables = DrawTables::new(parameters)?;
     let source_sha256 = match origin {
         None => format!("{:x}", Sha256::digest([])),
-        Some((file_sha256, report)) => {
-            let entries = workload.source_entries(report);
-            let parent_len: BTreeMap<u64, usize> = entries
-                .iter()
-                .map(|entry| (entry.id, entry.input.actions.len()))
-                .collect();
-            fold_draw_sources(
-                &mut tables,
-                parameters,
-                entries.iter().map(|entry| {
-                    let prefix = entry
-                        .parent_id
-                        .and_then(|parent| parent_len.get(&parent).copied())
-                        .unwrap_or(0);
-                    entry.input.actions.get(prefix..).unwrap_or(&[])
-                }),
-            )?;
+        Some((file_sha256, suffixes)) => {
+            fold_draw_sources(&mut tables, parameters, suffixes.into_iter())?;
             file_sha256.to_owned()
         }
     };
@@ -4717,7 +4899,7 @@ where
             }
             workload.resume_input(source.report())?
         }
-        ORIGIN_SEARCH_CHECKPOINT => {
+        ORIGIN_SEARCH_CHECKPOINT | ORIGIN_SAVED_STATES => {
             return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
         }
         _ => return Err("campaign stream origin kind is not recognized".into()),
@@ -4757,14 +4939,14 @@ where
         }
     }
     let draw_origin = match header.origin_kind.as_str() {
-        ORIGIN_ARCHIVE => Some((
-            origin_source
-                .ok_or("archive campaign replay requires the source archive")?
-                .file_sha256(),
-            origin_source
-                .ok_or("archive campaign replay requires the source archive")?
-                .report(),
-        )),
+        ORIGIN_ARCHIVE => {
+            let source =
+                origin_source.ok_or("archive campaign replay requires the source archive")?;
+            Some((
+                source.file_sha256(),
+                source_suffixes(workload.source_entries(source.report())),
+            ))
+        }
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
@@ -5883,6 +6065,7 @@ mod tests {
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static JOB_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
         static JOB_INDEX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static DOOMED_VALUE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -6432,6 +6615,10 @@ mod tests {
             ExecutionDisposition::Runnable
         }
 
+        fn is_doomed(&self, target: &Self::Target) -> bool {
+            DOOMED_VALUE.get() == Some(target.value)
+        }
+
         fn objective_reached(
             &self,
             _run: &Self::Run,
@@ -6600,6 +6787,7 @@ mod tests {
                 ExecutionDisposition::default()
             };
             Ok(Outcome {
+                doomed: false,
                 objective_reached,
                 disposition,
             })
@@ -6782,6 +6970,84 @@ mod tests {
         .expect("failed parent is a reportable preparation failure");
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![()]));
+    }
+
+    #[test]
+    fn a_doomed_endpoint_ends_the_job_without_a_candidate() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut target = TestTarget::default();
+        let snapshot = workload.snapshot(&mut target).expect("snapshot");
+        DOOMED_VALUE.set(Some(3));
+        let result = crate::search::rollout::execute_job(
+            &workload,
+            &(),
+            &mut target,
+            &snapshot,
+            &[],
+            (),
+            &[
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(4, 1),
+            ],
+            RetentionPolicy::Unprobed,
+            crate::search::rollout::RolloutStop::new(false),
+        );
+        DOOMED_VALUE.set(None);
+        let result = result.expect("doomed job");
+        assert_eq!(result.actions.len(), 2);
+        assert!(result.actions[0].candidate.is_some());
+        let last = &result.actions[1];
+        assert!(last.outcome.doomed);
+        assert_eq!(last.outcome.disposition, ExecutionDisposition::Terminal);
+        assert!(last.candidate.is_none());
+        let bytes = postcard::to_allocvec(&last.outcome).expect("encode");
+        assert_eq!(
+            postcard::from_bytes::<Outcome>(&bytes).expect("decode"),
+            last.outcome
+        );
+        let text = serde_json::to_string(&last.outcome).expect("json");
+        assert_eq!(
+            serde_json::from_str::<Outcome>(&text).expect("json decode"),
+            last.outcome
+        );
+        assert_ne!(
+            bytes,
+            postcard::to_allocvec(&Outcome {
+                doomed: false,
+                ..last.outcome
+            })
+            .expect("encode")
+        );
+    }
+
+    #[test]
+    fn an_outcome_that_is_not_doomed_keeps_its_encoding() {
+        for (objective_reached, disposition, variant) in [
+            (false, ExecutionDisposition::Runnable, 0),
+            (true, ExecutionDisposition::Terminal, 1),
+            (false, ExecutionDisposition::Failed, 2),
+        ] {
+            let outcome = Outcome {
+                objective_reached,
+                disposition,
+                doomed: false,
+            };
+            assert_eq!(
+                postcard::to_allocvec(&outcome).expect("encode"),
+                [u8::from(objective_reached), variant]
+            );
+            assert_eq!(
+                serde_json::to_value(outcome).expect("json"),
+                serde_json::json!({
+                    "objective_reached": objective_reached,
+                    "disposition": serde_json::to_value(disposition).expect("json"),
+                })
+            );
+        }
     }
 
     #[test]
@@ -6996,6 +7262,7 @@ mod tests {
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: true,
                         disposition: ExecutionDisposition::Terminal,
                     },
@@ -7020,6 +7287,7 @@ mod tests {
                     observations: vec![()],
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: false,
                         disposition: ExecutionDisposition::Failed,
                     },
@@ -7030,6 +7298,31 @@ mod tests {
         .expect("admit failed execution");
         assert_eq!(core.terminal_endpoints, 1);
         assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 1);
+
+        let doomed = TestAction::new(3, 1);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                preparation_failure: None,
+                hang: None,
+                actions: vec![CampaignActionResult {
+                    action: doomed,
+                    observations: vec![()],
+                    milestones: (),
+                    outcome: Outcome {
+                        doomed: true,
+                        objective_reached: false,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit doomed endpoint");
+        assert_eq!(core.terminal_endpoints, 1);
+        assert_eq!(core.doomed_endpoints, 1);
         assert_eq!(core.execution_failures, 1);
     }
 
@@ -8480,6 +8773,7 @@ mod tests {
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome {
+                    doomed: false,
                     objective_reached: true,
                     disposition: ExecutionDisposition::Runnable,
                 },
@@ -10070,6 +10364,7 @@ mod tests {
                 every: std::num::NonZeroU64::new(1_000_000),
                 on_marks: false,
                 on_top_progress: false,
+                on_stall: false,
                 checkpoint_owner: None,
                 max_image_bytes: 64 << 20,
                 before_write: None,
@@ -10477,6 +10772,7 @@ mod tests {
                                 every: std::num::NonZeroU64::new(1),
                                 on_marks: false,
                                 on_top_progress: false,
+                                on_stall: false,
                                 checkpoint_owner: None,
                                 max_image_bytes: 64 << 20,
                                 before_write: None,
@@ -10532,6 +10828,8 @@ mod tests {
             assert_eq!(header.executions, 1);
             assert_eq!(header.admitted, 1);
             assert_eq!(header.reserved, 2);
+            let _: Vec<crate::search::archive::SavedStateRecord<TestAction, ()>> =
+                reader.next().unwrap();
             let core: super::CoreCheckpoint<TestWorkload> = reader.next().unwrap();
             let archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
                 reader.next().unwrap();
@@ -10789,6 +11087,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -11630,6 +11929,7 @@ mod tests {
             record_progress: core.record_progress,
             terminal_endpoints: core.terminal_endpoints,
             terminal_objectives: core.terminal_objectives,
+            doomed_endpoints: 0,
             execution_failures: core.execution_failures,
             hung_jobs: core.hung_jobs,
             hang_streak: core.hang_streak,
@@ -11695,6 +11995,7 @@ mod tests {
                             every: std::num::NonZeroU64::new(1),
                             on_marks: false,
                             on_top_progress: false,
+                            on_stall: false,
                             checkpoint_owner: None,
                             max_image_bytes,
                             before_write: None,
@@ -11765,6 +12066,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 10,
                     before_write: None,
@@ -11840,6 +12142,7 @@ mod tests {
                             every: std::num::NonZeroU64::new(1),
                             on_marks: false,
                             on_top_progress: false,
+                            on_stall: false,
                             checkpoint_owner: None,
                             max_image_bytes: 64 << 20,
                             before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
@@ -11927,6 +12230,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -11994,6 +12298,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
@@ -12061,6 +12366,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -12143,6 +12449,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(5),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes,
                     before_write: None,
@@ -12266,6 +12573,7 @@ mod tests {
                     every: None,
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,

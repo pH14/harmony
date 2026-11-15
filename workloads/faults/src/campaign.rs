@@ -343,6 +343,7 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
 
 fn outcome(target: &FaultTarget) -> Outcome {
     Outcome {
+        doomed: false,
         objective_reached: !target.failed() && target.found_bug(),
         disposition: if target.failed() {
             ExecutionDisposition::Failed
@@ -486,6 +487,7 @@ pub(crate) fn execute_job(
         let objective_reached = raw_outcome.objective_reached && !objective_seen;
         objective_seen |= raw_outcome.objective_reached;
         let outcome = Outcome {
+            doomed: false,
             objective_reached,
             disposition: raw_outcome.disposition,
         };
@@ -1468,6 +1470,7 @@ mod tests {
                 observations: vec![FaultObservations::default()],
                 milestones: FaultMilestones::default(),
                 outcome: Outcome {
+                    doomed: false,
                     objective_reached: false,
                     disposition: ExecutionDisposition::Runnable,
                 },
@@ -1802,6 +1805,7 @@ mod tests {
             observations: Vec::new(),
             milestones: FaultMilestones::default(),
             outcome: Outcome {
+                doomed: false,
                 objective_reached: false,
                 disposition,
             },
@@ -1871,6 +1875,7 @@ mod tests {
             observations,
             milestones: FaultMilestones::default(),
             outcome: Outcome {
+                doomed: false,
                 objective_reached: false,
                 disposition: ExecutionDisposition::Runnable,
             },
@@ -1940,6 +1945,7 @@ mod tests {
             observations,
             milestones: FaultMilestones::default(),
             outcome: Outcome {
+                doomed: false,
                 objective_reached: false,
                 disposition: ExecutionDisposition::Runnable,
             },
