@@ -3,8 +3,9 @@
 # Guest-kernel patch series
 
 These diffs apply to the Linux version pinned in `../versions.lock`. The
-platform build applies every numbered patch in `common/` first, then every
-numbered patch in the selected architecture directory. The series stamp
+platform build applies every numbered patch in `common/` first. The x86 and
+arm64 VM kernels then apply every numbered patch in `vm/`. Every build ends
+with the numbered patches in the selected architecture directory. The series stamp
 includes directory names, patch names, and SHA-256 values, so a partially
 applied or changed tree is rejected and must be re-extracted.
 
@@ -17,12 +18,26 @@ elsewhere uses the repository license.
 The common series owns the architecture-independent Harmony character device
 and observation handles. The device allocates and bounds its shared pages in
 the kernel; platform userspace interacts through the stable character-device
-interfaces.
+interfaces. Its coverage ioctl carries one SDK coverage exchange in a single
+system call.
+
+## VM series
+
+The VM series applies only to the x86 and arm64 VM kernels. Its patch gives
+each time namespace a realtime offset that can change while tasks use it. The
+process supervisor starts every node in its own time namespace and changes
+that offset to inject a per-node clock fault. CLOCK_REALTIME,
+CLOCK_REALTIME_COARSE and CLOCK_TAI reads, `gettimeofday`, `time` and the vDSO
+add the offset. Absolute realtime deadlines convert to host time when they are
+armed. CLOCK_MONOTONIC and CLOCK_BOOTTIME keep their fixed namespace offsets,
+and kernel-internal realtime uses such as file timestamps stay on host time.
+The UML trees lack the generic vDSO time-namespace support, so they omit this
+series.
 
 ## Architecture series
 
 The x86 series supplies the paravirtual clock, counter confinement and
-emulation, syscall tick, idle port, and x86-specific clock and trap plumbing.
+emulation, syscall tick (skipped for the coverage ioctl), idle port, retry ticks, and x86-specific clock and trap plumbing.
 Its KVM host-counter patch uses the outer VMM's intercepted TSC MSR for shared,
 LAPIC, PMU and nested-VMX counter reads, and disables the optional VMX hardware
 preemption timer by default. KVM hosting is compiled only in the nested-host
@@ -41,7 +56,8 @@ on the vendor its runner provides, VMX or SVM.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
-canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
+canonical state, counter trap switch, idle register, the syscall tick
+that skips the coverage ioctl, and the retry ticks. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
 The series moves alternative and unwind metadata after `__initdata_begin`, so
@@ -51,6 +67,11 @@ With the Harmony clock, the kernel's virtual timer shutdown uses only the MMIO
 clockevent, and the physical timer paths stop if reached. This removes all
 architected timer control instructions from the shipped arm64 image so the
 instruction scanner can reject them without exceptions.
+
+Both series ring the execution tick where the kernel can retry without an
+exit: once per request the device-mapper `error` target fails, and once per
+page-allocation retry. A disk error window or an allocation that reclaim cannot
+satisfy then still advances virtual time to the next timer deadline.
 
 The um series applies after the common series to the separate User-mode Linux
 source tree. It makes SECCOMP userspace the only UML mode, charges virtual

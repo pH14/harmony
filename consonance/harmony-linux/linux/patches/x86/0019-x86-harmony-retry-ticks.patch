@@ -1,0 +1,59 @@
+x86: ring the virtual_time tick for failed bios and allocation retries
+
+Two kernel loops can retry without an exit, so virtual time stops and the
+next timer deadline never arrives. The device-mapper error target fails each
+bio inside the guest, and a page fault that retries a failed read, as
+MAP_POPULATE does on a file whose read fails, then repeats forever. A
+GFP_NOIO or GFP_NOFS allocation that direct reclaim cannot satisfy also
+retries forever, because the OOM killer does not run for it. One tick per
+failed bio and per allocation retry lets the timer fire, so the scheduler
+runs other tasks and a disk fault window can close.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/md/dm-target.c
++++ b/drivers/md/dm-target.c
+@@ -12,6 +12,7 @@
+ #include <linux/kmod.h>
+ #include <linux/bio.h>
+ #include <linux/dax.h>
++#include <asm/harmony_pvclock.h>
+ 
+ #define DM_MSG_PREFIX "target"
+ 
+@@ -193,6 +194,7 @@
+ 
+ static int io_err_map(struct dm_target *tt, struct bio *bio)
+ {
++	harmony_virtual_time_tick();
+ 	return DM_MAPIO_KILL;
+ }
+ 
+@@ -200,6 +202,7 @@
+ 				   union map_info *map_context,
+ 				   struct request **clone)
+ {
++	harmony_virtual_time_tick();
+ 	return DM_MAPIO_KILL;
+ }
+ 
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -59,6 +59,7 @@
+ #include "internal.h"
+ #include "shuffle.h"
+ #include "page_reporting.h"
++#include <asm/harmony_pvclock.h>
+ 
+ /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
+ typedef int __bitwise fpi_t;
+@@ -4827,6 +4828,7 @@
+ 	}
+ 
+ retry:
++	harmony_virtual_time_tick();
+ 	/*
+ 	 * Deal with possible cpuset update races or zonelist updates to avoid
+ 	 * infinite retries.

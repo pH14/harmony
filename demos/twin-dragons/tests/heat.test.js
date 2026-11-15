@@ -63,7 +63,7 @@ test("colors compare each cell with the hottest cell of its own level", () => {
   heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
   assert.deepEqual(heat.color(cool, 0), [245, 89, 62], "Colors follow new visits");
 });
-test("route numbers survive new arrivals, the rolling window and repeat visits", () => {
+test("visible and selected route numbers survive arrivals and bounded history", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: "1:0" },
     cell = heat.visit(point, 0);
@@ -72,10 +72,11 @@ test("route numbers survive new arrivals, the rolling window and repeat visits",
   assert.equal(cell.routes.get("1:0"), 1);
   assert.equal(cell.routes.get("1:1"), 2);
   assert.deepEqual(routeIds(cell), ["1:0", "1:1"]);
+  heat.select(cell, "1:0");
   for (let id = 2; id < 15; id++)
     heat.visit({ ...point, retained: `1:${id}` }, id + 1);
   assert.equal(cell.ids.length, 12);
-  assert.equal(cell.routes.size, 15);
+  assert.equal(cell.routes.size, 13);
   assert.equal(cell.routes.get(routeIds(cell)[0]), 4);
   assert.equal(cell.routes.get("1:0"), 1);
   const pinned = routeIds(cell, "1:0");
@@ -84,7 +85,7 @@ test("route numbers survive new arrivals, the rolling window and repeat visits",
   assert.deepEqual(routeIds(cell, "unknown"), routeIds(cell));
   assert.equal(cell.ids.length, 12);
   heat.visit(point, 20);
-  assert.equal(cell.routes.size, 15);
+  assert.equal(cell.routes.size, 12);
   assert.equal(cell.routes.get("1:0"), 1);
   assert.equal(routeIds(cell)[0], "1:0");
   const another = heat.visit(
@@ -100,6 +101,125 @@ test("route numbers survive new arrivals, the rolling window and repeat visits",
   assert.equal(otherSearch.routes.get("1:0"), 1);
   assert.deepEqual(routeIds({ ids: [] }), []);
 });
+test("ten thousand arrivals retain only recent and selected or pending route metadata", () => {
+  const heat = new Heatmap(), point = { observation: { level: 0, x: 52, y: 184 }, retained: 0 };
+  const cell = heat.retain(point, 0);
+  heat.select(cell, 0);
+  heat.retain({ ...point, retained: 1 }, 1);
+  heat.pending(cell, 1, 41);
+  for (let id = 2; id < 10000; id++) {
+    heat.retain({ ...point, retained: id }, id);
+    assert.ok(cell.ids.length <= 12);
+    assert.ok(cell.routes.size <= 14);
+  }
+  assert.equal(cell.routes.get(0), 1);
+  assert.equal(cell.routes.get(1), 2);
+  assert.equal(cell.nextRoute, 10000);
+  heat.forget(Array.from({ length: 10000 }, (_, id) => id), 41);
+  assert.deepEqual(cell.ids, []);
+  assert.deepEqual(routeIds(cell, 0), [0]);
+  assert.equal(cell.routes.size, 1, "cached playing history survives backend eviction");
+  assert.equal(cell.routes.get(0), 1);
+  heat.clearPins();
+  assert.equal(cell.routes.size, 0);
+  heat.retain(point, 10001);
+  assert.equal(cell.routes.get(0), 10001, "forgotten unselected re-arrivals receive a new ordinal");
+});
+
+test("pending request rollover and stale responses cannot release a newer route pin", () => {
+  const heat = new Heatmap(), point = { observation: { level: 0, x: 52, y: 184 }, retained: 0 };
+  const cell = heat.retain(point, 0);
+  heat.select(cell, 0);
+  heat.retain({ ...point, retained: 1 }, 1);
+  heat.pending(cell, 1, 10);
+  for (let id = 2; id < 30; id++) heat.retain({ ...point, retained: id }, id);
+  heat.pending(cell, 1, 11);
+  heat.releasePending(10);
+  heat.forget([1], 10);
+  assert.equal(cell.routes.get(1), 2);
+  assert.equal(cell.routes.get(0), 1);
+  heat.select(cell, 1);
+  heat.releasePending(11);
+  assert.equal(cell.routes.get(1), 2, "fetch completion transfers the pending label to selection");
+  assert.equal(cell.routes.has(0), false);
+  heat.forget([1], 11);
+  assert.equal(cell.routes.get(1), 2);
+  heat.select(null);
+  assert.equal(cell.routes.has(1), false);
+  heat.pending(cell, cell.ids[0], 12);
+  heat.clearPins();
+  heat.releasePending(12);
+  assert.equal(heat.pins.size, 0, "branch reset releases both pins");
+});
+
+test("a visible button can pin its old ordinal without retaining an unbounded history", () => {
+  const heat = new Heatmap(), point = { observation: { level: 0, x: 52, y: 184 }, retained: 0 };
+  const cell = heat.retain(point, 0), visibleOrdinal = cell.routes.get(0);
+  for (let id = 1; id < 10000; id++) heat.retain({ ...point, retained: id }, id);
+  assert.equal(cell.routes.has(0), false);
+  heat.pending(cell, 0, 1, visibleOrdinal);
+  assert.equal(cell.routes.get(0), 1);
+  assert.equal(cell.routes.size, 13);
+  heat.select(cell, 0);
+  heat.releasePending(1);
+  heat.select(null);
+  assert.equal(cell.routes.size, 12);
+  heat.pending(cell, 0, 2, 10001);
+  assert.equal(cell.routes.has(0), false, "a future ordinal is not a visible past route");
+});
+
+test("selection pins are global across cells and release prior cells on rollover", () => {
+  const heat = new Heatmap(), cells = [];
+  for (let column = 0; column < 4; column++) {
+    const point = { observation: { level: 0, x: column * 32 + 8, y: 184 }, retained: `${column}:0` };
+    const cell = heat.retain(point, 0);
+    cells.push(cell);
+    heat.select(cell, point.retained);
+    heat.pending(cell, point.retained, column);
+    for (let id = 1; id < 30; id++) heat.retain({ ...point, retained: `${column}:${id}` }, id);
+    assert.equal(heat.pins.size, 2);
+    assert.equal(cells.reduce((sum, c) => sum + c.routes.size - c.ids.length, 0), 1);
+    assert.equal(cell.routes.get(point.retained), 1);
+  }
+  heat.clearPins();
+  assert.ok(cells.every(cell => cell.routes.size === 12));
+  assert.equal(heat.pins.size, 0);
+});
+
+test("foreign or replaced cells cannot apply captured ordinals or replace owned pins", () => {
+  const heat = new Heatmap(), other = new Heatmap();
+  const point = { observation: { level: 0, x: 52, y: 184 }, retained: 0 };
+  const cell = heat.retain(point, 0), foreign = other.retain(point, 0);
+  heat.select(cell, 0);
+  heat.pending(cell, 0, 4);
+  const selected = heat.pins.get("selected"), pending = heat.pins.get("pending");
+  heat.select(foreign, 99, 1);
+  heat.pending(foreign, 99, 5, 1);
+  assert.equal(heat.pins.get("selected"), selected);
+  assert.equal(heat.pins.get("pending"), pending);
+  assert.deepEqual([...foreign.routes], [[0, 1]]);
+  heat.cells.delete(cell.key);
+  const replacement = heat.retain({ ...point, retained: 1 }, 1);
+  heat.pending(cell, 99, 6, 1);
+  assert.equal(heat.pins.get("pending"), pending);
+  assert.equal(cell.routes.has(99), false);
+  assert.deepEqual([...replacement.routes], [[1, 1]]);
+  heat.clearPins();
+});
+
+test("forget leaves untouched cell storage intact and still clears a missing pending pin", () => {
+  const heat = new Heatmap(), point = { observation: { level: 0, x: 52, y: 184 }, retained: 0 };
+  const cell = heat.retain(point, 0), ids = cell.ids;
+  heat.forget([99]);
+  assert.equal(cell.ids, ids);
+  heat.pending(cell, 0, 7);
+  for (let id = 1; id < 20; id++) heat.retain({ ...point, retained: id }, id);
+  const currentIds = cell.ids;
+  heat.forget([0], 7);
+  assert.equal(cell.ids, currentIds);
+  assert.equal(cell.routes.has(0), false);
+});
+
 test("history admission rejects wrong identities and malformed inputs", () => {
   const tape = {
     format: "harmony-twin-dragons-browser-v1",

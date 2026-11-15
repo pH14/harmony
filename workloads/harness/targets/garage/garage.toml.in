@@ -1,0 +1,17 @@
+metadata_dir = "/tmp/garage/n@INDEX@/meta"
+data_dir = "/tmp/garage/n@INDEX@/data"
+metadata_fsync = true
+data_fsync = true
+replication_factor = 3
+consistency_mode = "consistent"
+rpc_bind_addr = "10.77.0.@INDEX@:3901"
+rpc_public_addr = "10.77.0.@INDEX@:3901"
+rpc_secret = "5f1c0a6e9b8d7c3f2e4a6b8c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e" # pragma: allowlist secret
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "10.77.0.@INDEX@:3900"
+root_domain = ".s3.garage"
+
+[admin]
+api_bind_addr = "10.77.0.@INDEX@:3903"

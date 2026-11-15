@@ -517,6 +517,7 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
+            interrupt: None,
         },
     )
     .expect("adaptive campaign");
@@ -537,6 +538,7 @@ fn replay_rejects_hidden_endpoint_drift_with_matching_results() {
     };
     let logical_result = CampaignJobResult::<TimingWorkload> {
         preparation_failure: None,
+        hang: None,
         actions: Vec::new(),
     };
     assert_eq!(
@@ -574,6 +576,7 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
+            interrupt: None,
         },
     )
     .expect("adaptive campaign");
@@ -714,6 +717,7 @@ fn failed_duration_actions_do_not_train_the_policy() {
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
+            interrupt: None,
         },
     )
     .expect("failed-duration campaign");
@@ -752,6 +756,7 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
             work_budget: Some(4_096),
             checkpoints: None,
             placement: None,
+            interrupt: None,
         },
     )
     .expect("preparation-failure campaign");
@@ -796,10 +801,12 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
 
     let without_failure = CampaignJobResult::<TimingWorkload> {
         preparation_failure: None,
+        hang: None,
         actions: Vec::new(),
     };
     let with_failure = CampaignJobResult::<TimingWorkload> {
         preparation_failure: Some(vec![(1,)]),
+        hang: None,
         actions: Vec::new(),
     };
     assert_ne!(
@@ -829,7 +836,7 @@ fn failed_parent_skips_replay_and_preserves_preparation_observations() {
             (),
             &[],
             RetentionPolicy::Unprobed,
-            false,
+            searcher::search::rollout::RolloutStop::new(false),
         )
         .expect("failed parent is reportable with replay input");
 

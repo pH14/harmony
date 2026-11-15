@@ -12,6 +12,7 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    mm2::action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
 };
@@ -32,6 +33,10 @@ const ENEMY_KILLED_ID: u8 = 0x06;
 const STAGE: usize = 0x2a;
 const PLAYER_STATE: usize = 0x2c;
 const WEAPONS_OBTAINED: usize = 0x9a;
+const ITEMS_OBTAINED: usize = 0x9b;
+const ITEMS: u8 = 3;
+const FIRST_ITEM_WEAPON: u8 = 9;
+const LAST_FIRST_PAGE_WEAPON: u8 = 5;
 const LIVES: usize = 0xa8;
 const PLAYER_SCREEN: usize = 0x440;
 const LEVEL_ROOM: usize = 0x20;
@@ -89,9 +94,9 @@ const PLAYER_STATE_DYING: u8 = 0x00;
 const BELOW_PLAY_AREA_Y: u8 = 0xe0;
 pub const FULL_HEALTH: u8 = 28;
 
-const JOYPAD_START: u8 = 1 << 3;
+pub(crate) const JOYPAD_START: u8 = 1 << 3;
 const JOYPAD_UP: u8 = 1 << 4;
-const JOYPAD_DOWN: u8 = 1 << 5;
+pub(crate) const JOYPAD_DOWN: u8 = 1 << 5;
 const JOYPAD_LEFT: u8 = 1 << 6;
 const JOYPAD_RIGHT: u8 = 1 << 7;
 
@@ -194,7 +199,7 @@ pub fn next_stage_after(weapons_obtained: u8) -> Mm2Stage {
         .unwrap_or(Mm2Stage(MM2_FIRST_WILY_STAGE))
 }
 
-pub type Mm2Input = crate::search::archive::Input<ButtonChord>;
+pub type Mm2Input = crate::search::archive::Input<Mm2Action>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2MechanicalState {
@@ -440,6 +445,54 @@ fn decode_state_after(
     })
 }
 
+#[must_use]
+pub fn menu_row_is_open(menu: u8) -> bool {
+    usize::from(menu / MENU_PAGE_ROWS) < MENU_ROWS.len()
+        && menu % MENU_PAGE_ROWS < MENU_ROWS[usize::from(menu / MENU_PAGE_ROWS)]
+}
+
+#[must_use]
+pub fn menu_page(menu: u8) -> u8 {
+    menu / MENU_PAGE_ROWS
+}
+
+#[must_use]
+pub fn menu_next_row(menu: u8) -> u8 {
+    menu_page(menu) * MENU_PAGE_ROWS
+}
+
+#[must_use]
+pub fn weapon_menu_row(weapon: u8) -> u8 {
+    if weapon <= LAST_FIRST_PAGE_WEAPON {
+        weapon + 1
+    } else {
+        weapon - LAST_FIRST_PAGE_WEAPON - 1 + MENU_PAGE_ROWS + 1
+    }
+}
+
+pub fn switch_choices(wram: &[u8]) -> Result<Vec<u8>, MachineError> {
+    let weapons = read_byte(wram, WEAPONS_OBTAINED)?;
+    let items = read_byte(wram, ITEMS_OBTAINED)?;
+    let equipped = read_byte(wram, SELECTED_WEAPON)?;
+    let held = (1..=MM2_STAGE_COUNT)
+        .filter(|weapon| weapons & (1 << (weapon - 1)) != 0)
+        .chain(
+            (FIRST_ITEM_WEAPON..FIRST_ITEM_WEAPON + ITEMS)
+                .filter(|weapon| items & (1 << (weapon - FIRST_ITEM_WEAPON)) != 0),
+        );
+    let mut choices = Vec::new();
+    for weapon in std::iter::once(0).chain(held) {
+        let energy = match weapon {
+            0 => FULL_HEALTH,
+            _ => read_byte(wram, WEAPON_ENERGY + usize::from(weapon) - 1)?,
+        };
+        if weapon != equipped && energy > 0 {
+            choices.push(weapon);
+        }
+    }
+    Ok(choices)
+}
+
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
     (0..ENEMY_SLOTS)
         .filter_map(|enemy| {
@@ -602,6 +655,11 @@ impl Mm2Snapshot {
     }
 
     #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
     pub fn emulator_state(&self) -> &[u8] {
         &self.emulator_state
     }
@@ -681,6 +739,10 @@ pub fn power_on_walk() -> Vec<ButtonChord> {
     chords
 }
 
+fn power_on_walk_actions() -> Vec<Mm2Action> {
+    power_on_walk().into_iter().map(Mm2Action::from).collect()
+}
+
 const MENU_MODE: usize = 0xf7;
 const MENU_MODE_STAGE_SELECT: u8 = 0x90;
 const STAGE_SELECT_WALK_ROUNDS: usize = 16;
@@ -691,11 +753,9 @@ fn at_stage_select(wram: &[u8]) -> bool {
 
 pub fn walk_to_stage_select<M: Machine + NesMemory>(
     mut machine: M,
-    chords: &[ButtonChord],
+    actions: &[Mm2Action],
 ) -> Result<Vec<ButtonChord>, MachineError> {
-    for chunk in chords.chunks(64) {
-        run_chords(&mut machine, chunk)?;
-    }
+    run_actions(&mut machine, actions)?;
     let mut walk = idle_chords(AWARD_SETTLE_FRAMES);
     run_chords(&mut machine, &walk)?;
     for _ in 0..STAGE_SELECT_WALK_ROUNDS {
@@ -725,6 +785,55 @@ fn run_chords<M: Machine>(machine: &mut M, chords: &[ButtonChord]) -> Result<(),
     machine.drop_snapshot(here)
 }
 
+fn drive_switch<E: From<MachineError>>(
+    word: u32,
+    wram: &[u8],
+    mut run: impl FnMut(ButtonChord) -> Result<Mm2MechanicalState, E>,
+) -> Result<(), E> {
+    let mut ran = false;
+    if let Some(weapon) = switch_choice(&switch_choices(wram)?, word) {
+        let mut switch = WeaponSwitch::to_row(weapon_menu_row(weapon));
+        let mut state = decode_state(wram)?;
+        while let Some(chord) = switch.next(state) {
+            state = run(chord)?;
+            ran = true;
+        }
+    }
+    if !ran {
+        run(ButtonChord::new(0, SWITCH_WAIT_FRAMES))?;
+    }
+    Ok(())
+}
+
+pub fn run_actions<M: Machine + NesMemory>(
+    machine: &mut M,
+    actions: &[Mm2Action],
+) -> Result<Vec<ButtonChord>, MachineError> {
+    let mut resolved = Vec::new();
+    let mut pending = 0;
+    for action in actions {
+        match *action {
+            Mm2Action::Chord(chord) => resolved.push(chord),
+            Mm2Action::Switch(word) => {
+                for chunk in resolved[pending..].chunks(64) {
+                    run_chords(machine, chunk)?;
+                }
+                let wram = machine.read_wram()?;
+                drive_switch(word, &wram, |chord| {
+                    run_chords(machine, &[chord])?;
+                    resolved.push(chord);
+                    decode_state(&machine.read_wram()?)
+                })?;
+                pending = resolved.len();
+            }
+        }
+    }
+    for chunk in resolved[pending..].chunks(64) {
+        run_chords(machine, chunk)?;
+    }
+    Ok(resolved)
+}
+
 #[cfg(unix)]
 impl Mm2Target<QuickNesMachine> {
     pub fn from_rom_bytes_after_with_identity(
@@ -732,7 +841,7 @@ impl Mm2Target<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        prefix: &[ButtonChord],
+        prefix: &[Mm2Action],
         stage: Mm2Stage,
     ) -> Result<Self, MachineError> {
         Self::from_machine(
@@ -753,7 +862,7 @@ impl Mm2Target<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        root: &[ButtonChord],
+        root: &[Mm2Action],
     ) -> Result<Self, MachineError> {
         Self::whole_game_from_machine(
             QuickNesMachine::from_rom_bytes_with_identity(
@@ -772,14 +881,14 @@ impl Mm2Target<QuickNesMachine> {
         core_sha256: &str,
         stage: Mm2Stage,
     ) -> Result<Self, MachineError> {
-        Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk(), stage)
+        Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk_actions(), stage)
     }
 
     pub fn from_rom_bytes_after(
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        prefix: &[ButtonChord],
+        prefix: &[Mm2Action],
         stage: Mm2Stage,
     ) -> Result<Self, MachineError> {
         Self::from_machine(
@@ -794,7 +903,7 @@ impl Mm2Target<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        root: &[ButtonChord],
+        root: &[Mm2Action],
     ) -> Result<Self, MachineError> {
         Self::whole_game_from_machine(
             QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
@@ -806,12 +915,10 @@ impl Mm2Target<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        tape: &[ButtonChord],
+        tape: &[Mm2Action],
     ) -> Result<Self, MachineError> {
         let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
-        for chunk in tape.chunks(64) {
-            run_chords(&mut machine, chunk)?;
-        }
+        let tape = run_actions(&mut machine, tape)?;
         let wram = machine.read_wram()?;
         let state = decode_state(&wram)?;
         if !state.playable() {
@@ -819,7 +926,7 @@ impl Mm2Target<QuickNesMachine> {
                 "Mega Man 2 tape does not end in play: {state:?}"
             )));
         }
-        Self::at_genesis(machine, wram, tape.to_vec(), Mm2Route::WholeGame)
+        Self::at_genesis(machine, wram, tape, Mm2Route::WholeGame)
     }
 
     pub fn start_capturing(&mut self) {
@@ -861,7 +968,18 @@ impl Mm2Target<QuickNesMachine> {
         let result = (|| {
             let mut metadata = None;
             for action in &input.actions {
-                self.render_action(*action, video_output, audio_output, &mut metadata)?;
+                match *action {
+                    Mm2Action::Chord(chord) => {
+                        self.render_action(chord, video_output, audio_output, &mut metadata)?;
+                    }
+                    Mm2Action::Switch(word) => {
+                        let wram = self.machine.read_wram()?;
+                        drive_switch(word, &wram, |chord| -> Result<_, Box<dyn Error>> {
+                            self.render_action(chord, video_output, audio_output, &mut metadata)?;
+                            Ok(decode_state(&self.machine.read_wram()?)?)
+                        })?;
+                    }
+                }
             }
             let input_endpoint = decode_state(&self.machine.read_wram()?)?;
             let mut remaining = tail_frames;
@@ -968,10 +1086,10 @@ impl Mm2Target<QuickNesMachine> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
-    pub fn whole_game_from_machine(machine: M, root: &[ButtonChord]) -> Result<Self, MachineError> {
+    pub fn whole_game_from_machine(machine: M, root: &[Mm2Action]) -> Result<Self, MachineError> {
         let mut target = Self::from_machine(
             machine,
-            &power_on_walk(),
+            &power_on_walk_actions(),
             ROBOT_MASTER_ORDER[0],
             Mm2Route::WholeGame,
         )?;
@@ -1003,14 +1121,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
 
     pub fn from_machine(
         mut machine: M,
-        prefix: &[ButtonChord],
+        prefix: &[Mm2Action],
         stage: Mm2Stage,
         route: Mm2Route,
     ) -> Result<Self, MachineError> {
-        let mut genesis_prefix = prefix.to_vec();
-        for chunk in prefix.chunks(64) {
-            run_chords(&mut machine, chunk)?;
-        }
+        let mut genesis_prefix = run_actions(&mut machine, prefix)?;
         for direction in stage.select_path() {
             let chords = [ButtonChord::new(*direction, 4), ButtonChord::new(0, 30)];
             run_chords(&mut machine, &chords)?;
@@ -1237,6 +1352,21 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         (!frames.is_empty()).then_some(frames)
     }
 
+    fn run_switch(&mut self, word: u32) -> Option<Vec<[u8; WRAM_SIZE]>> {
+        let wram = self.current_wram;
+        let mut frames: Vec<[u8; WRAM_SIZE]> = Vec::new();
+        drive_switch(word, &wram, |chord| {
+            let ran = self
+                .run_action(&chord)
+                .ok_or_else(|| MachineError::Backend("Mega Man 2 switch chord failed".into()))?;
+            let state = decode_state(ran.last().unwrap_or(&wram));
+            frames.extend(ran);
+            state
+        })
+        .ok()?;
+        Some(frames)
+    }
+
     fn advance(&mut self, chords: &[ButtonChord]) -> Option<u64> {
         let mut frames = 0_u64;
         for chord in chords {
@@ -1311,7 +1441,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
-    type Action = ButtonChord;
+    type Action = Mm2Action;
     type Observations = Mm2Observations;
     type Snapshot = Mm2Snapshot;
 
@@ -1327,7 +1457,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         if self.failed || self.is_terminal() {
             return;
         }
-        let Some(mut frames) = self.run_action(action) else {
+        let frames = match *action {
+            Mm2Action::Chord(chord) => self.run_action(&chord),
+            Mm2Action::Switch(word) => self.run_switch(word),
+        };
+        let Some(mut frames) = frames else {
             self.failed = true;
             return;
         };

@@ -71,6 +71,9 @@ pub const KEY_POLICY_FIELD: &str = "key_policy";
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
 pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
+pub const DOOMED_POLICY_FIELD: &str = "doomed_policy";
+pub const DOOMED_POLICY_IDENTIFIER: &str =
+    "block_below_ground_line_over_open_floor_without_lifts_v2";
 pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
 pub fn recorded_policy<'a>(
@@ -470,6 +473,7 @@ where
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
+            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER.to_owned()),
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value))
@@ -491,6 +495,7 @@ where
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
+            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER),
         ];
         for (field, compiled) in pinned {
             if recorded(field)? != compiled {
@@ -706,6 +711,7 @@ where
     ) -> Result<Outcome, Box<dyn Error>> {
         let objective_reached = self.objective_reached(run, target)?;
         Ok(Outcome {
+            doomed: false,
             objective_reached,
             disposition: if target.exit_kind() != ExitKind::Ok {
                 ExecutionDisposition::Failed
@@ -715,6 +721,10 @@ where
                 ExecutionDisposition::Runnable
             },
         })
+    }
+
+    fn is_doomed(&self, target: &SmbTarget<M, P>) -> bool {
+        target.is_doomed()
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {

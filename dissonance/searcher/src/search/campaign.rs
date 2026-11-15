@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
@@ -16,16 +16,16 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
-    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
-    retention_policy_identifier,
+    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SavedStateRecord,
+    SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
+    retention_policy_from_identifier, retention_policy_identifier, saved_state_entries,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
 };
 use crate::search::draw_tables::{
@@ -49,6 +49,7 @@ use crate::search::telemetry::{
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
 
+use coordinator::WorkerResult;
 pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
 
 pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
@@ -102,6 +103,8 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      campaign state; the same seed, configuration, origin, and workload bytes produce the same \
      recorded stream";
 
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const EXECUTOR_MODE: &str = "snapshot_resume_archive";
 const SELECTION_SEED_DERIVATION: &str = "sha256(campaign_seed_le)[0..8] as u64 le";
@@ -109,12 +112,14 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 const ORIGIN_SEARCH_CHECKPOINT: &str = "search_checkpoint";
+const ORIGIN_SAVED_STATES: &str = "saved_states";
 
 #[derive(Clone, Debug, Default)]
 pub struct CampaignExecutionOptions {
     pub work_budget: Option<u64>,
     pub checkpoints: Option<CheckpointPlan>,
     pub placement: Option<ThreadPlacement>,
+    pub interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,11 +174,34 @@ fn schedule_policy_is_supported(policy: &str) -> bool {
 
 const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
+const HANG_STREAK_ODDS: u32 = 1_000;
+
+#[allow(clippy::cast_precision_loss)]
+fn hang_streak_is_implausible(jobs: u64, hung_jobs: u64, streak: u64) -> bool {
+    if streak > hung_jobs || hung_jobs > jobs {
+        return false;
+    }
+    let rate = ((hung_jobs - streak) as f64 + 1.0) / ((jobs - streak) as f64 + 2.0);
+    let limit = 1.0 / f64::from(HANG_STREAK_ODDS);
+    let mut chance = 1.0;
+    for _ in 1..streak {
+        chance *= rate;
+        if chance < limit {
+            return true;
+        }
+    }
+    false
+}
+
 const CURVE_INTERVAL: u64 = 100;
 
 const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
 
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
+
+const CELL_INTERVAL_REPORT_LINES: u64 = 32;
+
+const CELL_INTERVAL_TOP_CELLS: usize = 16;
 
 fn compact_progress_curve<M, P>(
     curve: &mut Vec<ProgressPoint<M, P>>,
@@ -199,6 +227,13 @@ fn progress_line_interval(executions: u64) -> u64 {
 fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0
         && (executions == 1 || executions.is_multiple_of(progress_line_interval(executions)))
+}
+
+fn cell_interval_report_due(executions: u64) -> bool {
+    executions > 0
+        && executions.is_multiple_of(
+            progress_line_interval(executions).saturating_mul(CELL_INTERVAL_REPORT_LINES),
+        )
 }
 
 fn full_selector_report_due(executions: u64) -> bool {
@@ -554,7 +589,7 @@ pub trait TargetExecution: CampaignTypes {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: crate::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
         Self: Workload + Sized,
@@ -570,7 +605,7 @@ pub trait TargetExecution: CampaignTypes {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -583,7 +618,7 @@ pub trait TargetExecution: CampaignTypes {
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: crate::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
         Self: Workload + Sized,
@@ -597,7 +632,7 @@ pub trait TargetExecution: CampaignTypes {
             parent_milestones,
             suffix,
             retention,
-            stop_rollout_on_objective,
+            stop,
         )
     }
 }
@@ -620,13 +655,28 @@ pub trait Evaluation: CampaignTypes {
         Ok(crate::search::rollout::Outcome {
             objective_reached: self.objective_reached(run, target)?,
             disposition: self.execution_disposition(target),
+            doomed: false,
         })
+    }
+    fn is_doomed(&self, _target: &Self::Target) -> bool {
+        false
     }
     fn merge_preparation_failure(
         &self,
         _evidence: &mut Self::Evidence,
         _observations: &[Self::Observations],
     ) {
+    }
+    fn merge_hang_evidence<F>(
+        &self,
+        _evidence: &mut Self::Evidence,
+        _sequence: u64,
+        _input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+    {
+        Ok(())
     }
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
     fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
@@ -687,7 +737,9 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub rejected: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
+    pub hung_jobs: u64,
     pub selector: SelectorAccounting,
 }
 
@@ -705,6 +757,52 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
         path: PathBuf,
         expected_sha256: Option<String>,
     },
+    SavedStates {
+        states: SavedStates<G>,
+    },
+}
+
+pub struct SavedStates<G: CampaignTypes + ?Sized> {
+    path: String,
+    file_sha256: String,
+    header: CheckpointHeader,
+    entries: Vec<ArchiveEntryReport<G::Action, (), G::Milestones>>,
+    snapshots: BTreeMap<u64, G::Snapshot>,
+}
+
+impl<G: Workload> SavedStates<G> {
+    pub fn open(workload: &G, path: &Path) -> Result<Self, Box<dyn Error>> {
+        let mut reader = CheckpointReader::open(path)?;
+        if reader.header.workload_identity_sha256 != workload.workload_identity_sha256() {
+            return Err("saved states belong to a different workload".into());
+        }
+        let records: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
+        let entries = saved_state_entries(records)?;
+        let snapshots = if reader.header.executable_identity == workload.executable_identity()? {
+            reader.snapshots::<G::Snapshot>()?.into_iter().collect()
+        } else {
+            BTreeMap::new()
+        };
+        Ok(Self {
+            path: path.display().to_string(),
+            file_sha256: reader.file_sha256.clone(),
+            header: reader.header.clone(),
+            entries,
+            snapshots,
+        })
+    }
+
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 #[derive(Clone)]
@@ -961,10 +1059,26 @@ pub struct CampaignSkipRecord<C, K = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignCancelRecord {
+    pub reservation: u64,
+    pub parent_id: u64,
+    pub mutation_seed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splice: Option<CampaignSpliceRecord>,
+    pub selector: SelectorDraw,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix_limit: Option<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignEndRecord {
     pub jobs: u64,
     pub skips: u64,
     pub executions_completed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -973,6 +1087,7 @@ pub struct CampaignEndRecord {
 pub enum CampaignStreamRecord<C, K = ()> {
     Job(CampaignJobRecord<C, K>),
     Skip(CampaignSkipRecord<C, K>),
+    Cancel(CampaignCancelRecord),
     End(CampaignEndRecord),
 }
 
@@ -1028,6 +1143,10 @@ pub struct CampaignModeReport<A: Ord, R> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_budget: Option<u64>,
     pub executions_completed: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub jobs_cancelled: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_objective: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
@@ -1056,7 +1175,13 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub probe_refused: u64,
     pub terminal_endpoints: u64,
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     pub execution_failures: u64,
+    #[serde(default)]
+    pub hung_jobs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hang_stop: Option<String>,
     pub objectives_reached: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective_witness: Option<Input<A>>,
@@ -1460,12 +1585,15 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     pub preparation_failure: Option<Vec<G::Observations>>,
+    pub hang: Option<Vec<G::Action>>,
     pub actions: Vec<CampaignActionResult<G>>,
 }
 
 impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.preparation_failure == other.preparation_failure && self.actions == other.actions
+        self.preparation_failure == other.preparation_failure
+            && self.hang == other.hang
+            && self.actions == other.actions
     }
 }
 impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
@@ -1474,6 +1602,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     fn clone(&self) -> Self {
         Self {
             preparation_failure: self.preparation_failure.clone(),
+            hang: self.hang.clone(),
             actions: self.actions.clone(),
         }
     }
@@ -1484,6 +1613,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
         formatter
             .debug_struct("CampaignJobResult")
             .field("preparation_failure", &self.preparation_failure)
+            .field("hang", &self.hang)
             .field("actions", &self.actions)
             .finish()
     }
@@ -1551,12 +1681,17 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
+    hung_jobs: u64,
+    hang_streak: u64,
+    pub(crate) hang_stop: Option<String>,
     pub(crate) objectives_reached: u64,
     pub(crate) objective_witness: Option<Input<G::Action>>,
     sequence: u64,
     probe_refused: u64,
     pub(crate) mixture_energy: MixtureEnergy,
+    suffix_reach: SuffixReach,
     suffix_jobs_in_flight: BTreeMap<(u64, u8), u32>,
 }
 
@@ -1589,12 +1724,17 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             record_progress: true,
             terminal_endpoints: 0,
             terminal_objectives: 0,
+            doomed_endpoints: 0,
             execution_failures: 0,
+            hung_jobs: 0,
+            hang_streak: 0,
+            hang_stop: None,
             objectives_reached: 0,
             objective_witness: None,
             sequence: 0,
             probe_refused: 0,
             mixture_energy: MixtureEnergy::default(),
+            suffix_reach: SuffixReach::default(),
             suffix_jobs_in_flight: BTreeMap::new(),
         }
     }
@@ -1603,13 +1743,30 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.suffix_limit_excluding(parent_id, parent_index, &BTreeMap::new())
     }
 
+    pub(crate) fn lineage_duration(
+        &self,
+        workload: &G,
+        run: &G::Run,
+        parent_index: usize,
+    ) -> Option<NonZeroU64> {
+        if self.archive.suffix_limit(parent_index) > 1 {
+            return None;
+        }
+        self.archive
+            .last_action(parent_index)
+            .and_then(|action| workload.duration_of_action(run, action))
+    }
+
     fn suffix_limit_excluding(
         &self,
         parent_id: u64,
         parent_index: usize,
         excluded: &BTreeMap<(u64, u8), u32>,
     ) -> u8 {
-        let limit = self.archive.suffix_limit(parent_index);
+        let limit = self
+            .archive
+            .suffix_limit(parent_index)
+            .max(self.suffix_reach.length());
         if self
             .suffix_jobs_in_flight
             .range((parent_id, limit)..=(parent_id, u8::MAX))
@@ -1658,14 +1815,21 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 self.curve_interval,
                 self.bounded_progress_curve,
                 self.record_progress,
-                self.terminal_endpoints,
-                self.terminal_objectives,
+                (
+                    self.terminal_endpoints,
+                    self.terminal_objectives,
+                    self.doomed_endpoints,
+                ),
                 self.execution_failures,
+                self.hung_jobs,
+                self.hang_streak,
+                &self.hang_stop,
                 self.objectives_reached,
                 &self.objective_witness,
                 self.sequence,
                 self.probe_refused,
                 self.mixture_energy,
+                &self.suffix_reach,
             ),
             out,
         )?;
@@ -1673,18 +1837,26 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn restore_state(&mut self, state: CoreCheckpoint<G>) -> Result<(), Box<dyn Error>> {
+        if state.hang_streak > state.hung_jobs || state.hung_jobs > state.sequence {
+            return Err("search checkpoint hung-job counts exceed its executions".into());
+        }
         self.curve = state.curve;
         self.curve_interval = state.curve_interval;
         self.bounded_progress_curve = state.bounded_progress_curve;
         self.record_progress = state.record_progress;
         self.terminal_endpoints = state.terminal_endpoints;
         self.terminal_objectives = state.terminal_objectives;
+        self.doomed_endpoints = state.doomed_endpoints;
         self.execution_failures = state.execution_failures;
+        self.hung_jobs = state.hung_jobs;
+        self.hang_streak = state.hang_streak;
+        self.hang_stop = state.hang_stop;
         self.objectives_reached = state.objectives_reached;
         self.objective_witness = state.objective_witness;
         self.sequence = state.sequence;
         self.probe_refused = state.probe_refused;
         self.mixture_energy = state.mixture_energy;
+        self.suffix_reach = state.suffix_reach;
         Ok(())
     }
 
@@ -1695,7 +1867,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         target: &mut G::Target,
     ) -> Result<(), Box<dyn Error>> {
         workload.reset(target);
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("campaign genesis target failed before execution".into());
         }
@@ -1738,7 +1910,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Result<(), Box<dyn Error>> {
         let snapshot = validate_snapshot_root_checkpoint(workload, checkpoint)?;
         workload.restore(target, snapshot)?;
-        let outcome = workload.rollout_outcome(run, target)?;
+        let outcome = crate::search::rollout::classify(workload, run, target)?;
         if outcome.disposition.is_failed() {
             return Err("snapshot-root checkpoint restores a failed target".into());
         }
@@ -1787,23 +1959,65 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(checkpoint) = checkpoint {
             validate_archive_checkpoint_entries(workload, source, checkpoint)?;
         }
-        let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
-        self.archive.preserve_inactive_snapshots(true)?;
-        self.bootstrap(workload, run, target)?;
-        let genesis_id = 0;
         let checkpointed = checkpoint
             .map(|checkpoint| {
                 checkpoint
                     .entries
                     .iter()
                     .map(|entry| (entry.id, entry.snapshot.clone()))
-                    .collect::<Vec<_>>()
+                    .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
-        let checkpointed = checkpointed.into_iter().collect::<BTreeMap<_, _>>();
+        let counts = self.import_entries(
+            workload,
+            run,
+            target,
+            workload.source_entries(source),
+            &checkpointed,
+        )?;
+        workload.merge_origin_evidence(&mut self.evidence, source);
+        Ok(counts)
+    }
+
+    pub(crate) fn import_saved_states(
+        &mut self,
+        workload: &G,
+        run: &G::Run,
+        target: &mut G::Target,
+        states: &SavedStates<G>,
+    ) -> Result<TreeImportCounts, Box<dyn Error>> {
+        workload.reset(target);
+        let genesis = workload.snapshot_identity_sha256(&workload.snapshot(target)?)?;
+        let saved_genesis = states
+            .entries
+            .iter()
+            .find(|entry| entry.input.actions.is_empty())
+            .and_then(|entry| states.snapshots.get(&entry.id))
+            .map(|snapshot| workload.snapshot_identity_sha256(snapshot))
+            .transpose()?;
+        let rebuilt = BTreeMap::new();
+        let snapshots = if saved_genesis.as_deref() == Some(genesis.as_str()) {
+            &states.snapshots
+        } else {
+            &rebuilt
+        };
+        self.import_entries(workload, run, target, &states.entries, snapshots)
+    }
+
+    fn import_entries<K>(
+        &mut self,
+        workload: &G,
+        run: &G::Run,
+        target: &mut G::Target,
+        source_entries: &[ArchiveEntryReport<G::Action, K, G::Milestones>],
+        checkpointed: &BTreeMap<u64, G::Snapshot>,
+    ) -> Result<TreeImportCounts, Box<dyn Error>> {
+        let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
+        self.archive.preserve_inactive_snapshots(true)?;
+        self.bootstrap(workload, run, target)?;
+        let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
-        let source_entries = workload.source_entries(source);
         let mut imported: Vec<Option<usize>> = Vec::with_capacity(source_entries.len());
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
@@ -1878,8 +2092,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 for (index, action) in suffix.iter().enumerate() {
                     captured_endpoint =
                         workload.apply_action_and_snapshot(target, action, &mut milestones)?;
-                    if workload
-                        .rollout_outcome(run, target)?
+                    if crate::search::rollout::classify(workload, run, target)?
                         .disposition
                         .is_terminal()
                     {
@@ -1928,8 +2141,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
-                if workload
-                    .rollout_outcome(run, target)?
+                if crate::search::rollout::classify(workload, run, target)?
                     .disposition
                     .is_terminal()
                 {
@@ -1993,7 +2205,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         self.archive
             .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
-        workload.merge_origin_evidence(&mut self.evidence, source);
         Ok(counts)
     }
 
@@ -2020,10 +2231,14 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
+            hang,
             actions,
         } = result;
         if preparation_failure.is_some() && !actions.is_empty() {
             return Err("preparation failure result also carries actions".into());
+        }
+        if hang.is_some() && (preparation_failure.is_some() || !actions.is_empty()) {
+            return Err("hung job result also carries other outcomes".into());
         }
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
@@ -2031,6 +2246,23 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .archive
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
+        if let Some(attempted) = hang {
+            self.hung_jobs = self.hung_jobs.saturating_add(1);
+            self.hang_streak = self.hang_streak.saturating_add(1);
+            if self.hang_stop.is_none() {
+                self.hang_stop = self.hang_streak_failure();
+            }
+            workload.merge_hang_evidence(&mut self.evidence, sequence, || {
+                let mut input = self
+                    .archive
+                    .materialize_input(parent_index)
+                    .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                input.actions.extend_from_slice(&attempted);
+                Ok(input)
+            })?;
+            return Ok((sequence, Vec::new(), DurationAdmission::default()));
+        }
+        self.hang_streak = 0;
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
@@ -2049,6 +2281,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let parent_place = self.archive.entries[parent_index].key.place();
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
+        let mut novel_slots = 0_usize;
         for action in actions {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
@@ -2069,6 +2302,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 Ok(input)
             })?;
             match action.outcome.disposition {
+                crate::search::rollout::ExecutionDisposition::Terminal if action.outcome.doomed => {
+                    self.doomed_endpoints = self.doomed_endpoints.saturating_add(1);
+                }
                 crate::search::rollout::ExecutionDisposition::Terminal => {
                     self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
                     if action.outcome.objective_reached {
@@ -2127,6 +2363,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         duration.useful |= tracked;
+                        novel_slots += usize::from(self.archive.opened_novel_slot(id));
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
                                 .archive
@@ -2165,6 +2402,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 left_place,
                 terminal,
             );
+            self.suffix_reach.record_outcome(actions_run, novel_slots);
         }
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
@@ -2196,6 +2434,27 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
 
     fn aggregate_milestones(&self) -> G::Milestones {
         G::aggregate_milestones(&self.evidence)
+    }
+
+    pub(crate) const fn hung_jobs(&self) -> u64 {
+        self.hung_jobs
+    }
+
+    pub(crate) const fn hang_streak(&self) -> u64 {
+        self.hang_streak
+    }
+
+    pub(crate) fn hang_streak_failure(&self) -> Option<String> {
+        hang_streak_is_implausible(self.sequence, self.hung_jobs, self.hang_streak).then(|| {
+            format!(
+                "campaign stopped after {} hung jobs in a row: {} of the {} earlier jobs hung, \
+                 so a run this long has less than a 1 in {} chance on a working host",
+                self.hang_streak,
+                self.hung_jobs - self.hang_streak,
+                self.sequence - self.hang_streak,
+                HANG_STREAK_ODDS,
+            )
+        })
     }
 
     fn finish_curve(&mut self) {
@@ -2251,7 +2510,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 rejected: self.archive.rejected,
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
+                doomed_endpoints: self.doomed_endpoints,
                 execution_failures: self.execution_failures,
+                hung_jobs: self.hung_jobs,
                 selector,
             },
         );
@@ -2309,9 +2570,38 @@ fn resolve_origin<G: Workload>(
             resume_actions: 0,
         });
     }
+    if let CampaignOrigin::SavedStates { states } = origin {
+        let expected = search_checkpoint_header(
+            workload,
+            config,
+            executable_identity,
+            &states.header.reason,
+            0,
+            0,
+            0,
+            0,
+        );
+        let resume_input_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&Input::<G::Action>::default())?)
+        );
+        return Ok(CampaignOriginRecord {
+            kind: ORIGIN_SAVED_STATES.to_owned(),
+            path: None,
+            archive_sha256: None,
+            checkpoint_path: Some(states.path.clone()),
+            checkpoint_sha256: Some(states.file_sha256.clone()),
+            checkpoint_policy_changes: saved_state_policy_changes(&states.header, &expected),
+            resume_input_sha256,
+            resume_actions: 0,
+        });
+    }
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
         CampaignOrigin::SearchCheckpoint { .. } => {
             return Err("a search checkpoint origin was not opened".into());
+        }
+        CampaignOrigin::SavedStates { .. } => {
+            return Err("a saved-state origin has no archive source".into());
         }
         CampaignOrigin::Genesis => (
             ORIGIN_GENESIS.to_owned(),
@@ -2552,13 +2842,14 @@ fn verify_duration_draw(
     draw: &DurationDraw<impl Copy>,
     checkpoint: Option<&DurationCheckpoint>,
     mutation_seed: u64,
+    lineage: Option<NonZeroU64>,
 ) -> Result<(), Box<dyn Error>> {
     let policy = match checkpoint {
         Some(checkpoint) => DurationPolicy::from_checkpoint(checkpoint.clone())?,
         None => DurationPolicy::new(),
     };
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-    let expected = policy.draw(&mut rand, draw.max_duration);
+    let expected = policy.draw_in_lineage(&mut rand, draw.max_duration, lineage);
     if expected != draw.duration.get() {
         return Err("recorded duration choice diverges from its draw-time policy state".into());
     }
@@ -2708,7 +2999,10 @@ fn build_report<G: Workload>(
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
     let terminal_objectives = core.terminal_objectives;
+    let doomed_endpoints = core.doomed_endpoints;
     let execution_failures = core.execution_failures;
+    let hung_jobs = core.hung_jobs;
+    let hang_stop = core.hang_stop.clone();
     let objectives_reached = core.objectives_reached;
     let objective_witness = core.objective_witness.clone();
     let replacement_cost_displaced = core.archive.replacement_cost_displaced();
@@ -2752,6 +3046,8 @@ fn build_report<G: Workload>(
         stop_campaign_on_objective: header.stop_campaign_on_objective,
         work_budget: header.work_budget,
         executions_completed,
+        jobs_cancelled: 0,
+        interrupted: false,
         executions_to_first_objective: counters.executions_to_first_objective,
         wall_budget_seconds: header.wall_budget_seconds,
         archive_entry_limit: header.archive_entry_limit,
@@ -2777,7 +3073,10 @@ fn build_report<G: Workload>(
         probe_refused,
         terminal_endpoints,
         terminal_objectives,
+        doomed_endpoints,
         execution_failures,
+        hung_jobs,
+        hang_stop,
         objectives_reached,
         objective_witness,
         replacement_cost_displaced,
@@ -2845,6 +3144,7 @@ struct SemanticAction<'a, A, O, M, K> {
 #[derive(Serialize)]
 struct SemanticResult<'a, A, O, M, K> {
     preparation_failure: &'a Option<Vec<O>>,
+    hang: &'a Option<Vec<A>>,
     actions: Vec<SemanticAction<'a, A, O, M, K>>,
 }
 
@@ -2853,6 +3153,7 @@ pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&SemanticResult {
         preparation_failure: &result.preparation_failure,
+        hang: &result.hang,
         actions: result
             .actions
             .iter()
@@ -2941,12 +3242,17 @@ struct CoreCheckpoint<G: Workload + ?Sized> {
     record_progress: bool,
     terminal_endpoints: u64,
     terminal_objectives: u64,
+    doomed_endpoints: u64,
     execution_failures: u64,
+    hung_jobs: u64,
+    hang_streak: u64,
+    hang_stop: Option<String>,
     objectives_reached: u64,
     objective_witness: Option<Input<G::Action>>,
     sequence: u64,
     probe_refused: u64,
     mixture_energy: MixtureEnergy,
+    suffix_reach: SuffixReach,
 }
 
 struct SearchResume<G: Workload + ?Sized> {
@@ -2985,7 +3291,7 @@ struct PendingJob<G: Workload + ?Sized> {
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
     pending: PendingJob<G>,
-    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+    outcome: WorkerResult<G>,
 }
 
 struct CompletedBuffer<K: Ord, V> {
@@ -3050,10 +3356,8 @@ fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u
     completed_result_records(&job.outcome)
 }
 
-fn completed_result_records<G: CampaignTypes + ?Sized>(
-    outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
-) -> (u64, u64) {
-    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
+fn completed_result_records<G: CampaignTypes + ?Sized>(outcome: &WorkerResult<G>) -> (u64, u64) {
+    outcome.as_ref().map_or((0, 0), |(result, ..)| {
         (
             result.actions.len() as u64,
             result
@@ -3153,8 +3457,12 @@ pub struct CampaignProgressRecord<K> {
     pub terminal_endpoints: u64,
     #[serde(default)]
     pub terminal_objectives: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub doomed_endpoints: u64,
     #[serde(default)]
     pub execution_failures: u64,
+    #[serde(default)]
+    pub hung_jobs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_elapsed_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3210,7 +3518,7 @@ pub struct CampaignProgressRecord<K> {
 }
 
 fn write_live_progress<G: Workload>(
-    core: &CoordinatorCore<G>,
+    core: &mut CoordinatorCore<G>,
     counters: &CampaignCounters,
     profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
     draw_state_memory_bytes: usize,
@@ -3218,14 +3526,21 @@ fn write_live_progress<G: Workload>(
     final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
-    let line = serde_json::to_string(&progress_record(
+    let mut record = progress_record(
         core,
         counters,
         profile,
         draw_state_memory_bytes,
         telemetry_started,
         final_census,
-    )?)?;
+    )?;
+    if final_census || cell_interval_report_due(core.sequence) {
+        record.selector.cell_interval = Some(
+            core.archive
+                .take_cell_interval(core.sequence, CELL_INTERVAL_TOP_CELLS),
+        );
+    }
+    let line = serde_json::to_string(&record)?;
     sink.write_all(line.as_bytes())?;
     sink.write_all(b"\n")?;
     sink.flush()?;
@@ -3261,7 +3576,9 @@ fn progress_record<G: Workload>(
         objectives_reached: core.objectives_reached,
         terminal_endpoints: core.terminal_endpoints,
         terminal_objectives: core.terminal_objectives,
+        doomed_endpoints: core.doomed_endpoints,
         execution_failures: core.execution_failures,
+        hung_jobs: core.hung_jobs,
         search_elapsed_millis: Some(telemetry_started)
             .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         unix_time,
@@ -3329,6 +3646,9 @@ fn bootstrap_core<G: Workload>(
         CampaignOrigin::SearchCheckpoint { .. } => {
             Err("a search checkpoint restores its archive instead of bootstrapping one".into())
         }
+        CampaignOrigin::SavedStates { states } => Ok(Some(
+            core.import_saved_states(workload, run, target, states)?,
+        )),
     }
 }
 
@@ -3518,6 +3838,7 @@ where
     let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
+    let cancel = std::sync::OnceLock::new();
     let mut coordinator = None;
     let pool_outcome = with_worker_pool_routed(
         config.workers,
@@ -3536,7 +3857,9 @@ where
         |target, job: JobSpec<G>| {
             let reservation = job.reservation;
             let outcome = watch
-                .run(&job, || run_job(workload, config, target, &job))
+                .run(&job, || {
+                    run_job(workload, config, target, &job, cancel.get().cloned())
+                })
                 .map_err(|error| error.to_string());
             Ok((reservation, outcome))
         },
@@ -3557,6 +3880,9 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            cancel
+                .set(campaign.cancellation())
+                .map_err(|_| "the campaign cancel flag was set twice")?;
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
@@ -3580,8 +3906,12 @@ where
                     break;
                 }
                 let receive_started = profile_now();
-                let reply = match pool.receive() {
-                    Ok(reply) => reply,
+                let reply = match pool.receive_timeout(STOP_POLL_INTERVAL) {
+                    Ok(Some(reply)) => reply,
+                    Ok(None) => {
+                        campaign.stop_if_due()?;
+                        continue;
+                    }
                     Err(WorkerPoolError::RepliesClosed) => {
                         let reservation = campaign
                             .next_admission()
@@ -3671,6 +4001,9 @@ where
                         Err(error) => return Err(error.into()),
                     };
                 }
+            }
+            if campaign.stopped() {
+                pool.discard_queued();
             }
             pool.close();
             Ok(())
@@ -3837,6 +4170,43 @@ fn search_checkpoint_header<G: Workload>(
     }
 }
 
+fn saved_state_policy_changes(
+    header: &CheckpointHeader,
+    expected: &CheckpointHeader,
+) -> BTreeMap<String, PolicyChange> {
+    let absent = String::new();
+    let mut changes = header
+        .policies
+        .keys()
+        .chain(expected.policies.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|field| {
+            let checkpoint = header.policies.get(field).unwrap_or(&absent);
+            let run = expected.policies.get(field).unwrap_or(&absent);
+            (checkpoint != run).then(|| {
+                (
+                    field.clone(),
+                    PolicyChange {
+                        checkpoint: checkpoint.clone(),
+                        run: run.clone(),
+                    },
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    if header.executable_identity != expected.executable_identity {
+        changes.insert(
+            "executable_identity".to_owned(),
+            PolicyChange {
+                checkpoint: header.executable_identity.clone(),
+                run: expected.executable_identity.clone(),
+            },
+        );
+    }
+    changes
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_checkpoint_policy_changes(
     header: &CheckpointHeader,
@@ -3911,6 +4281,7 @@ fn restore_search_checkpoint<G: Workload>(
         return Err("search checkpoint limits differ from the campaign".into());
     }
     let changes = search_checkpoint_policy_changes(&header, &expected)?;
+    let _: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
     let state: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
     let evidence: Vec<u8> = reader.next()?;
@@ -4024,6 +4395,7 @@ fn write_search_checkpoint<G: Workload>(
         reason,
         core.archive.resident_snapshot_entries(),
         |out| {
+            postcard::to_io(&core.archive.saved_state_records()?, &mut *out)?;
             core.write_checkpoint_state(&mut *out)?;
             postcard::to_io(&core.archive, &mut *out)?;
             super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
@@ -4155,32 +4527,34 @@ fn fold_draw_sources<'a, A: Copy + Ord + Serialize + 'a>(
     Ok(())
 }
 
+pub(crate) fn source_suffixes<A: Ord, K, M>(entries: &[ArchiveEntryReport<A, K, M>]) -> Vec<&[A]> {
+    let parent_len: BTreeMap<u64, usize> = entries
+        .iter()
+        .map(|entry| (entry.id, entry.input.actions.len()))
+        .collect();
+    entries
+        .iter()
+        .map(|entry| {
+            let prefix = entry
+                .parent_id
+                .and_then(|parent| parent_len.get(&parent).copied())
+                .unwrap_or(0);
+            entry.input.actions.get(prefix..).unwrap_or(&[])
+        })
+        .collect()
+}
+
 fn initial_draw_state<G: Workload>(
     workload: &G,
     run: &G::Run,
-    origin: Option<(&str, &G::ArchiveReport)>,
+    origin: Option<(&str, Vec<&[G::Action]>)>,
 ) -> Result<InitialDrawState<G>, Box<dyn Error>> {
     let parameters = workload.draw_table_parameters(run);
     let mut tables = DrawTables::new(parameters)?;
     let source_sha256 = match origin {
         None => format!("{:x}", Sha256::digest([])),
-        Some((file_sha256, report)) => {
-            let entries = workload.source_entries(report);
-            let parent_len: BTreeMap<u64, usize> = entries
-                .iter()
-                .map(|entry| (entry.id, entry.input.actions.len()))
-                .collect();
-            fold_draw_sources(
-                &mut tables,
-                parameters,
-                entries.iter().map(|entry| {
-                    let prefix = entry
-                        .parent_id
-                        .and_then(|parent| parent_len.get(&parent).copied())
-                        .unwrap_or(0);
-                    entry.input.actions.get(prefix..).unwrap_or(&[])
-                }),
-            )?;
+        Some((file_sha256, suffixes)) => {
+            fold_draw_sources(&mut tables, parameters, suffixes.into_iter())?;
             file_sha256.to_owned()
         }
     };
@@ -4411,10 +4785,33 @@ where
             Option<CampaignSpliceRecord>,
         ),
     >::new();
+    let mut replay_cancelled = 0_u64;
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
+        if replay_cancelled > 0 && !matches!(record, CampaignStreamRecord::Cancel(_)) {
+            return Err("campaign stream records work after its cancelled jobs".into());
+        }
         let before = match record {
+            CampaignStreamRecord::Cancel(cancel) => {
+                if replay_job_reservations
+                    .insert(
+                        cancel.reservation,
+                        (
+                            cancel.parent_id,
+                            cancel.suffix_limit,
+                            cancel.mutation_seed,
+                            cancel.selector.path,
+                            cancel.splice.clone(),
+                        ),
+                    )
+                    .is_some()
+                {
+                    return Err("campaign stream records one reservation twice".into());
+                }
+                replay_cancelled = replay_cancelled.saturating_add(1);
+                None
+            }
             CampaignStreamRecord::Job(job) => {
                 if replay_job_reservations
                     .insert(
@@ -4502,7 +4899,7 @@ where
             }
             workload.resume_input(source.report())?
         }
-        ORIGIN_SEARCH_CHECKPOINT => {
+        ORIGIN_SEARCH_CHECKPOINT | ORIGIN_SAVED_STATES => {
             return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
         }
         _ => return Err("campaign stream origin kind is not recognized".into()),
@@ -4542,14 +4939,14 @@ where
         }
     }
     let draw_origin = match header.origin_kind.as_str() {
-        ORIGIN_ARCHIVE => Some((
-            origin_source
-                .ok_or("archive campaign replay requires the source archive")?
-                .file_sha256(),
-            origin_source
-                .ok_or("archive campaign replay requires the source archive")?
-                .report(),
-        )),
+        ORIGIN_ARCHIVE => {
+            let source =
+                origin_source.ok_or("archive campaign replay requires the source archive")?;
+            Some((
+                source.file_sha256(),
+                source_suffixes(workload.source_entries(source.report())),
+            ))
+        }
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
@@ -4663,8 +5060,10 @@ where
     {
         return Err("campaign replay selected work after its work budget".into());
     }
+    let interrupted = end.as_ref().is_some_and(|end| end.interrupted);
     if require_terminal
         && header.wall_budget_seconds.is_none()
+        && !interrupted
         && !stop_reservations_after_objective(
             header.stop_campaign_on_objective,
             core.objective_witness.is_some(),
@@ -4674,6 +5073,7 @@ where
             counters.bootstrap_execution_work,
             counters.job_execution_work,
         )
+        && core.hang_stop.is_none()
         && replay_job_parents.len()
             < usize::try_from(
                 header
@@ -4692,6 +5092,7 @@ where
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
+    let mut replay_job_lineage_durations = BTreeMap::<usize, Option<NonZeroU64>>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4724,6 +5125,10 @@ where
         {
             return Err("replayed job suffix limit diverged at reservation".into());
         }
+        replay_job_lineage_durations.insert(
+            job_slot,
+            core.lineage_duration(workload, &replay_run, parent_index),
+        );
         let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
         verify_splice_selection(
             &mut core,
@@ -4771,6 +5176,9 @@ where
                     core.objective_witness.is_some(),
                 ) {
                     return Err("campaign replay selected work after its objective stop".into());
+                }
+                if core.hang_stop.is_some() {
+                    return Err("campaign replay selected work after its hang stop".into());
                 }
                 if stop_reservations_after_work_budget(
                     header.work_budget,
@@ -4855,7 +5263,12 @@ where
                     if expected_checkpoint != skip.duration_checkpoint_at_draw {
                         return Err("recorded skip duration state diverged at selection".into());
                     }
-                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), skip.mutation_seed)?;
+                    verify_duration_draw(
+                        &draw,
+                        expected_checkpoint.as_ref(),
+                        skip.mutation_seed,
+                        core.lineage_duration(workload, &replay_run, parent_index),
+                    )?;
                 } else if skip.duration_checkpoint_at_draw.is_some() {
                     return Err("recorded stream carries duration state without a choice".into());
                 }
@@ -4952,6 +5365,9 @@ where
                 let selector_tier_limit = replay_job_tier_limits
                     .remove(&replay_job_slot)
                     .ok_or("recorded job has no rebuilt selection tier bound")?;
+                let lineage_duration = replay_job_lineage_durations
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt lineage duration")?;
                 if (job.mixture_weight, job.splice_weight)
                     != replay_job_weights
                         .remove(&replay_job_slot)
@@ -5047,7 +5463,12 @@ where
                     if expected_checkpoint != job.duration_checkpoint_at_draw {
                         return Err("recorded job duration state diverged at selection".into());
                     }
-                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), job.mutation_seed)?;
+                    verify_duration_draw(
+                        &draw,
+                        expected_checkpoint.as_ref(),
+                        job.mutation_seed,
+                        lineage_duration,
+                    )?;
                 } else if job.duration_checkpoint_at_draw.is_some() {
                     return Err("recorded stream carries duration state without a choice".into());
                 }
@@ -5100,7 +5521,7 @@ where
                     parent_milestones,
                     &suffix,
                     replay_retention,
-                    header.stop_rollout_on_objective,
+                    crate::search::rollout::RolloutStop::new(header.stop_rollout_on_objective),
                 )?;
                 let execution_work = execution_work_delta(
                     job_execution_work_before,
@@ -5271,6 +5692,9 @@ where
                 {
                     return Err("campaign replay selected work after its objective stop".into());
                 }
+                if core.hang_stop.is_some() && replay_job_parents.get(next_slot).is_some() {
+                    return Err("campaign replay selected work after its hang stop".into());
+                }
                 if stop_reservations_after_work_budget(
                     header.work_budget,
                     counters.bootstrap_execution_work,
@@ -5281,6 +5705,7 @@ where
                 }
                 if require_terminal
                     && header.wall_budget_seconds.is_none()
+                    && !interrupted
                     && u64::try_from(next_slot)? < header.execution_budget
                     && !stop_reservations_after_objective(
                         header.stop_campaign_on_objective,
@@ -5291,6 +5716,7 @@ where
                         counters.bootstrap_execution_work,
                         counters.job_execution_work.saturating_add(execution_work),
                     )
+                    && core.hang_stop.is_none()
                     && replay_job_parents.get(next_slot).is_none()
                 {
                     return Err(
@@ -5324,6 +5750,10 @@ where
                     }) {
                         return Err("replayed job suffix limit diverged at reservation".into());
                     }
+                    replay_job_lineage_durations.insert(
+                        next_slot,
+                        core.lineage_duration(workload, &replay_run, parent_index),
+                    );
                     let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
                     verify_splice_selection(
                         &mut core,
@@ -5374,15 +5804,55 @@ where
                     counters.note_first_objective(sequence);
                 }
             }
+            CampaignStreamRecord::Cancel(cancel) => {
+                let slot = usize::try_from(cancel.reservation)?;
+                let (_, _, _, snapshot_id) = replay_job_snapshots
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job was never selected or was admitted")?;
+                let selector_tier_limit = replay_job_tier_limits
+                    .remove(&slot)
+                    .ok_or("recorded cancelled job has no rebuilt selection tier bound")?;
+                verify_selector_annotation(&cancel.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&cancel.selector, selector_tier_limit)?;
+                verify_selector_preference::<G::Key>(&cancel.selector)?;
+                replay_selections.remove(&slot);
+                replay_continuations.remove(&slot);
+                core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);
+                core.archive.unpin_job_origin(snapshot_id);
+                core.archive.unpin_metadata(cancel.parent_id);
+                for metadata_id in &replay_job_metadata[slot] {
+                    if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                        *uses = uses.saturating_sub(1);
+                        if *uses == 0 {
+                            replay_metadata_uses.remove(metadata_id);
+                        }
+                    }
+                }
+                core.archive
+                    .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+            }
             CampaignStreamRecord::End(_) => {
                 return Err("campaign stream has a premature terminal record".into());
             }
         }
     }
-    if let Some(end) = end
+    if require_terminal
+        && replay_cancelled > 0
+        && !interrupted
+        && header.wall_budget_seconds.is_none()
+        && !stop_reservations_after_objective(
+            header.stop_campaign_on_objective,
+            core.objective_witness.is_some(),
+        )
+    {
+        return Err("campaign stream cancelled jobs without a stop that drops them".into());
+    }
+    if let Some(end) = &end
         && (end.jobs != u64::try_from(replay_job_parents.len())?
             || end.skips != counters.duplicates_skipped
-            || end.executions_completed != core.sequence)
+            || end.executions_completed != core.sequence
+            || end.jobs_cancelled != replay_cancelled
+            || !replay_job_snapshots.is_empty())
     {
         return Err("campaign stream terminal counts diverged".into());
     }
@@ -5415,6 +5885,8 @@ where
     if !require_terminal {
         outcome.0.mode = "campaign-prefix".to_owned();
     }
+    outcome.0.jobs_cancelled = replay_cancelled;
+    outcome.0.interrupted = interrupted;
     Ok(outcome)
 }
 
@@ -5536,8 +6008,11 @@ mod tests {
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        jobs_started: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
         selections: std::sync::atomic::AtomicUsize,
+        hang_divisor: std::sync::atomic::AtomicU8,
+        suffix_actions: Option<usize>,
     }
 
     #[derive(Default)]
@@ -5588,6 +6063,9 @@ mod tests {
         static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static JOB_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+        static JOB_INDEX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static DOOMED_VALUE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -5796,6 +6274,13 @@ mod tests {
                         std::thread::yield_now();
                     }
                 }
+            }
+            if let Some(length) = self
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.suffix_actions)
+            {
+                return Ok(vec![TestAction::new(mutation_seed as u8 | 1, 1); length]);
             }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
@@ -6077,11 +6562,61 @@ mod tests {
         fn snapshot_memory_charge(_snapshot: &Self::Snapshot) -> usize {
             1
         }
+
+        fn execute_job(
+            &self,
+            run: &Self::Run,
+            target: &mut Self::Target,
+            origin_snapshot: &Self::Snapshot,
+            replay: &[Self::Action],
+            parent_milestones: Self::Milestones,
+            suffix: &[Self::Action],
+            retention: RetentionPolicy,
+            stop: crate::search::rollout::RolloutStop,
+        ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+            JOB_CANCEL.with(|cancel| *cancel.borrow_mut() = stop.cancellation().cloned());
+            let index = self.targets.as_ref().map_or(0, |targets| {
+                targets
+                    .jobs_started
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            });
+            JOB_INDEX.with(|job| job.set(index));
+            let result = crate::search::rollout::execute_job(
+                self,
+                run,
+                target,
+                origin_snapshot,
+                replay,
+                parent_milestones,
+                suffix,
+                retention,
+                stop,
+            )?;
+            let divisor = self.targets.as_ref().map_or(0, |targets| {
+                targets
+                    .hang_divisor
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            });
+            if divisor != 0
+                && let Some(first) = suffix.first().filter(|first| first.input % divisor == 0)
+            {
+                return Ok(CampaignJobResult {
+                    preparation_failure: None,
+                    hang: Some(vec![*first]),
+                    actions: Vec::new(),
+                });
+            }
+            Ok(result)
+        }
     }
 
     impl Evaluation for TestWorkload {
         fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
             ExecutionDisposition::Runnable
+        }
+
+        fn is_doomed(&self, target: &Self::Target) -> bool {
+            DOOMED_VALUE.get() == Some(target.value)
         }
 
         fn objective_reached(
@@ -6145,6 +6680,21 @@ mod tests {
         where
             F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
         {
+            Ok(())
+        }
+        fn merge_hang_evidence<F>(
+            &self,
+            evidence: &mut Self::Evidence,
+            _sequence: u64,
+            input: F,
+        ) -> Result<(), Box<dyn Error>>
+        where
+            F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+        {
+            if input()?.actions.is_empty() {
+                return Err("a hung job input names no actions".into());
+            }
+            *evidence = evidence.wrapping_add(1);
             Ok(())
         }
         fn source_entries<'a>(
@@ -6237,6 +6787,7 @@ mod tests {
                 ExecutionDisposition::default()
             };
             Ok(Outcome {
+                doomed: false,
                 objective_reached,
                 disposition,
             })
@@ -6399,7 +6950,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal parent is a valid no-op rollout");
         assert!(result.actions.is_empty());
@@ -6414,11 +6965,115 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("failed parent is a reportable preparation failure");
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![()]));
+    }
+
+    #[test]
+    fn a_doomed_endpoint_ends_the_job_without_a_candidate() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut target = TestTarget::default();
+        let snapshot = workload.snapshot(&mut target).expect("snapshot");
+        DOOMED_VALUE.set(Some(3));
+        let result = crate::search::rollout::execute_job(
+            &workload,
+            &(),
+            &mut target,
+            &snapshot,
+            &[],
+            (),
+            &[
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(4, 1),
+            ],
+            RetentionPolicy::Unprobed,
+            crate::search::rollout::RolloutStop::new(false),
+        );
+        DOOMED_VALUE.set(None);
+        let result = result.expect("doomed job");
+        assert_eq!(result.actions.len(), 2);
+        assert!(result.actions[0].candidate.is_some());
+        let last = &result.actions[1];
+        assert!(last.outcome.doomed);
+        assert_eq!(last.outcome.disposition, ExecutionDisposition::Terminal);
+        assert!(last.candidate.is_none());
+        let bytes = postcard::to_allocvec(&last.outcome).expect("encode");
+        assert_eq!(
+            postcard::from_bytes::<Outcome>(&bytes).expect("decode"),
+            last.outcome
+        );
+        let text = serde_json::to_string(&last.outcome).expect("json");
+        assert_eq!(
+            serde_json::from_str::<Outcome>(&text).expect("json decode"),
+            last.outcome
+        );
+        assert_ne!(
+            bytes,
+            postcard::to_allocvec(&Outcome {
+                doomed: false,
+                ..last.outcome
+            })
+            .expect("encode")
+        );
+    }
+
+    #[test]
+    fn an_outcome_that_is_not_doomed_keeps_its_encoding() {
+        for (objective_reached, disposition, variant) in [
+            (false, ExecutionDisposition::Runnable, 0),
+            (true, ExecutionDisposition::Terminal, 1),
+            (false, ExecutionDisposition::Failed, 2),
+        ] {
+            let outcome = Outcome {
+                objective_reached,
+                disposition,
+                doomed: false,
+            };
+            assert_eq!(
+                postcard::to_allocvec(&outcome).expect("encode"),
+                [u8::from(objective_reached), variant]
+            );
+            assert_eq!(
+                serde_json::to_value(outcome).expect("json"),
+                serde_json::json!({
+                    "objective_reached": objective_reached,
+                    "disposition": serde_json::to_value(disposition).expect("json"),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_job_stops_replaying_its_prefix() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut target = TestTarget::default();
+        let snapshot = workload.snapshot(&mut target).expect("snapshot");
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let stop = crate::search::rollout::RolloutStop::new(false).with_cancel(Some(cancel));
+        let result = crate::search::rollout::execute_job(
+            &workload,
+            &(),
+            &mut target,
+            &snapshot,
+            &[TestAction::new(1, 1), TestAction::new(2, 1)],
+            (),
+            &[TestAction::new(4, 1)],
+            RetentionPolicy::Unprobed,
+            stop,
+        )
+        .expect("a cancelled job returns without error");
+        assert!(result.actions.is_empty());
+        assert_eq!(target.value, 0);
     }
 
     #[test]
@@ -6434,7 +7089,7 @@ mod tests {
                 TestAction::new(4, 1),
             ],
             RetentionPolicy::ProbeAtAdmission,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("rollout");
         assert_eq!(result.actions.len(), 3);
@@ -6469,7 +7124,7 @@ mod tests {
                 TestAction::new(1, 1),
             ],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal action rollout");
         assert_eq!(result.actions.len(), 2);
@@ -6485,7 +7140,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 RetentionPolicy::Unprobed,
-                false,
+                crate::search::rollout::RolloutStop::new(false),
             )
             .is_err()
         );
@@ -6499,7 +7154,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 RetentionPolicy::ProbeAtAdmission,
-                false,
+                crate::search::rollout::RolloutStop::new(false),
             )
             .is_err()
         );
@@ -6515,7 +7170,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            true,
+            crate::search::rollout::RolloutStop::new(true),
         )
         .expect("runnable objective rollout");
         assert_eq!(result.actions.len(), 1);
@@ -6540,7 +7195,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            true,
+            crate::search::rollout::RolloutStop::new(true),
         )
         .expect("continuation after a latched objective");
         assert_eq!(result.actions.len(), 1);
@@ -6561,7 +7216,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("terminal outcome");
         assert_eq!(result.actions.len(), 1);
@@ -6580,7 +7235,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1), TestAction::new(1, 1)],
             RetentionPolicy::Unprobed,
-            false,
+            crate::search::rollout::RolloutStop::new(false),
         )
         .expect("failed outcome");
         assert_eq!(result.actions.len(), 1);
@@ -6601,11 +7256,13 @@ mod tests {
             0,
             CampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: vec![CampaignActionResult {
                     action: terminal_objective,
                     observations: Vec::new(),
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: true,
                         disposition: ExecutionDisposition::Terminal,
                     },
@@ -6624,11 +7281,13 @@ mod tests {
             0,
             CampaignJobResult {
                 preparation_failure: None,
+                hang: None,
                 actions: vec![CampaignActionResult {
                     action: failed,
                     observations: vec![()],
                     milestones: (),
                     outcome: Outcome {
+                        doomed: false,
                         objective_reached: false,
                         disposition: ExecutionDisposition::Failed,
                     },
@@ -6639,6 +7298,31 @@ mod tests {
         .expect("admit failed execution");
         assert_eq!(core.terminal_endpoints, 1);
         assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 1);
+
+        let doomed = TestAction::new(3, 1);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                preparation_failure: None,
+                hang: None,
+                actions: vec![CampaignActionResult {
+                    action: doomed,
+                    observations: vec![()],
+                    milestones: (),
+                    outcome: Outcome {
+                        doomed: true,
+                        objective_reached: false,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit doomed endpoint");
+        assert_eq!(core.terminal_endpoints, 1);
+        assert_eq!(core.doomed_endpoints, 1);
         assert_eq!(core.execution_failures, 1);
     }
 
@@ -6651,6 +7335,7 @@ mod tests {
                 0,
                 CampaignJobResult {
                     preparation_failure: Some(vec![()]),
+                    hang: None,
                     actions: Vec::new(),
                 },
             )
@@ -6667,6 +7352,7 @@ mod tests {
                 0,
                 CampaignJobResult {
                     preparation_failure: Some(vec![()]),
+                    hang: None,
                     actions: vec![CampaignActionResult {
                         action,
                         observations: Vec::new(),
@@ -6682,6 +7368,202 @@ mod tests {
             "preparation failure result also carries actions"
         );
         assert_eq!(core.execution_failures, 1);
+    }
+
+    #[test]
+    fn coordinator_counts_hung_jobs_without_archiving_them() {
+        let (workload, _run, mut core, _target) = test_core();
+        let action = TestAction::new(5, 1);
+        let hung = |attempted: Vec<TestAction>| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            hang: Some(attempted),
+            actions: Vec::new(),
+        };
+        for expected in 1..=2 {
+            let (sequence, decisions) = core
+                .admit_job(&workload, 0, hung(vec![action]))
+                .expect("admit hung job");
+            assert_eq!(sequence, expected);
+            assert!(decisions.is_empty());
+        }
+        assert_eq!((core.hung_jobs, core.hang_streak), (2, 2));
+        assert_eq!(core.archive.retained, 1);
+        assert_eq!(core.evidence, 2);
+        assert_eq!(core.execution_failures, 0);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                preparation_failure: None,
+                hang: None,
+                actions: vec![CampaignActionResult {
+                    action,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit completed job");
+        assert_eq!((core.hung_jobs, core.hang_streak), (2, 0));
+        let error = core
+            .admit_job(
+                &workload,
+                0,
+                CampaignJobResult {
+                    preparation_failure: Some(vec![()]),
+                    hang: Some(vec![action]),
+                    actions: Vec::new(),
+                },
+            )
+            .expect_err("a hang cannot also be a preparation failure");
+        assert_eq!(
+            error.to_string(),
+            "hung job result also carries other outcomes"
+        );
+        assert_eq!(core.hung_jobs, 2);
+    }
+
+    #[test]
+    fn hang_streak_stops_only_when_unlikely_at_the_earlier_hang_rate() {
+        use super::hang_streak_is_implausible as implausible;
+        assert!(!implausible(0, 0, 0));
+        assert!(!implausible(1, 1, 1));
+        assert!(!implausible(10, 10, 10));
+        assert!(implausible(11, 11, 11));
+        assert!(!implausible(1_301, 1, 1));
+        assert!(implausible(1_302, 2, 2));
+        assert!(!implausible(15, 7, 5));
+        assert!(implausible(16, 8, 6));
+        assert!(!implausible(1_000, 900, 2));
+        assert!(!implausible(3, 4, 2));
+        assert!(!implausible(3, 1, 2));
+    }
+
+    fn hanging_campaign(
+        divisor: u8,
+        execution_budget: u64,
+    ) -> (TestWorkload, CampaignConfig<TestWorkload>) {
+        let targets = LiveTargets::default();
+        targets
+            .hang_divisor
+            .store(divisor, std::sync::atomic::Ordering::SeqCst);
+        (
+            TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(targets)),
+            },
+            CampaignConfig {
+                campaign_seed: 29,
+                workers: 2,
+                execution_budget,
+                host: "test".to_owned(),
+                wall_budget: None,
+                stop_rollout_on_objective: true,
+                stop_campaign_on_objective: true,
+                archive_entry_limit: 64,
+                window: 4,
+                memory_budget_mib: None,
+                materialize_final_artifacts: true,
+                run: (),
+                mixture: DrawMixture::AlphabetOnly,
+                retention: RetentionPolicy::Unprobed,
+                objective_witness_path: None,
+            },
+        )
+    }
+
+    fn stream_records(
+        stream: &[u8],
+    ) -> Vec<CampaignStreamRecord<EmpiricalStepCheckpoint, TestKey>> {
+        std::str::from_utf8(stream)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn campaign_records_hung_jobs_and_finishes_its_budget() {
+        let (workload, config) = hanging_campaign(3, 60);
+        let mut stream = Vec::new();
+        let mut progress = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut progress),
+        )
+        .expect("a hung job does not end the campaign");
+        assert_eq!(live.executions_completed, 60);
+        assert!(
+            live.hung_jobs > 0 && live.hung_jobs < 60,
+            "{}",
+            live.hung_jobs
+        );
+        assert_eq!(u64::from(live.archive.marker), live.hung_jobs);
+        assert_eq!(live.execution_failures, 0);
+        let records = stream_records(&stream);
+        let jobs = records
+            .iter()
+            .filter(|record| matches!(record, CampaignStreamRecord::Job(_)))
+            .count();
+        assert_eq!(jobs, 60);
+        let last: CampaignProgressRecord<TestKey> = serde_json::from_str(
+            std::str::from_utf8(&progress)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(last.hung_jobs, live.hung_jobs);
+        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("a stream with hung jobs replays");
+        assert_eq!(replayed.0, live);
+    }
+
+    #[test]
+    fn campaign_stops_when_every_job_hangs_and_keeps_its_evidence() {
+        let (workload, config) = hanging_campaign(1, 1_000);
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("a hang stop finishes the campaign");
+        assert_eq!(
+            live.hang_stop.as_deref(),
+            Some(
+                "campaign stopped after 11 hung jobs in a row: 0 of the 0 earlier jobs hung, \
+                 so a run this long has less than a 1 in 1000 chance on a working host"
+            )
+        );
+        let records = stream_records(&stream);
+        let jobs = records
+            .iter()
+            .filter(|record| matches!(record, CampaignStreamRecord::Job(_)))
+            .count();
+        assert!(
+            (11..11 + config.window).contains(&jobs),
+            "{jobs} jobs after the stop"
+        );
+        assert!(records.iter().all(|record| match record {
+            CampaignStreamRecord::Job(job) => job.decisions.is_empty(),
+            CampaignStreamRecord::End(_) => true,
+            CampaignStreamRecord::Skip(_) | CampaignStreamRecord::Cancel(_) => false,
+        }));
+        assert_eq!(live.hung_jobs, u64::try_from(jobs).unwrap());
+        assert_eq!(u64::from(live.archive.marker), live.hung_jobs);
+        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("a stream that stopped on hangs replays");
+        assert_eq!(replayed.0, live);
     }
 
     #[test]
@@ -6861,11 +7743,12 @@ mod tests {
             None,
         )
         .expect("live objective-stop campaign");
-        assert_eq!(stopped.executions_completed, 2);
+        assert_eq!(stopped.executions_completed, 1);
+        assert_eq!(stopped.jobs_cancelled, 1);
         let (replayed_stopped, _) =
             replay_campaign_checkpointed(&workload, &stopped_stream, None, None)
-                .expect("in-flight job remains replayable after an objective stop");
-        assert_eq!(replayed_stopped.executions_completed, 2);
+                .expect("a cancelled job stays replayable after an objective stop");
+        assert_eq!(replayed_stopped, stopped);
         let mut lines = std::str::from_utf8(&stream)
             .unwrap()
             .lines()
@@ -7530,8 +8413,8 @@ mod tests {
             })
             .unwrap();
         let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
-        assert_eq!(job["suffix_limit"], 1);
-        job["suffix_limit"] = serde_json::json!(2);
+        assert_eq!(job["suffix_limit"], 64);
+        job["suffix_limit"] = serde_json::json!(32);
         lines[first_job] = serde_json::to_string(&job).unwrap();
         let error =
             replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
@@ -7719,6 +8602,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -7754,6 +8638,7 @@ mod tests {
         let tracked = TestAction::new(0x01, 4);
         let seed = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: tracked,
                 observations: Vec::new(),
@@ -7772,6 +8657,7 @@ mod tests {
         let untracked = TestAction::new(0x01, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![
                 CampaignActionResult {
                     action: tracked,
@@ -7822,6 +8708,7 @@ mod tests {
         let home = core.archive.entries[0].key.0;
         let refused = |value: u8| CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: TestAction::new(0x01, 1),
                 observations: Vec::new(),
@@ -7851,6 +8738,9 @@ mod tests {
     fn a_parent_with_a_job_in_flight_at_its_suffix_limit_draws_one_action() {
         let (_workload, _run, mut core, _target) = test_core();
         let parent = core.archive.stable_id(0).expect("the root has an id");
+        while core.suffix_reach.length() > 1 {
+            core.suffix_reach.record_outcome(64, 0);
+        }
         core.archive
             .record_suffix_outcome(0, 1, false, false, false);
         assert_eq!(core.suffix_limit(parent, 0), 2);
@@ -7877,11 +8767,13 @@ mod tests {
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: winning,
                 observations: Vec::new(),
                 milestones: (),
                 outcome: Outcome {
+                    doomed: false,
                     objective_reached: true,
                     disposition: ExecutionDisposition::Runnable,
                 },
@@ -7914,6 +8806,7 @@ mod tests {
 
         let later = CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: TestAction::new(0x01, 9),
                 ..winning_action
@@ -8268,6 +9161,7 @@ mod tests {
         let second = TestAction::new(2, 1);
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![
                 CampaignActionResult {
                     action: first,
@@ -8380,6 +9274,7 @@ mod tests {
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -8700,6 +9595,7 @@ mod tests {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
+            fall_through: false,
         };
     }
 
@@ -8728,6 +9624,97 @@ mod tests {
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
     }
+    #[test]
+    fn cell_interval_accounting_leaves_the_draws_unchanged() {
+        let config = CampaignConfig {
+            campaign_seed: 47,
+            workers: 2,
+            execution_budget: 7_000,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            window: 4,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::EnergySplice { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let run = |with_progress: bool| {
+            let mut stream = Vec::new();
+            let mut progress = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                with_progress.then_some(&mut progress as &mut dyn Write),
+            )
+            .expect("campaign runs");
+            (outcome, stream, progress)
+        };
+        let (first, first_stream, first_progress) = run(true);
+        let (second, second_stream, _) = run(true);
+        let (silent, silent_stream, silent_progress) = run(false);
+        assert!(silent_progress.is_empty());
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(first_stream, silent_stream);
+        assert_eq!(first, second);
+        assert_eq!(first, silent);
+        let records = String::from_utf8(first_progress)
+            .expect("progress is utf-8")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<CampaignProgressRecord<serde_json::Value>>(line)
+                    .expect("progress record parses")
+            })
+            .collect::<Vec<_>>();
+        let intervals = records
+            .iter()
+            .filter_map(|record| {
+                record
+                    .selector
+                    .cell_interval
+                    .as_ref()
+                    .map(|interval| (record.executions, interval))
+            })
+            .collect::<Vec<_>>();
+        assert!(intervals.len() >= 3);
+        assert_eq!(intervals[0].1.since, 0);
+        for pair in intervals.windows(2) {
+            assert_eq!(pair[1].1.since, pair[0].0);
+        }
+        for (_, interval) in &intervals {
+            assert!(interval.top.len() <= super::CELL_INTERVAL_TOP_CELLS.min(interval.cells));
+            assert!(
+                interval
+                    .top
+                    .windows(2)
+                    .all(|rows| rows[0].counts.draws >= rows[1].counts.draws)
+            );
+        }
+        let interval_draws: u64 = intervals
+            .iter()
+            .map(|(_, interval)| interval.totals.draws)
+            .sum();
+        let final_record = records.last().expect("a final progress line");
+        assert!(final_record.selector.cell_interval.is_some());
+        let selector = &final_record.selector;
+        assert!(interval_draws >= selector.cell_selections);
+        assert!(
+            interval_draws
+                <= selector.cell_selections + selector.continuation_selections.unwrap_or(0)
+        );
+        assert!(interval_draws > 0);
+    }
+
     #[test]
     fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
         let config = CampaignConfig {
@@ -8782,6 +9769,7 @@ mod tests {
             Ok((
                 CampaignJobResult::<TestWorkload> {
                     preparation_failure: None,
+                    hang: None,
                     actions: flags
                         .iter()
                         .map(|&candidate| CampaignActionResult {
@@ -9200,11 +10188,338 @@ mod tests {
                     .expect("stream record parses")
                 {
                     CampaignStreamRecord::Job(job) => Some((index, job)),
-                    CampaignStreamRecord::Skip(_) => None,
-                    CampaignStreamRecord::End(_) => None,
+                    CampaignStreamRecord::Skip(_)
+                    | CampaignStreamRecord::Cancel(_)
+                    | CampaignStreamRecord::End(_) => None,
                 }
             })
             .collect()
+    }
+
+    fn slow_targets(suffix_actions: usize, pause: Duration) -> Arc<LiveTargets> {
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(suffix_actions),
+            ..LiveTargets::default()
+        });
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            std::thread::sleep(pause);
+            Ok(())
+        }));
+        targets
+    }
+
+    const BLOCKED_JOB_LIMIT: Duration = Duration::from_secs(120);
+
+    #[allow(clippy::disallowed_methods)]
+    fn block_until_cancelled() -> Result<(), String> {
+        let cancel = JOB_CANCEL
+            .with(|cancel| cancel.borrow().clone())
+            .ok_or("the job has no cancel flag")?;
+        let started = Instant::now();
+        while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+            if started.elapsed() >= BLOCKED_JOB_LIMIT {
+                return Err("the blocked job was never cancelled".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+
+    fn cancelled_reservations(stream: &[u8]) -> Vec<u64> {
+        stream_records(stream)
+            .into_iter()
+            .filter_map(|record| match record {
+                CampaignStreamRecord::Cancel(cancel) => Some(cancel.reservation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn replaying(objective_after_work: u64) -> TestWorkload {
+        let targets = slow_targets(64, Duration::ZERO);
+        targets
+            .objective_after_work
+            .store(objective_after_work, std::sync::atomic::Ordering::SeqCst);
+        TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        }
+    }
+
+    fn assert_replay_matches(
+        live: &super::CampaignModeReport<TestAction, TestArchiveReport>,
+        stream: &[u8],
+        objective_after_work: u64,
+    ) {
+        let replayed =
+            replay_campaign_checkpointed(&replaying(objective_after_work), stream, None, None)
+                .expect("a stream with cancelled jobs replays");
+        assert_eq!(&replayed.0, live);
+    }
+
+    #[test]
+    fn a_wall_budget_drops_the_jobs_in_flight_and_replays() {
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(64),
+            ..LiveTargets::default()
+        });
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(|_| {
+            if JOB_INDEX.with(std::cell::Cell::get) >= 2 {
+                block_until_cancelled()
+            } else {
+                Ok(())
+            }
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 1_000_000;
+        config.wall_budget = Some(Duration::from_secs(1));
+        let mut stream = Vec::new();
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("the campaign ends at its wall budget");
+        let elapsed = started.elapsed();
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        assert!(!live.interrupted);
+        let jobs = job_lines(&stream);
+        assert!(!jobs.is_empty());
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(jobs.len()).unwrap()
+        );
+        assert!(
+            jobs.iter()
+                .all(|(_, job)| !cancelled.contains(&job.reservation))
+        );
+        assert_replay_matches(&live, &stream, 0);
+    }
+
+    fn objective_stop_config() -> CampaignConfig<TestWorkload> {
+        let mut config = three_worker_config();
+        config.execution_budget = 1_000_000;
+        config.stop_rollout_on_objective = true;
+        config.stop_campaign_on_objective = true;
+        config
+    }
+
+    fn objective_stop_run_with(
+        options: CampaignExecutionOptions,
+    ) -> (
+        super::CampaignModeReport<TestAction, TestArchiveReport>,
+        Vec<u8>,
+    ) {
+        let targets = slow_targets(64, Duration::from_millis(2));
+        targets
+            .objective_after_work
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed_with_options(
+            &workload,
+            &objective_stop_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            options,
+        )
+        .expect("the campaign stops at its first objective");
+        (live, stream)
+    }
+
+    fn objective_stop_run() -> (
+        super::CampaignModeReport<TestAction, TestArchiveReport>,
+        Vec<u8>,
+    ) {
+        objective_stop_run_with(CampaignExecutionOptions::default())
+    }
+
+    #[test]
+    fn a_search_stopped_with_jobs_in_flight_leaves_a_checkpoint_that_resumes() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-stopped-checkpoint-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let (live, _) = objective_stop_run_with(CampaignExecutionOptions {
+            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                directory: directory.clone(),
+                every: std::num::NonZeroU64::new(1_000_000),
+                on_marks: false,
+                on_top_progress: false,
+                on_stall: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        });
+        assert!(live.jobs_cancelled > 0);
+        let mut checkpoints = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "ckpt")
+            })
+            .collect::<Vec<_>>();
+        checkpoints.sort();
+        let path = checkpoints
+            .pop()
+            .expect("the stopped search wrote a checkpoint");
+        let mut config = objective_stop_config();
+        config.execution_budget = live.executions_completed + 8;
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256: None,
+            },
+            &mut Vec::new(),
+            None,
+        )
+        .expect("the checkpoint of a stopped search resumes");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn the_first_objective_drops_the_jobs_in_flight_deterministically() {
+        let (live, stream) = objective_stop_run();
+        assert_eq!(live.objectives_reached, 1);
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        let jobs = job_lines(&stream);
+        let (_, last) = jobs.last().expect("an admitted job");
+        assert!(
+            last.decisions
+                .contains(&CampaignAdmissionDecision::Objective)
+        );
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(jobs.len()).unwrap()
+        );
+        assert_eq!(cancelled.len(), 2);
+        assert_replay_matches(&live, &stream, 1);
+        let (again, again_stream) = objective_stop_run();
+        assert_eq!(again_stream, stream);
+        assert_eq!(again, live);
+    }
+
+    #[test]
+    fn replay_rejects_a_cancelled_selector_outside_the_selection_history() {
+        let (_, stream) = objective_stop_run();
+        let text = String::from_utf8(stream).unwrap();
+        let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let cancel = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "cancel"
+            })
+            .expect("a cancel record");
+        let mut record: serde_json::Value = serde_json::from_str(&lines[cancel]).unwrap();
+        record["selector"]["tier_rank"] = serde_json::json!(255);
+        lines[cancel] = serde_json::to_string(&record).unwrap();
+        let error =
+            replay_campaign_checkpointed(&replaying(1), lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a cancelled selector outside the selection history")
+                .to_string();
+        assert!(error.contains("tier rank"), "{error}");
+    }
+
+    #[test]
+    fn an_interrupt_drops_the_jobs_in_flight_and_marks_the_stream() {
+        static INTERRUPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let actions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let targets = Arc::new(LiveTargets {
+            suffix_actions: Some(64),
+            ..LiveTargets::default()
+        });
+        let counted = Arc::clone(&actions);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 300 {
+                INTERRUPT.store(true, std::sync::atomic::Ordering::Release);
+                return block_until_cancelled();
+            }
+            Ok(())
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 1_000_000;
+        let mut stream = Vec::new();
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now();
+        let (live, _) = run_campaign_checkpointed_with_options(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                interrupt: Some(&INTERRUPT),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .expect("an interrupted campaign still reports");
+        let elapsed = started.elapsed();
+        assert!(elapsed < BLOCKED_JOB_LIMIT / 2, "{elapsed:?}");
+        assert!(live.interrupted);
+        assert!(actions.load(std::sync::atomic::Ordering::SeqCst) < 300 + 3 * 64);
+        let cancelled = cancelled_reservations(&stream);
+        assert!(!cancelled.is_empty());
+        assert_eq!(live.jobs_cancelled, u64::try_from(cancelled.len()).unwrap());
+        assert_eq!(
+            live.executions_completed,
+            u64::try_from(job_lines(&stream).len()).unwrap()
+        );
+        assert_replay_matches(&live, &stream, 0);
+        let mut unterminated = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        unterminated.pop();
+        replay_campaign_prefix_checkpointed(
+            &replaying(0),
+            unterminated.join("\n").as_bytes(),
+            None,
+            None,
+        )
+        .expect("a prefix that ends in cancelled jobs replays");
+        let unmarked = std::str::from_utf8(&stream)
+            .unwrap()
+            .replace(",\"interrupted\":true", "");
+        let error = replay_campaign_checkpointed(&replaying(0), unmarked.as_bytes(), None, None)
+            .expect_err("an unmarked early end does not replay");
+        assert!(
+            error
+                .to_string()
+                .contains("cancelled jobs without a stop that drops them"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -9279,7 +10594,8 @@ mod tests {
                 let job: JobSpec<TestWorkload> =
                     postcard::from_bytes(&postcard::to_allocvec(&job).expect("job bytes"))
                         .expect("job");
-                let outcome = run_job(&workload, &config, &mut target, &job).expect("job runs");
+                let outcome =
+                    run_job(&workload, &config, &mut target, &job, None).expect("job runs");
                 let outcome: JobOutcome<TestWorkload> =
                     postcard::from_bytes(&postcard::to_allocvec(&outcome).expect("outcome bytes"))
                         .expect("outcome");
@@ -9456,6 +10772,7 @@ mod tests {
                                 every: std::num::NonZeroU64::new(1),
                                 on_marks: false,
                                 on_top_progress: false,
+                                on_stall: false,
                                 checkpoint_owner: None,
                                 max_image_bytes: 64 << 20,
                                 before_write: None,
@@ -9511,6 +10828,8 @@ mod tests {
             assert_eq!(header.executions, 1);
             assert_eq!(header.admitted, 1);
             assert_eq!(header.reserved, 2);
+            let _: Vec<crate::search::archive::SavedStateRecord<TestAction, ()>> =
+                reader.next().unwrap();
             let core: super::CoreCheckpoint<TestWorkload> = reader.next().unwrap();
             let archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
                 reader.next().unwrap();
@@ -9768,6 +11087,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -10223,22 +11543,30 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let jobs = job_lines(&stream);
-        let refused = jobs.windows(2).filter(|pair| {
-            let mut tampered = lines.clone();
-            tampered[pair[0].0] = lines[pair[0].0].replacen(
-                &format!("\"reservation\":{},", pair[0].1.reservation),
-                &format!("\"reservation\":{},", pair[1].1.reservation),
-                1,
-            );
-            tampered[pair[1].0] = lines[pair[1].0].replacen(
-                &format!("\"reservation\":{},", pair[1].1.reservation),
-                &format!("\"reservation\":{},", pair[0].1.reservation),
-                1,
-            );
-            replay_campaign_checkpointed(&workload, tampered.join("\n").as_bytes(), None, None)
-                .is_err_and(|error| error.to_string().contains("out of planned-finish order"))
-        });
-        assert!(refused.count() > jobs.len() / 2);
+        let errors = jobs
+            .windows(2)
+            .map(|pair| {
+                let mut tampered = lines.clone();
+                tampered[pair[0].0] = lines[pair[0].0].replacen(
+                    &format!("\"reservation\":{},", pair[0].1.reservation),
+                    &format!("\"reservation\":{},", pair[1].1.reservation),
+                    1,
+                );
+                tampered[pair[1].0] = lines[pair[1].0].replacen(
+                    &format!("\"reservation\":{},", pair[1].1.reservation),
+                    &format!("\"reservation\":{},", pair[0].1.reservation),
+                    1,
+                );
+                replay_campaign_checkpointed(&workload, tampered.join("\n").as_bytes(), None, None)
+                    .expect_err("replay accepted swapped admissions")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let out_of_order = errors
+            .iter()
+            .filter(|error| error.contains("out of planned-finish order"))
+            .count();
+        assert!(3 * out_of_order > jobs.len(), "{errors:?}");
     }
 
     fn run_placed(placement: ThreadPlacement) -> Result<CampaignOutcome<TestWorkload>, String> {
@@ -10576,7 +11904,7 @@ mod tests {
                 return Err("direct coordinator has no runnable jobs".into());
             }
             for job in jobs.into_iter().rev() {
-                coordinator.admit(run_job(workload, config, &mut target, &job)?)?;
+                coordinator.admit(run_job(workload, config, &mut target, &job, None)?)?;
             }
         }
         coordinator.finish(Vec::new())
@@ -10591,6 +11919,9 @@ mod tests {
         core.sequence = 17;
         core.probe_refused = 19;
         core.terminal_endpoints = 23;
+        core.hung_jobs = 3;
+        core.hang_streak = 2;
+        core.hang_stop = Some("hang stop".to_owned());
         let reference = super::CoreCheckpoint::<TestWorkload> {
             curve: core.curve.clone(),
             curve_interval: core.curve_interval,
@@ -10598,12 +11929,17 @@ mod tests {
             record_progress: core.record_progress,
             terminal_endpoints: core.terminal_endpoints,
             terminal_objectives: core.terminal_objectives,
+            doomed_endpoints: 0,
             execution_failures: core.execution_failures,
+            hung_jobs: core.hung_jobs,
+            hang_streak: core.hang_streak,
+            hang_stop: core.hang_stop.clone(),
             objectives_reached: core.objectives_reached,
             objective_witness: core.objective_witness.clone(),
             sequence: core.sequence,
             probe_refused: core.probe_refused,
             mixture_energy: core.mixture_energy,
+            suffix_reach: core.suffix_reach.clone(),
         };
         let expected = postcard::to_allocvec(&reference).unwrap();
         let mut streamed = Vec::new();
@@ -10612,6 +11948,8 @@ mod tests {
         let restored: super::CoreCheckpoint<TestWorkload> =
             postcard::from_bytes(&streamed).unwrap();
         assert_eq!(restored.sequence, 17);
+        assert_eq!((restored.hung_jobs, restored.hang_streak), (3, 2));
+        assert_eq!(restored.hang_stop, core.hang_stop);
         assert_eq!(restored.probe_refused, 19);
         assert_eq!(restored.objective_witness, core.objective_witness);
     }
@@ -10657,6 +11995,7 @@ mod tests {
                             every: std::num::NonZeroU64::new(1),
                             on_marks: false,
                             on_top_progress: false,
+                            on_stall: false,
                             checkpoint_owner: None,
                             max_image_bytes,
                             before_write: None,
@@ -10670,7 +12009,7 @@ mod tests {
                 let mut target = workload.new_target().unwrap();
                 let guard = EvidenceWriteFailureGuard::new(pass);
                 let error = coordinator
-                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
                     .unwrap_err();
                 assert!(
                     error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
@@ -10727,6 +12066,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 10,
                     before_write: None,
@@ -10740,7 +12080,7 @@ mod tests {
         let mut target = workload.new_target().unwrap();
         let guard = EvidenceWriteFailureGuard::after_overflow();
         let error = coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap_err();
         assert!(error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>());
         let primary = error.source().unwrap();
@@ -10802,6 +12142,7 @@ mod tests {
                             every: std::num::NonZeroU64::new(1),
                             on_marks: false,
                             on_top_progress: false,
+                            on_stall: false,
                             checkpoint_owner: None,
                             max_image_bytes: 64 << 20,
                             before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
@@ -10819,7 +12160,7 @@ mod tests {
                 let job = coordinator.plan(1).pop().unwrap();
                 let mut target = workload.new_target().unwrap();
                 coordinator
-                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
                     .unwrap();
                 entered.recv_timeout(Duration::from_secs(10)).unwrap();
                 let next = receive.then(|| coordinator.plan(1).pop().unwrap().reservation);
@@ -10889,6 +12230,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -10901,7 +12243,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         wait_for_checkpoint_worker(&coordinator);
         assert!(
@@ -10956,6 +12298,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: Some(super::super::checkpoint::publisher::TestWriteHook(
@@ -10973,7 +12316,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(!coordinator.finished());
@@ -11023,6 +12366,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(1),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -11035,7 +12379,7 @@ mod tests {
         let job = coordinator.plan(1).pop().unwrap();
         let mut target = workload.new_target().unwrap();
         coordinator
-            .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+            .admit(run_job(&workload, &config, &mut target, &job, None).unwrap())
             .unwrap();
         drop(coordinator);
         let reader = crate::search::checkpoint::CheckpointReader::open(
@@ -11105,6 +12449,7 @@ mod tests {
                     every: std::num::NonZeroU64::new(5),
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes,
                     before_write: None,
@@ -11228,6 +12573,7 @@ mod tests {
                     every: None,
                     on_marks: false,
                     on_top_progress: false,
+                    on_stall: false,
                     checkpoint_owner: None,
                     max_image_bytes: 64 << 20,
                     before_write: None,
@@ -11341,9 +12687,9 @@ mod tests {
             checkpoint: None,
         };
         let config = CampaignConfig {
-            campaign_seed: 196,
+            campaign_seed: 954,
             workers: 3,
-            execution_budget: 8,
+            execution_budget: 300,
             host: "test".to_owned(),
             wall_budget: None,
             stop_rollout_on_objective: true,
@@ -11365,11 +12711,12 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(records[1]["event"], "skip");
-        assert_eq!(records[1]["reservation"], 1);
-        assert_eq!(records[1]["suffix_limit"], 1);
-        assert_eq!(records[2]["event"], "job");
-        records[1]["suffix_limit"] = serde_json::json!(2);
+        let skip = records
+            .iter()
+            .position(|record| record["event"] == "skip" && record["suffix_limit"].is_u64())
+            .expect("the campaign records a drawn skip");
+        let limit = records[skip]["suffix_limit"].as_u64().unwrap();
+        records[skip]["suffix_limit"] = serde_json::json!(if limit == 64 { 32 } else { limit * 2 });
         let forged = records
             .iter()
             .map(serde_json::to_string)

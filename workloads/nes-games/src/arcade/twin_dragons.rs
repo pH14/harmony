@@ -124,6 +124,10 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for TwinDragonsGame<M> {
         observation.decoded.levels_cleared()
     }
 
+    fn snapshot_frame_count(snapshot: &TwinDragonsSnapshot) -> u64 {
+        snapshot.observation.frame_count
+    }
+
     fn emulator_state(snapshot: &TwinDragonsSnapshot) -> &[u8] {
         &snapshot.emulator_state
     }

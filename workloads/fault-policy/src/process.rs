@@ -31,6 +31,19 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
             hold_nanos: hold.0,
             target: *target,
         },
+        Fault::ProcPowerLoss { choice } => ProcessAction::PowerLoss { choice: *choice },
+        Fault::ProcDiskError => ProcessAction::DiskError,
+        Fault::ProcDiskStall(hold) => ProcessAction::DiskStall { hold_nanos: hold.0 },
+        Fault::ProcDiskCorrupt { choice } => ProcessAction::DiskCorrupt { choice: *choice },
+        Fault::ProcClock {
+            offset,
+            rate_ppm,
+            spread,
+        } => ProcessAction::Clock {
+            offset_nanos: *offset,
+            rate_ppm: *rate_ppm,
+            spread: *spread,
+        },
         _ => unreachable!("process_target received a non-process fault"),
     }
 }
@@ -50,6 +63,19 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
             edges,
             hold: Span(hold_nanos),
             target,
+        },
+        ProcessAction::PowerLoss { choice } => Fault::ProcPowerLoss { choice },
+        ProcessAction::DiskError => Fault::ProcDiskError,
+        ProcessAction::DiskStall { hold_nanos } => Fault::ProcDiskStall(Span(hold_nanos)),
+        ProcessAction::DiskCorrupt { choice } => Fault::ProcDiskCorrupt { choice },
+        ProcessAction::Clock {
+            offset_nanos,
+            rate_ppm,
+            spread,
+        } => Fault::ProcClock {
+            offset: offset_nanos,
+            rate_ppm,
+            spread,
         },
     })
 }
@@ -76,6 +102,15 @@ mod tests {
                 edges: 1,
                 hold: Span(2_000_000),
                 target: crate::ParkTarget::new(0x1000, 0x1004),
+            },
+            Fault::ProcPowerLoss { choice: 9 },
+            Fault::ProcDiskError,
+            Fault::ProcDiskStall(Span(3_000_000)),
+            Fault::ProcDiskCorrupt { choice: 11 },
+            Fault::ProcClock {
+                offset: -5_000_000_000,
+                rate_ppm: crate::CLOCK_RATE_STOPPED_PPM,
+                spread: 9,
             },
         ] {
             let bytes = process_target(3, &f);

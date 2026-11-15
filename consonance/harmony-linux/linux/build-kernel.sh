@@ -29,12 +29,13 @@ fi
 
 extract_kernel
 
-# Apply the architecture-independent transport first, then the x86 overlay.
+# Apply the architecture-independent transport and the VM kernel series first,
+# then the x86 overlay.
 # Each directory is ordered lexically by apply-patch-series.sh and the stamp
 # records both directory and file names, so a changed common or arch patch
 # cannot be mistaken for an already prepared source tree.
 bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" \
-    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/x86"
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/vm" "$LINUX_DIR/patches/x86"
 
 mkdir -p "$KOBJ" "$ART_DIR"
 
@@ -82,10 +83,10 @@ assert_off() {
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS PROC_CHILDREN SYSFS DEVTMPFS ACPI PCI \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
-    HARMONY_PVCLOCK HARMONY_DEVICE NAMESPACES UTS_NS IPC_NS PID_NS \
+    HARMONY_PVCLOCK HARMONY_DEVICE NAMESPACES UTS_NS IPC_NS PID_NS TIME_NS \
     NET_NS NET UNIX INET SYSCTL NETDEVICES VETH NET_SCHED NET_SCH_NETEM \
     CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_BPF BPF_SYSCALL TMPFS UNIX98_PTYS SECCOMP \
-    SECCOMP_FILTER
+    SECCOMP_FILTER BLOCK BLK_DEV BLK_DEV_RAM MD BLK_DEV_DM DM_LOG_WRITES DM_DELAY EXT4_FS
 assert_off BPF_JIT FHANDLE
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     assert_off HARMONY_USER_COUNTER_TRAPS

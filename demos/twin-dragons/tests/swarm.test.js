@@ -133,3 +133,56 @@ test("a clearing trail holds its last position for the finish hold", () => {
   assert.equal(held[0].x, 110);
   assert.equal(swarm.frame(0, 1500).size, 0);
 });
+
+test("live cohorts acquire separate births without changing trajectory speed", () => {
+  const trails = Array.from({ length: 4 }, (_, i) => new Uint16Array([0, 0, i * 100, 20, 0, 60, 0, i * 100 + 60, 20, 0]));
+  const swarm = new Swarm(4096, 20);
+  swarm.add(0, trails, 100, [], 100);
+  assert.equal(swarm.frame(0, 99).size, 0);
+  assert.deepEqual(swarm.frame(0, 100).get(0).map(p => p.x), [0]);
+  assert.deepEqual(swarm.frame(0, 125).get(0).map(p => p.x), [1.5, 100]);
+  assert.deepEqual(swarm.frame(0, 150).get(0).map(p => p.x), [3, 101.5, 200]);
+  assert.deepEqual(swarm.frame(0, 175).get(0).map(p => p.x), [4.5, 103, 201.5, 300]);
+  assert.deepEqual(swarm.frame(0, 600).get(0).map(p => p.x), [30, 128.5, 227, 325.5]);
+  assert.equal(swarm.frame(0, 1175).size, 0);
+  assert.equal(swarm.bytes, 0);
+  swarm.add(0, trails, 1200);
+  assert.deepEqual(swarm.frame(0, 1200).get(0).map(p => p.x), [0, 100, 200, 300], "Ordinary browser batches retain immediate births");
+});
+
+test("scheduled births share caps and finish hold, and a pause freezes their clock", () => {
+  const samples = new Uint16Array([0, 0, 10, 20, 0, 6, 0, 16, 20, 0]);
+  const clock = new Heatmap(), swarm = new Swarm(samples.byteLength * 2, 2, 500);
+  clock.setRunning(true, 0);
+  swarm.add(0, [samples, samples, samples, samples], clock.clock(0), [3], 10000);
+  assert.equal(swarm.trails.size, 2);
+  assert.equal(swarm.bytes, samples.byteLength * 2);
+  assert.deepEqual(swarm.frame(0, 49).get(0).map(p => [p.x, !!p.finish]), [[12.94, true]], "Finish evidence is immediate; evicted attempts cannot leak their scheduled births");
+  clock.setRunning(false, 60);
+  assert.equal(swarm.frame(0, clock.clock(5000)).get(0).length, 2);
+  clock.setRunning(true, 5000);
+  const points = swarm.frame(0, clock.clock(5020)).get(0);
+  assert.equal(points.length, 2);
+  assert.equal(points[1].finish, true);
+  assert.equal(points[1].x, 14.8);
+  assert.equal(swarm.frame(0, 175).get(0).length, 1);
+  assert.equal(swarm.frame(0, 600).size, 0);
+  assert.equal(swarm.bytes, 0);
+});
+
+
+test("terminal presentation deadline uses retained actual durations and finish holds", () => {
+  const swarm = new Swarm(4096, 10, 500);
+  const long = new Uint16Array([0, 0, 10, 20, 0, 65535, 0, 18, 28, 2]);
+  const short = new Uint16Array([0, 0, 10, 20, 0, 60, 0, 18, 28, 2]);
+  swarm.add(0, [short, short], 100, [1], 100);
+  assert.equal(swarm.endTime(0, 100), 1600);
+  assert.equal(swarm.endTime(1, 100), 100);
+  swarm.add(1, [long], 200);
+  assert.equal(swarm.endTime(1, 200), 200 + 65535 / 0.06);
+  assert.equal(swarm.bytes, short.byteLength * 2 + long.byteLength);
+  swarm.frame(0, 1600);
+  assert.equal(swarm.endTime(0, 1600), 1600);
+  swarm.remove(1);
+  assert.equal(swarm.bytes, 0);
+});

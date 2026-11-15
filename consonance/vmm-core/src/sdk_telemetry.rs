@@ -13,12 +13,11 @@ pub(crate) enum Kind {
     Unknown,
     Invalid,
     Unreadable,
-    Refused,
     ResponseUnknown,
 }
 
 impl Kind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 10] = [
         Self::Event,
         Self::Coverage,
         Self::Service,
@@ -28,7 +27,6 @@ impl Kind {
         Self::Unknown,
         Self::Invalid,
         Self::Unreadable,
-        Self::Refused,
         Self::ResponseUnknown,
     ];
     fn name(self) -> &'static str {
@@ -42,7 +40,6 @@ impl Kind {
             Self::Unknown => "unknown",
             Self::Invalid => "invalid",
             Self::Unreadable => "unreadable",
-            Self::Refused => "predecode_refused",
             Self::ResponseUnknown => "response_unclassified",
         }
     }
@@ -124,7 +121,6 @@ impl Callback {
 struct Work {
     requests: u64,
     deferred: u64,
-    request: Callback,
     response: Callback,
 }
 
@@ -132,16 +128,12 @@ impl Work {
     fn merge(&mut self, rhs: Self) {
         self.requests = self.requests.saturating_add(rhs.requests);
         self.deferred = self.deferred.saturating_add(rhs.deferred);
-        self.request.merge(rhs.request);
         self.response.merge(rhs.response);
     }
     fn counters(self, prefix: &str, out: &mut Vec<(String, u64)>) {
         for (name, value) in [
             ("requests", self.requests),
             ("deferred", self.deferred),
-            ("request_guard_calls", self.request.calls),
-            ("request_guard_errors", self.request.errors),
-            ("request_guard_callback_ns", self.request.nanos),
             ("response_guard_calls", self.response.calls),
             ("response_guard_errors", self.response.errors),
             ("response_guard_callback_ns", self.response.nanos),
@@ -153,7 +145,7 @@ impl Work {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SdkDispatchTelemetry {
-    bins: [Work; 11],
+    bins: [Work; 10],
     shapes: [Option<(Shape, Work)>; 32],
     overflow: Work,
 }
@@ -179,13 +171,12 @@ impl SdkDispatchTelemetry {
             self.overflow.merge(work);
         }
     }
-    pub(crate) fn request(&mut self, at: Attribution, callback: Callback, deferred: bool) {
+    pub(crate) fn request(&mut self, at: Attribution, deferred: bool) {
         self.add(
             at,
             Work {
                 requests: 1,
                 deferred: u64::from(deferred),
-                request: callback,
                 ..Work::default()
             },
         );
@@ -275,13 +266,8 @@ mod tests {
             })
         );
         let mut work = SdkDispatchTelemetry::default();
-        work.request(at, Callback::measured(true, false, 17), true);
+        work.request(at, true);
         work.response(at, Callback::measured(true, true, 23));
-        work.request(
-            Attribution::kind(Kind::Refused),
-            Callback::measured(true, true, 31),
-            false,
-        );
         work.response(
             Attribution::kind(Kind::Service),
             Callback::measured(false, true, 999),
@@ -291,11 +277,6 @@ mod tests {
             Work {
                 requests: 1,
                 deferred: 1,
-                request: Callback {
-                    calls: 1,
-                    errors: 0,
-                    nanos: 17
-                },
                 response: Callback {
                     calls: 1,
                     errors: 1,
@@ -303,7 +284,6 @@ mod tests {
                 }
             }
         );
-        assert_eq!(work.bins[Kind::Refused as usize].request.nanos, 31);
         assert_eq!(
             work.bins[Kind::Service as usize].response,
             Callback::default()
@@ -328,7 +308,6 @@ mod tests {
                         first: Some(0),
                     }),
                 },
-                Callback::measured(true, false, 7),
                 false,
             );
         }
@@ -343,7 +322,6 @@ mod tests {
         first.response(known, Callback::measured(true, true, 11));
         assert_eq!(first.shapes.iter().flatten().count(), 32);
         assert_eq!(first.overflow.requests, 1);
-        assert_eq!(first.overflow.request.nanos, 7);
         let before = first.clone();
         first.merge(&before);
         let mut covered = first.overflow;
@@ -364,12 +342,10 @@ mod tests {
                     first: Some(0),
                 }),
             },
-            Callback::measured(true, false, 13),
             false,
         );
         first.merge(&other);
         assert_eq!(first.overflow.requests, 3);
-        assert_eq!(first.overflow.request.nanos, 27);
         assert_eq!(first.shapes.iter().flatten().count(), 32);
         let mut covered = first.overflow;
         for (_, work) in first.shapes.iter().flatten() {

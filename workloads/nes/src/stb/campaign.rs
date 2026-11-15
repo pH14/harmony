@@ -201,11 +201,12 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     parent_milestones: StbMilestones,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
-    stop_rollout_on_objective: bool,
+    stop: searcher::search::rollout::RolloutStop,
 ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
+        doomed: false,
         objective_reached: target.exit_kind() == ExitKind::Ok && target.player_a_won(),
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
@@ -219,6 +220,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions,
         });
     }
@@ -242,6 +244,7 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             ExecutionDisposition::Runnable
         };
         let outcome = Outcome {
+            doomed: false,
             objective_reached,
             disposition,
         };
@@ -284,12 +287,13 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             outcome,
             candidate,
         });
-        if outcome.should_stop(stop_rollout_on_objective) {
+        if outcome.should_stop(&stop) {
             break;
         }
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
+        hang: None,
         actions,
     })
 }
@@ -499,19 +503,13 @@ impl TargetExecution for StbGame {
         parent_milestones: StbMilestones,
         suffix: &[ButtonChord],
         retention: RetentionPolicy,
-        stop_rollout_on_objective: bool,
+        stop: searcher::search::rollout::RolloutStop,
     ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(
-            target,
-            parent_milestones,
-            suffix,
-            retention,
-            stop_rollout_on_objective,
-        )
+        execute_suffix(target, parent_milestones, suffix, retention, stop)
     }
 }
 
@@ -752,6 +750,7 @@ mod tests {
             .expect("shared-state wire representation");
         CampaignJobResult {
             preparation_failure: None,
+            hang: None,
             actions: vec![CampaignActionResult {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
@@ -934,7 +933,7 @@ mod tests {
                 StbMilestones::default(),
                 &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
                 RetentionPolicy::Unprobed,
-                stop_on_objective,
+                searcher::search::rollout::RolloutStop::new(stop_on_objective),
             )
             .expect("respawn suffix");
             assert_eq!(result.actions.len(), 2);

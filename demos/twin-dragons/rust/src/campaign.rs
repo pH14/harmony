@@ -36,7 +36,9 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    famidash::Famidash, mega_man::MegaMan, metroid::Metroid, smb::Smb, twin_dragons::TwinDragons,
+    castlevania::Castlevania, donkey_kong::DonkeyKong, famidash::Famidash,
+    ice_climbers::IceClimbers, joust::Joust, mega_man::MegaMan, metroid::Metroid, pac_man::PacMan,
+    punchout::PunchOut, smb::Smb, twin_dragons::TwinDragons, zelda::Zelda,
 };
 
 const WINDOW: usize = 16;
@@ -476,6 +478,7 @@ impl<G: BrowserGame> Search<G> {
         while coordinator.reserve_next()? {}
         coordinator.watch_admissions();
         let feed = Feed::new(
+            0,
             G::memory_view(&restore_ram(options.core, &raw)?)?,
             frames,
             snapshot_digest(&raw),
@@ -614,7 +617,7 @@ impl<G: BrowserGame> WorkerApi for Worker<G> {
     fn run(&mut self, job: &[u8]) -> Result<Vec<u8>, JsValue> {
         let job: JobSpec<G> = postcard::from_bytes(job).map_err(js_error)?;
         let (outcome, note) = run_noted(&job, || {
-            run_job(self.game, &self.config, &mut self.target, &job)
+            run_job(self.game, &self.config, &mut self.target, &job, None)
         })
         .map_err(js_error)?;
         self.note = Some(postcard::to_allocvec(&note).map_err(js_error)?);
@@ -667,6 +670,13 @@ impl CampaignSearch {
             "super-mario-bros" => Box::new(Search::<Smb>::new(options).map_err(js_error)?),
             "mega-man-2" => Box::new(Search::<MegaMan>::new(options).map_err(js_error)?),
             "metroid" => Box::new(Search::<Metroid>::new(options).map_err(js_error)?),
+            "donkey-kong" => Box::new(Search::<DonkeyKong>::new(options).map_err(js_error)?),
+            "ice-climbers" => Box::new(Search::<IceClimbers>::new(options).map_err(js_error)?),
+            "pac-man" => Box::new(Search::<PacMan>::new(options).map_err(js_error)?),
+            "joust" => Box::new(Search::<Joust>::new(options).map_err(js_error)?),
+            "punch-out" => Box::new(Search::<PunchOut>::new(options).map_err(js_error)?),
+            "zelda" => Box::new(Search::<Zelda>::new(options).map_err(js_error)?),
+            "castlevania" => Box::new(Search::<Castlevania>::new(options).map_err(js_error)?),
             "famidash" => Box::new(Search::<Famidash<0>>::new(options).map_err(js_error)?),
             "famidash-community" => {
                 Box::new(Search::<Famidash<1>>::new(options).map_err(js_error)?)
@@ -747,6 +757,30 @@ impl CampaignWorker {
             "metroid" => Box::new(
                 Worker::<Metroid>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
             ),
+            "donkey-kong" => Box::new(
+                Worker::<DonkeyKong>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "ice-climbers" => Box::new(
+                Worker::<IceClimbers>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "pac-man" => Box::new(
+                Worker::<PacMan>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
+            "joust" => Box::new(
+                Worker::<Joust>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
+            "punch-out" => Box::new(
+                Worker::<PunchOut>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
+            "zelda" => Box::new(
+                Worker::<Zelda>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
+            "castlevania" => Box::new(
+                Worker::<Castlevania>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
             "famidash" => Box::new(
                 Worker::<Famidash<0>>::new(core, rom, identity, identity_sha256)
                     .map_err(js_error)?,
@@ -802,6 +836,13 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
         "super-mario-bros" => genesis_of::<Smb>(core, rom),
         "mega-man-2" => genesis_of::<MegaMan>(core, rom),
         "metroid" => genesis_of::<Metroid>(core, rom),
+        "donkey-kong" => genesis_of::<DonkeyKong>(core, rom),
+        "ice-climbers" => genesis_of::<IceClimbers>(core, rom),
+        "pac-man" => genesis_of::<PacMan>(core, rom),
+        "joust" => genesis_of::<Joust>(core, rom),
+        "punch-out" => genesis_of::<PunchOut>(core, rom),
+        "zelda" => genesis_of::<Zelda>(core, rom),
+        "castlevania" => genesis_of::<Castlevania>(core, rom),
         "famidash" => genesis_of::<Famidash<0>>(core, rom),
         "famidash-community" => genesis_of::<Famidash<1>>(core, rom),
         "famidash-b" => genesis_of::<Famidash<2>>(core, rom),

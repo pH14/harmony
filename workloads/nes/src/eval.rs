@@ -4,8 +4,8 @@ use crate::{
     search::{
         archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch, Workload,
-            replay_campaign_checkpointed, run_campaign_watched,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch, SavedStates,
+            Workload, replay_campaign_checkpointed, run_campaign_watched,
         },
         checkpoint::CheckpointPlan,
         draw::draw_mixture_from_identifier,
@@ -69,7 +69,11 @@ pub struct Request {
     #[serde(default)]
     pub checkpoint_on_progress: bool,
     #[serde(default)]
+    pub checkpoint_on_stall: bool,
+    #[serde(default)]
     pub resume: Option<PathBuf>,
+    #[serde(default)]
+    pub resume_states: Option<PathBuf>,
     #[serde(default)]
     pub live: Option<String>,
     #[serde(default)]
@@ -130,11 +134,11 @@ where
     if request.live.is_some() {
         return Err("this game has no live view".into());
     }
-    evaluate_watched(game, run, request, execution_sha256, out, started, &())
+    evaluate_watched(&game, run, request, execution_sha256, out, started, &())
 }
 
 pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
-    game: G,
+    game: &G,
     run: G::Run,
     request: &Request,
     execution_sha256: &str,
@@ -153,26 +157,33 @@ where
     if full && request.executions > 10000 {
         return Err("full campaign verification is bounded to 10000 executions; use witness verification for performance runs".into());
     }
-    if full && request.resume.is_some() {
+    if full && (request.resume.is_some() || request.resume_states.is_some()) {
         return Err("a run resumed from a search checkpoint has no stream to replay; use witness verification".into());
     }
-    let origin = match &request.resume {
-        Some(path) => CampaignOrigin::SearchCheckpoint {
+    let origin = match (&request.resume, &request.resume_states) {
+        (Some(_), Some(_)) => {
+            return Err("resume and resume_states name two origins; choose one".into());
+        }
+        (Some(path), None) => CampaignOrigin::SearchCheckpoint {
             path: path.clone(),
             expected_sha256: None,
         },
-        None => CampaignOrigin::Genesis,
+        (None, Some(path)) => CampaignOrigin::SavedStates {
+            states: SavedStates::open(game, path)?,
+        },
+        (None, None) => CampaignOrigin::Genesis,
     };
-    let checkpoints =
-        (request.checkpoint_every.is_some() || request.checkpoint_on_progress).then(|| {
-            CheckpointPlan {
-                directory: out.join("checkpoints"),
-                every: request.checkpoint_every,
-                on_marks: request.checkpoint_on_progress,
-                on_top_progress: request.checkpoint_on_progress,
-                checkpoint_owner: None,
-                max_image_bytes: 64 << 20,
-            }
+    let checkpoints = (request.checkpoint_every.is_some()
+        || request.checkpoint_on_progress
+        || request.checkpoint_on_stall)
+        .then(|| CheckpointPlan {
+            directory: out.join("checkpoints"),
+            every: request.checkpoint_every,
+            on_marks: request.checkpoint_on_progress,
+            on_top_progress: request.checkpoint_on_progress,
+            on_stall: request.checkpoint_on_stall,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
         });
     let config = CampaignConfig {
         campaign_seed: request.seed,
@@ -203,7 +214,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "resume":request.resume}),
+        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -219,7 +230,7 @@ where
     phase(out, "search", started)?;
     let search_started = telemetry_now();
     let (report, checkpoint) = run_campaign_watched(
-        &game,
+        game,
         &config,
         &origin,
         &mut stream,
@@ -228,6 +239,7 @@ where
             work_budget: request.frames,
             checkpoints,
             placement: None,
+            interrupt: None,
         },
         watch,
     )?;
@@ -260,8 +272,8 @@ where
     let export_seconds = export_started.elapsed().as_secs_f64();
     phase(out, "verification", started)?;
     let verify_started = telemetry_now();
-    let first = replay_witness(&game, &run, &witness)?;
-    let second = replay_witness(&game, &run, &witness)?;
+    let first = replay_witness(game, &run, &witness)?;
+    let second = replay_witness(game, &run, &witness)?;
     if first != second {
         return Err("witness replay endpoint is nondeterministic".into());
     }
@@ -270,8 +282,7 @@ where
     }
     if full {
         let bytes = fs::read(out.join("stream.jsonl"))?;
-        let (replayed, replay_checkpoint) =
-            replay_campaign_checkpointed(&game, &bytes, None, None)?;
+        let (replayed, replay_checkpoint) = replay_campaign_checkpointed(game, &bytes, None, None)?;
         if serde_json::to_value(&replayed)? != serde_json::to_value(&report)?
             || checkpoint != replay_checkpoint
         {
@@ -288,8 +299,8 @@ where
         for path in paths {
             let bytes = fs::read(&path)?;
             let input: Input<G::Action> = serde_json::from_slice(&bytes)?;
-            let replay = replay_witness(&game, &run, &input)?;
-            if replay != replay_witness(&game, &run, &input)? {
+            let replay = replay_witness(game, &run, &input)?;
+            if replay != replay_witness(game, &run, &input)? {
                 return Err("milestone witness replay is nondeterministic".into());
             }
             let name = path

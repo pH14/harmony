@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub mod castlevania;
+pub mod donkey_kong;
 pub mod famidash;
 pub mod feed;
+pub mod ice_climbers;
+pub mod joust;
 pub mod mega_man;
 pub mod metroid;
+pub mod pac_man;
+pub mod punchout;
 pub mod smb;
 pub mod trail;
 pub mod twin_dragons;
+pub mod zelda;
 
 use std::{error::Error, sync::Arc};
 
@@ -22,8 +29,23 @@ pub const HIDDEN: u16 = u16::MAX;
 
 pub type Machines<M> = Arc<dyn Fn() -> Result<M, MachineError> + Send + Sync>;
 
+pub trait ArcadeAction {
+    fn chord(&self) -> Option<ButtonChord>;
+    fn planned_frames(&self) -> u64;
+}
+
+impl ArcadeAction for ButtonChord {
+    fn chord(&self) -> Option<ButtonChord> {
+        Some(*self)
+    }
+
+    fn planned_frames(&self) -> u64 {
+        u64::from(self.bounded_hold_frames())
+    }
+}
+
 pub trait ArcadeGame:
-    Workload<Action = ButtonChord, ArchiveReport: Serialize> + Sized + 'static
+    Workload<Action: ArcadeAction, ArchiveReport: Serialize> + Sized + 'static
 {
     type Machine;
     type View: Serialize + DeserializeOwned + Copy + Send + 'static;
@@ -36,6 +58,16 @@ pub trait ArcadeGame:
         identity_sha256: &str,
         machines: Machines<Self::Machine>,
     ) -> Self;
+
+    fn arcade_from(
+        rom: &[u8],
+        identity: &str,
+        identity_sha256: &str,
+        machines: Machines<Self::Machine>,
+        _level: u8,
+    ) -> Self {
+        Self::arcade(rom, identity, identity_sha256, machines)
+    }
 
     fn run() -> Self::Run;
 
@@ -54,6 +86,8 @@ pub trait ArcadeGame:
     fn cleared(observation: &Self::Observations) -> u8;
 
     fn emulator_state(snapshot: &Self::Snapshot) -> &[u8];
+
+    fn snapshot_frame_count(snapshot: &Self::Snapshot) -> u64;
 
     fn probe() -> trail::Probe {
         trail::Probe {

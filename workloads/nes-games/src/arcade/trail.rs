@@ -25,6 +25,7 @@ pub struct Probe {
 #[derive(Default)]
 pub struct Trail {
     skip: u64,
+    start: u64,
     pub samples: Vec<u16>,
     pub start_cleared: u8,
 }
@@ -152,7 +153,7 @@ impl<M: Machine + NesMemory> Traced<M> {
         let needed = RECORDING.with_borrow(|trail| {
             trail
                 .as_ref()
-                .is_some_and(|trail| elapsed == trail.skip && trail.samples.is_empty())
+                .is_some_and(|trail| elapsed >= trail.skip && trail.samples.is_empty())
         });
         if !needed {
             return;
@@ -163,6 +164,7 @@ impl<M: Machine + NesMemory> Traced<M> {
             memory.resize(probe.memory_bytes, 0);
         }
         with_trail(|trail| {
+            trail.start = elapsed;
             trail.samples.push(0);
             trail.samples.extend((probe.motion)(wram));
             trail.start_cleared = (probe.cleared)(&memory);
@@ -193,7 +195,7 @@ impl<M: Machine + NesMemory> Traced<M> {
         let mut within = 0_u16;
         for index in 0..frames {
             let wram = self.inner.frames()[index];
-            if within == 0 && index > 0 {
+            if index > 0 {
                 self.begin(&self.inner.frames()[index - 1]);
             }
             self.elapsed += 1;
@@ -211,10 +213,10 @@ impl<M: Machine + NesMemory> Traced<M> {
             if within.is_multiple_of(TRAIL_STRIDE) || ended || index + 1 == frames {
                 let (elapsed, motion) = (self.elapsed, self.probe.motion);
                 with_trail(|trail| {
-                    if elapsed > trail.skip && !trail.samples.is_empty() {
+                    if elapsed > trail.start && !trail.samples.is_empty() {
                         trail
                             .samples
-                            .push(u16::try_from(elapsed - trail.skip).unwrap_or(u16::MAX));
+                            .push(u16::try_from(elapsed - trail.start).unwrap_or(u16::MAX));
                         trail.samples.extend(motion(&wram));
                     }
                 });
@@ -554,6 +556,40 @@ mod tests {
             );
         });
         assert_eq!(trail.samples, [0, 2, 0, 0, 0, 4, 6, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_trail_whose_prefix_ends_inside_a_chord_starts_on_that_frame() {
+        let mut machine = Traced::new(Walker::default(), probe());
+        let root = machine.snapshot().unwrap();
+        let ((), trail) = record(4, || {
+            walk(
+                &mut machine,
+                root,
+                &[ButtonChord::new(1, 2), ButtonChord::new(1, 8)],
+            );
+        });
+        assert_eq!(
+            trail.samples,
+            [0, 4, 0, 0, 0, 2, 6, 0, 0, 0, 6, 10, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn a_reset_before_the_job_leaves_the_trail_start_unchanged() {
+        let mut machine = Traced::new(Walker::default(), probe());
+        let root = machine.snapshot().unwrap();
+        walk(&mut machine, root, &[ButtonChord::new(1, 3)]);
+        let genesis = machine.snapshot().unwrap();
+        let job = machine.import(&9).unwrap();
+        let ((), trail) = record(0, || {
+            machine.replay(genesis).unwrap();
+            walk(&mut machine, job, &[ButtonChord::new(1, 5)]);
+        });
+        assert_eq!(
+            trail.samples,
+            [0, 9, 0, 0, 0, 4, 13, 0, 0, 0, 5, 14, 0, 0, 0]
+        );
     }
 
     #[test]

@@ -103,6 +103,11 @@ impl<P: SnapshotState> SmbSnapshot<P> {
     }
 
     #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
     pub fn emulator_state(&self) -> &P {
         &self.emulator_state
     }
@@ -307,6 +312,11 @@ where
     #[must_use]
     pub fn is_dead(&self) -> bool {
         self.dead
+    }
+
+    #[must_use]
+    pub fn is_doomed(&self) -> bool {
+        !self.dead && smb_player_is_doomed(&self.wram())
     }
 
     #[must_use]
@@ -594,6 +604,65 @@ fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
 
+const PLAYER_CONTROL_STATE: u8 = 0x08;
+const PLAYER_AIR_STATE_OFFSET: usize = 0x001d;
+const PLAYER_JUMPING: u8 = 1;
+const PLAYER_FALLING: u8 = 2;
+const PLAYER_Y_SPEED_OFFSET: usize = 0x009f;
+const SWIMMING_FLAG_OFFSET: usize = 0x0704;
+const PLAY_AREA_PAGE: u8 = 1;
+const GROUND_LINE_Y: u8 = 0xb0;
+const METATILE_PIXELS: u8 = 16;
+const ENEMY_SLOTS: usize = 5;
+const ENEMY_ACTIVE_OFFSET: usize = 0x000f;
+const ENEMY_ID_OFFSET: usize = 0x0016;
+const LIFT_ENEMY_IDS: std::ops::RangeInclusive<u8> = 0x24..=0x2c;
+const JUMPSPRING_ENEMY_ID: u8 = 0x32;
+const BLOCK_BUFFERS: [usize; 2] = [0x0500, 0x05d0];
+const BLOCK_BUFFER_COLUMNS: u32 = 16;
+const FLOOR_ROWS: [usize; 2] = [11, 12];
+const FOOT_OFFSETS: [u32; 2] = [3, 12];
+const NON_SOLID_METATILES: [u8; 6] = [0x00, 0x26, 0x5f, 0x60, 0xc2, 0xc3];
+
+fn metatile_is_solid(metatile: u8) -> bool {
+    !NON_SOLID_METATILES.contains(&metatile)
+}
+
+fn floor_is_open_at(wram: &[u8; WRAM_SIZE], x: u32) -> bool {
+    let column = x / 16;
+    let buffer = BLOCK_BUFFERS[usize::from(column / BLOCK_BUFFER_COLUMNS % 2 == 1)];
+    let offset = usize::try_from(column % BLOCK_BUFFER_COLUMNS).unwrap_or(0);
+    FLOOR_ROWS
+        .iter()
+        .all(|row| !metatile_is_solid(wram[buffer + row * BLOCK_BUFFER_COLUMNS as usize + offset]))
+}
+
+fn a_lift_or_jumpspring_is_active(wram: &[u8; WRAM_SIZE]) -> bool {
+    (0..ENEMY_SLOTS).any(|slot| {
+        let id = wram[ENEMY_ID_OFFSET + slot];
+        wram[ENEMY_ACTIVE_OFFSET + slot] != 0
+            && (LIFT_ENEMY_IDS.contains(&id) || id == JUMPSPRING_ENEMY_ID)
+    })
+}
+
+#[must_use]
+pub fn smb_player_is_doomed(wram: &[u8; WRAM_SIZE]) -> bool {
+    let x = u32::from(wram[PLAYER_X_PAGE_OFFSET]) * 256 + u32::from(wram[PLAYER_X_LOW_OFFSET]);
+    wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_CONTROL_STATE
+        && matches!(
+            wram[PLAYER_AIR_STATE_OFFSET],
+            PLAYER_JUMPING | PLAYER_FALLING
+        )
+        && wram[SWIMMING_FLAG_OFFSET] == 0
+        && wram[PLAYER_VERTICAL_PAGE_OFFSET] == PLAY_AREA_PAGE
+        && wram[PLAYER_Y_OFFSET] >= GROUND_LINE_Y + METATILE_PIXELS
+        && wram[PLAYER_Y_SPEED_OFFSET] < 0x80
+        && FOOT_OFFSETS
+            .iter()
+            .all(|offset| floor_is_open_at(wram, x + offset))
+        && !a_lift_or_jumpspring_is_active(wram)
+}
+
 const OPERATING_MODE_OFFSET: usize = 0x0770;
 const VICTORY_OPERATING_MODE: u8 = 2;
 const FINAL_WORLD_NUMBER: u8 = 7;
@@ -743,7 +812,7 @@ mod tests {
         BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, OPER_MODE_OFFSET, OPER_MODE_PLAY,
         OPER_MODE_TASK_OFFSET, OPER_MODE_TASK_PLAY, PLAYER_ENGINE_STATE_OFFSET,
         PLAYER_KILLED_STATE, SCREEN_X_OFFSET, SmbSnapshot, SmbTarget, WRAM_SIZE, smb_is_victory,
-        smb_mechanical_state_from_wram,
+        smb_mechanical_state_from_wram, smb_player_is_doomed,
     };
     use crate::{
         nes_backend::{NesBackend, SnapshotState},
@@ -770,6 +839,69 @@ mod tests {
     fn chord_duration_is_total_and_bounded() {
         assert_eq!(ButtonChord::new(0x81, 0).hold_frames, 1);
         assert_eq!(ButtonChord::new(0x81, u8::MAX).hold_frames, MAX_HOLD_FRAMES);
+    }
+
+    fn falling_over(floor: u8) -> [u8; WRAM_SIZE] {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[0x000e] = 0x08;
+        wram[0x001d] = 2;
+        wram[0x00b5] = 1;
+        wram[0x00ce] = 0xc4;
+        wram[0x009f] = 4;
+        wram[0x006d] = 3;
+        wram[0x0086] = 0x40;
+        for row in [11, 12] {
+            for column in 0..16 {
+                wram[0x05d0 + row * 16 + column] = floor;
+            }
+        }
+        wram
+    }
+
+    #[test]
+    fn a_fall_below_the_ground_line_over_open_floor_is_doomed() {
+        assert!(smb_player_is_doomed(&falling_over(0x00)));
+        assert!(smb_player_is_doomed(&falling_over(0xc2)));
+        assert!(!smb_player_is_doomed(&falling_over(0x54)));
+    }
+
+    #[test]
+    fn a_state_that_can_still_land_or_rise_is_not_doomed() {
+        let mut above = falling_over(0x00);
+        above[0x00ce] = 0xb0;
+        assert!(!smb_player_is_doomed(&above));
+        let mut within_a_block = falling_over(0x00);
+        within_a_block[0x00ce] = 0xbf;
+        assert!(!smb_player_is_doomed(&within_a_block));
+        for id in [0x24, 0x2c, 0x32] {
+            let mut over_a_lift = falling_over(0x00);
+            over_a_lift[0x0011] = 1;
+            over_a_lift[0x0018] = id;
+            assert!(!smb_player_is_doomed(&over_a_lift));
+            over_a_lift[0x0011] = 0;
+            assert!(smb_player_is_doomed(&over_a_lift));
+        }
+        let mut over_an_enemy = falling_over(0x00);
+        over_an_enemy[0x0011] = 1;
+        over_an_enemy[0x0018] = 0x06;
+        assert!(smb_player_is_doomed(&over_an_enemy));
+        let mut rising = falling_over(0x00);
+        rising[0x009f] = 0xfc;
+        assert!(!smb_player_is_doomed(&rising));
+        let mut standing = falling_over(0x00);
+        standing[0x001d] = 0;
+        assert!(!smb_player_is_doomed(&standing));
+        let mut swimming = falling_over(0x00);
+        swimming[0x0704] = 1;
+        assert!(!smb_player_is_doomed(&swimming));
+        let mut in_pipe = falling_over(0x00);
+        in_pipe[0x000e] = 0x03;
+        assert!(!smb_player_is_doomed(&in_pipe));
+        let mut edge = falling_over(0x00);
+        edge[0x0086] = 0x48;
+        edge[0x05d0 + 12 * 16 + 5] = 0x54;
+        assert!(smb_player_is_doomed(&falling_over(0x00)));
+        assert!(!smb_player_is_doomed(&edge));
     }
 
     #[test]

@@ -66,7 +66,11 @@ fn qualify_vmm(len: usize, nonzero: bool, check_only: bool) {
     software.wire_snapshot_hashing();
     let native_blob = native.state_blob().unwrap();
     assert_eq!(native_blob, software.state_blob().unwrap());
-    let expected: [u8; 32] = sha2_reference::Sha256::digest(&native_blob).into();
+    let (memory, suffix) = native_blob[12..].split_at(len);
+    let expected = vmm_core::state_digest::state_hash_of(
+        &vmm_core::state_digest::memory_digest_of(memory),
+        suffix,
+    );
     drop(native_blob);
     assert_eq!(native.state_hash().unwrap(), expected);
     assert_eq!(software.state_hash().unwrap(), expected);
