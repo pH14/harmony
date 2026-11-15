@@ -19,12 +19,13 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_staged_plan_v4_routes_through_walkable_room_edges_energy_64_before_brinstar_routes_current_route_cell_stage_objective_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_staged_plan_v5_kraid_stage_done_on_kraid_defeat_bit_routes_through_walkable_room_edges_energy_64_before_brinstar_routes_current_route_cell_stage_objective_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
 pub const PREFERENCE_IDENTIFIER: &str = "items_tanks_missiles_health_then_items_tanks_balance_missiles_health_energy_first_at_zero_balance";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
 const BOSS_DAMAGE_BUCKET: u16 = 4;
+const KRAID_DEFEATED: u8 = 1;
 
 pub type MetroidArchive =
     Archive<MetroidAction, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
@@ -210,7 +211,8 @@ impl MetroidArchiveKey {
             equipment: self.equipment,
             missile_capacity: self.missile_capacity,
             energy_tanks: self.energy_tanks,
-            bosses: self.bosses,
+            bosses: u8::try_from(self.bosses.count_ones()).unwrap_or(u8::MAX),
+            kraid_defeated: self.bosses & KRAID_DEFEATED != 0,
             ..MetroidMechanicalState::default()
         }
     }
@@ -275,7 +277,8 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         missile_capacity: state.missile_capacity,
         energy_tanks: state.energy_tanks,
         equipment: state.equipment,
-        bosses: state.bosses,
+        bosses: u8::from(state.kraid_defeated)
+            | (u8::from(state.bosses > u8::from(state.kraid_defeated)) << 1),
         stage: 0,
         objective: 0,
     }
@@ -413,6 +416,31 @@ mod tests {
         });
         assert_eq!(kraid.progress(), ridley.progress());
         assert_ne!(kraid.place(), ridley.place());
+    }
+
+    #[test]
+    fn the_key_keeps_which_boss_is_defeated() {
+        let ridley_only = MetroidMechanicalState {
+            bosses: 1,
+            ..MetroidMechanicalState::default()
+        };
+        let kraid_only = MetroidMechanicalState {
+            bosses: 1,
+            kraid_defeated: true,
+            ..MetroidMechanicalState::default()
+        };
+        let both = MetroidMechanicalState {
+            bosses: 2,
+            kraid_defeated: true,
+            ..MetroidMechanicalState::default()
+        };
+        for state in [ridley_only, kraid_only, both] {
+            let rebuilt = archive_key(state).state();
+            assert_eq!(
+                (rebuilt.bosses, rebuilt.kraid_defeated),
+                (state.bosses, state.kraid_defeated)
+            );
+        }
     }
 
     #[test]

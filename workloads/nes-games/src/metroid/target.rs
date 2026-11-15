@@ -176,6 +176,7 @@ pub struct MetroidMechanicalState {
     pub statues: u8,
     pub mother_brain_defeated: bool,
     pub ending: bool,
+    pub kraid_defeated: bool,
 }
 
 impl MetroidMechanicalState {
@@ -406,6 +407,7 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
             + u8::from(statue_raised(read_byte(cartridge, RIDLEY_STATUS)?)),
         mother_brain_defeated: mother_brain_defeated(wram, area)?,
         ending: read_byte(cartridge, ENDING)? != 0,
+        kraid_defeated: boss_defeated(read_byte(cartridge, KRAID_STATUS)?, KRAID_DEFEATED_BIT),
     })
 }
 

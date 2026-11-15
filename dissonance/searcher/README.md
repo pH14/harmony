@@ -317,6 +317,18 @@ key as a magnitude:
 | Which same-place states are distinct? | `ArchiveKey::identity`. Two entries at one place and progress with different identities hold separate slots. |
 | Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices; the default declares none and compares `Ordering::Equal`. |
 
+A workload may build its progress from a staged plan in `search::plan`. A
+plan is an ordered slice of values implementing `plan::Stage`: each stage has
+a name, one integer objective computed from the state (with the parent's value
+for that stage passed in, for a state the stage cannot measure), and a done
+test. `plan::locate` returns (stage, objective) for the first stage whose done
+test fails, skipping a stage whose `latches` is true once the parent is past
+it, so a reached waypoint stays reached for every descendant.
+`ArchiveKey::progress` returns that pair, so the stage is the outer tier and
+the objective orders states within it. Place, identity and preferences remain
+the key's own; a key that wants them to differ by stage reads the stage from
+its progress. A workload without a plan keeps its own progress.
+
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,
 and its contents are the union of those sets. A candidate enters when it
