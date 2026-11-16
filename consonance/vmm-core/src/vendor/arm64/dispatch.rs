@@ -207,24 +207,6 @@ impl Arm64Devices {
 }
 
 impl<B: Backend<A = Arm64>> Vmm<B> {
-    pub fn arm64_architectural_state(
-        &mut self,
-    ) -> Result<super::Arm64ArchitecturalState, VmmError> {
-        let mut vcpu = self.backend.save()?;
-        let backend_gic = vcpu.gic.take().map(|gic| records::gic_from_backend(&gic));
-        let userspace_gic = self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
-        let gic = match (backend_gic, userspace_gic) {
-            (Some(_), Some(_)) => {
-                return Err(VmmError::ContractViolation(
-                    "both in-kernel and userspace GICv3 fabrics are wired".to_string(),
-                ));
-            }
-            (Some(gic), None) | (None, Some(gic)) => Some(gic),
-            (None, None) => None,
-        };
-        Ok(super::Arm64ArchitecturalState { vcpu, gic })
-    }
-
     pub fn canonical_arm64_gic_state(&mut self) -> Result<Option<gicv3::GicState>, VmmError> {
         let vcpu = self.backend.save()?;
         match (vcpu.gic.as_ref(), self.devices.gic.as_ref()) {
