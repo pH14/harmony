@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::error::Error;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
-use std::{error::Error, marker::PhantomData};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,7 +24,6 @@ use crate::{
         NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES,
     },
     nes_backend::{NesBackend, SnapshotState},
-    search::assertion::Findings,
     search::campaign::{
         CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
         CampaignOrigin, CampaignProgressRecord, CampaignStreamRecord, CampaignTypes, Evaluation,
@@ -37,7 +36,7 @@ use crate::{
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, SmbKey, admission_is_viable, archive_key, chord_time,
+        SmbArchiveReport, admission_is_viable, archive_key, chord_time, key_policy_identifier,
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
@@ -45,7 +44,7 @@ use crate::{
     smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, WRAM_SIZE,
+        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
         smb_mechanical_state_from_wram, smb_player_has_control,
     },
     target::{ExitKind, Target},
@@ -88,7 +87,7 @@ pub fn recorded_policy<'a>(
 
 pub type SmbTargets<M, P> = Box<dyn Fn() -> Result<SmbTarget<M, P>, String> + Send + Sync>;
 
-pub struct SmbGame<M, P = Vec<u8>, K = SmbArchiveKey>
+pub struct SmbGame<M, P = Vec<u8>>
 where
     M: NesBackend<P>,
     P: SnapshotState,
@@ -98,7 +97,6 @@ where
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
     route: SmbRoute,
-    key: PhantomData<fn() -> K>,
 }
 
 #[must_use]
@@ -126,17 +124,9 @@ where
             checkpoint_format,
             targets,
             route: SmbRoute::AllLevels,
-            key: PhantomData,
         }
     }
-}
 
-impl<M, P, K> SmbGame<M, P, K>
-where
-    M: NesBackend<P>,
-    P: SnapshotState,
-    K: SmbKey,
-{
     #[must_use]
     pub fn with_root(self, root: SmbInput) -> Self
     where
@@ -168,24 +158,12 @@ where
     }
 
     #[must_use]
-    pub fn with_key<L: SmbKey>(self) -> SmbGame<M, P, L> {
-        SmbGame {
-            rom_sha256: self.rom_sha256,
-            identity: self.identity,
-            checkpoint_format: self.checkpoint_format,
-            targets: self.targets,
-            route: self.route,
-            key: PhantomData,
-        }
-    }
-
-    #[must_use]
     pub fn route(&self) -> SmbRoute {
         self.route
     }
 
     fn key_policy(&self) -> String {
-        K::key_policy(self.route)
+        key_policy_identifier(self.route)
     }
 
     fn doomed_policy(&self) -> String {
@@ -304,19 +282,16 @@ pub struct SmbCampaignEvidence {
     pub first_inputs: SmbMilestoneInputs,
     pub champion_input: SmbInput,
     pub champion_milestones: SmbMilestones,
-    #[serde(default, skip_serializing_if = "Findings::is_empty")]
-    pub findings: Findings<ButtonChord>,
 }
 
-pub type SmbCampaignOrigin<M, P = Vec<u8>, K = SmbArchiveKey> = CampaignOrigin<SmbGame<M, P, K>>;
+pub type SmbCampaignOrigin<M, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
 pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>;
 pub type SmbSnapshotCheckpoint<P = Vec<u8>> = SnapshotCheckpoint<SmbSnapshot<P>>;
 pub type SmbSnapshotCheckpointEntry<P = Vec<u8>> =
     crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot<P>>;
 pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveReport>;
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
-pub type SmbCampaignActionResult<M, P = Vec<u8>, K = SmbArchiveKey> =
-    CampaignActionResult<SmbGame<M, P, K>>;
+pub type SmbCampaignActionResult<M, P = Vec<u8>> = CampaignActionResult<SmbGame<M, P>>;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmbTerminalPredicate {
@@ -448,53 +423,44 @@ pub fn button_vocabulary_from_identifier(
     }
 }
 
-fn frontier<K: SmbKey>(key: K) -> (u8, u8, u16) {
-    let view = key.view();
-    (view.world, view.level, view.progress)
-}
-
-pub fn select_frontier_resume_input<K: SmbKey>(
-    source: &SmbArchiveReport<K>,
-) -> Result<SmbInput, Box<dyn Error>> {
-    let frontier_reached = source
+pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
+    let frontier = source
         .entries
         .iter()
-        .map(|entry| frontier(entry.key))
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
         .max()
         .ok_or("source archive contains no retained entries")?;
     source
         .entries
         .iter()
-        .filter(|entry| frontier(entry.key) == frontier_reached)
+        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
         .min_by_key(|entry| (entry.input.actions.len(), entry.id))
         .map(|entry| entry.input.clone())
         .ok_or_else(|| "source archive contains no frontier entries".into())
 }
 
-impl<M, P, K> CampaignTypes for SmbGame<M, P, K>
+impl<M, P> CampaignTypes for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     type JobObservation = ();
     type Target = SmbTarget<M, P>;
     type Action = ButtonChord;
-    type Key = K;
+    type Key = SmbArchiveKey;
     type Milestones = SmbMilestones;
     type Progress = SmbProgressWatermark;
     type Snapshot = SmbSnapshot<P>;
     type Observations = SmbObservations;
     type Evidence = SmbCampaignEvidence;
-    type ArchiveReport = SmbArchiveReport<K>;
+    type ArchiveReport = SmbArchiveReport;
     type Run = SmbCampaignRun;
 }
 
-impl<M, P, K> Reporting for SmbGame<M, P, K>
+impl<M, P> Reporting for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     fn write_evidence_checkpoint(
         evidence: &Self::Evidence,
@@ -536,7 +502,7 @@ where
         &self,
         evidence: &SmbCampaignEvidence,
         state: crate::search::campaign::ArchiveReportState<Self>,
-    ) -> SmbArchiveReport<K> {
+    ) -> SmbArchiveReport {
         SmbArchiveReport {
             seed: state.seed,
             executions: state.executions,
@@ -553,16 +519,14 @@ where
                 .terminal_endpoints
                 .saturating_sub(state.terminal_objectives),
             selector: state.selector,
-            findings: evidence.findings.clone(),
         }
     }
 }
 
-impl<M, P, K> InputPolicy for SmbGame<M, P, K>
+impl<M, P> InputPolicy for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     fn simpler_actions(&self, _run: &SmbCampaignRun, action: &ButtonChord) -> Vec<ButtonChord> {
         simpler_chords(action)
@@ -635,11 +599,10 @@ where
     }
 }
 
-impl<M, P, K> TargetExecution for SmbGame<M, P, K>
+impl<M, P> TargetExecution for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     fn new_target(&self) -> Result<SmbTarget<M, P>, String> {
         (self.targets)()
@@ -694,11 +657,10 @@ where
     }
 }
 
-impl<M, P, K> Evaluation for SmbGame<M, P, K>
+impl<M, P> Evaluation for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
         ShrinkCost::new(
@@ -719,13 +681,8 @@ where
     fn aggregate_progress(evidence: &SmbCampaignEvidence) -> SmbProgressWatermark {
         evidence.watermark
     }
-    fn merge_origin_evidence(
-        &self,
-        evidence: &mut SmbCampaignEvidence,
-        source: &SmbArchiveReport<K>,
-    ) {
+    fn merge_origin_evidence(&self, evidence: &mut SmbCampaignEvidence, source: &SmbArchiveReport) {
         evidence.watermark = evidence.watermark.max(source.progress_watermark);
-        evidence.findings.merge_new(&source.findings);
     }
     fn merge_snapshot_root_evidence(
         &self,
@@ -762,7 +719,7 @@ where
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut SmbCampaignEvidence,
-        action: &SmbCampaignActionResult<M, P, K>,
+        action: &SmbCampaignActionResult<M, P>,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>
@@ -778,31 +735,8 @@ where
             || (action.milestones.reached_onward && evidence.first_inputs.onward.is_none());
         let champion =
             milestone_key(action.milestones) > milestone_key(evidence.champion_milestones);
-        let mut violated: Vec<&'static str> = action
-            .observations
-            .iter()
-            .filter_map(|observation| {
-                <&[u8; WRAM_SIZE]>::try_from(observation.wram.as_slice()).ok()
-            })
-            .flat_map(|wram| K::violations_at(wram, self.route))
-            .collect();
-        violated.sort_unstable();
-        violated.dedup();
-        let finding_needed = violated
-            .iter()
-            .any(|declaration| evidence.findings.is_new(declaration));
-        let tape = if first_input_needed || champion || finding_needed {
-            Some(input()?)
-        } else {
-            None
-        };
-        for declaration in violated {
-            evidence.findings.record(declaration, sequence, || {
-                tape.clone()
-                    .ok_or_else(|| "a new finding has no tape".into())
-            })?;
-        }
-        if let Some(input) = tape.filter(|_| first_input_needed || champion) {
+        if first_input_needed || champion {
+            let input = input()?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
@@ -819,11 +753,11 @@ where
     }
     fn source_entries<'a>(
         &self,
-        source: &'a SmbArchiveReport<K>,
-    ) -> &'a [crate::smb::archive::SmbArchiveEntryReport<K>] {
+        source: &'a SmbArchiveReport,
+    ) -> &'a [crate::smb::archive::SmbArchiveEntryReport] {
         &source.entries
     }
-    fn resume_input(&self, source: &SmbArchiveReport<K>) -> Result<SmbInput, Box<dyn Error>> {
+    fn resume_input(&self, source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
         select_frontier_resume_input(source)
     }
 
@@ -871,22 +805,22 @@ where
         target.is_doomed() || (!target.is_dead() && self.route.is_doomed(&target.wram()))
     }
 
-    fn current_key(&self, target: &SmbTarget<M, P>) -> Result<K, Box<dyn Error>> {
-        let wram = target.wram();
-        stamp_arrival_room(archive_key(&wram).on_route(self.route), &wram).map(K::from_view)
+    fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        stamp_arrival_room(
+            archive_key(&target.wram()).on_route(self.route),
+            &target.wram(),
+        )
     }
 
-    fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<K, Box<dyn Error>> {
-        Ok(K::from_view(
-            archive_key(&target.wram()).on_route(self.route),
-        ))
+    fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        Ok(archive_key(&target.wram()).on_route(self.route))
     }
 
     fn complete_candidate_key(
         &self,
-        key: K,
+        key: SmbArchiveKey,
         snapshot: &SmbSnapshot<P>,
-    ) -> Result<K, Box<dyn Error>> {
-        stamp_arrival_room_identity(key.view(), snapshot.room_area()).map(K::from_view)
+    ) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        stamp_arrival_room_identity(key, snapshot.room_area())
     }
 }

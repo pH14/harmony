@@ -24,8 +24,6 @@ use nes_workload::{
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
     smb::{
-        archive::SmbKey,
-        assertion::SmbAssertionKey,
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         plan::SmbRoute,
     },
@@ -91,7 +89,6 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.metroid_terminal.is_some()
         || request.smb_route.is_some()
         || request.smb_terminal.is_some()
-        || request.smb_key.is_some()
         || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
@@ -149,40 +146,6 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
     }
 }
 
-const HAND_WRITTEN_SMB_KEY: &str = "hand_written";
-const ASSERTION_SMB_KEY: &str = "assertion";
-
-fn evaluate_smb<K: SmbKey>(
-    game: SmbGame<machine::quicknes::QuickNesMachine, Vec<u8>, K>,
-    rom: &[u8],
-    request: &Request,
-    execution_sha256: &str,
-    out: &Path,
-    started: Instant,
-) -> Result<()> {
-    evaluate_watching(
-        game,
-        SmbCampaignRun {
-            vocabulary: Default::default(),
-            terminal: Some(
-                request
-                    .smb_terminal
-                    .as_deref()
-                    .map(SmbTerminalPredicate::from_identifier)
-                    .transpose()?
-                    .unwrap_or_default(),
-            ),
-        },
-        rom,
-        request,
-        execution_sha256,
-        out,
-        started,
-        "super-mario-bros",
-        <SmbGame>::memory_view,
-    )
-}
-
 fn famidash_live(stage: Stage) -> (String, MemoryView<famidash::View>) {
     let group = GROUPS
         .iter()
@@ -218,14 +181,9 @@ fn main() -> Result<()> {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);
         }
-        if (request.smb_route.is_some()
-            || request.smb_key.is_some()
-            || request.smb_terminal.is_some())
-            && request.game != "smb"
+        if (request.smb_route.is_some() || request.smb_terminal.is_some()) && request.game != "smb"
         {
-            return Err(
-                "only Super Mario Bros. takes smb_route, smb_key and smb_terminal options".into(),
-            );
+            return Err("only Super Mario Bros. takes smb_route and smb_terminal options".into());
         }
         match request.game.as_str() {
             "smb" | "metroid"
@@ -260,8 +218,8 @@ fn main() -> Result<()> {
         let h = &request.core_sha256;
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
-            "smb" => {
-                let game = SmbGame::new(&rom, p, h, &execution_sha256)
+            "smb" => evaluate_watching(
+                SmbGame::new(&rom, p, h, &execution_sha256)
                     .with_root(
                         root_actions::<nes_games::smb::target::SmbInput>(
                             request.root_input.as_deref(),
@@ -275,25 +233,26 @@ fn main() -> Result<()> {
                             .map(SmbRoute::from_identifier)
                             .transpose()?
                             .unwrap_or_default(),
-                    );
-                match request.smb_key.as_deref().unwrap_or(HAND_WRITTEN_SMB_KEY) {
-                    HAND_WRITTEN_SMB_KEY => {
-                        evaluate_smb(game, &rom, &request, &execution_sha256, &out, started)
-                    }
-                    ASSERTION_SMB_KEY => evaluate_smb(
-                        game.with_key::<SmbAssertionKey>(),
-                        &rom,
-                        &request,
-                        &execution_sha256,
-                        &out,
-                        started,
                     ),
-                    other => Err(format!(
-                        "smb_key {other} is not {HAND_WRITTEN_SMB_KEY} or {ASSERTION_SMB_KEY}"
-                    )
-                    .into()),
-                }
-            }
+                SmbCampaignRun {
+                    vocabulary: Default::default(),
+                    terminal: Some(
+                        request
+                            .smb_terminal
+                            .as_deref()
+                            .map(SmbTerminalPredicate::from_identifier)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ),
+                },
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "super-mario-bros",
+                <SmbGame>::memory_view,
+            ),
             "mm2" if request.whole_game => evaluate_watching(
                 Mm2Game::new_whole_game(
                     &rom,

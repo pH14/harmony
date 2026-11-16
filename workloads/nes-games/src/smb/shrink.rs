@@ -6,7 +6,6 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::shrink::ShrinkPolicy,
     smb::{
-        archive::SmbKey,
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         target::{
             ButtonChord, ROOM_IDENTITY_BYTES, SmbInput, SmbTarget, WAIT_FOR_CONTROL_HOLD,
@@ -130,11 +129,10 @@ pub fn simpler_chords(action: &ButtonChord) -> Vec<ButtonChord> {
     simpler
 }
 
-impl<M, P, K> ShrinkPolicy for SmbGame<M, P, K>
+impl<M, P> ShrinkPolicy for SmbGame<M, P>
 where
     M: NesBackend<P>,
     P: SnapshotState,
-    K: SmbKey,
 {
     fn window_actions(&self, run: &SmbCampaignRun) -> Vec<ButtonChord> {
         run.vocabulary

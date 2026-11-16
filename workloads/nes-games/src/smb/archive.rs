@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, fmt::Debug};
+use std::{cmp::Ordering, error::Error};
 
 use crate::search::{
     archive::{ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix},
-    assertion::Findings,
     plan::StageProgress,
 };
 
@@ -19,8 +18,8 @@ use crate::{
         plan::{self, PlanState, SmbRoute},
         target::{
             ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-            SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, WRAM_SIZE,
-            smb_area_is_loading, smb_camera_pixels, smb_is_victory, smb_mechanical_state_from_wram,
+            SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
+            smb_camera_pixels, smb_is_victory, smb_mechanical_state_from_wram,
             smb_milestones_from_wram, smb_player_position,
         },
     },
@@ -74,41 +73,11 @@ pub struct SmbArchiveKey {
     pub victory: bool,
 }
 
-pub trait SmbKey: ArchiveKey + Debug + Send + Sync + 'static {
-    fn key_policy(route: SmbRoute) -> String;
-
-    fn from_view(view: SmbArchiveKey) -> Self;
-
-    fn view(self) -> SmbArchiveKey;
-
-    fn violations_at(_wram: &[u8; WRAM_SIZE], _route: SmbRoute) -> Vec<&'static str> {
-        Vec::new()
-    }
-}
-
-impl SmbKey for SmbArchiveKey {
-    fn key_policy(route: SmbRoute) -> String {
-        key_policy_identifier(route)
-    }
-
-    fn from_view(view: SmbArchiveKey) -> Self {
-        view
-    }
-
-    fn view(self) -> SmbArchiveKey {
-        self
-    }
-}
-
 impl SmbArchiveKey {
     #[must_use]
-    pub fn column(self) -> u16 {
-        self.progress.saturating_add(u16::from(self.room_x_bucket))
-    }
-
-    #[must_use]
     pub fn band(self) -> u16 {
-        plan::band(self.column()).max(self.lineage_band)
+        plan::band(self.progress.saturating_add(u16::from(self.room_x_bucket)))
+            .max(self.lineage_band)
     }
 
     #[must_use]
@@ -137,7 +106,7 @@ impl ArchiveKey for SmbArchiveKey {
     fn place(self) -> Self::Place {
         (
             self.room,
-            self.column(),
+            self.progress.saturating_add(u16::from(self.room_x_bucket)),
             self.player_y_bucket,
             self.loop_on_path,
             self.time_bucket,
@@ -212,12 +181,10 @@ impl ArchiveKey for SmbArchiveKey {
 pub type SmbArchiveProgressPoint =
     crate::search::archive::ProgressPoint<SmbMilestones, SmbProgressWatermark>;
 
-pub type SmbArchiveEntryReport<K = SmbArchiveKey> =
-    ArchiveEntryReport<ButtonChord, K, SmbMilestones>;
+pub type SmbArchiveEntryReport = ArchiveEntryReport<ButtonChord, SmbArchiveKey, SmbMilestones>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "K: ArchiveKey")]
-pub struct SmbArchiveReport<K = SmbArchiveKey> {
+pub struct SmbArchiveReport {
     pub seed: u64,
     pub executions: u64,
     pub milestones: SmbMilestones,
@@ -227,15 +194,13 @@ pub struct SmbArchiveReport<K = SmbArchiveKey> {
     pub first_inputs: SmbMilestoneInputs,
     pub champion_input: SmbInput,
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<SmbArchiveEntryReport<K>>,
+    pub entries: Vec<SmbArchiveEntryReport>,
     pub progress_curve: Vec<SmbArchiveProgressPoint>,
     pub retained: u64,
     pub rejected: u64,
     pub deaths: u64,
     #[serde(default)]
     pub selector: SelectorAccounting,
-    #[serde(default, skip_serializing_if = "Findings::is_empty")]
-    pub findings: Findings<ButtonChord>,
 }
 
 pub fn admission_is_viable<M, P>(

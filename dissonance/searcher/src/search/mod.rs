@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod archive;
-pub mod assertion;
 pub mod campaign;
 mod chain;
 pub mod checkpoint;

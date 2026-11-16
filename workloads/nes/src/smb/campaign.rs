@@ -13,13 +13,12 @@ use crate::{
         ArchiveSource, TargetExecution, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
     search::draw::DrawMixture,
-    smb::archive::{SmbArchiveKey, SmbArchiveReport},
+    smb::archive::SmbArchiveReport,
     smb::target::SmbInput,
     target::{ExitKind, Target},
 };
 
-pub type SmbGame<M = QuickNesMachine, P = Vec<u8>, K = SmbArchiveKey> =
-    nes_games::smb::campaign::SmbGame<M, P, K>;
+pub type SmbGame<M = QuickNesMachine, P = Vec<u8>> = nes_games::smb::campaign::SmbGame<M, P>;
 pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> =
     nes_games::smb::campaign::SmbCampaignOrigin<M, P>;
 pub type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
