@@ -102,14 +102,6 @@ pub struct PreparedIdentity {
     pub search: SearchIdentity,
     pub search_policy: String,
 }
-impl PreparedIdentity {
-    pub fn validate_execution(&self, candidate: &Self) -> Result<(), Box<dyn Error>> {
-        if self.workload != candidate.workload || self.execution != candidate.execution {
-            return Err("prepared workload or execution identity mismatch".into());
-        }
-        Ok(())
-    }
-}
 fn validate_output(options: &SearchOptions) -> Result<(), Box<dyn Error>> {
     if options.workers == 0 || options.executions == 0 {
         return Err("workers and executions must be positive".into());

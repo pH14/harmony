@@ -12,12 +12,11 @@ pub use nes_games::famidash::campaign::{
 
 use crate::{
     famidash::target::FamidashInput,
-    search::campaign::{CampaignOrigin, TargetExecution},
+    search::campaign::TargetExecution,
     target::{ExitKind, Target},
 };
 
 pub type FamidashGame = nes_games::famidash::campaign::FamidashGame<QuickNesMachine>;
-pub type FamidashCampaignOrigin = CampaignOrigin<FamidashGame>;
 
 impl crate::film::Filmable for FamidashGame {
     fn film(
