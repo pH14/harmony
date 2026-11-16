@@ -64,6 +64,7 @@ pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
+const VIOLATIONS_FIELD: &str = "objective_violations";
 const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
@@ -705,6 +706,10 @@ impl InputPolicy for FaultWorkload {
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
+            (
+                VIOLATIONS_FIELD.to_owned(),
+                serde_json::to_string(&run.violations).unwrap_or_default(),
+            ),
         ])
         .collect()
     }
@@ -713,10 +718,10 @@ impl InputPolicy for FaultWorkload {
         &self,
         policies: &WorkloadPolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
-        let run = FaultCampaignRun::any_bug(FaultVocabulary::from_identifier(recorded(
-            policies,
-            VOCABULARY_FIELD,
-        )?)?);
+        let run = FaultCampaignRun {
+            vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
+            violations: serde_json::from_str(recorded(policies, VIOLATIONS_FIELD)?)?,
+        };
         let expected = self.policies(&run);
         if policies != &expected {
             for (field, value) in &expected {
@@ -2231,6 +2236,22 @@ mod tests {
             "watchdog_incomplete_v1".into(),
         );
         assert!(game.resolve_recorded(&policies).is_err());
+    }
+
+    #[test]
+    fn the_stream_pins_the_objective_violations() {
+        let game = game();
+        let any = run(1, vec![1, 2]);
+        let named = FaultCampaignRun {
+            violations: BTreeSet::from(["lost write".to_owned()]),
+            ..any.clone()
+        };
+        let policies = game.policies(&named);
+        assert_ne!(policies, game.policies(&any));
+        assert_eq!(game.resolve_recorded(&policies).expect("resolve"), named);
+        let mut missing = policies;
+        missing.remove(VIOLATIONS_FIELD);
+        assert!(game.resolve_recorded(&missing).is_err());
     }
 
     #[test]

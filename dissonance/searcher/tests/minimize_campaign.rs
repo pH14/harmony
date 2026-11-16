@@ -3,7 +3,10 @@
 use std::{collections::BTreeMap, error::Error, num::NonZeroU64, num::NonZeroUsize, path::PathBuf};
 
 use searcher::search::{
-    archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
+    archive::{
+        ArchiveEntryReport, ArchiveKey, Input, MAX_ENTRIES_PER_KEY, RetentionPolicy,
+        entries_by_suffix,
+    },
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
         CampaignIncumbentRecord, CampaignJobResult, CampaignOrigin, CampaignOutcome, CampaignTypes,
@@ -16,7 +19,10 @@ use searcher::search::{
     draw::DrawMixture,
     rand::RomuDuoJrRand,
     rollout::{ExecutionDisposition, JobCeiling},
-    shrink::{JobKind, ShrinkConfig, ShrinkEvent, ShrinkPolicy, ShrinkStop, shrink},
+    shrink::{
+        JobKind, ShrinkConfig, ShrinkEvent, ShrinkPolicy, ShrinkStop, shrink,
+        window::{WindowConfig, WindowStop, search_window},
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,7 +38,17 @@ struct Step(u8);
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct WalkKey(u8);
 
+thread_local! {
+    static KEY_CAPACITY: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 impl ArchiveKey for WalkKey {
+    fn capacity() -> usize {
+        KEY_CAPACITY
+            .with(std::cell::Cell::get)
+            .unwrap_or(MAX_ENTRIES_PER_KEY)
+    }
+
     type Place = u8;
     type Progress = ();
     type Identity = ();
@@ -162,7 +178,11 @@ impl InputPolicy for Walk {
     }
 }
 
-impl ShrinkPolicy for Walk {}
+impl ShrinkPolicy for Walk {
+    fn window_actions(&self, _run: &Self::Run) -> Vec<Self::Action> {
+        vec![Step(1), Step(2)]
+    }
+}
 
 fn advance(position: u8, step: Step) -> u8 {
     if position == DEAD || step == DEATH {
@@ -813,6 +833,32 @@ fn a_tape_root_past_the_objective_is_rejected() {
     assert!(error.to_string().contains("root"), "{error}");
 }
 
+#[test]
+fn a_tape_root_whose_state_loses_its_slot_to_genesis_is_rejected() {
+    let mut actions = vec![Step(0), Step(0)];
+    actions.extend([Step(3); 4]);
+    KEY_CAPACITY.with(|capacity| capacity.set(Some(1)));
+    for ordinary in [false, true] {
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed_with_options(
+            &Walk,
+            &minimize_config(ordinary, 1, 64),
+            &tape_origin(
+                Input {
+                    actions: actions.clone(),
+                },
+                1,
+            ),
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .expect_err("a root without an archive slot must be rejected");
+        assert!(error.to_string().contains("root"), "{error}");
+    }
+    KEY_CAPACITY.with(|capacity| capacity.set(None));
+}
+
 fn minimize_config(ordinary: bool, window: usize, execution_budget: u64) -> CampaignConfig<Walk> {
     let mut config = walk_config(1);
     config.window = window;
@@ -1151,4 +1197,33 @@ fn an_ordinary_campaign_replays_its_report_and_checkpoint_without_minimize_recor
         serde_json::to_value(&single.0).unwrap()
     );
     assert_eq!(replayed.1, single.1);
+}
+
+#[test]
+fn a_window_search_that_drops_states_never_proves_more_than_the_shortest_walk() {
+    let shortest = ShrinkCost::new(u64::from(GOAL / 2), 0);
+    let incumbent = Input {
+        actions: vec![Step(1); usize::from(GOAL)],
+    };
+    for frontier_limit in [1, 2, 3, 64] {
+        let config = WindowConfig {
+            start: 0,
+            expansion_budget: None,
+            frontier_limit,
+        };
+        let outcome =
+            search_window(&Walk, &(), &incumbent, &config, |_| Ok(())).expect("window search");
+        assert!(
+            outcome.progress.lower_bound <= shortest,
+            "frontier {frontier_limit} proved {:?}",
+            outcome.progress.lower_bound
+        );
+        if outcome.stop == WindowStop::Complete {
+            assert_eq!(outcome.progress.cost, shortest, "frontier {frontier_limit}");
+        }
+        if frontier_limit == 64 {
+            assert_eq!(outcome.stop, WindowStop::Complete);
+            assert_eq!(outcome.progress.cost, shortest);
+        }
+    }
 }

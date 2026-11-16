@@ -158,19 +158,22 @@ where
         .map(|fingerprint| (fingerprint, start_cost))
         .into_iter()
         .collect();
+    let mut evicted: Option<ShrinkCost> = None;
     let stop = loop {
-        let Some((estimate, cost, index)) = frontier.pop_first() else {
-            if progress.dropped > 0 {
-                break WindowStop::FrontierEmpty;
-            }
-            progress.lower_bound = best;
-            break WindowStop::Complete;
+        let open_estimate = frontier.first().map(|&(estimate, _, _)| estimate);
+        let floor = match (open_estimate, evicted) {
+            (Some(open), Some(evicted)) => Some(open.min(evicted)),
+            (open, evicted) => open.or(evicted),
         };
-        if estimate >= best {
+        if floor.is_none_or(|floor| floor >= best) {
             progress.lower_bound = best;
             break WindowStop::Complete;
         }
-        progress.lower_bound = estimate;
+        let Some((estimate, cost, index)) = frontier.pop_first() else {
+            progress.lower_bound = floor.unwrap_or(best);
+            break WindowStop::FrontierEmpty;
+        };
+        progress.lower_bound = evicted.map_or(estimate, |evicted| evicted.min(estimate));
         if config
             .expansion_budget
             .is_some_and(|budget| progress.expansions >= budget)
@@ -246,9 +249,10 @@ where
             frontier.insert((child_cost + bound, child_cost, child));
         }
         while frontier.len() > config.frontier_limit.max(1) {
-            if let Some((_, _, dropped)) = frontier.pop_last() {
+            if let Some((estimate, _, dropped)) = frontier.pop_last() {
                 open.remove(&dropped);
                 progress.dropped += 1;
+                evicted = Some(evicted.map_or(estimate, |evicted| evicted.min(estimate)));
             }
         }
         progress.frontier_peak = progress.frontier_peak.max(frontier.len());

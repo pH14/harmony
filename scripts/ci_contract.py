@@ -579,7 +579,7 @@ DISSONANCE_CHECKS = Workflow(
         Job("Scheduling", "pr", 15, test_targets=("searcher:adaptive_durations",), select="rust_checks"),
         Job("Search Coordination", "pr", 15, test_targets=("searcher:interfaces",), select="rust_checks"),
         Job("Campaign Recording and Replay", "pr", 15,
-            test_targets=("searcher:adaptive_campaign",),
+            test_targets=("searcher:adaptive_campaign", "searcher:minimize_campaign"),
             select="rust_checks"),
     ),
 )

@@ -1284,12 +1284,14 @@ the state and applies every `window_actions` action once. A child that reaches
 the goal more cheaply becomes the incumbent, a terminal child is dropped, a
 child whose fingerprint was reached at no greater cost merges into the earlier
 state, and a child whose cost plus bound reaches the incumbent's is pruned.
-The frontier keeps at most `frontier_limit` states and drops the most costly.
-The search stops `Complete` when the cheapest open estimate reaches the
-incumbent's cost, which proves no cheaper tape exists within the window and
-the actions; `FrontierEmpty` when states were dropped; or `ExpansionBudget`.
-`WindowProgress` reports expansions, merged, pruned and dropped children, and
-the lower bound proved so far.
+The frontier keeps at most `frontier_limit` states and drops the most costly,
+keeping the cheapest estimate among the dropped states. The search stops
+`Complete` when the cheapest open or dropped estimate reaches the incumbent's
+cost, which proves no cheaper tape exists within the window and the actions;
+`FrontierEmpty` when the frontier is empty and a dropped estimate is still
+below the incumbent's cost; or `ExpansionBudget`. `WindowProgress` reports
+expansions, merged, pruned and dropped children, and the lower bound proved so
+far, which never exceeds a dropped estimate.
 
 ## Minimizing
 
@@ -1339,7 +1341,9 @@ first objective arrival, which becomes the incumbent and rebuilds the chain
 from where it leaves the tape. Chain positions before `root` are replayed but
 admit no archive entry, so every entry, job parent and shortcut window lies at
 or after the root, which must be one of the tape's states before its
-objective, terminal state or end. The stream header records the tape and the root, so
+objective, terminal state or end. A root after genesis must also hold an
+archive slot; when genesis holds the root state's slot at a lower cost, the
+campaign is rejected, since no job could start at or after the root. The stream header records the tape and the root, so
 replay takes no extra argument. A search checkpoint carries the incumbent cost,
 the chain, the root and the job-kind state, and resumes only with the same
 `minimize` options.

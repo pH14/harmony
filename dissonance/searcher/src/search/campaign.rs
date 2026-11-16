@@ -1979,6 +1979,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 "the tape root is not a state before the tape's objective, death or end".into(),
             );
         }
+        if root > 0 && chain.entries.get(root).copied().flatten().is_none() {
+            return Err(
+                "the tape root's state holds no archive slot: a cheaper state before the root holds it"
+                    .into(),
+            );
+        }
         workload.reset(target);
         workload.restore(target, &chain.snapshots[root])?;
         let floor = chain.costs[root] + workload.remaining_cost_bound(run, target);
