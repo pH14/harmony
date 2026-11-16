@@ -1274,6 +1274,7 @@ A workload implements `ShrinkPolicy` beside its other contracts:
 | `remaining_cost_bound(run, target)` | zero | A lower bound on the cost still to pay from this state. |
 | `window_actions(run)` | none | The actions the window search tries from every state. |
 | `window_fingerprint(target)` | none | A hash under which the window search merges states. |
+| `goal_tail(run, last)` | none | Actions appended to every shortcut proposal, so a change that delays the goal past the tape's end can still reach it; a job stops at the goal, so an unused tail costs nothing. |
 
 The goal is `Evaluation::objective_reached`. `ShrinkCost` is a pair ordered
 first part first and added part by part, so a workload can rank by one measure
@@ -1289,8 +1290,12 @@ proposed a continuation:
    each action's first simpler action (with every simpler action for a window
    of one) or with nothing, and replay the incumbent's tail. Windows start at
    half the tape and halve; after an acceptance the pass restarts at that
-   position, and the pass at size one repeats while it accepts.
-2. **Redraw.** From a chain state, or one time in four from a kept state,
+   position, and the pass at size one repeats while it accepts. With
+   `primary_shortcuts`, windows range over only the actions that added to the
+   first part of the cost, the actions between them stay in place, and every
+   window, a window of one included, tries its first simpler actions, and tries
+   nothing in their place only when none of them has a simpler action.
+2. **Redraw.** Unless `redraws` is off, from a chain state, or one time in four from a kept state,
    draw `redraw_length` actions from `InputPolicy::sample_alphabet`.
    An endpoint is kept when its slot has no cheaper holder on the chain or
    among kept states and its cost plus the bound is below the incumbent's.
@@ -1303,7 +1308,10 @@ the bound reaches the incumbent's. Results are admitted in batch order, so the
 same seed and configuration give the same tape at any worker count. The
 cheapest goal-reaching tape of a batch becomes the incumbent: the chain is
 rebuilt from the first changed action, its replayed cost must equal the job's,
-and kept states and pending continuations are dropped. The search stops at a
+and kept states and pending continuations are dropped. With `shortcut_states`,
+a shortcut job snapshots every step, and an accepted shortcut becomes the chain
+from those states without a rebuild; `ShrinkProgress::rebuilds` counts the
+rebuilds. The search stops at a
 job or work budget, when the cost reaches the lower bound of the starting
 state, or, with `until_shortcuts_exhausted`, when the shortcut passes find
 nothing more.

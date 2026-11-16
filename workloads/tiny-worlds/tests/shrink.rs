@@ -67,6 +67,38 @@ fn the_same_seed_gives_the_same_tape_at_one_and_four_workers() {
 }
 
 #[test]
+fn keeping_shortcut_states_gives_the_same_tape_without_rebuilding_the_chain() {
+    let mut config = ShrinkConfig::new((), 5);
+    config.batch = 1;
+    config.redraws = false;
+    config.until_shortcuts_exhausted = true;
+    let rebuilt = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
+    config.shortcut_states = true;
+    let kept = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
+    assert_eq!(kept.input, rebuilt.input);
+    assert_eq!(kept.improvements.len(), rebuilt.improvements.len());
+    assert_eq!(kept.progress.jobs, rebuilt.progress.jobs);
+    assert!(rebuilt.progress.rebuilds > 0);
+    assert_eq!(kept.progress.rebuilds, 0);
+}
+
+#[test]
+fn primary_shortcuts_still_delete_actions_that_have_no_simpler_action() {
+    let mut config = ShrinkConfig::new((), 3);
+    config.batch = 1;
+    config.redraws = false;
+    config.primary_shortcuts = true;
+    config.shortcut_states = true;
+    config.until_shortcuts_exhausted = true;
+    let outcome = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
+    assert_eq!(outcome.input.actions, shortest());
+    assert_eq!(
+        outcome.stop,
+        searcher::search::shrink::ShrinkStop::ShortcutsExhausted
+    );
+}
+
+#[test]
 fn a_tape_that_misses_the_goal_is_refused() {
     let config = ShrinkConfig::new((), 1);
     let input = Input {

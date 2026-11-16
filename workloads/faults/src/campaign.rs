@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     num::NonZeroU64,
@@ -75,6 +75,26 @@ const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
     pub vocabulary: FaultVocabulary,
+    pub violations: BTreeSet<String>,
+}
+
+impl FaultCampaignRun {
+    #[must_use]
+    pub fn any_bug(vocabulary: FaultVocabulary) -> Self {
+        Self {
+            vocabulary,
+            violations: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn reproduced_by(&self, observation: &FaultObservations) -> bool {
+        self.violations.is_empty()
+            || observation
+                .violations()
+                .iter()
+                .any(|violation| self.violations.contains(violation))
+    }
 }
 
 pub struct FaultWorkload {
@@ -315,9 +335,7 @@ impl FaultCampaignConfig {
             window: default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
-            run: FaultCampaignRun {
-                vocabulary: self.vocabulary.clone(),
-            },
+            run: FaultCampaignRun::any_bug(self.vocabulary.clone()),
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.objective_witness_path.clone(),
@@ -341,17 +359,23 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
     }
 }
 
-fn outcome(target: &FaultTarget) -> Outcome {
+fn outcome(run: &FaultCampaignRun, target: &FaultTarget) -> Outcome {
     Outcome {
         doomed: false,
-        objective_reached: !target.failed() && target.found_bug(),
-        disposition: if target.failed() {
-            ExecutionDisposition::Failed
-        } else if target.observation().stop.is_continuable() {
-            ExecutionDisposition::Runnable
-        } else {
-            ExecutionDisposition::Terminal
-        },
+        objective_reached: !target.failed()
+            && target.found_bug()
+            && run.reproduced_by(target.observation()),
+        disposition: disposition(target),
+    }
+}
+
+fn disposition(target: &FaultTarget) -> ExecutionDisposition {
+    if target.failed() {
+        ExecutionDisposition::Failed
+    } else if target.observation().stop.is_continuable() {
+        ExecutionDisposition::Runnable
+    } else {
+        ExecutionDisposition::Terminal
     }
 }
 
@@ -438,6 +462,7 @@ pub(crate) fn capture_replayed_prefix(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
+    run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
     replay: &[FaultAction],
@@ -455,7 +480,7 @@ pub(crate) fn execute_job(
         return Ok(hung_job(&[]));
     }
     for (action, certificate) in replay.iter().zip(replay_certificates) {
-        if outcome(target).disposition.is_terminal() {
+        if outcome(run, target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         crate::job_observation::tail(false);
@@ -469,7 +494,7 @@ pub(crate) fn execute_job(
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
-    let parent_outcome = outcome(target);
+    let parent_outcome = outcome(run, target);
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
@@ -483,7 +508,7 @@ pub(crate) fn execute_job(
         let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
-        let raw_outcome = outcome(target);
+        let raw_outcome = outcome(run, target);
         let objective_reached = raw_outcome.objective_reached && !objective_seen;
         objective_seen |= raw_outcome.objective_reached;
         let outcome = Outcome {
@@ -677,9 +702,10 @@ impl InputPolicy for FaultWorkload {
         &self,
         policies: &WorkloadPolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
-        let run = FaultCampaignRun {
-            vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
-        };
+        let run = FaultCampaignRun::any_bug(FaultVocabulary::from_identifier(recorded(
+            policies,
+            VOCABULARY_FIELD,
+        )?)?);
         let expected = self.policies(&run);
         if policies != &expected {
             for (field, value) in &expected {
@@ -1034,7 +1060,7 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job_certified(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &mut FaultTarget,
         origin_snapshot: &FaultSnapshot,
         replay: &[FaultAction],
@@ -1045,6 +1071,7 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
+            run,
             target,
             origin_snapshot,
             replay,
@@ -1057,7 +1084,7 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &mut FaultTarget,
         origin_snapshot: &FaultSnapshot,
         replay: &[FaultAction],
@@ -1067,6 +1094,7 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
+            run,
             target,
             origin_snapshot,
             replay,
@@ -1080,16 +1108,16 @@ impl TargetExecution for FaultWorkload {
 
 impl Evaluation for FaultWorkload {
     fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {
-        outcome(target).disposition
+        disposition(target)
     }
 
     fn objective_reached(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
         require_completed_attempt(target, "bootstrap or rollout evaluation")?;
-        Ok(outcome(target).objective_reached)
+        Ok(outcome(run, target).objective_reached)
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<FaultArchiveKey, Box<dyn Error>> {
@@ -1321,6 +1349,11 @@ pub fn run_fault_campaign_with_plan(
         },
     )?;
     Ok((FaultCampaignReport::new(report), snapshot))
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_run() -> FaultCampaignRun {
+    FaultCampaignRun::any_bug(FaultVocabulary::new(1, vec![1]).expect("fixture vocabulary"))
 }
 
 #[cfg(test)]
@@ -1691,9 +1724,7 @@ mod tests {
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
-        FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
-        }
+        FaultCampaignRun::any_bug(FaultVocabulary::new(nodes, hooks).expect("vocabulary"))
     }
 
     #[test]
@@ -1974,6 +2005,35 @@ mod tests {
     }
 
     #[test]
+    fn a_run_with_violations_is_reproduced_only_by_one_of_them() {
+        let violated = |id: &str| {
+            let mut assertions = crate::assertion::Assertions::default();
+            assertions.record(
+                id.to_owned(),
+                crate::assertion::AssertionOutcome {
+                    kind: crate::assertion::AssertionKind::Always,
+                    message: id.to_owned(),
+                    location: String::new(),
+                    passed: false,
+                    failed: true,
+                },
+            );
+            FaultObservations {
+                assertions,
+                ..FaultObservations::default()
+            }
+        };
+        let any = run(3, vec![]);
+        assert!(any.reproduced_by(&violated("lost write")));
+        let finding = FaultCampaignRun {
+            violations: BTreeSet::from(["lost write".to_owned(), "stale read".to_owned()]),
+            ..any
+        };
+        assert!(finding.reproduced_by(&violated("stale read")));
+        assert!(!finding.reproduced_by(&violated("node ended")));
+    }
+
+    #[test]
     fn search_reserves_one_job_per_worker() {
         for workers in [1, 3, 7] {
             let config = FaultCampaignConfig {
@@ -1998,11 +2058,11 @@ mod tests {
     #[test]
     fn wait_contexts_separate_lifecycle_states() {
         let game = game();
-        let run = FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(3, vec![])
+        let run = FaultCampaignRun::any_bug(
+            FaultVocabulary::new(3, vec![])
                 .unwrap()
                 .with_instrumented_events(true),
-        };
+        );
         let parent = FaultArchiveKey {
             alive: 7,
             ..FaultArchiveKey::default()
@@ -2032,11 +2092,11 @@ mod tests {
     #[test]
     fn recorded_duration_choices_reach_waits_and_event_holds() {
         let game = game();
-        let run = FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(3, vec![])
+        let run = FaultCampaignRun::any_bug(
+            FaultVocabulary::new(3, vec![])
                 .unwrap()
                 .with_instrumented_events(true),
-        };
+        );
         let mixture = MixtureDraw {
             mixture: DrawMixture::AlphabetOnly,
             weight: 0,

@@ -320,6 +320,23 @@ impl FaultAction {
         }
     }
 
+    #[must_use]
+    pub fn is_fault(&self) -> bool {
+        !matches!(self.operation, FaultOperation::Wait(_))
+    }
+
+    #[must_use]
+    pub fn as_wait(self) -> Self {
+        let ticks = u16::try_from(self.ticks())
+            .ok()
+            .and_then(NonZeroU16::new)
+            .unwrap_or(NonZeroU16::MIN);
+        Self {
+            operation: FaultOperation::Wait(ticks),
+            ..self
+        }
+    }
+
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
         let mut bytes = [0; ACTION_KEY_WIDTH];
         bytes[..OPERATION_KEY_WIDTH].copy_from_slice(&self.operation.key_bytes());

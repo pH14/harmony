@@ -84,6 +84,11 @@ pub trait ShrinkPolicy: Workload {
         let _ = target;
         None
     }
+
+    fn goal_tail(&self, run: &Self::Run, last: Option<&Self::Action>) -> Vec<Self::Action> {
+        let _ = (run, last);
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -143,6 +148,9 @@ pub struct ShrinkConfig<R> {
     pub work_budget: Option<u64>,
     pub job_budget: Option<u64>,
     pub until_shortcuts_exhausted: bool,
+    pub primary_shortcuts: bool,
+    pub redraws: bool,
+    pub shortcut_states: bool,
 }
 
 impl<R> ShrinkConfig<R> {
@@ -158,6 +166,9 @@ impl<R> ShrinkConfig<R> {
             work_budget: None,
             job_budget: None,
             until_shortcuts_exhausted: false,
+            primary_shortcuts: false,
+            redraws: true,
+            shortcut_states: false,
         }
     }
 }
@@ -185,6 +196,7 @@ pub struct ShrinkProgress {
     pub batches: u64,
     pub jobs: KindCounts,
     pub accepted: KindCounts,
+    pub rebuilds: u64,
     pub cost: ShrinkCost,
     pub initial_cost: ShrinkCost,
     pub lower_bound: ShrinkCost,
@@ -227,6 +239,7 @@ type Accepted<G> = Option<(
     Vec<<G as super::campaign::CampaignTypes>::Action>,
     Improvement,
     Option<usize>,
+    Option<(usize, Vec<Endpoint<G>>)>,
 )>;
 
 struct Chain<G: Workload> {
@@ -401,14 +414,37 @@ enum Fill<A> {
     Replace(Vec<A>),
 }
 
+fn proposal<A: Copy>(actions: &[A], indices: &[usize], fill: Fill<A>) -> Vec<A> {
+    let start = indices[0];
+    let stop = indices[indices.len() - 1] + 1;
+    let mut replaced = match fill {
+        Fill::Delete => None,
+        Fill::Replace(replaced) => Some(replaced.into_iter()),
+    };
+    let mut proposal = Vec::with_capacity(actions.len() - start);
+    let mut window = indices.iter().peekable();
+    for (index, action) in actions.iter().enumerate().take(stop).skip(start) {
+        if window.next_if(|&&next| next == index).is_none() {
+            proposal.push(*action);
+        } else if let Some(replacement) = replaced.as_mut().and_then(Iterator::next) {
+            proposal.push(replacement);
+        }
+    }
+    proposal.extend_from_slice(&actions[stop..]);
+    proposal
+}
+
 impl Schedule {
     fn fills<G: ShrinkPolicy>(
         workload: &G,
         run: &G::Run,
         window: &[G::Action],
+        primary: bool,
     ) -> Vec<Fill<G::Action>> {
         let mut fills = Vec::new();
-        if let [action] = window {
+        if let [action] = window
+            && !primary
+        {
             for simpler in workload.simpler_actions(run, action) {
                 fills.push(Fill::Replace(vec![simpler]));
             }
@@ -430,7 +466,9 @@ impl Schedule {
                 fills.push(Fill::Replace(replaced));
             }
         }
-        fills.push(Fill::Delete);
+        if !(primary && !fills.is_empty()) {
+            fills.push(Fill::Delete);
+        }
         fills
     }
 
@@ -439,8 +477,10 @@ impl Schedule {
         workload: &G,
         run: &G::Run,
         actions: &[G::Action],
+        eligible: &[usize],
+        primary: bool,
     ) -> Option<(usize, Vec<G::Action>)> {
-        let length = actions.len();
+        let length = eligible.len();
         loop {
             if self.exhausted || length == 0 {
                 self.exhausted = true;
@@ -467,20 +507,21 @@ impl Schedule {
                 continue;
             }
             let end = (self.position + self.size).min(length);
-            let window = &actions[self.position..end];
-            let fills = Self::fills(workload, run, window);
+            let indices = &eligible[self.position..end];
+            let window = indices
+                .iter()
+                .map(|&index| actions[index])
+                .collect::<Vec<_>>();
+            let fills = Self::fills(workload, run, &window, primary);
             let Some(fill) = fills.into_iter().nth(self.variant) else {
                 self.variant = 0;
                 self.position = end;
                 continue;
             };
             self.variant += 1;
-            let mut proposal = match fill {
-                Fill::Delete => Vec::new(),
-                Fill::Replace(replaced) => replaced,
-            };
-            proposal.extend_from_slice(&actions[end..]);
-            return Some((self.position, proposal));
+            let start = indices[0];
+            let proposal = proposal(actions, indices, fill);
+            return Some((start, proposal));
         }
     }
 
@@ -563,6 +604,7 @@ where
                 batches: 0,
                 jobs: KindCounts::default(),
                 accepted: KindCounts::default(),
+                rebuilds: 0,
                 cost: ShrinkCost::ZERO,
                 initial_cost: ShrinkCost::ZERO,
                 lower_bound,
@@ -675,7 +717,10 @@ where
     }
 
     fn draw_kind(&mut self) -> Result<JobKind, Box<dyn Error>> {
-        let shares = self.energy.shares(self.config.energy_scale);
+        let mut shares = self.energy.shares(self.config.energy_scale);
+        if !self.config.redraws {
+            shares[JobKind::Redraw.index()] = 0;
+        }
         let total = shares.iter().sum::<u64>();
         let draw = self
             .rand
@@ -690,12 +735,39 @@ where
         Ok(JobKind::Redraw)
     }
 
+    fn eligible(&self) -> Vec<usize> {
+        let indices = 0..self.chain.actions.len();
+        if !self.config.primary_shortcuts {
+            return indices.collect();
+        }
+        indices
+            .filter(|&index| self.chain.costs[index + 1].primary > self.chain.costs[index].primary)
+            .collect()
+    }
+
     fn shortcut(&mut self) -> Option<JobSpec<G>> {
         let workload = self.workload;
-        let (position, actions) =
-            self.schedule
-                .next(workload, &self.config.run, &self.chain.actions)?;
-        Some(self.spec(JobKind::Shortcut, Start::Chain(position), actions, 0))
+        let eligible = self.eligible();
+        let (position, mut actions) = self.schedule.next(
+            workload,
+            &self.config.run,
+            &self.chain.actions,
+            &eligible,
+            self.config.primary_shortcuts,
+        )?;
+        let tail = workload.goal_tail(&self.config.run, actions.last());
+        actions.extend(tail);
+        let snapshot_endpoints = if self.config.shortcut_states {
+            actions.len()
+        } else {
+            0
+        };
+        Some(self.spec(
+            JobKind::Shortcut,
+            Start::Chain(position),
+            actions,
+            snapshot_endpoints,
+        ))
     }
 
     fn redraw(&mut self) -> Result<JobSpec<G>, Box<dyn Error>> {
@@ -754,9 +826,10 @@ where
             };
             let spec = match spec {
                 Some(spec) => spec,
-                None if self.config.until_shortcuts_exhausted
-                    && self.schedule.exhausted
-                    && self.continuations.is_empty() =>
+                None if !self.config.redraws
+                    || (self.config.until_shortcuts_exhausted
+                        && self.schedule.exhausted
+                        && self.continuations.is_empty()) =>
                 {
                     break;
                 }
@@ -774,13 +847,13 @@ where
         }
     }
 
-    fn admit(&mut self, spec: JobSpec<G>, result: JobResult<G>, accepted: &mut Accepted<G>) {
+    fn admit(&mut self, spec: JobSpec<G>, mut result: JobResult<G>, accepted: &mut Accepted<G>) {
         let job = self.progress.jobs.total();
         self.progress.jobs.add(spec.kind);
         self.progress.execution_work = self.progress.execution_work.saturating_add(result.work);
         let best = accepted
             .as_ref()
-            .map_or(self.chain.cost(), |(_, improvement, _)| improvement.cost);
+            .map_or(self.chain.cost(), |(_, improvement, _, _)| improvement.cost);
         let mut productive = false;
         if let Some((index, cost)) = result.goal
             && cost < best
@@ -789,6 +862,12 @@ where
             input.extend_from_slice(&spec.actions[..=index]);
             let restart = match (spec.kind, spec.start) {
                 (JobKind::Shortcut, Start::Chain(position)) => Some(position),
+                _ => None,
+            };
+            let states = match restart {
+                Some(position) if spec.snapshot_endpoints > index => {
+                    Some((position, std::mem::take(&mut result.endpoints)))
+                }
                 _ => None,
             };
             *accepted = Some((
@@ -801,6 +880,7 @@ where
                     execution_work: self.progress.execution_work,
                 },
                 restart,
+                states,
             ));
             productive = true;
         }
@@ -891,7 +971,35 @@ where
         input: &[G::Action],
         improvement: &mut Improvement,
         restart: Option<usize>,
+        states: Option<(usize, Vec<Endpoint<G>>)>,
     ) -> Result<(), Box<dyn Error>> {
+        if let Some((start, endpoints)) = states {
+            self.chain.truncate(start);
+            let (goal, steps) = input[start..]
+                .split_last()
+                .ok_or("an accepted shrink tape is empty")?;
+            if steps.len() != endpoints.len() {
+                return Err("an accepted shortcut kept a state for every step but the goal".into());
+            }
+            for (action, endpoint) in steps.iter().zip(endpoints) {
+                let (snapshot, lineage, milestones) = endpoint
+                    .kept
+                    .ok_or("an accepted shortcut step has no kept state")?;
+                self.chain.push(
+                    *action,
+                    endpoint.cost,
+                    State {
+                        snapshot: Arc::new(snapshot),
+                        key: endpoint.key,
+                        lineage,
+                        milestones,
+                    },
+                );
+            }
+            self.chain.actions.push(*goal);
+            self.chain.costs.push(improvement.cost);
+            return self.accepted(improvement, restart, start);
+        }
         let common = self
             .chain
             .actions
@@ -904,17 +1012,31 @@ where
         self.chain.truncate(common);
         let work = self.extend_chain(&input[common..])?;
         self.progress.execution_work = self.progress.execution_work.saturating_add(work);
+        self.progress.rebuilds += 1;
         if self.chain.cost() != improvement.cost {
             return Err("an accepted shrink tape changed its cost on replay".into());
         }
+        self.accepted(improvement, restart, common)
+    }
+
+    fn accepted(
+        &mut self,
+        improvement: &mut Improvement,
+        restart: Option<usize>,
+        common: usize,
+    ) -> Result<(), Box<dyn Error>> {
         improvement.actions = self.chain.actions.len();
         self.kept.clear();
         self.kept_slots.clear();
         self.continuations.clear();
         self.proposed.clear();
+        let eligible = self.eligible();
+        let before = |position: usize| eligible.partition_point(|&index| index < position);
         match restart {
-            Some(position) => self.schedule.restart_at(position),
-            None => self.schedule.restart_at(self.schedule.position.min(common)),
+            Some(position) => self.schedule.restart_at(before(position)),
+            None => self
+                .schedule
+                .restart_at(self.schedule.position.min(before(common))),
         }
         self.progress.cost = self.chain.cost();
         self.progress.accepted.add(improvement.kind);
@@ -1026,8 +1148,8 @@ where
                     let result = result.ok_or("a shrink job returned no result")?;
                     shrinker.admit(spec, result, &mut accepted);
                 }
-                if let Some((input, mut improvement, restart)) = accepted {
-                    shrinker.accept(&input, &mut improvement, restart)?;
+                if let Some((input, mut improvement, restart, states)) = accepted {
+                    shrinker.accept(&input, &mut improvement, restart, states)?;
                     shrinker.improvements.push(improvement);
                     let input = shrinker.input();
                     observe(ShrinkEvent::Improved {
@@ -1051,4 +1173,29 @@ where
             })
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_contiguous_window_is_replaced_or_deleted_with_the_tail_kept() {
+        let actions = [1, 2, 3, 4, 5];
+        assert_eq!(
+            proposal(&actions, &[1, 2], Fill::Replace(vec![20, 30])),
+            vec![20, 30, 4, 5]
+        );
+        assert_eq!(proposal(&actions, &[1, 2], Fill::Delete), vec![4, 5]);
+    }
+
+    #[test]
+    fn a_window_of_scattered_actions_keeps_the_actions_between_them() {
+        let actions = [1, 2, 3, 4, 5];
+        assert_eq!(
+            proposal(&actions, &[1, 3], Fill::Replace(vec![20, 40])),
+            vec![20, 3, 40, 5]
+        );
+        assert_eq!(proposal(&actions, &[1, 3], Fill::Delete), vec![3, 5]);
+    }
 }

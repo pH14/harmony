@@ -102,8 +102,9 @@ finding from `campaign-summary.json`.
    `runs/NAME-why/explain.md`: it names the promise, the fault table with
    guest times, the history output, and per fault the log lines with patterns
    that never appeared before and the files that appeared, vanished or
-   changed size. Expect it to take about one finding replay per shrink
-   attempt plus one replay per job.
+   changed size. Expect the shrink to take about ten finding replays for
+   a finding with a few faults and about a hundred for one with twenty or
+   more, one at a time, plus one replay per job for the report.
 3. Test each explanation the report suggests. The report's `branch --shell`
    command opens a guest shell at the violation; `--rewind` or
    `--rewind-time` on `runs/NAME-why` reaches the state before any fault.
@@ -112,7 +113,8 @@ finding from `campaign-summary.json`.
    both.
 4. To shrink without the report, run
    `harmony shrink runs/NAME --finding K --jobs 4 --out runs/NAME-min`.
-   `shrink.json` lists every attempt.
+   `shrink.json` lists each improvement, the job counts per kind and the
+   reduced actions.
 5. Check a fix. Replay the reduced actions against the fixed version's image
    with the same seed, using the fix-check command at the end of
    `explain.md`:
