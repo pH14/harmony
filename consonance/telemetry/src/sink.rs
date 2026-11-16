@@ -33,10 +33,6 @@ impl LiveSink {
         }
     }
 
-    pub fn with_default_capacity() -> LiveSink {
-        LiveSink::new(DEFAULT_CAPACITY)
-    }
-
     pub fn drain(&self) -> Vec<Event> {
         let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let mut out: Vec<Event> = ring.queue.drain(..).collect();
