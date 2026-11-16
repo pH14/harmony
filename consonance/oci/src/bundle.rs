@@ -11,8 +11,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
-pub const CONTROL_ROOT: &str = "/harmony-oci";
-pub const ROOTFS_ROOT: &str = "/harmony-oci/rootfs";
 pub const EXECUTION_SOURCE: &str = "/harmony-oci/execution.json";
 pub const EXECUTION_DESTINATION: &str = execution_proto::EXECUTION_PATH;
 pub const SUPERVISOR_PATH: &str = "/usr/lib/harmony/supervisor";
