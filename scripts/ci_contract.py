@@ -234,7 +234,7 @@ LIB_PARTITIONS = {
     "searcher": {
         "Archive": (
             "search::archive", "search::assertion", "search::draw", "search::draw_tables",
-            "search::plan", "search::shrink", "search::weighted_set",
+            "search::plan", "search::shortcut", "search::shrink", "search::weighted_set",
         ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",

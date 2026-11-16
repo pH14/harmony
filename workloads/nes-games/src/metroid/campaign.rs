@@ -400,6 +400,8 @@ fn merge_action_milestones<M: NesBackend<Vec<u8>> + NesMemory>(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
+    game: &MetroidGame<M>,
+    run: &MetroidCampaignRun,
     target: &mut MetroidTarget<M>,
     genesis: (u8, u8),
     parent_milestones: MetroidMilestones,
@@ -475,6 +477,8 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: game.shrink_cost(action, target),
+            bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
             break;
@@ -825,7 +829,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
 
     fn execute_job(
         &self,
-        _run: &Self::Run,
+        run: &Self::Run,
         target: &mut Self::Target,
         origin_snapshot: &Self::Snapshot,
         replay: &[Self::Action],
@@ -842,6 +846,8 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
             }
         }
         execute_suffix(
+            self,
+            run,
             target,
             target.genesis_holdings(),
             parent_milestones,
@@ -1067,6 +1073,7 @@ mod tests {
 
     use super::*;
     use crate::metroid::target::ButtonChord;
+    use crate::search::cost::ShrinkCost;
 
     #[test]
     fn streamed_evidence_preserves_the_owned_reference_bytes_and_resume_fields() {
@@ -1162,6 +1169,8 @@ mod tests {
             milestones: MetroidMilestones::default(),
             outcome: Outcome::default(),
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         for publish in [false, true] {
             let mut game = MetroidGame::new(&[], Path::new("unused"), "unused", "test-execution");
@@ -1226,6 +1235,8 @@ mod tests {
                     milestones: MetroidMilestones::default(),
                     outcome: Outcome::default(),
                     candidate: None,
+                    cost: ShrinkCost::ZERO,
+                    bound: ShrinkCost::ZERO,
                 },
                 MetroidInput {
                     actions: vec![MetroidAction::Chord(ButtonChord::new(0, 1)); actions],

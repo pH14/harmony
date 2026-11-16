@@ -31,6 +31,7 @@ use crate::{
         InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
         postcard_semantic_result_sha256,
     },
+    search::cost::ShrinkCost,
     search::empirical_steps::EmpiricalStepCheckpoint,
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
@@ -41,7 +42,7 @@ use crate::{
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
     smb::plan::SmbRoute,
-    smb::shrink::remaining_frames_bound,
+    smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, WRAM_SIZE,
@@ -97,7 +98,6 @@ where
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
     route: SmbRoute,
-    frame_ceiling: Option<u64>,
     key: PhantomData<fn() -> K>,
 }
 
@@ -126,7 +126,6 @@ where
             checkpoint_format,
             targets,
             route: SmbRoute::AllLevels,
-            frame_ceiling: None,
             key: PhantomData,
         }
     }
@@ -169,14 +168,6 @@ where
     }
 
     #[must_use]
-    pub fn with_frame_ceiling(self, frame_ceiling: Option<u64>) -> Self {
-        Self {
-            frame_ceiling,
-            ..self
-        }
-    }
-
-    #[must_use]
     pub fn with_key<L: SmbKey>(self) -> SmbGame<M, P, L> {
         SmbGame {
             rom_sha256: self.rom_sha256,
@@ -184,7 +175,6 @@ where
             checkpoint_format: self.checkpoint_format,
             targets: self.targets,
             route: self.route,
-            frame_ceiling: self.frame_ceiling,
             key: PhantomData,
         }
     }
@@ -199,18 +189,12 @@ where
     }
 
     fn doomed_policy(&self) -> String {
-        let doomed = match self.route {
+        match self.route {
             SmbRoute::AllLevels => DOOMED_POLICY_IDENTIFIER.to_owned(),
             route => format!(
                 "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen_without_the_vine_and_its_area_pointer",
                 route.identifier()
             ),
-        };
-        match self.frame_ceiling {
-            Some(ceiling) => {
-                format!("{doomed}_or_frames_from_power_on_plus_bound_at_least_{ceiling}")
-            }
-            None => doomed,
         }
     }
 
@@ -580,6 +564,9 @@ where
     P: SnapshotState,
     K: SmbKey,
 {
+    fn simpler_actions(&self, _run: &SmbCampaignRun, action: &ButtonChord) -> Vec<ButtonChord> {
+        simpler_chords(action)
+    }
     fn policies(&self, run: &SmbCampaignRun) -> WorkloadPolicies {
         let mut policies: WorkloadPolicies = [
             (
@@ -713,6 +700,16 @@ where
     P: SnapshotState,
     K: SmbKey,
 {
+    fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
+        ShrinkCost::new(
+            target.last_action_frames(),
+            target.last_action_level_frames(),
+        )
+    }
+    fn remaining_cost_bound(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
+        let frames = remaining_frames_bound(target);
+        ShrinkCost::new(frames, frames)
+    }
     fn merge_milestones(&self, into: &mut SmbMilestones, from: SmbMilestones) {
         merge_milestones(into, from);
     }
@@ -871,12 +868,7 @@ where
     }
 
     fn is_doomed(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_doomed()
-            || (!target.is_dead() && self.route.is_doomed(&target.wram()))
-            || self.frame_ceiling.is_some_and(|ceiling| {
-                target.boot_frames() + target.frame_count() + remaining_frames_bound(target)
-                    >= ceiling
-            })
+        target.is_doomed() || (!target.is_dead() && self.route.is_doomed(&target.wram()))
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<K, Box<dyn Error>> {

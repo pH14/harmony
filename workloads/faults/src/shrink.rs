@@ -2,11 +2,10 @@
 
 use std::num::NonZeroU16;
 
-use searcher::search::shrink::{ShrinkCost, ShrinkPolicy};
+use searcher::search::{cost::ShrinkCost, shrink::ShrinkPolicy};
 
 use crate::{
-    campaign::{FaultCampaignRun, FaultWorkload},
-    consonance::FaultTarget,
+    campaign::FaultWorkload,
     target::{FaultAction, FaultOperation},
 };
 
@@ -40,22 +39,12 @@ pub fn settle_tail(last: Option<&FaultAction>) -> Vec<FaultAction> {
         .collect()
 }
 
-impl ShrinkPolicy for FaultWorkload {
-    fn shrink_cost(&self, action: &FaultAction, _target: &FaultTarget) -> ShrinkCost {
-        fault_cost(action)
-    }
-
-    fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
-        simpler_fault_actions(action)
-    }
-
-    fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
-        settle_tail(last)
-    }
-}
+impl ShrinkPolicy for FaultWorkload {}
 
 #[cfg(test)]
 mod tests {
+    use searcher::search::campaign::InputPolicy;
+
     use super::*;
     use crate::{
         campaign::{fixture_run, fixture_workload},

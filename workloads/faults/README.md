@@ -1036,13 +1036,16 @@ prefix without adding settlement actions.
 bug counts only when its observation reports one of them, and an empty set
 (the search's run) counts every bug. `package::shrink` runs the searcher's
 `search::shrink` on a finding's actions with that run, and
-[`shrink`](src/shrink.rs) holds the faults `ShrinkPolicy`: a tape costs its
+[`shrink`](src/shrink.rs) holds the faults shrink hooks, which the campaign
+traits call: a tape costs its
 fault count and then its ticks, a fault's simpler actions are a wait of the same
 length (keeping its `choice` and coverage quantum) and then the same fault for
 half its ticks, a wait's is a wait for half its ticks, and the lower bound is
 zero. It sets `primary_shortcuts`, so shortcut windows cover only the faults,
-turns `redraws` off, so every job is a shortcut, and sets `shortcut_states`,
-so an accepted shortcut's own replay becomes the new tape. Its goal tail is the
+turns `ordinary` off, so every job is a shortcut or a continuation, sets
+`shortcut_snapshots`, so a shortcut's steps enter the archive, sets
+`until_shortcuts_exhausted`, and runs an admission window of one, so each job
+starts from the tape the previous job left. Its goal tail is the
 replay's settlement waits, so a candidate whose violation appears only while the
 replay settles still counts, as it does in a report replay.
 Its workers come from the same memory plan as a replay, and every replay

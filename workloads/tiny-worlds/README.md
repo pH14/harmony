@@ -687,10 +687,14 @@ progress line.
 
 ## Shrink
 
-A world declares the `ShrinkPolicy` for `search::shrink` with the default cost
-of one per action, no simpler actions and a zero bound. The window search tries
-the four sampled actions from every state and merges states that are equal, so
-over a whole tape it finds the shortest path to the goal and proves it
+A world keeps the campaign traits' default shrink hooks, a cost of one per
+action, no simpler actions and a zero bound, and declares the `ShrinkPolicy`
+window hooks. `search::shrink` runs a minimize campaign from a tape: a maze tape
+three times the shortest path shrinks to it, a graph detour shrinks to the
+graph's shortest path, and a graph tape cut short of the goal searches from its
+states until its first arrival. The window search (`shrink::window`) tries the
+four sampled actions from every state and merges states that are equal, so over
+a whole tape it finds the shortest path to the goal and proves it
 (`tests/shrink.rs`).
 
 ## Checks

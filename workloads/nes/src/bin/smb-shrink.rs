@@ -12,7 +12,7 @@ use std::{
 use nes_games::smb::{
     campaign::{SmbButtonVocabulary, SmbCampaignRun, SmbTerminalPredicate},
     plan::SmbRoute,
-    shrink::{until_terminal, with_level_end_waits},
+    shrink::{reaching, until_terminal, with_level_end_waits},
     target::SmbInput,
 };
 use nes_workload::{
@@ -29,10 +29,12 @@ struct Arguments {
     out: PathBuf,
     seed: u64,
     workers: usize,
-    batch: usize,
-    redraw_length: usize,
+    window: Option<usize>,
+    ordinary_length: Option<u8>,
     job_budget: Option<u64>,
     work_budget: Option<u64>,
+    memory_mib: Option<usize>,
+    stream: Option<PathBuf>,
     progress_every: u64,
     terminal: SmbTerminalPredicate,
     root_at: Option<SmbTerminalPredicate>,
@@ -45,10 +47,12 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
         out: PathBuf::new(),
         seed: 1,
         workers: 1,
-        batch: 32,
-        redraw_length: 64,
+        window: None,
+        ordinary_length: Some(64),
         job_budget: None,
         work_budget: None,
+        memory_mib: Some(8_192),
+        stream: None,
         progress_every: 16,
         terminal: SmbTerminalPredicate::GameVictory,
         root_at: None,
@@ -64,10 +68,12 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
             "--out" => arguments.out = PathBuf::from(value),
             "--seed" => arguments.seed = value.parse()?,
             "--workers" => arguments.workers = value.parse()?,
-            "--batch" => arguments.batch = value.parse()?,
-            "--redraw-length" => arguments.redraw_length = value.parse()?,
+            "--window" => arguments.window = Some(value.parse()?),
+            "--ordinary-length" => arguments.ordinary_length = Some(value.parse()?),
             "--job-budget" => arguments.job_budget = Some(value.parse()?),
             "--work-budget" => arguments.work_budget = Some(value.parse()?),
+            "--memory-mib" => arguments.memory_mib = Some(value.parse()?),
+            "--stream" => arguments.stream = Some(PathBuf::from(value)),
             "--progress-every" => arguments.progress_every = value.parse()?,
             "--terminal" => arguments.terminal = SmbTerminalPredicate::from_identifier(&value)?,
             "--route" => arguments.route = SmbRoute::from_identifier(&value)?,
@@ -78,7 +84,7 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
         }
     }
     if arguments.input.as_os_str().is_empty() || arguments.out.as_os_str().is_empty() {
-        return Err("usage: smb-shrink --input <tape.json> --out <dir> [--seed N] [--workers N] [--batch N] [--redraw-length N] [--job-budget N] [--work-budget N] [--terminal game_victory|control_in:W,L] [--root-at control_in:W,L] [--route IDENTIFIER]".into());
+        return Err("usage: smb-shrink --input <tape.json> --out <dir> [--seed N] [--workers N] [--window N] [--ordinary-length N] [--job-budget N] [--work-budget N] [--memory-mib N] [--stream PATH] [--progress-every N] [--terminal game_victory|control_in:W,L] [--root-at control_in:W,L] [--route IDENTIFIER]".into());
     }
     Ok(arguments)
 }
@@ -100,47 +106,40 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input: SmbInput = serde_json::from_slice(&fs::read(&arguments.input)?)?;
     let mut target = SmbGame::from_environment(&rom)?.new_target()?;
     let canonical = with_level_end_waits(&mut target, &input)?;
-    let canonical = until_terminal(&mut target, &canonical, arguments.terminal)?;
+    let tape = reaching(&mut target, &canonical, arguments.terminal)?.unwrap_or(canonical);
     let root = arguments
         .root_at
-        .map(|root_at| until_terminal(&mut target, &canonical, root_at))
+        .map(|root_at| until_terminal(&mut target, &tape, root_at))
         .transpose()?
         .unwrap_or_default();
     drop(target);
-    let incumbent = SmbInput {
-        actions: canonical.actions[root.actions.len()..].to_vec(),
-    };
-    let game = SmbGame::from_environment(&rom)?
-        .with_root(root.clone())
-        .with_route(arguments.route);
+    let game = SmbGame::from_environment(&rom)?.with_route(arguments.route);
     let boot_frames = game.new_target()?.boot_frames();
     let run = SmbCampaignRun {
         vocabulary: SmbButtonVocabulary::default(),
         terminal: Some(arguments.terminal),
     };
-    let rooted = |tail: &SmbInput| SmbInput {
-        actions: root.actions.iter().chain(&tail.actions).copied().collect(),
-    };
     write_json(arguments.out.join("root-input.json"), &root)?;
-    write_json(
-        arguments.out.join("incumbent-input.json"),
-        &rooted(&incumbent),
-    )?;
+    write_json(arguments.out.join("incumbent-input.json"), &tape)?;
     let mut config = ShrinkConfig::new(run, arguments.seed);
+    config.root = root.actions.len();
     config.workers = arguments.workers;
-    config.batch = arguments.batch;
-    config.redraw_length = arguments.redraw_length;
+    config.window = arguments.window;
+    config.ordinary_length = arguments.ordinary_length;
     config.job_budget = arguments.job_budget;
     config.work_budget = arguments.work_budget;
+    config.memory_budget_mib = arguments.memory_mib;
+    config.stream = arguments.stream.clone();
     let started = Instant::now();
     let mut progress = BufWriter::new(File::create(arguments.out.join("progress.jsonl"))?);
     let mut improvements = BufWriter::new(File::create(arguments.out.join("improvements.jsonl"))?);
     let every = arguments.progress_every.max(1);
     let out = arguments.out.clone();
-    let outcome = shrink(&game, &config, &incumbent, |event| {
+    let mut written = 0;
+    let outcome = shrink(&game, &config, &tape, |event| {
         match event {
             ShrinkEvent::Improved { input, improvement } => {
-                write_json(out.join("best-input.json"), &rooted(input))?;
+                write_json(out.join("best-input.json"), input)?;
                 let line = json!({
                     "seconds": started.elapsed().as_secs_f64(),
                     "frames_from_power_on": boot_frames + improvement.cost.primary,
@@ -149,8 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 writeln!(improvements, "{line}")?;
                 improvements.flush()?;
             }
-            ShrinkEvent::Batch { progress: state } => {
-                if state.batches % every == 0 {
+            ShrinkEvent::Progress { progress: state } => {
+                let jobs = state.jobs.total();
+                if jobs >= written + every {
+                    written = jobs;
                     let line = json!({
                         "seconds": started.elapsed().as_secs_f64(),
                         "progress": state,
@@ -162,10 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })?;
-    write_json(
-        arguments.out.join("best-input.json"),
-        &rooted(&outcome.input),
-    )?;
+    write_json(arguments.out.join("best-input.json"), &outcome.input)?;
     write_json(
         arguments.out.join("outcome.json"),
         &json!({
@@ -175,8 +173,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "root_at": arguments.root_at.map(SmbTerminalPredicate::identifier),
             "root_actions": root.actions.len(),
             "route": arguments.route.identifier(),
-            "initial_frames_from_power_on": boot_frames + outcome.progress.initial_cost.primary,
-            "frames_from_power_on": boot_frames + outcome.progress.cost.primary,
+            "initial_frames_from_power_on": outcome.progress.initial_cost.map(|cost| boot_frames + cost.primary),
+            "frames_from_power_on": outcome.progress.cost.map(|cost| boot_frames + cost.primary),
             "stop": outcome.stop,
             "progress": outcome.progress,
             "improvements": outcome.improvements,

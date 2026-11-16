@@ -21,6 +21,7 @@ use searcher::{
             ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
             run_campaign_checkpointed_with_options,
         },
+        cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
         duration::{DurationDraw, DurationRequest},
@@ -49,6 +50,7 @@ use crate::{
         FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
         validate_snapshot_prefix_certificates,
     },
+    shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
     },
@@ -339,6 +341,7 @@ impl FaultCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.objective_witness_path.clone(),
+            minimize: None,
         }
     }
 }
@@ -532,6 +535,8 @@ pub(crate) fn execute_job(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: fault_cost(action),
+            bound: ShrinkCost::ZERO,
         });
         if outcome.should_stop(&stop) {
             break;
@@ -680,6 +685,12 @@ impl Reporting for FaultWorkload {
 }
 
 impl InputPolicy for FaultWorkload {
+    fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
+        simpler_fault_actions(action)
+    }
+    fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
+        settle_tail(last)
+    }
     fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
@@ -1107,6 +1118,9 @@ impl TargetExecution for FaultWorkload {
 }
 
 impl Evaluation for FaultWorkload {
+    fn shrink_cost(&self, action: &FaultAction, _target: &FaultTarget) -> ShrinkCost {
+        fault_cost(action)
+    }
     fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {
         disposition(target)
     }
@@ -1512,6 +1526,8 @@ mod tests {
                     viable: true,
                     snapshot,
                 }),
+                cost: ShrinkCost::ZERO,
+                bound: ShrinkCost::ZERO,
             }],
         };
         let mut fresh_calls = 0;
@@ -1686,6 +1702,9 @@ mod tests {
                 duration_checkpoint_before: None,
                 duration_checkpoint_after: None,
                 suffix_limit: None,
+                ceiling: None,
+                incumbent: None,
+                shrink: None,
             });
             let line = serde_json::to_string(&record).unwrap();
             assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
@@ -1841,6 +1860,8 @@ mod tests {
                 disposition,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         game.merge_action_evidence(
             &mut evidence,
@@ -1911,6 +1932,8 @@ mod tests {
                 disposition: ExecutionDisposition::Runnable,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         let landed = FaultObservations {
             parks: vec![crate::target::ParkLanding {
@@ -1981,6 +2004,8 @@ mod tests {
                 disposition: ExecutionDisposition::Runnable,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         for (sequence, observations) in [
             (1, vec![checked(2)]),

@@ -163,6 +163,8 @@ fn merge_action_milestones<M: NesBackend<Vec<u8>>>(
 }
 
 fn execute_suffix<M: NesBackend<Vec<u8>>>(
+    game: &TwinDragonsGame<M>,
+    run: &TwinDragonsCampaignRun,
     target: &mut TwinDragonsTarget<M>,
     parent_milestones: TwinDragonsMilestones,
     suffix: &[ButtonChord],
@@ -254,6 +256,8 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: game.shrink_cost(&recorded_action, target),
+            bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
             break;
@@ -473,7 +477,7 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for TwinDragonsGame<M> {
 
     fn execute_job(
         &self,
-        _run: &Self::Run,
+        run: &Self::Run,
         target: &mut Self::Target,
         origin_snapshot: &Self::Snapshot,
         replay: &[Self::Action],
@@ -486,7 +490,15 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for TwinDragonsGame<M> {
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(target, parent_milestones, suffix, retention, stop)
+        execute_suffix(
+            self,
+            run,
+            target,
+            parent_milestones,
+            suffix,
+            retention,
+            stop,
+        )
     }
 }
 

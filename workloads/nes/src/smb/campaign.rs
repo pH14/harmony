@@ -68,6 +68,7 @@ impl SmbCampaignConfig {
             },
             retention: self.retention,
             objective_witness_path: self.victory_input_path.clone(),
+            minimize: None,
         }
     }
 }
@@ -360,6 +361,8 @@ mod tests {
             milestones,
             outcome: Outcome::default(),
             candidate: None,
+            cost: searcher::search::cost::ShrinkCost::ZERO,
+            bound: searcher::search::cost::ShrinkCost::ZERO,
         }
     }
 

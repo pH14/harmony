@@ -59,6 +59,7 @@ impl TwinDragonsCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.victory_input_path.clone(),
+            minimize: None,
         }
     }
 }

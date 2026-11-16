@@ -155,6 +155,8 @@ fn merge_action_milestones<M: NesBackend<Vec<u8>>>(
 }
 
 fn execute_suffix<M: NesBackend<Vec<u8>>>(
+    game: &JoustGame<M>,
+    run: &JoustCampaignRun,
     target: &mut JoustTarget<M>,
     parent_milestones: JoustMilestones,
     suffix: &[ButtonChord],
@@ -244,6 +246,8 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: game.shrink_cost(&recorded_action, target),
+            bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
             break;
@@ -520,7 +524,7 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for JoustGame<M> {
 
     fn execute_job(
         &self,
-        _run: &Self::Run,
+        run: &Self::Run,
         target: &mut Self::Target,
         origin_snapshot: &Self::Snapshot,
         replay: &[Self::Action],
@@ -533,7 +537,15 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for JoustGame<M> {
         for action in replay {
             target.apply(action);
         }
-        execute_suffix(target, parent_milestones, suffix, retention, stop)
+        execute_suffix(
+            self,
+            run,
+            target,
+            parent_milestones,
+            suffix,
+            retention,
+            stop,
+        )
     }
 }
 

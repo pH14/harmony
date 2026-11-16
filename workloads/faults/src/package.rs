@@ -809,7 +809,7 @@ mod live {
         Ok(summary)
     }
 
-    const SHRINK_BATCH: usize = 1;
+    const SHRINK_WINDOW: usize = 1;
 
     pub struct Shrunk {
         pub outcome: ShrinkOutcome<FaultAction>,
@@ -822,7 +822,7 @@ mod live {
         run: FaultCampaignRun,
         incumbent: &[FaultAction],
         jobs: usize,
-        observe: impl FnMut(ShrinkEvent<'_, FaultAction>) -> Result<(), Box<dyn Error>>,
+        observe: impl FnMut(ShrinkEvent<'_, FaultAction>) -> Result<(), Box<dyn Error>> + Send,
     ) -> Result<Shrunk, Box<dyn Error>> {
         let config = config(options)?;
         let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
@@ -833,11 +833,11 @@ mod live {
         let workers = memory.workers;
         let mut settings = ShrinkConfig::new(run, options.seed);
         settings.workers = workers;
-        settings.batch = SHRINK_BATCH;
+        settings.window = Some(SHRINK_WINDOW);
         settings.until_shortcuts_exhausted = true;
         settings.primary_shortcuts = true;
-        settings.redraws = false;
-        settings.shortcut_states = true;
+        settings.ordinary = false;
+        settings.shortcut_snapshots = true;
         let outcome = searcher::search::shrink::shrink(
             &workload,
             &settings,

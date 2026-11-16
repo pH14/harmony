@@ -308,22 +308,25 @@ the same action for half as long. A replacement keeps the action's recorded
 execution keeps its timing. A finding that stopped without a violation is
 refused.
 
-The shrink runs one replay at a time, so each replay starts from the tape the
-last one accepted, and it is seeded with the recording's seed, so the reduced
-actions are the same for every `--jobs N`. A replay starts from the snapshot of
-the current tape at the step it changes and stops at the violation, and all
-replays share one snapshot cache, the same cache a search uses. Its windows
-cover only the faults, the way a delta debugger chunks them: a window turns its
-faults into waits of the same length and leaves the waits between them in place.
-Each candidate ends with the usual settlement waits, so a violation that appears
-while it settles counts. An accepted replay becomes the new tape, cut at the
-violation, without being run again. Ticks fall when a cheaper tape reaches the
-violation sooner. The shrink stops when a pass of one-fault windows finds
-nothing cheaper. A last replay of the reduced actions, with the usual settlement
-waits, writes the report and must show the violation.
+The shrink is a minimize campaign from the recorded tape (`search::shrink` in
+the searcher README). It admits one replay at a time, so each replay starts from
+the tape the last one accepted, and it is seeded with the recording's seed, so
+the reduced actions are the same for every `--jobs N`. A replay starts from the
+snapshot of the current tape at the step it changes and stops at the violation,
+and all replays share one snapshot cache, the same cache a search uses. Its
+windows cover only the faults, the way a delta debugger chunks them: a window
+turns its faults into waits of the same length and leaves the waits between them
+in place. Each candidate ends with the usual settlement waits, so a violation
+that appears while it settles counts. An accepted replay, cut at the violation,
+becomes the new tape, which is replayed once from its first changed step to
+rebuild its snapshots, so the replay count is the jobs plus the acceptances plus
+the recorded tape's replay and the report replay. Ticks fall when a cheaper tape
+reaches the violation sooner. The shrink stops when a pass of one-fault windows
+finds nothing cheaper. A last replay of the reduced actions, with the usual
+settlement waits, writes the report and must show the violation.
 
 The output is a replay of the reduced actions that `show`, `show --timeline` and
-`branch` accept. `shrink.json` holds its format (`harmony-fault-shrink-v2`), the
+`branch` accept. `shrink.json` holds its format (`harmony-fault-shrink-v3`), the
 violations, the fault and tick counts before and after, the replays it took,
 each accepted improvement, the shrink's job counts and stop reason, and the
 reduced actions in a form `debug run --actions` accepts. NES findings are not

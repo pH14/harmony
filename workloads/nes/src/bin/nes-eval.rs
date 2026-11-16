@@ -92,13 +92,13 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.smb_route.is_some()
         || request.smb_terminal.is_some()
         || request.smb_key.is_some()
-        || request.smb_frame_ceiling.is_some()
+        || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
         || !request.mixture.is_empty()
     {
         return Err(
-            "a live view runs the arcade game from genesis with its own mixture, without ai, root, resume or mixture options"
+            "a live view runs the arcade game from genesis with its own mixture, without ai, root, minimize, resume or mixture options"
                 .into(),
         );
     }
@@ -220,13 +220,11 @@ fn main() -> Result<()> {
         }
         if (request.smb_route.is_some()
             || request.smb_key.is_some()
-            || request.smb_terminal.is_some()
-            || request.smb_frame_ceiling.is_some())
+            || request.smb_terminal.is_some())
             && request.game != "smb"
         {
             return Err(
-                "only Super Mario Bros. takes smb_route, smb_key, smb_terminal and smb_frame_ceiling options"
-                    .into(),
+                "only Super Mario Bros. takes smb_route, smb_key and smb_terminal options".into(),
             );
         }
         match request.game.as_str() {
@@ -277,8 +275,7 @@ fn main() -> Result<()> {
                             .map(SmbRoute::from_identifier)
                             .transpose()?
                             .unwrap_or_default(),
-                    )
-                    .with_frame_ceiling(request.smb_frame_ceiling);
+                    );
                 match request.smb_key.as_deref().unwrap_or(HAND_WRITTEN_SMB_KEY) {
                     HAND_WRITTEN_SMB_KEY => {
                         evaluate_smb(game, &rom, &request, &execution_sha256, &out, started)

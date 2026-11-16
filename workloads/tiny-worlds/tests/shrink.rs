@@ -44,7 +44,7 @@ fn wandering() -> Input<u8> {
 fn run(seed: u64, workers: usize) -> ShrinkOutcome<u8> {
     let mut config = ShrinkConfig::new((), seed);
     config.workers = workers;
-    config.batch = 8;
+    config.window = Some(8);
     config.job_budget = Some(4_000);
     shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink the maze tape")
 }
@@ -54,8 +54,11 @@ fn a_tape_three_times_the_shortest_path_shrinks_to_it_on_eight_seeds() {
     for seed in 1..=8 {
         let outcome = run(seed, 2);
         assert_eq!(outcome.input.actions, shortest(), "seed {seed}");
-        assert_eq!(outcome.progress.initial_cost.primary, 27);
-        assert_eq!(outcome.progress.cost.primary, 9);
+        assert_eq!(
+            outcome.progress.initial_cost.map(|cost| cost.primary),
+            Some(27)
+        );
+        assert_eq!(outcome.progress.cost.map(|cost| cost.primary), Some(9));
     }
 }
 
@@ -67,28 +70,27 @@ fn the_same_seed_gives_the_same_tape_at_one_and_four_workers() {
 }
 
 #[test]
-fn keeping_shortcut_states_gives_the_same_tape_without_rebuilding_the_chain() {
+fn shortcut_snapshots_give_the_same_tape_from_shortcuts_alone() {
     let mut config = ShrinkConfig::new((), 5);
-    config.batch = 1;
-    config.redraws = false;
+    config.window = Some(1);
+    config.ordinary = false;
     config.until_shortcuts_exhausted = true;
-    let rebuilt = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
-    config.shortcut_states = true;
-    let kept = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
-    assert_eq!(kept.input, rebuilt.input);
-    assert_eq!(kept.improvements.len(), rebuilt.improvements.len());
-    assert_eq!(kept.progress.jobs, rebuilt.progress.jobs);
-    assert!(rebuilt.progress.rebuilds > 0);
-    assert_eq!(kept.progress.rebuilds, 0);
+    let plain = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
+    config.shortcut_snapshots = true;
+    let snapshotted = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
+    assert_eq!(snapshotted.input, plain.input);
+    assert_eq!(snapshotted.improvements.len(), plain.improvements.len());
+    assert_eq!(snapshotted.progress.jobs, plain.progress.jobs);
+    assert_eq!(plain.progress.jobs.ordinary, 0);
 }
 
 #[test]
 fn primary_shortcuts_still_delete_actions_that_have_no_simpler_action() {
     let mut config = ShrinkConfig::new((), 3);
-    config.batch = 1;
-    config.redraws = false;
+    config.window = Some(1);
+    config.ordinary = false;
     config.primary_shortcuts = true;
-    config.shortcut_states = true;
+    config.shortcut_snapshots = true;
     config.until_shortcuts_exhausted = true;
     let outcome = shrink(&maze(), &config, &wandering(), |_| Ok(())).expect("shrink");
     assert_eq!(outcome.input.actions, shortest());
@@ -96,15 +98,6 @@ fn primary_shortcuts_still_delete_actions_that_have_no_simpler_action() {
         outcome.stop,
         searcher::search::shrink::ShrinkStop::ShortcutsExhausted
     );
-}
-
-#[test]
-fn a_tape_that_misses_the_goal_is_refused() {
-    let config = ShrinkConfig::new((), 1);
-    let input = Input {
-        actions: vec![3, 3, 0],
-    };
-    assert!(shrink(&maze(), &config, &input, |_| Ok(())).is_err());
 }
 
 fn graph_world(layout: u64) -> (Workload, graph::Config) {
@@ -170,13 +163,42 @@ fn a_graph_detour_three_times_the_shortest_path_shrinks_to_its_length_on_eight_s
     for seed in 1..=8 {
         let mut shrink_config = ShrinkConfig::new((), seed);
         shrink_config.workers = 2;
-        shrink_config.batch = 8;
-        shrink_config.redraw_length = 8;
+        shrink_config.window = Some(8);
+        shrink_config.ordinary_length = Some(8);
         shrink_config.job_budget = Some(20_000);
         let outcome = shrink(&workload, &shrink_config, &input, |_| Ok(())).expect("shrink");
         assert_eq!(
-            outcome.progress.cost.primary,
-            u64::try_from(shortest).expect("length fits"),
+            outcome.progress.cost.map(|cost| cost.primary),
+            Some(u64::try_from(shortest).expect("length fits")),
+            "seed {seed}: {:?}",
+            outcome.progress
+        );
+        let mut state = config.initial();
+        for action in &outcome.input.actions {
+            state = config.step(state, *action);
+        }
+        assert!(config.goal(state));
+    }
+}
+
+#[test]
+fn a_graph_tape_that_stops_short_of_the_goal_searches_from_its_states_until_an_arrival() {
+    let (workload, config) = graph_world(0x5eed_0001);
+    let (shortest, mut actions) = detour(&config);
+    let detour_length = u64::try_from(actions.len()).expect("length fits");
+    actions.truncate(actions.len() - 2);
+    let input = Input { actions };
+    for seed in 1..=4 {
+        let mut shrink_config = ShrinkConfig::new((), seed);
+        shrink_config.workers = 2;
+        shrink_config.window = Some(8);
+        shrink_config.ordinary_length = Some(8);
+        shrink_config.job_budget = Some(20_000);
+        let outcome = shrink(&workload, &shrink_config, &input, |_| Ok(())).expect("shrink");
+        assert_eq!(outcome.progress.initial_cost, None, "seed {seed}");
+        let cost = outcome.progress.cost.expect("an arrival").primary;
+        assert!(
+            (u64::try_from(shortest).expect("length fits")..=detour_length).contains(&cost),
             "seed {seed}: {:?}",
             outcome.progress
         );

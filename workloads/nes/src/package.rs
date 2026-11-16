@@ -162,6 +162,7 @@ where
         mixture: DrawMixture::default(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: Some(options.output.join("victory.json")),
+        minimize: None,
     };
     use searcher::search::campaign::{
         CampaignCheckpoint, SnapshotCheckpoint, SnapshotCheckpointEntry,

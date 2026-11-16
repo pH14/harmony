@@ -7,8 +7,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{ShrinkCost, ShrinkPolicy};
-use crate::search::{archive::Input, rollout::classify};
+use super::ShrinkPolicy;
+use crate::search::{archive::Input, cost::ShrinkCost, rollout::classify};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct WindowConfig {

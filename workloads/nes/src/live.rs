@@ -412,7 +412,7 @@ where
         Ok((outcome, note))
     }
 
-    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {
         let watched = self.viewers.load(Ordering::Relaxed) > 0;
         if watched != self.recording.swap(watched, Ordering::Relaxed) {
             if watched {
@@ -442,6 +442,7 @@ where
             lock(&self.shared).stats = feed::stats(campaign);
         }
         self.serve(campaign);
+        Ok(())
     }
 
     fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {

@@ -328,6 +328,7 @@ fn continuation_config(
         mixture,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
+        minimize: None,
     }
 }
 

@@ -93,6 +93,7 @@ fn path_name(path: SelectorPath) -> &'static str {
         SelectorPath::Continuation => "continuation",
         SelectorPath::Tiers => "tiers",
         SelectorPath::Recent => "recent",
+        SelectorPath::Shrink => "shrink",
     }
 }
 
@@ -1305,6 +1306,7 @@ fn campaign_config<const CAPACITY_TWO: bool>(
         mixture: workload.config.mixture(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
+        minimize: None,
     }
 }
 
@@ -1925,6 +1927,8 @@ mod tests {
                     milestones: false,
                     outcome: Outcome::default(),
                     candidate: None,
+                    cost: searcher::search::cost::ShrinkCost::ZERO,
+                    bound: searcher::search::cost::ShrinkCost::ZERO,
                 };
                 w.merge_action_evidence(&mut evidence, &result, 0, || Ok(Input::default()))
                     .unwrap();
@@ -1948,6 +1952,8 @@ mod tests {
                     milestones: false,
                     outcome: Outcome::default(),
                     candidate: None,
+                    cost: searcher::search::cost::ShrinkCost::ZERO,
+                    bound: searcher::search::cost::ShrinkCost::ZERO,
                 };
                 w.merge_action_evidence(&mut evidence, &result, 0, || Ok(Input::default()))
                     .unwrap();

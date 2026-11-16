@@ -411,6 +411,7 @@ mod tests {
             mixture: DrawMixture::BiasedHalf,
             retention: RetentionPolicy::Unprobed,
             objective_witness_path: None,
+            minimize: None,
         };
         let mut stream = Vec::new();
         let (report, checkpoint) =

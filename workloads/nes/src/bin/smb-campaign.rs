@@ -231,7 +231,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
     let origin = load_origin(&origin_arg, checkpoint_arg.as_deref(), checkpoint_format)?;
     let (origin_source, origin_checkpoint) = match origin {
-        SmbCampaignOrigin::Genesis => (None, None),
+        SmbCampaignOrigin::Genesis | SmbCampaignOrigin::Tape { .. } => (None, None),
         SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
         SmbCampaignOrigin::Archive {
             source, checkpoint, ..

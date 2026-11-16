@@ -56,8 +56,8 @@ a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
 sum. `smb-route` replays a Super Mario Bros. tape and prints its frames from
 power-on (the boot walk's frames plus the tape's), the frame each level starts
 in play, its frames, and whether it ended into the next level or through a warp
-pipe. `smb-shrink` runs `search::shrink` on a Super Mario Bros. tape; the
-[SMB README](src/smb/README.md#shrink) describes it.
+pipe. `smb-shrink` runs `search::shrink`, a minimize campaign, on a Super
+Mario Bros. tape; the [SMB README](src/smb/README.md#shrink) describes it.
 
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds
@@ -366,12 +366,13 @@ file streaming limits and qualification checks are documented in the
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
 the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
-`smb_route`, `smb_key`, `smb_terminal`, `smb_frame_ceiling`, `resume`, `resume_states` and `mixture`. For Super
+`smb_route`, `smb_key`, `smb_terminal`, `minimize`, `resume`, `resume_states` and `mixture`. For Super
 Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
-`control_in:7,0`, `root_input` a tape the game replays before its genesis, and
-`smb_frame_ceiling` a frame count from power-on that dooms every state whose
-frames plus the shrink's lower bound reach it, so the first goal a search
-reports is cheaper than the ceiling. `live_site` names a directory with the built arcade
+`control_in:7,0`, and `root_input` a tape the game replays before its genesis.
+For any game, `minimize` runs the campaign in the searcher's minimize mode
+(see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search
+keeps going after its first goal and `victory-input.json` holds the cheapest
+goal tape found. `live_site` names a directory with the built arcade
 page and its `roms` directory, which the server serves at `/`. Other campaigns
 keep their own game setup and mixture, and their view has no motion trails;
 its root is the campaign's first archived state.

@@ -3,8 +3,10 @@
 pub mod archive;
 pub mod assertion;
 pub mod campaign;
+mod chain;
 pub mod checkpoint;
 mod continuation;
+pub mod cost;
 pub mod draw;
 pub mod draw_tables;
 pub mod duration;
@@ -15,6 +17,7 @@ pub mod parallel;
 pub mod plan;
 pub mod rand;
 pub mod rollout;
+mod shortcut;
 pub mod shrink;
 pub mod snapshot_codec;
 mod snapshot_store;

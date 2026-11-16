@@ -4,7 +4,7 @@ use std::error::Error;
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState},
-    search::shrink::{ShrinkCost, ShrinkPolicy},
+    search::shrink::ShrinkPolicy,
     smb::{
         archive::SmbKey,
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -117,36 +117,25 @@ where
         })
 }
 
+#[must_use]
+pub fn simpler_chords(action: &ButtonChord) -> Vec<ButtonChord> {
+    let hold = action.hold_frames;
+    if hold == WAIT_FOR_CONTROL_HOLD || hold <= 1 {
+        return Vec::new();
+    }
+    let mut simpler = vec![ButtonChord::new(action.buttons, hold - 1)];
+    if hold > 3 {
+        simpler.push(ButtonChord::new(action.buttons, hold / 2));
+    }
+    simpler
+}
+
 impl<M, P, K> ShrinkPolicy for SmbGame<M, P, K>
 where
     M: NesBackend<P>,
     P: SnapshotState,
     K: SmbKey,
 {
-    fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
-        ShrinkCost::new(
-            target.last_action_frames(),
-            target.last_action_level_frames(),
-        )
-    }
-
-    fn simpler_actions(&self, _run: &SmbCampaignRun, action: &ButtonChord) -> Vec<ButtonChord> {
-        let hold = action.hold_frames;
-        if hold == WAIT_FOR_CONTROL_HOLD || hold <= 1 {
-            return Vec::new();
-        }
-        let mut simpler = vec![ButtonChord::new(action.buttons, hold - 1)];
-        if hold > 3 {
-            simpler.push(ButtonChord::new(action.buttons, hold / 2));
-        }
-        simpler
-    }
-
-    fn remaining_cost_bound(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
-        let frames = remaining_frames_bound(target);
-        ShrinkCost::new(frames, frames)
-    }
-
     fn window_actions(&self, run: &SmbCampaignRun) -> Vec<ButtonChord> {
         run.vocabulary
             .masks()
@@ -281,6 +270,19 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
+    reaching(target, input, terminal)?
+        .ok_or_else(|| format!("the tape never reaches {}", terminal.identifier()).into())
+}
+
+pub fn reaching<M, P>(
+    target: &mut SmbTarget<M, P>,
+    input: &SmbInput,
+    terminal: SmbTerminalPredicate,
+) -> Result<Option<SmbInput>, Box<dyn Error>>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
     target.reset();
     for (index, action) in input.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() {
@@ -288,12 +290,12 @@ where
         }
         target.apply(action);
         if terminal.reached(target)? {
-            return Ok(SmbInput {
+            return Ok(Some(SmbInput {
                 actions: input.actions[..=index].to_vec(),
-            });
+            }));
         }
     }
-    Err(format!("the tape never reaches {}", terminal.identifier()).into())
+    Ok(None)
 }
 
 pub fn splice<M, P>(
@@ -316,7 +318,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        search::shrink::ShrinkPolicy,
+        search::campaign::InputPolicy,
         smb::{
             campaign::{SmbCampaignRun, SmbGame},
             target::{ButtonChord, wait_for_control},
@@ -345,25 +347,6 @@ mod tests {
             game.simpler_actions(&run(), &ButtonChord::new(0x81, 1))
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn a_frame_ceiling_dooms_a_state_whose_frames_and_bound_reach_it() {
-        use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution};
-        let game = SmbGame::loopback_for_tests(&[0]);
-        let target = game.new_target().expect("target");
-        let frames = target.boot_frames() + target.frame_count();
-        assert!(!game.is_doomed(&target));
-        let ceiled = SmbGame::loopback_for_tests(&[0]).with_frame_ceiling(Some(frames + 1));
-        assert!(!ceiled.is_doomed(&target));
-        let reached = SmbGame::loopback_for_tests(&[0]).with_frame_ceiling(Some(frames));
-        assert!(reached.is_doomed(&target));
-        assert!(
-            reached.policies(&run())["doomed_policy"].ends_with(&format!(
-                "_or_frames_from_power_on_plus_bound_at_least_{frames}"
-            ))
-        );
-        assert!(!game.policies(&run())["doomed_policy"].contains("frames_from_power_on"));
     }
 
     #[test]

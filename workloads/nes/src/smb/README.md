@@ -174,12 +174,11 @@ x 1040 while the player is not climbing, unless the vine has spawned and
 AreaPointer still holds `$2F`, since the brick is then left of the screen. `smb-route <tape> --route <identifier>` replays a tape and prints each
 stage it visits with its objectives and the number of doomed actions.
 
-`SmbGame::with_frame_ceiling` adds one more rule: a state is doomed once its
-frames from power-on plus the shrink's lower bound (see [Shrink](#shrink))
-reach the ceiling. A search under a ceiling taken from the incumbent drops
-every state that cannot beat it, so its first goal is a cheaper tape, and a
-search run again under that tape's frames looks for a cheaper one still. The
-doomed policy identifier names the ceiling.
+A campaign in the searcher's minimize mode (see
+[Minimizing](../../../../dissonance/searcher/README.md#minimizing)) uses the
+shrink's per-action cost and lower bound (see [Shrink](#shrink)) to keep the
+cheapest goal tape and drop every state whose cost so far plus that bound
+reaches it.
 
 ## Snapshots
 
@@ -204,7 +203,8 @@ charges it. A compressed native snapshot stores about 1.8 KB.
 
 ## Shrink
 
-`smb::shrink` declares the `ShrinkPolicy` for `search::shrink`. The goal is the
+`smb::shrink` holds the shrink hooks that `SmbGame`'s campaign traits and its
+`ShrinkPolicy` call for `search::shrink`. The goal is the
 run's terminal predicate, the ending for a speedrun. The cost is frames, then
 frames inside a level. A simpler action is the same chord held one frame less,
 and held half as long when the hold is above 3; a wait for control has none.
@@ -223,16 +223,24 @@ holding the buttons of its last frame, and checks by replay that the tape still
 ends at the same frame. The second part of the cost lets savings inside one
 boundary be accepted until they add up to a whole boundary.
 
-`smb-shrink --input <tape.json> --out <dir>` rewrites the tape, shrinks it and
-writes `incumbent-input.json`, `best-input.json` after each improvement,
-`improvements.jsonl`, `progress.jsonl` and `outcome.json`, with frames counted
-from power-on. `--terminal control_in:<world>,<level>` makes the goal the first
-frame with control in that level (zero-based numbers), and cuts the tape there,
-so one level can be shrunk to the next level's start. `--root-at
-control_in:<world>,<level>` starts the game at the tape's first frame with
-control in that level, so only the actions after it are shrunk; the tapes it
-writes still start at power-on. `--route <identifier>` keys the shrink's
-archive by that route plan.
+`smb-shrink --input <tape.json> --out <dir>` rewrites the tape, runs
+`search::shrink` on it from power-on and writes `root-input.json`,
+`incumbent-input.json` (the rewritten tape), `best-input.json` after each
+improvement, `improvements.jsonl`, `progress.jsonl` (every `--progress-every`
+jobs) and `outcome.json`, with frames counted from power-on.
+`--terminal control_in:<world>,<level>` makes the goal the first frame with
+control in that level (zero-based numbers), and cuts the tape there, so one
+level can be shrunk to the next level's start. A tape that never reaches the
+terminal is kept whole: its states up to its end or Mario's death seed the
+search, `outcome.json` records no initial frames, and its stop is
+`no_arrival` if the budget ends before an arrival. `--root-at
+control_in:<world>,<level>` sets the shrink's root to the tape's first frame
+with control in that level, so only the actions after it change. `--route
+<identifier>` keys the archive by that route plan. `--workers`, `--window`,
+`--job-budget`, `--work-budget` (emulated frames, including the tape's own
+replay), `--ordinary-length` (default 64), `--memory-mib` (default 8192) and
+`--stream <path>`, which keeps the campaign stream for replay, set the
+campaign.
 
 A rooted game (`SmbGame::with_root`) replays a prefix tape after the boot and
 takes that state as its genesis, and its emulator identity names the prefix's

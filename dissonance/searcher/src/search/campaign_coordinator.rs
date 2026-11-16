@@ -16,17 +16,18 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignCancelRecord, CampaignConfig,
-    CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord,
-    CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
+    CampaignCounters, CampaignEndRecord, CampaignExecutionOptions, CampaignIncumbentRecord,
+    CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
     CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
     CampaignStreamRecord, CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore,
-    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob,
-    StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
-    completed_job_records, continuation_arrival, continuation_attempt, derive_selection_seed,
-    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
-    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
-    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, search_checkpoint_header, source_suffixes,
+    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MinimizeReport, PendingJob,
+    SHRINK_SELECTOR, SelectedJob, ShrinkReservation, StreamWriter, Workload,
+    archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
+    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
+    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
+    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
+    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
+    retained_archive_indexes, search_checkpoint_header, source_suffixes,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
     with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
@@ -34,12 +35,14 @@ use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
 };
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
+use crate::search::cost::ShrinkCost;
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
-use crate::search::rollout::RolloutStop;
+use crate::search::rollout::{JobCeiling, RolloutStop};
+use crate::search::shrink::JobKind;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
     thread_schedstat,
@@ -55,6 +58,8 @@ pub struct JobSpec<G: CampaignTypes + ?Sized> {
     pub replay_certificates: Vec<Option<[u8; 32]>>,
     pub parent_milestones: G::Milestones,
     pub suffix: Vec<G::Action>,
+    pub ceiling: Option<JobCeiling>,
+    pub candidates: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -72,6 +77,15 @@ pub struct CampaignAdmission {
     pub decisions: Vec<CampaignAdmissionDecision>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignIncumbent<A: Ord> {
+    pub sequence: u64,
+    pub kind: JobKind,
+    pub record: CampaignIncumbentRecord,
+    pub input: Input<A>,
+    pub execution_work: u64,
+}
+
 pub fn run_job<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
@@ -79,7 +93,10 @@ pub fn run_job<G: Workload>(
     job: &JobSpec<G>,
     cancel: Option<Arc<AtomicBool>>,
 ) -> Result<JobOutcome<G>, Box<dyn Error>> {
-    let stop = RolloutStop::new(config.stop_rollout_on_objective).with_cancel(cancel);
+    let stop = RolloutStop::new(config.stop_rollout_on_objective)
+        .with_cancel(cancel)
+        .with_ceiling(job.ceiling)
+        .with_candidates(job.candidates);
     let work_before = workload.execution_work(target);
     let result = workload.execute_job_certified(
         &config.run,
@@ -138,12 +155,14 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     telemetry_started: Moment,
     wall_started: Option<Moment>,
     admissions: Option<Vec<CampaignAdmission>>,
+    incumbents: Option<Vec<CampaignIncumbent<G::Action>>>,
     cancel: Arc<AtomicBool>,
     interrupt: Option<&'static AtomicBool>,
     stopped: bool,
     interrupted: bool,
     jobs_cancelled: u64,
     stall: Option<StallWatch<<G::Key as ArchiveKey>::Progress>>,
+    incumbent_target: Option<G::Target>,
 }
 
 const STALL_REPORT_STATES: usize = 16;
@@ -240,7 +259,8 @@ where
         let draw_origin = match origin {
             CampaignOrigin::Genesis
             | CampaignOrigin::SnapshotRoot { .. }
-            | CampaignOrigin::SearchCheckpoint { .. } => None,
+            | CampaignOrigin::SearchCheckpoint { .. }
+            | CampaignOrigin::Tape { .. } => None,
             CampaignOrigin::Archive { source, .. } => Some((
                 source.file_sha256(),
                 source_suffixes(workload.source_entries(source.report())),
@@ -257,13 +277,18 @@ where
         ) {
             return Err("initial draw state exceeds its deterministic memory reserve".into());
         }
+        let tape = match origin {
+            CampaignOrigin::Tape { input, root } => Some((input, *root)),
+            _ => None,
+        };
         let mut header = stream_header(
             workload,
             config,
             &origin_record,
+            tape,
             draw_header,
             &executable_identity,
-        );
+        )?;
         header.work_budget = work_budget;
         let mut writer = StreamWriter::new(stream);
         writer.write_line(&header)?;
@@ -279,19 +304,31 @@ where
         let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
 
         let bootstrap_started = now();
-        let resume = with_coordinator_session(workload, || {
+        let (resume, incumbent_target) = with_coordinator_session(workload, || {
             Ok(match search_checkpoint {
-                Some(reader) => Some(restore_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    reader,
-                    &mut core,
-                    &mut draw_state,
-                    &mut duration_policies,
-                    &mut counters,
-                )?),
-                None => {
+                Some(reader) => {
+                    let resume = restore_search_checkpoint(
+                        workload,
+                        config,
+                        &executable_identity,
+                        reader,
+                        &mut core,
+                        &mut draw_state,
+                        &mut duration_policies,
+                        &mut counters,
+                    )?;
+                    let target = config
+                        .minimize
+                        .is_some()
+                        .then(|| workload.new_target())
+                        .transpose()
+                        .map_err(|error| -> Box<dyn Error> {
+                            format!("failed to build the incumbent target: {error}").into()
+                        })?;
+                    (Some(resume), target)
+                }
+                None => (
+                    None,
                     bootstrap_campaign(
                         workload,
                         config,
@@ -300,9 +337,8 @@ where
                         &draw_state,
                         &duration_policies,
                         &mut counters,
-                    )?;
-                    None
-                }
+                    )?,
+                ),
             })
         })?;
         telemetry.bootstrap_ns = nanos_since(bootstrap_started);
@@ -390,12 +426,14 @@ where
             telemetry_started,
             wall_started: config.wall_budget.map(|_| telemetry_started),
             admissions: None,
+            incumbents: None,
             cancel: Arc::new(AtomicBool::new(false)),
             interrupt,
             stopped: false,
             interrupted: false,
             jobs_cancelled: 0,
             stall,
+            incumbent_target,
         };
         for job in in_flight {
             let parent_index = coordinator
@@ -439,6 +477,8 @@ where
                     replay_certificates: job.spec.replay_certificates.clone(),
                     parent_milestones: job.spec.parent_milestones,
                     suffix: job.spec.suffix.clone(),
+                    ceiling: job.spec.ceiling,
+                    candidates: job.spec.candidates,
                 },
             );
             if coordinator.checkpoints.is_some() {
@@ -501,6 +541,7 @@ where
                         splice: job.splice,
                         selector: job.selector,
                         suffix_limit: job.suffix_limit,
+                        shrink: job.shrink,
                     },
                 ),
             )?;
@@ -629,7 +670,7 @@ where
                 self.schedule.pop_first();
                 self.admit_completed(finish, reservation, completed)?;
                 if stop_reservations_after_objective(
-                    self.config.stop_campaign_on_objective,
+                    self.config.stops_campaign_on_objective(),
                     self.core.objective_witness.is_some(),
                 ) {
                     self.stop_in_flight(false)?;
@@ -726,6 +767,34 @@ where
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
+    }
+
+    pub fn watch_incumbents(&mut self) {
+        self.incumbents.get_or_insert_with(Vec::new);
+    }
+
+    pub fn take_incumbents(&mut self) -> Vec<CampaignIncumbent<G::Action>> {
+        self.incumbents
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub const fn incumbent_cost(&self) -> Option<ShrinkCost> {
+        self.core.incumbent_cost
+    }
+
+    #[must_use]
+    pub fn minimize_progress(&self) -> Option<MinimizeReport> {
+        self.core.minimize_report()
+    }
+
+    #[must_use]
+    pub const fn execution_work(&self) -> u64 {
+        self.counters
+            .bootstrap_execution_work
+            .saturating_add(self.counters.job_execution_work)
     }
 
     #[must_use]
@@ -1071,6 +1140,8 @@ where
             telemetry_started,
             completed,
             admissions,
+            incumbents,
+            incumbent_target,
             ..
         } = self;
         let admission = &mut telemetry.admission;
@@ -1136,9 +1207,10 @@ where
             .index_of_id(pending_job.parent_id)
             .ok_or("completed job parent is no longer resident")?;
         let isolated_continuation = pending_job.selector.path == SelectorPath::Continuation;
+        let shrink_job = pending_job.selector.path == SelectorPath::Shrink;
         if isolated_continuation {
             core.archive.record_isolated_continuation(parent_index);
-        } else {
+        } else if !shrink_job {
             core.archive
                 .record_selection(parent_index, &pending_job.selector);
         }
@@ -1149,7 +1221,7 @@ where
         let new_slot_descendant = retained_ids
             .iter()
             .any(|id| core.archive.opened_new_slot(*id));
-        if !isolated_continuation {
+        if !isolated_continuation && !shrink_job {
             core.archive
                 .record_selection_outcome(parent_index, !retained_ids.is_empty());
         }
@@ -1173,12 +1245,6 @@ where
             new_slot_descendant,
             execution_work,
         )?;
-        if objectives_before == 0
-            && let (Some(path), Some(input)) =
-                (&config.objective_witness_path, &core.objective_witness)
-        {
-            std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-        }
         let draw_checkpoint_after =
             finish_record(workload, &config.run, draw_state, core, &decisions)?;
         let draw_state_memory_bytes = workload.draw_state_memory_bytes(draw_state);
@@ -1190,6 +1256,20 @@ where
         }
         if !memory_is_within_reserve(duration_policies.memory_bytes(), duration_memory_reserve) {
             return Err("live adaptive duration state exceeds its memory reserve".into());
+        }
+        let incumbent = core.admit_minimize_job(
+            workload,
+            &config.run,
+            incumbent_target.as_mut(),
+            pending_job.shrink.as_ref(),
+            &decisions,
+            execution_work,
+        )?;
+        if (incumbent.is_some() || objectives_before == 0 && config.minimize.is_none())
+            && let (Some(path), Some(input)) =
+                (&config.objective_witness_path, &core.objective_witness)
+        {
+            std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
         }
         core.archive.unpin_job_origin(pending_job.snapshot_id);
         core.archive.unpin_metadata(pending_job.parent_id);
@@ -1213,6 +1293,12 @@ where
             });
         }
         let stream_started = profile_now();
+        let incumbent_work = incumbent.as_ref().map_or(0, |record| record.execution_work);
+        let accepted = incumbents.is_some().then(|| incumbent.clone()).flatten();
+        let accepted_kind = pending_job
+            .shrink
+            .as_ref()
+            .map_or(JobKind::Ordinary, |record| record.kind);
         writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
             continuation_energy: pending_job.continuation_energy,
             sequence,
@@ -1235,11 +1321,30 @@ where
             duration_checkpoint_before,
             duration_checkpoint_after,
             suffix_limit: pending_job.suffix_limit,
+            ceiling: pending_job.ceiling,
+            shrink: pending_job.shrink.map(Box::new),
+            incumbent,
         }))?;
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns
             .saturating_add(profile_elapsed(stream_started));
-        counters.job_execution_work = counters.job_execution_work.saturating_add(execution_work);
+        counters.job_execution_work = counters
+            .job_execution_work
+            .saturating_add(execution_work)
+            .saturating_add(incumbent_work);
+        if let (Some(incumbents), Some(record), Some(input)) =
+            (incumbents.as_mut(), accepted, &core.objective_witness)
+        {
+            incumbents.push(CampaignIncumbent {
+                sequence,
+                kind: accepted_kind,
+                record,
+                input: input.clone(),
+                execution_work: counters
+                    .bootstrap_execution_work
+                    .saturating_add(counters.job_execution_work),
+            });
+        }
         if objectives_before == 0 && core.objectives_reached > 0 {
             counters.note_first_objective(sequence);
         }
@@ -1350,7 +1455,7 @@ where
                 counters.job_execution_work,
             )
             || stop_reservations_after_objective(
-                config.stop_campaign_on_objective,
+                config.stops_campaign_on_objective(),
                 core.objective_witness.is_some(),
             )
             || core.hang_stop.is_some()
@@ -1362,6 +1467,58 @@ where
         {
             return Ok(None);
         }
+        let shrink =
+            match core.shrink_reserve(workload, &config.run, config.campaign_seed, *reserved)? {
+                ShrinkReservation::Unused => None,
+                ShrinkReservation::Stopped => return Ok(None),
+                ShrinkReservation::Ordinary(record) => Some(record),
+                ShrinkReservation::Chain(job) => {
+                    *reserved = reserved.saturating_add(1);
+                    let parent_id = core
+                        .archive
+                        .stable_id(job.parent_index)
+                        .ok_or("selected archive slot is missing")?;
+                    core.archive.pin_metadata(parent_id)?;
+                    let (snapshot, replay, replay_certificates, snapshot_id) =
+                        core.archive.pin_job_origin(job.parent_index)?;
+                    let ceiling = core.job_ceiling(job.parent_index)?;
+                    let entry = &core.archive.entries[job.parent_index];
+                    return Ok(Some((
+                        JobSpec {
+                            reservation: 0,
+                            planned_finish: 0,
+                            snapshot,
+                            replay,
+                            replay_certificates,
+                            parent_milestones: entry.milestones,
+                            suffix: job.suffix,
+                            ceiling,
+                            candidates: job.candidates,
+                        },
+                        PendingJob {
+                            snapshot_id,
+                            parent_id,
+                            continuation_energy: None,
+                            continuation_wave: 0,
+                            continuation_edge: None,
+                            mutation_seed: 0,
+                            mixture_weight: 0,
+                            splice_weight: 0,
+                            splice: None,
+                            selector: SHRINK_SELECTOR,
+                            draw_checkpoint_before: None,
+                            duration_draw: None,
+                            duration_admission_sequence_at_draw: None,
+                            duration_remaining_work: None,
+                            duration_checkpoint_at_draw: None,
+                            suffix_limit: None,
+                            planned_finish: 0,
+                            ceiling,
+                            shrink: Some(job.record),
+                        },
+                    )));
+                }
+            };
         let mut consecutive_skips = 0_u64;
         let (continuation_energy, continuation) =
             continuation_attempt(core, config.campaign_seed, *reserved);
@@ -1392,6 +1549,7 @@ where
             core.archive.pin_metadata(parent_id)?;
             let (snapshot, replay, replay_certificates, snapshot_id) =
                 core.archive.pin_job_origin(parent_index)?;
+            let ceiling = core.job_ceiling(parent_index)?;
             let entry = &core.archive.entries[parent_index];
             return Ok(Some((
                 JobSpec {
@@ -1402,6 +1560,8 @@ where
                     replay_certificates,
                     parent_milestones: entry.milestones,
                     suffix,
+                    ceiling,
+                    candidates: true,
                 },
                 PendingJob {
                     snapshot_id,
@@ -1421,11 +1581,13 @@ where
                     duration_checkpoint_at_draw: None,
                     suffix_limit: None,
                     planned_finish: 0,
+                    ceiling,
+                    shrink,
                 },
             )));
         }
         loop {
-            let (parent_index, selector) = core.archive.select_parent(rand)?;
+            let (parent_index, selector) = core.draw_parent(rand)?;
             let parent_id = core
                 .archive
                 .stable_id(parent_index)
@@ -1572,6 +1734,7 @@ where
             core.archive.pin_metadata(parent_id)?;
             let (snapshot, replay, replay_certificates, snapshot_id) =
                 core.archive.pin_job_origin(parent_index)?;
+            let ceiling = core.job_ceiling(parent_index)?;
             let entry = &core.archive.entries[parent_index];
             return Ok(Some((
                 JobSpec {
@@ -1582,6 +1745,8 @@ where
                     replay_certificates,
                     parent_milestones: entry.milestones,
                     suffix,
+                    ceiling,
+                    candidates: true,
                 },
                 PendingJob {
                     snapshot_id,
@@ -1601,6 +1766,8 @@ where
                     duration_checkpoint_at_draw,
                     suffix_limit,
                     planned_finish: 0,
+                    ceiling,
+                    shrink,
                 },
             )));
         }

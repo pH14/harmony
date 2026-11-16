@@ -8260,6 +8260,8 @@ mod tests {
                         disposition: ExecutionDisposition::Terminal,
                     },
                     candidate: None,
+                    cost: searcher::search::cost::ShrinkCost::ZERO,
+                    bound: searcher::search::cost::ShrinkCost::ZERO,
                 });
             }
             let certify = |digest, history_hung: bool| {

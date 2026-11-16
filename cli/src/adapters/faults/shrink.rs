@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SHRINK_FORMAT: &str = "harmony-fault-shrink-v2";
+pub const SHRINK_FORMAT: &str = "harmony-fault-shrink-v3";
 
 #[derive(Deserialize, Serialize)]
 struct Summary {
@@ -151,7 +151,7 @@ pub fn shrink_into(
         .progress
         .jobs
         .total()
-        .saturating_add(outcome.progress.rebuilds)
+        .saturating_add(outcome.progress.accepted.total())
         .saturating_add(2);
     fs::write(
         out.join("shrink.json"),
