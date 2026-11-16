@@ -945,6 +945,15 @@ mod tests {
     }
 
     #[test]
+    fn a_root_after_ridley_with_no_lineage_starts_on_the_way_back() {
+        let mut state = after_ridley(RIDLEY, 18, 29);
+        state.health = 960;
+        assert_eq!(locate(state, 0, None), (18, 0));
+        state.health = 300;
+        assert_eq!(locate(state, 0, None), (17, 30));
+    }
+
+    #[test]
     fn the_missile_target_latches_before_the_tourian_route() {
         let mut state = after_ridley(BRINSTAR, 13, 9);
         state.health = 960;

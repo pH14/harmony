@@ -125,7 +125,10 @@ Each stage climbs one integer:
   the key keeps the parent key's index through `complete`, so a side room
   keeps its parent's tier and walking back along the route lowers it. A route
   stage with no item to take, such as Kraid's door, is done once its last cell
-  is reached, and stays done for every descendant.
+  is reached, and stays done for every descendant. A root input replayed as
+  one execution has no lineage, so its stage comes from the items and bosses
+  it holds: every route and energy stage before a held item or a defeated boss
+  counts as done.
 - An energy stage climbs whole energy units and stays done after a later hit.
   The stages before the Brinstar routes are done at 64 energy: an enemy touch
   in Brinstar costs 8 energy (`$80` at `$95CE` in the Brinstar bank), and 64

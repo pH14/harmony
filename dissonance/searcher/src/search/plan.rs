@@ -25,7 +25,10 @@ pub fn locate<S: Stage>(
     for (index, stage) in plan.iter().enumerate() {
         let index = u8::try_from(index).unwrap_or(u8::MAX);
         let carried = parent.and_then(|(stage, objective)| (stage == index).then_some(objective));
-        if stage.latches() && parent.is_some_and(|(parent_stage, _)| parent_stage > index) {
+        if stage.latches()
+            && (parent.is_some_and(|(parent_stage, _)| parent_stage > index)
+                || later_fact_done(&plan[usize::from(index) + 1..], state))
+        {
             continue;
         }
         let objective = stage.objective(state, carried);
@@ -37,6 +40,12 @@ pub fn locate<S: Stage>(
         u8::try_from(plan.len().saturating_sub(1)).unwrap_or(u8::MAX),
         0,
     )
+}
+
+fn later_fact_done<S: Stage>(later: &[S], state: &S::State) -> bool {
+    later
+        .iter()
+        .any(|stage| !stage.latches() && stage.done(state, stage.objective(state, None)))
 }
 
 #[must_use]
@@ -102,6 +111,57 @@ mod tests {
         assert_eq!(locate(&PLAN, &12, None), (2, 0));
         assert_eq!(stage_name(&PLAN, 1), "reach");
         assert_eq!(stage_name(&PLAN, 9), "unknown");
+    }
+
+    #[derive(Clone, Copy)]
+    struct Flag {
+        bit: u16,
+        latch: bool,
+    }
+
+    impl Stage for Flag {
+        type State = u16;
+
+        fn name(self) -> &'static str {
+            "flag"
+        }
+
+        fn objective(self, state: &u16, _carried: Option<u16>) -> u16 {
+            *state
+        }
+
+        fn done(self, state: &u16, _objective: u16) -> bool {
+            state & self.bit != 0
+        }
+
+        fn latches(self) -> bool {
+            self.latch
+        }
+    }
+
+    #[test]
+    fn a_later_stage_that_does_not_latch_marks_the_latching_stages_before_it_done() {
+        let plan = [
+            Flag {
+                bit: 1,
+                latch: false,
+            },
+            Flag {
+                bit: 2,
+                latch: true,
+            },
+            Flag {
+                bit: 4,
+                latch: false,
+            },
+            Flag {
+                bit: 8,
+                latch: true,
+            },
+        ];
+        assert_eq!(locate(&plan, &0b0001, None), (1, 1));
+        assert_eq!(locate(&plan, &0b0101, None), (3, 5));
+        assert_eq!(locate(&plan, &0b0100, None), (0, 4));
     }
 
     #[test]

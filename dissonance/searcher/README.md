@@ -323,7 +323,12 @@ a name, one integer objective computed from the state (with the parent's value
 for that stage passed in, for a state the stage cannot measure), and a done
 test. `plan::locate` returns (stage, objective) for the first stage whose done
 test fails, skipping a stage whose `latches` is true once the parent is past
-it, so a reached waypoint stays reached for every descendant.
+it, so a reached waypoint stays reached for every descendant. A latching stage
+is also skipped when a later stage that does not latch is done: a stage that
+does not latch tests a fact the state keeps, such as an item held or a boss
+defeated, and the plan's order puts every waypoint before it behind that fact.
+A state with no lineage, such as a root input replayed as one execution, is
+then placed by its facts.
 `ArchiveKey::progress` returns that pair, so the stage is the outer tier and
 the objective orders states within it. Place, identity and preferences remain
 the key's own; a key that wants them to differ by stage reads the stage from
