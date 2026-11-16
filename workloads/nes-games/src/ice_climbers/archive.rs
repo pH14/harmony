@@ -8,11 +8,10 @@ use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
     ice_climbers::target::{
         ButtonChord, FLOORS, GRID_SHIFT, IceClimbersInput, IceClimbersMechanicalState,
-        IceClimbersObservations, IceClimbersSnapshot, MOUNTAINS,
+        IceClimbersObservations, MOUNTAINS,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -21,9 +20,6 @@ pub const KEY_POLICY_IDENTIFIER: &str = "ice_climbers_mountain_grounded_floor_ti
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub const ALTITUDE_BAND_SHIFT: u16 = 4;
-
-pub type IceClimbersArchive =
-    Archive<ButtonChord, IceClimbersArchiveKey, IceClimbersMilestones, IceClimbersSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct IceClimbersTier {

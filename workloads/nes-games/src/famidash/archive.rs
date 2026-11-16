@@ -8,11 +8,9 @@ use crate::{
     chord::ChordVocabulary,
     famidash::target::{
         A_BUTTON, ButtonChord, FamidashInput, FamidashMechanicalState, FamidashObservations,
-        FamidashSnapshot,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -26,9 +24,6 @@ const CELL_HEIGHT: i32 = 16;
 const CELL_SLOT_WIDTH: i32 = 8;
 const PROGRESS_BAND: i32 = 512;
 const CAMERA_PHASE_WIDTH: u8 = 32;
-
-pub type FamidashArchive =
-    Archive<ButtonChord, FamidashArchiveKey, FamidashMilestones, FamidashSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FamidashArchiveKey {

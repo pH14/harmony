@@ -28,12 +28,10 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
+            CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
             postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -136,10 +134,6 @@ pub struct DonkeyKongCampaignEvidence {
     champion_key: Option<DonkeyKongProgressWatermark>,
 }
 
-pub type DonkeyKongCampaignCheckpoint = CampaignCheckpoint<DonkeyKongSnapshot>;
-pub type DonkeyKongSnapshotCheckpoint = SnapshotCheckpoint<DonkeyKongSnapshot>;
-pub type DonkeyKongCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type DonkeyKongCampaignModeReport = CampaignModeReport<ButtonChord, DonkeyKongArchiveReport>;
 type DonkeyKongCampaignActionResult<M> = CampaignActionResult<DonkeyKongGame<M>>;
 type DonkeyKongCampaignJobResult<M> = CampaignJobResult<DonkeyKongGame<M>>;
 

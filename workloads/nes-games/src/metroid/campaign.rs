@@ -34,12 +34,10 @@ use crate::{
         archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, PREFERENCE_POLICY_FIELD,
-            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_semantic_result_sha256, postcard_value_sha256,
+            CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignTypes, Evaluation,
+            InputPolicy, PREFERENCE_POLICY_FIELD, Reporting, SnapshotCheckpoint, TargetExecution,
+            WorkloadPolicies, postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -372,9 +370,7 @@ impl MapCoverage {
 pub type MetroidCampaignOrigin<M> = CampaignOrigin<MetroidGame<M>>;
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
-pub type MetroidCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type MetroidCampaignModeReport = CampaignModeReport<MetroidAction, MetroidArchiveReport>;
-pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKey>;
 pub type MetroidCampaignActionResult<M> = CampaignActionResult<MetroidGame<M>>;
 pub type MetroidCampaignJobResult<M> = CampaignJobResult<MetroidGame<M>>;
 
