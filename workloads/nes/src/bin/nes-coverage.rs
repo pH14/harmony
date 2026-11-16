@@ -20,12 +20,12 @@ use machine::{
 use nes_workload::{
     metroid::{
         action::MetroidAction,
-        archive::MAX_ARCHIVE_ENTRIES as METROID_ARCHIVE_ENTRIES,
+        archive::{MAX_ARCHIVE_ENTRIES as METROID_ARCHIVE_ENTRIES, archive_key as metroid_key},
         campaign::{
             MetroidCampaignConfig, MetroidCampaignOrigin, MetroidGame,
             run_metroid_campaign_checkpointed,
         },
-        target::{GenesisDepth, MetroidInput, MetroidTarget, missile_door_in_room},
+        target::{GenesisDepth, MetroidInput, MetroidTarget, decode_state, missile_door_in_room},
     },
     nes_backend::{NesBackend, NesMemory, native_identity_sha256},
     search::{
@@ -34,11 +34,12 @@ use nes_workload::{
         draw::{DrawMixture, draw_mixture_from_identifier},
     },
     smb::{
+        archive::archive_key as smb_key,
         campaign::{
             SmbButtonVocabulary, SmbCampaignConfig, SmbCampaignOrigin, SmbGame,
             SmbTerminalPredicate, run_smb_campaign_checkpointed,
         },
-        target::{SmbInput, SmbTarget},
+        target::{SmbInput, SmbTarget, smb_mechanical_state_from_wram},
     },
     target::Target,
 };
@@ -126,13 +127,13 @@ impl Core {
         &self,
         rom: &[u8],
         log: &Arc<Mutex<Log>>,
-        place: &'static [usize],
+        probe: Probe,
     ) -> Result<Covered, MachineError> {
         Ok(Covered {
             inner: self.machine(rom)?,
             log: Arc::clone(log),
             ids: Vec::new(),
-            place,
+            probe,
         })
     }
 
@@ -188,7 +189,7 @@ impl TapeWriter {
         &mut self,
         mut line: Value,
         wram: &[u8],
-        (start, end): (Vec<u8>, Vec<u8>),
+        (start, end): (Reading, Reading),
     ) -> Result<(), Box<dyn Error>> {
         self.total_ids += self.ids.len();
         let Some(out) = self.out.as_mut() else {
@@ -197,8 +198,8 @@ impl TapeWriter {
         line["frame"] = json!(self.frames);
         line["wram_sha256"] = json!(format!("{:x}", Sha256::digest(wram)));
         if self.coverage {
-            line["place_start"] = json!(start);
-            line["place_end"] = json!(end);
+            line["reading_start"] = json!(start);
+            line["reading_end"] = json!(end);
             line["ids"] = json!(self.ids);
         }
         serde_json::to_writer(&mut *out, &line)?;
@@ -230,7 +231,7 @@ fn tape_smb(core: &Core, input: &Path, output: &Path, quiet: bool) -> Result<(),
     let rom = rom("HARMONY_SMB_ROM")?;
     let tape: SmbInput = serde_json::from_slice(&fs::read(input)?)?;
     let log = Arc::new(Mutex::new(Log::default()));
-    let machine = core.covered(&rom, &log, &SMB_PLACE)?;
+    let machine = core.covered(&rom, &log, SMB_PROBE)?;
     let coverage = machine.inner.has_coverage();
     let mut target = SmbTarget::from_machine(machine)?;
     target.reset();
@@ -242,7 +243,7 @@ fn tape_smb(core: &Core, input: &Path, output: &Path, quiet: bool) -> Result<(),
             break;
         }
         writer.timed(|| target.apply(action));
-        let places = lock(&log)?.drain(&mut writer.ids);
+        let readings = lock(&log)?.drain(&mut writer.ids);
         writer.frames += u64::from(action.bounded_hold_frames());
         applied = index + 1;
         if writer.out.is_none() {
@@ -268,7 +269,7 @@ fn tape_smb(core: &Core, input: &Path, output: &Path, quiet: bool) -> Result<(),
             "dead": target.is_dead(),
             "victory": target.is_victory(),
         });
-        writer.record(line, &wram, places)?;
+        writer.record(line, &wram, readings)?;
     }
     writer.finish(applied)
 }
@@ -283,7 +284,7 @@ fn tape_metroid(
     let tape: MetroidInput = serde_json::from_slice(&fs::read(input)?)?;
     let prefix = metroid_power_on();
     let log = Arc::new(Mutex::new(Log::default()));
-    let machine = core.covered(&rom, &log, &METROID_PLACE)?;
+    let machine = core.covered(&rom, &log, METROID_PROBE)?;
     let coverage = machine.inner.has_coverage();
     let mut target = MetroidTarget::from_machine(machine, &prefix, GenesisDepth::NewGame)?;
     target.reset();
@@ -296,7 +297,7 @@ fn tape_metroid(
         }
         let before = target.frames_clocked();
         writer.timed(|| target.apply(action));
-        let places = lock(&log)?.drain(&mut writer.ids);
+        let readings = lock(&log)?.drain(&mut writer.ids);
         writer.frames += target.frames_clocked().saturating_sub(before);
         applied = index + 1;
         if writer.out.is_none() {
@@ -312,7 +313,7 @@ fn tape_metroid(
             "dead": target.is_dead(),
             "victory": target.is_victory(),
         });
-        writer.record(line, &wram, places)?;
+        writer.record(line, &wram, readings)?;
     }
     writer.finish(applied)
 }
@@ -330,15 +331,105 @@ const KIND_SHIFT: u32 = 62;
 fn now() -> Instant {
     Instant::now()
 }
-const SMB_PLACE: [usize; 5] = [0x075f, 0x075c, 0x00e7, 0x00e8, 0x006d];
-const METROID_PLACE: [usize; 3] = [0x0074, 0x0050, 0x004f];
-const PLACE_BYTES: usize = 8;
+const READING_BYTES: usize = 16;
+const FRAME_BYTES: usize = 4;
+
+type Reading = [u8; READING_BYTES];
+type FrameFlags = [u8; FRAME_BYTES];
+
+#[derive(Clone, Copy)]
+struct Probe {
+    read: fn(&QuickNesMachine) -> Result<Reading, MachineError>,
+    frames: fn(&[[u8; WRAM_SIZE]]) -> FrameFlags,
+}
+
+const SMB_PROBE: Probe = Probe {
+    read: smb_reading,
+    frames: smb_frame_flags,
+};
+
+const METROID_PROBE: Probe = Probe {
+    read: metroid_reading,
+    frames: metroid_frame_flags,
+};
+
+fn smb_reading(machine: &QuickNesMachine) -> Result<Reading, MachineError> {
+    let wram = machine.read_wram()?;
+    let key = smb_key(&wram);
+    let state = smb_mechanical_state_from_wram(&wram);
+    let clock = key.clock.to_be_bytes();
+    Ok([
+        wram[0x075f],
+        wram[0x075c],
+        wram[0x00e7],
+        wram[0x00e8],
+        wram[0x006d],
+        wram[0x0756],
+        key.time_bucket,
+        clock[0],
+        clock[1],
+        u8::from(key.loop_on_path),
+        state.player_engine_state,
+        wram[0x06d6],
+        u8::from(state.dead),
+        wram[0x0770],
+        0,
+        0,
+    ])
+}
+
+fn smb_frame_flags(frames: &[[u8; WRAM_SIZE]]) -> FrameFlags {
+    let mut engines = 0_u16;
+    let mut flags = 0_u8;
+    let mut status = 0_u8;
+    for wram in frames {
+        let state = smb_mechanical_state_from_wram(wram);
+        engines |= 1 << (state.player_engine_state & 15);
+        flags |= u8::from(wram[0x06d6] != 0)
+            | (u8::from(state.dead) << 1)
+            | (u8::from(state.flag_active) << 2);
+        status = status.max(wram[0x0756]);
+    }
+    let engines = engines.to_le_bytes();
+    [engines[0], engines[1], flags, status]
+}
+
+fn metroid_reading(machine: &QuickNesMachine) -> Result<Reading, MachineError> {
+    let wram = machine.read_wram()?;
+    let key = metroid_key(decode_state(&wram, &machine.read_save_ram()?)?);
+    let boss_health = key.boss_health.to_be_bytes();
+    let health = key.health.to_be_bytes();
+    Ok([
+        wram[0x0074],
+        wram[0x0050],
+        wram[0x004f],
+        key.equipment,
+        key.missile_capacity,
+        key.energy_tanks,
+        key.door,
+        key.bosses,
+        boss_health[0],
+        boss_health[1],
+        key.columns,
+        key.missiles,
+        health[0],
+        health[1],
+        key.posture,
+        u8::from(missile_door_in_room(&wram)),
+    ])
+}
+
+fn metroid_frame_flags(frames: &[[u8; WRAM_SIZE]]) -> FrameFlags {
+    let door = frames.iter().any(|wram| !matches!(wram[0x0056], 0 | 5));
+    [u8::from(door), 0, 0, 0]
+}
 
 struct Step {
     ids: Vec<u64>,
     frames: usize,
-    start: Vec<u8>,
-    end: Vec<u8>,
+    start: Reading,
+    end: Reading,
+    seen: FrameFlags,
 }
 
 struct IdStream {
@@ -359,15 +450,14 @@ impl IdStream {
     }
 
     fn write(&mut self, job: u32, action: usize, step: &Step) -> Result<(), Box<dyn Error>> {
-        let mut row = [0_u8; 16 + 2 * PLACE_BYTES];
+        let mut row = [0_u8; 16 + 2 * READING_BYTES + FRAME_BYTES];
         row[0..4].copy_from_slice(&job.to_le_bytes());
         row[4..8].copy_from_slice(&u32::try_from(action)?.to_le_bytes());
         row[8..12].copy_from_slice(&u32::try_from(step.frames)?.to_le_bytes());
         row[12..16].copy_from_slice(&u32::try_from(step.ids.len())?.to_le_bytes());
-        for (slot, place) in [(16, &step.start), (16 + PLACE_BYTES, &step.end)] {
-            let len = place.len().min(PLACE_BYTES);
-            row[slot..slot + len].copy_from_slice(&place[..len]);
-        }
+        row[16..16 + READING_BYTES].copy_from_slice(&step.start);
+        row[16 + READING_BYTES..16 + 2 * READING_BYTES].copy_from_slice(&step.end);
+        row[16 + 2 * READING_BYTES..].copy_from_slice(&step.seen);
         self.actions.write_all(&row)?;
         for id in &step.ids {
             let next = u32::try_from(self.table.len())?;
@@ -407,21 +497,15 @@ fn lock(log: &Arc<Mutex<Log>>) -> Result<MutexGuard<'_, Log>, Box<dyn Error>> {
 }
 
 impl Log {
-    fn drain(&mut self, ids: &mut Vec<u64>) -> (Vec<u8>, Vec<u8>) {
+    fn drain(&mut self, ids: &mut Vec<u64>) -> (Reading, Reading) {
         let steps = std::mem::take(&mut self.steps);
         ids.clear();
         ids.extend(steps.iter().flat_map(|step| step.ids.iter().copied()));
         ids.sort_unstable();
         ids.dedup();
         (
-            steps
-                .first()
-                .map(|step| step.start.clone())
-                .unwrap_or_default(),
-            steps
-                .last()
-                .map(|step| step.end.clone())
-                .unwrap_or_default(),
+            steps.first().map(|step| step.start).unwrap_or_default(),
+            steps.last().map(|step| step.end).unwrap_or_default(),
         )
     }
 
@@ -477,8 +561,8 @@ impl Log {
                 "job": self.jobs,
                 "action": index,
                 "frames": step.frames,
-                "place": step.start,
-                "place_end": step.end,
+                "reading": step.start,
+                "reading_end": step.end,
                 "ids": step.ids.len(),
                 "new": new,
                 "c": rarest.map(|slot| slot.map(|(count, _)| count)),
@@ -526,15 +610,10 @@ struct Covered {
     inner: QuickNesMachine,
     log: Arc<Mutex<Log>>,
     ids: Vec<u64>,
-    place: &'static [usize],
+    probe: Probe,
 }
 
 impl Covered {
-    fn place(&self) -> Result<Vec<u8>, MachineError> {
-        let wram = self.inner.read_wram()?;
-        Ok(self.place.iter().map(|addr| wram[*addr]).collect())
-    }
-
     fn end_job(&self) {
         if let Ok(mut log) = self.log.lock() {
             log.end_job();
@@ -570,14 +649,15 @@ impl Machine for Covered {
         if !self.inner.has_coverage() {
             return self.inner.run(until, resolve);
         }
-        let start = self.place()?;
+        let start = (self.probe.read)(&self.inner)?;
         let stop = self.inner.run(until, resolve)?;
         self.inner.take_coverage(&mut self.ids)?;
         let step = Step {
             ids: self.ids.clone(),
             frames: self.inner.frames().len(),
             start,
-            end: self.place()?,
+            end: (self.probe.read)(&self.inner)?,
+            seen: (self.probe.frames)(self.inner.frames()),
         };
         self.log
             .lock()
@@ -712,7 +792,7 @@ fn campaign_smb(
         reference.snapshot_checkpoint_format(),
         Box::new(move || {
             let machine = target_core
-                .covered(&target_rom, &target_log, &SMB_PLACE)
+                .covered(&target_rom, &target_log, SMB_PROBE)
                 .map_err(|error| error.to_string())?;
             SmbTarget::from_machine(machine).map_err(|error| error.to_string())
         }),
@@ -777,7 +857,7 @@ fn campaign_metroid(
         &native_identity_sha256(&core.sha256, &core.execution_sha256),
         metroid_power_on(),
         GenesisDepth::NewGame,
-        Box::new(move || machine_core.covered(&image, &machine_log, &METROID_PLACE)),
+        Box::new(move || machine_core.covered(&image, &machine_log, METROID_PROBE)),
     );
     let config = MetroidCampaignConfig {
         campaign_seed: seed,
