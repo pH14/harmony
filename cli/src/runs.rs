@@ -473,6 +473,95 @@ mod tests {
         destination.create().unwrap();
         assert!(destination.create().is_err());
     }
+    #[cfg(feature = "frontend")]
+    #[test]
+    fn destinations_pin_a_name_once_and_refuse_names_that_are_not_plain() {
+        let out = Destination {
+            out: Some("/tmp/somewhere".into()),
+            name: None,
+        };
+        let pinned = out.pinned().unwrap();
+        assert_eq!((pinned.out, pinned.name), (out.out.clone(), None));
+        assert_eq!(out.path(), Some(PathBuf::from("/tmp/somewhere")));
+        let named = Destination {
+            out: None,
+            name: Some("night_1-a".into()),
+        };
+        let pinned = named.pinned().unwrap();
+        assert_eq!((pinned.out, pinned.name), (None, named.name.clone()));
+        assert_eq!(named.path(), Some(PathBuf::from(".harmony/runs/night_1-a")));
+        let unnamed = Destination {
+            out: None,
+            name: None,
+        };
+        assert_eq!(unnamed.path(), None);
+        let pinned = unnamed.pinned().unwrap();
+        assert_eq!(pinned.out, None);
+        let name = pinned.name.clone().unwrap();
+        assert!(name.starts_with("run-"), "{name}");
+        assert!(name["run-".len()..].bytes().all(|b| b.is_ascii_digit()));
+        assert_eq!(pinned.pinned().unwrap().name, Some(name));
+        for bad in ["", "a b", "../x", "a/b", "a.b"] {
+            assert_eq!(
+                Destination {
+                    out: None,
+                    name: Some(bad.into()),
+                }
+                .create()
+                .unwrap_err()
+                .to_string(),
+                "run names use letters, digits, '_' and '-'; use --out for a directory",
+                "{bad:?}"
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn stored_trees_keep_paths_and_permissions_and_refuse_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let run = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tree.path().join("bin/inner")).unwrap();
+        fs::write(tree.path().join("profile"), b"profile").unwrap();
+        fs::write(tree.path().join("bin/tool"), b"tool").unwrap();
+        fs::write(tree.path().join("bin/inner/data"), b"data").unwrap();
+        fs::set_permissions(
+            tree.path().join("bin/tool"),
+            fs::Permissions::from_mode(0o750),
+        )
+        .unwrap();
+        fs::set_permissions(
+            tree.path().join("profile"),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        store_tree(&mut manifest, run.path(), tree.path(), "uml").unwrap();
+        let artifacts = run.path().join("artifacts/uml");
+        assert_eq!(fs::read(artifacts.join("profile")).unwrap(), b"profile");
+        assert_eq!(fs::read(artifacts.join("bin/tool")).unwrap(), b"tool");
+        assert_eq!(fs::read(artifacts.join("bin/inner/data")).unwrap(), b"data");
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&artifacts.join("bin/tool")), 0o750);
+        assert_eq!(mode(&artifacts.join("profile")), 0o640);
+        manifest.verify(run.path()).unwrap();
+        fs::write(artifacts.join("bin/inner/data"), b"changed").unwrap();
+        assert!(manifest.verify(run.path()).is_err());
+
+        let linked = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", linked.path().join("link")).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        assert_eq!(
+            store_tree(&mut manifest, run.path(), linked.path(), "other")
+                .unwrap_err()
+                .to_string(),
+            "runtime profile must not contain symlinks"
+        );
+    }
     #[test]
     fn tampered_artifacts_fail_before_execution() {
         let dir = tempfile::tempdir().unwrap();
