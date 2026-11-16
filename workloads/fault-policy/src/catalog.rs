@@ -30,11 +30,6 @@ impl DecisionClass {
         self as u16
     }
 
-    #[must_use]
-    pub fn from_wire(v: u16) -> Option<Self> {
-        Self::from_u16(v)
-    }
-
     pub(crate) fn from_u16(v: u16) -> Option<Self> {
         match v {
             1 => Some(Self::Entropy),
