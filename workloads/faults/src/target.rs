@@ -328,11 +328,6 @@ impl From<FaultOperation> for FaultAction {
     }
 }
 
-#[must_use]
-pub fn actions_key(actions: &[FaultAction]) -> Vec<u8> {
-    actions.iter().flat_map(FaultAction::key_bytes).collect()
-}
-
 mod park_target_serde {
     use fault_policy::ParkTarget;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

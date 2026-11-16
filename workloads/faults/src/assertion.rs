@@ -25,11 +25,6 @@ impl AssertionKind {
             _ => None,
         }
     }
-
-    #[must_use]
-    pub fn must_be_satisfied(self) -> bool {
-        matches!(self, Self::Always | Self::Sometimes | Self::Reachable)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
