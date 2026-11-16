@@ -439,7 +439,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                 show_replay(replay);
             }
             for assertion in selected["never_satisfied"].as_array().into_iter().flatten() {
-                println!("unmet reachability assertion: {assertion}");
+                println!("unmet Sometimes or Reachable assertion: {assertion}");
             }
             if let Some(line) = undecided_line(&selected["undecided_checks"]) {
                 println!("{line}");
