@@ -7,12 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     castlevania::target::{
         ButtonChord, CastlevaniaInput, CastlevaniaMechanicalState, CastlevaniaObservations,
-        CastlevaniaSnapshot, FINAL_STAGE,
+        FINAL_STAGE,
     },
     chord::{ChordVocabulary, SHORT_HOLD_FRAMES},
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
 };
 
@@ -23,9 +22,6 @@ pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 const PLAY_MODE_MARK: u8 = 0;
 const BOSS_DAMAGE_STEP: u8 = 8;
 const DRACULA_HEALTH_STEP: u8 = 16;
-
-pub type CastlevaniaArchive =
-    Archive<ButtonChord, CastlevaniaArchiveKey, CastlevaniaMilestones, CastlevaniaSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct CastlevaniaTier {

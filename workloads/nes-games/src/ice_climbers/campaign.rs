@@ -28,12 +28,10 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
+            CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
             postcard_semantic_result_sha256, postcard_value_sha256,
         },
-        draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
@@ -203,10 +201,6 @@ pub struct IceClimbersCampaignEvidence {
     champion_key: Option<IceClimbersProgressWatermark>,
 }
 
-pub type IceClimbersCampaignCheckpoint = CampaignCheckpoint<IceClimbersSnapshot>;
-pub type IceClimbersSnapshotCheckpoint = SnapshotCheckpoint<IceClimbersSnapshot>;
-pub type IceClimbersCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
-pub type IceClimbersCampaignModeReport = CampaignModeReport<ButtonChord, IceClimbersArchiveReport>;
 type IceClimbersCampaignActionResult<M> = CampaignActionResult<IceClimbersGame<M>>;
 type IceClimbersCampaignJobResult<M> = CampaignJobResult<IceClimbersGame<M>>;
 

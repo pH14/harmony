@@ -9,12 +9,11 @@ use crate::{
         ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES, Tap,
     },
     search::archive::{
-        Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
     zelda::target::{
         ButtonChord, GRID_SHIFT, ITEMS, SWORDS, TRIFORCE_PIECES, ZeldaInput, ZeldaMechanicalState,
-        ZeldaObservations, ZeldaSnapshot,
+        ZeldaObservations,
     },
 };
 
@@ -22,8 +21,6 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str = "zelda_triforce_tier_stable_mode_level_room_grid_64_place_containers_health_rupees_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-
-pub type ZeldaArchive = Archive<ButtonChord, ZeldaArchiveKey, ZeldaMilestones, ZeldaSnapshot>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ZeldaTier {

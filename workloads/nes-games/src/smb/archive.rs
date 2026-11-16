@@ -3,7 +3,7 @@
 use std::{cmp::Ordering, error::Error};
 
 use crate::search::archive::{
-    Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
+    ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
@@ -21,9 +21,6 @@ use crate::{
     },
     target::Target,
 };
-
-pub type SmbArchive<P = Vec<u8>> =
-    Archive<ButtonChord, SmbArchiveKey, SmbMilestones, SmbSnapshot<P>>;
 
 pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
