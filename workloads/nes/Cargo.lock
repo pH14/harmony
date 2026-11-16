@@ -391,7 +391,6 @@ name = "nes-workload"
 version = "0.1.0"
 dependencies = [
  "consonance-client",
- "guest-image",
  "libc",
  "lz4_flex",
  "machine",
