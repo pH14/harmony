@@ -11,8 +11,8 @@ Usage:
   strip-comments.py --check   # exit 1 if any disallowed comments exist
 """
 
+import argparse
 import subprocess
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(
@@ -197,7 +197,15 @@ def get_rs_files() -> list[Path]:
 
 
 def main() -> int:
-    check_only = "--check" in sys.argv
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report disallowed comments and exit 1 instead of stripping them",
+    )
+    check_only = parser.parse_args().check
 
     files = get_rs_files()
     total_violations = 0
