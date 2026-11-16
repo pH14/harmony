@@ -325,9 +325,11 @@ jobs:
           NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
           NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
         run: |
           set -euo pipefail
-          cargo test --locked --release -p nested-driver --test live --test sdk_operations --test nested_restore --no-run
+          cargo test --locked --release -p nested-driver --test live --test nested_restore --no-run
+          cargo test --locked --release --target x86_64-unknown-linux-musl -p nested-driver --test sdk_operations --no-run
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           timeout -k 10 180 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
             --test live inner_consonance_runs_inner_guest -- --ignored --exact --test-threads=1 --nocapture \
@@ -337,9 +339,10 @@ jobs:
             timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
               --test live inner_operation_api_smoke -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee nested-host-evidence/inner-operation-smoke.log
-            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-              --test sdk_operations outer_operation_sdk_smoke -- --ignored --exact --test-threads=1 --nocapture \
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release --target x86_64-unknown-linux-musl \
+              -p nested-driver --test sdk_operations outer_operation_sdk_smoke -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee nested-host-evidence/sdk-operation-smoke.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/sdk-operation-smoke.log
           fi
       - name: Outer nested state repeated and cold restore qualification
         env:
