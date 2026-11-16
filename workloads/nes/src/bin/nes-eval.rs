@@ -88,6 +88,8 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
         || request.smb_route.is_some()
+        || request.smb_terminal.is_some()
+        || request.smb_frame_ceiling.is_some()
         || request.resume.is_some()
         || request.resume_states.is_some()
         || !request.mixture.is_empty()
@@ -179,8 +181,15 @@ fn main() -> Result<()> {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);
         }
-        if request.smb_route.is_some() && request.game != "smb" {
-            return Err("only Super Mario Bros. takes an smb_route option".into());
+        if (request.smb_route.is_some()
+            || request.smb_terminal.is_some()
+            || request.smb_frame_ceiling.is_some())
+            && request.game != "smb"
+        {
+            return Err(
+                "only Super Mario Bros. takes smb_route, smb_terminal and smb_frame_ceiling options"
+                    .into(),
+            );
         }
         match request.game.as_str() {
             "smb" | "metroid"
@@ -216,17 +225,32 @@ fn main() -> Result<()> {
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
             "smb" => evaluate_watching(
-                SmbGame::new(&rom, p, h, &execution_sha256).with_route(
-                    request
-                        .smb_route
-                        .as_deref()
-                        .map(SmbRoute::from_identifier)
-                        .transpose()?
+                SmbGame::new(&rom, p, h, &execution_sha256)
+                    .with_root(
+                        root_actions::<nes_games::smb::target::SmbInput>(
+                            request.root_input.as_deref(),
+                        )?
                         .unwrap_or_default(),
-                ),
+                    )
+                    .with_route(
+                        request
+                            .smb_route
+                            .as_deref()
+                            .map(SmbRoute::from_identifier)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    )
+                    .with_frame_ceiling(request.smb_frame_ceiling),
                 SmbCampaignRun {
                     vocabulary: Default::default(),
-                    terminal: Some(SmbTerminalPredicate::GameVictory),
+                    terminal: Some(
+                        request
+                            .smb_terminal
+                            .as_deref()
+                            .map(SmbTerminalPredicate::from_identifier)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ),
                 },
                 &rom,
                 &request,

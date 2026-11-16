@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, VecDeque};
 
 use searcher::search::{
     archive::Input,
-    shrink::{ShrinkConfig, ShrinkOutcome, shrink},
+    shrink::{
+        ShrinkConfig, ShrinkOutcome, shrink,
+        window::{WindowConfig, WindowStop, search_window},
+    },
 };
 use tiny_worlds::{Workload, graph, maze, worlds::World};
 
@@ -151,4 +154,32 @@ fn a_graph_detour_three_times_the_shortest_path_shrinks_to_its_length_on_eight_s
         }
         assert!(config.goal(state));
     }
+}
+
+#[test]
+fn a_window_over_the_whole_tape_finds_the_shortest_path_and_proves_it() {
+    let config = WindowConfig {
+        start: 0,
+        expansion_budget: None,
+        frontier_limit: 1_000,
+    };
+    let outcome = search_window(&maze(), &(), &wandering(), &config, |_| Ok(()))
+        .expect("search the maze window");
+    assert_eq!(outcome.input.actions, shortest());
+    assert_eq!(outcome.progress.cost.primary, 9);
+    assert_eq!(outcome.progress.lower_bound.primary, 9);
+    assert_eq!(outcome.stop, WindowStop::Complete);
+}
+
+#[test]
+fn a_window_keeps_the_tape_before_its_start() {
+    let config = WindowConfig {
+        start: 18,
+        expansion_budget: None,
+        frontier_limit: 1_000,
+    };
+    let outcome = search_window(&maze(), &(), &wandering(), &config, |_| Ok(()))
+        .expect("search the maze window");
+    assert_eq!(outcome.input.actions[..18], wandering().actions[..18]);
+    assert!(outcome.progress.cost.primary <= 27);
 }

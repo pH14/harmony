@@ -594,7 +594,23 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         })
     }
 }
-impl<const CAPACITY_TWO: bool> searcher::search::shrink::ShrinkPolicy for Workload<CAPACITY_TWO> {}
+impl<const CAPACITY_TWO: bool> searcher::search::shrink::ShrinkPolicy for Workload<CAPACITY_TWO> {
+    fn window_actions(&self, _: &()) -> Vec<u8> {
+        (0..4)
+            .map(|action| self.config.sample_action(action, self.broken))
+            .collect()
+    }
+
+    fn window_fingerprint(&self, target: &Target) -> Option<u64> {
+        Some(
+            format!("{:?}", target.state)
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                }),
+        )
+    }
+}
 
 impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     fn execution_disposition(&self, _: &Target) -> ExecutionDisposition {

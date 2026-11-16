@@ -1223,6 +1223,8 @@ A workload implements `ShrinkPolicy` beside its other contracts:
 | `shrink_cost(action, target)` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
 | `simpler_actions(run, action)` | none | Replacements for one action, simplest first. |
 | `remaining_cost_bound(run, target)` | zero | A lower bound on the cost still to pay from this state. |
+| `window_actions(run)` | none | The actions the window search tries from every state. |
+| `window_fingerprint(target)` | none | A hash under which the window search merges states. |
 
 The goal is `Evaluation::objective_reached`. `ShrinkCost` is a pair ordered
 first part first and added part by part, so a workload can rank by one measure
@@ -1256,6 +1258,22 @@ and kept states and pending continuations are dropped. The search stops at a
 job or work budget, when the cost reaches the lower bound of the starting
 state, or, with `until_shortcuts_exhausted`, when the shortcut passes find
 nothing more.
+
+### Window search
+
+`shrink::window::search_window` searches the end of a goal-reaching tape
+exhaustively. It replays the incumbent to `WindowConfig::start` and expands
+states best first by cost plus `remaining_cost_bound`: each expansion restores
+the state and applies every `window_actions` action once. A child that reaches
+the goal more cheaply becomes the incumbent, a terminal child is dropped, a
+child whose fingerprint was reached at no greater cost merges into the earlier
+state, and a child whose cost plus bound reaches the incumbent's is pruned.
+The frontier keeps at most `frontier_limit` states and drops the most costly.
+The search stops `Complete` when the cheapest open estimate reaches the
+incumbent's cost, which proves no cheaper tape exists within the window and
+the actions; `FrontierEmpty` when states were dropped; or `ExpansionBudget`.
+`WindowProgress` reports expansions, merged, pruned and dropped children, and
+the lower bound proved so far.
 
 ## Host hashing
 

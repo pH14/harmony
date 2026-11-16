@@ -7,7 +7,10 @@ use nes_workload::{
     smb::{
         archive::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room},
         plan::SmbRoute,
-        target::{SmbInput, SmbTarget, smb_is_playing},
+        target::{
+            ROOM_IDENTITY_BYTES, SmbInput, SmbTarget, smb_is_playing, smb_player_has_control,
+            smb_player_position,
+        },
     },
     target::Target,
 };
@@ -21,8 +24,12 @@ const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 struct Level {
     level: String,
     start_frame: u64,
+    control_frame: Option<u64>,
     frames: u64,
     exit: &'static str,
+    exit_room: [u8; 2],
+    exit_x: u32,
+    exit_frame: u64,
 }
 
 #[derive(Serialize)]
@@ -104,11 +111,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     target.reset();
     let boot_frames = target.boot_frames();
 
-    let mut levels: Vec<(u8, u8, u64)> = Vec::new();
+    let mut levels: Vec<(u8, u8, u64, Option<u64>)> = Vec::new();
+    let mut exits: Vec<([u8; 2], u32, u64)> = Vec::new();
     let mut frames = 0_u64;
     let mut applied = 0_usize;
     let wram = target.wram();
-    levels.push((wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET], 0));
+    levels.push((
+        wram[WORLD_NUMBER_OFFSET],
+        wram[LEVEL_NUMBER_OFFSET],
+        0,
+        None,
+    ));
+    exits.push(([0, 0], 0, boot_frames));
     let mut parent: Option<SmbArchiveKey> = None;
     let mut lineage: Vec<SmbRoomIdentity> = Vec::new();
     let mut visits: Vec<StageVisit> = Vec::new();
@@ -148,9 +162,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         if smb_is_playing(&wram)
             && levels
                 .last()
-                .is_some_and(|(world, level, _)| (*world, *level) != here)
+                .is_some_and(|(world, level, _, _)| (*world, *level) != here)
         {
-            levels.push((here.0, here.1, frames));
+            levels.push((here.0, here.1, frames, None));
+            exits.push(([0, 0], 0, boot_frames + frames));
+        }
+        if smb_player_has_control(&wram)
+            && let Some(exit) = exits.last_mut()
+        {
+            *exit = (
+                ROOM_IDENTITY_BYTES.map(|offset| wram[offset]),
+                smb_player_position(&wram).x,
+                boot_frames + frames,
+            );
+        }
+        if smb_player_has_control(&wram)
+            && let Some(current) = levels.last_mut()
+            && (current.0, current.1) == here
+            && current.3.is_none()
+        {
+            current.3 = Some(boot_frames + frames);
         }
     }
     let route = Route {
@@ -171,15 +202,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         levels: levels
             .iter()
             .enumerate()
-            .map(|(index, (world, level, start))| {
+            .map(|(index, (world, level, start, control))| {
                 let next = levels.get(index + 1);
                 Level {
                     level: label(*world, *level),
                     start_frame: boot_frames + start,
-                    frames: next.map_or(frames, |(_, _, end)| *end) - start,
-                    exit: next.map_or("end", |(to_world, to_level, _)| {
+                    control_frame: *control,
+                    frames: next.map_or(frames, |(_, _, end, _)| *end) - start,
+                    exit: next.map_or("end", |(to_world, to_level, _, _)| {
                         exit_kind((*world, *level), (*to_world, *to_level))
                     }),
+                    exit_room: exits[index].0,
+                    exit_x: exits[index].1,
+                    exit_frame: exits[index].2,
                 }
             })
             .collect(),

@@ -16,6 +16,9 @@ const ENEMY_FLAG_OFFSET: usize = 0x000f;
 const ENEMY_ID_OFFSET: usize = 0x0016;
 const ENEMY_SLOTS: usize = 5;
 const VINE_ENEMY_ID: u8 = 0x2f;
+const VINE_START_Y_OFFSET: usize = 0x039d;
+const AREA_POINTER_OFFSET: usize = 0x0750;
+const VINE_AREA_POINTER: u8 = 0x2f;
 const PLAYER_X_PAGE_OFFSET: usize = 0x006d;
 const PLAYER_X_LOW_OFFSET: usize = 0x0086;
 const EVEN_PAGE_BLOCK_BUFFER: usize = 0x0500;
@@ -24,7 +27,7 @@ const HIDDEN_COIN_METATILE: u8 = 0x5f;
 
 const FOUR_TWO: (u8, u8) = (3, 1);
 const FOUR_TWO_VINE_ROOM: [u8; 2] = [2, 1];
-const FOUR_TWO_INTRO_ROOM: [u8; 2] = [1, 9];
+const FOUR_TWO_VINE_AREA_ROOM: [u8; 2] = [1, 15];
 const VINE_STEPS: [(usize, usize); 4] = [(63, 6), (64, 5), (65, 6), (66, 7)];
 const VINE_STEPS_FROM_PIXEL: u32 = 960;
 const VINE_STEPS_READABLE_FROM_CAMERA: u32 = 784;
@@ -53,7 +56,7 @@ impl SmbRoute {
     pub fn identifier(self) -> &'static str {
         match self {
             Self::AllLevels => "all_levels",
-            Self::Warps => "warps_1_2_to_4_vine_4_2_to_8",
+            Self::Warps => "warps_1_2_to_4_vine_area_4_2_to_8",
         }
     }
 
@@ -259,10 +262,14 @@ fn climbing(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_STATE_OFFSET] == PLAYER_CLIMBING_STATE
 }
 
+fn player_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
+    u32::from(wram[PLAYER_X_PAGE_OFFSET]) * 256 + u32::from(wram[PLAYER_X_LOW_OFFSET])
+}
+
 fn vine_spawned(wram: &[u8; WRAM_SIZE]) -> bool {
     (0..ENEMY_SLOTS).any(|slot| {
         wram[ENEMY_FLAG_OFFSET + slot] != 0 && wram[ENEMY_ID_OFFSET + slot] == VINE_ENEMY_ID
-    })
+    }) || (player_pixels(wram) >= VINE_STEPS_FROM_PIXEL && wram[VINE_START_Y_OFFSET] != 0)
 }
 
 fn metatile(wram: &[u8; WRAM_SIZE], column: usize, row: usize) -> u8 {
@@ -280,6 +287,7 @@ fn vine_out_of_reach(wram: &[u8; WRAM_SIZE]) -> bool {
         && !smb_area_is_loading(wram)
         && smb_camera_pixels(wram) > VINE_BRICK_LAST_CAMERA
         && !climbing(wram)
+        && !(vine_spawned(wram) && wram[AREA_POINTER_OFFSET] == VINE_AREA_POINTER)
 }
 
 #[must_use]
@@ -288,12 +296,11 @@ pub fn vine_step(wram: &[u8; WRAM_SIZE]) -> u16 {
         return 0;
     }
     let here = room(wram);
+    if here == FOUR_TWO_VINE_AREA_ROOM {
+        return VINE_AREA;
+    }
     if here != FOUR_TWO_VINE_ROOM {
-        return if here == FOUR_TWO_INTRO_ROOM {
-            0
-        } else {
-            VINE_AREA
-        };
+        return 0;
     }
     if climbing(wram) {
         return VINE_CLIMBING;
@@ -302,8 +309,7 @@ pub fn vine_step(wram: &[u8; WRAM_SIZE]) -> u16 {
         return VINE_SPAWNED;
     }
     let camera = smb_camera_pixels(wram);
-    let player = u32::from(wram[PLAYER_X_PAGE_OFFSET]) * 256 + u32::from(wram[PLAYER_X_LOW_OFFSET]);
-    if player < VINE_STEPS_FROM_PIXEL {
+    if player_pixels(wram) < VINE_STEPS_FROM_PIXEL {
         return 0;
     }
     let revealed = if (VINE_STEPS_READABLE_FROM_CAMERA..=VINE_BRICK_LAST_CAMERA).contains(&camera) {
@@ -424,15 +430,27 @@ mod tests {
         wram[ENEMY_FLAG_OFFSET + 2] = 1;
         wram[ENEMY_ID_OFFSET + 2] = VINE_ENEMY_ID;
         assert_eq!(vine_step(&wram), VINE_SPAWNED);
+        let mut scrolled_off = four_two_at(1200, 1300);
+        scrolled_off[VINE_START_Y_OFFSET] = 80;
+        assert_eq!(vine_step(&scrolled_off), VINE_SPAWNED);
+        let mut entering = four_two_at(0, 40);
+        entering[VINE_START_Y_OFFSET] = 36;
+        assert_eq!(vine_step(&entering), 0);
         wram[PLAYER_STATE_OFFSET] = PLAYER_CLIMBING_STATE;
         assert_eq!(vine_step(&wram), VINE_CLIMBING);
+        wram[ROOM_IDENTITY_BYTES[0]] = 2;
+        wram[ROOM_IDENTITY_BYTES[1]] = 2;
+        assert_eq!(vine_step(&wram), 0);
         wram[ROOM_IDENTITY_BYTES[0]] = 1;
-        wram[ROOM_IDENTITY_BYTES[1]] = 3;
+        wram[ROOM_IDENTITY_BYTES[1]] = 5;
+        assert_eq!(vine_step(&wram), 0);
+        wram[ROOM_IDENTITY_BYTES[0]] = FOUR_TWO_VINE_AREA_ROOM[0];
+        wram[ROOM_IDENTITY_BYTES[1]] = FOUR_TWO_VINE_AREA_ROOM[1];
         assert_eq!(vine_step(&wram), VINE_AREA);
     }
 
     #[test]
-    fn passing_the_vine_brick_without_climbing_is_doomed_on_the_warp_route() {
+    fn passing_the_vine_brick_before_the_vine_spawns_is_doomed_on_the_warp_route() {
         assert!(!SmbRoute::Warps.is_doomed(&four_two_at(1040, 1100)));
         let past = four_two_at(1041, 1100);
         assert!(SmbRoute::Warps.is_doomed(&past));
@@ -440,6 +458,11 @@ mod tests {
         let mut climbing = past;
         climbing[PLAYER_STATE_OFFSET] = PLAYER_CLIMBING_STATE;
         assert!(!SmbRoute::Warps.is_doomed(&climbing));
+        let mut spawned = past;
+        spawned[VINE_START_Y_OFFSET] = 80;
+        assert!(SmbRoute::Warps.is_doomed(&spawned));
+        spawned[AREA_POINTER_OFFSET] = VINE_AREA_POINTER;
+        assert!(!SmbRoute::Warps.is_doomed(&spawned));
         let mut five_one = [0_u8; WRAM_SIZE];
         five_one[WORLD_NUMBER_OFFSET] = 4;
         assert!(SmbRoute::Warps.is_doomed(&five_one));

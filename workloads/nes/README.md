@@ -366,7 +366,12 @@ file streaming limits and qualification checks are documented in the
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
 the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
-`resume`, `resume_states` and `mixture`. `live_site` names a directory with the built arcade
+`smb_route`, `smb_terminal`, `smb_frame_ceiling`, `resume`, `resume_states` and `mixture`. For Super
+Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
+`control_in:7,0`, `root_input` a tape the game replays before its genesis, and
+`smb_frame_ceiling` a frame count from power-on that dooms every state whose
+frames plus the shrink's lower bound reach it, so the first goal a search
+reports is cheaper than the ceiling. `live_site` names a directory with the built arcade
 page and its `roms` directory, which the server serves at `/`. Other campaigns
 keep their own game setup and mixture, and their view has no motion trails;
 its root is the campaign's first archived state.

@@ -127,13 +127,18 @@ impl<P: SnapshotState> SmbSnapshot<P> {
 pub const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
-        hold_frames: 120,
+        hold_frames: 39,
     },
     ButtonChord {
         buttons: 0x08,
         hold_frames: 1,
     },
 ];
+
+#[must_use]
+pub fn boot_identifier() -> String {
+    format!("boot=start-after-{}-idle-frames", BOOT_WALK[0].hold_frames)
+}
 
 const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
 const OPER_MODE_OFFSET: usize = 0x0770;
@@ -224,6 +229,31 @@ where
             last_frames: 0,
             last_level_frames: 0,
         })
+    }
+
+    pub fn root_after(&mut self, prefix: &[ButtonChord]) -> Result<(), MachineError> {
+        self.reset();
+        for action in prefix {
+            self.apply(action);
+        }
+        if self.failed || self.dead || self.is_victory() || !self.rerun_to_stop() {
+            return Err(MachineError::Backend(
+                "the root prefix does not end in a live state".to_owned(),
+            ));
+        }
+        let genesis = self.machine.snapshot()?;
+        self.machine.drop_snapshot(self.genesis)?;
+        self.genesis = genesis;
+        self.snapshot_base = None;
+        self.boot_frames = self
+            .boot_frames
+            .saturating_add(self.observation.frame_count);
+        self.observation.frame_count = 0;
+        self.genesis_observation = self.observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.last_frames = 0;
+        self.last_level_frames = 0;
+        Ok(())
     }
 
     #[must_use]
@@ -757,11 +787,24 @@ pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
         && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER
 }
 
+const PLAYER_STATE_BYTES: [usize; 34] = [
+    0x000e, 0x001d, 0x0033, 0x0045, 0x0057, 0x006d, 0x0086, 0x009f, 0x00b5, 0x00ce, 0x0416, 0x0433,
+    0x0490, 0x0700, 0x0701, 0x0702, 0x0703, 0x0704, 0x0705, 0x0709, 0x070a, 0x0714, 0x0717, 0x071a,
+    0x071c, 0x074e, 0x074f, 0x0750, 0x0754, 0x0756, 0x075c, 0x075f, 0x0782, 0x0783,
+];
+const SAVED_JOYPAD_OFFSET: usize = 0x06fc;
+const SAVED_JUMP_AND_RUN_BITS: u8 = 0xc0;
+
 fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
-    let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
-    let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 16);
-    let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);
-    (screen_page << 8) | (screen_x_bucket << 4) | player_y_bucket
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let bytes = PLAYER_STATE_BYTES
+        .iter()
+        .map(|&offset| wram[offset])
+        .chain([wram[SAVED_JOYPAD_OFFSET] & SAVED_JUMP_AND_RUN_BITS]);
+    for byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

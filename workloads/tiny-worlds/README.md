@@ -685,6 +685,14 @@ progress line.
 | `cores` | The same graph at each of `--workers-list`, with `--work` transitions per worker, or in total with `--total-work`, and with `--reservations` per worker. `--sleep-ns` makes each transition sleep instead of spin, so worker counts above the core count still measure scheduling. | Median executions per second over `--repeats`, timed between the first and last progress lines of the search so setup and the final report are excluded, speedup over the first count, coordinator busy share, transitions per try, worker milliseconds per try, the share of worker time running jobs, and the share idle while results waited for admission. |
 | `memory` | `--seeds` campaigns on a 65,536-node graph under `--budget-mib`, plus one control at 16 GiB, with `--snapshot-bytes` payloads. | Whether each run reached the goal, peak logical memory, progress lines over the budget, peak RSS, snapshot evictions, history compactions, and dropped entries. |
 
+## Shrink
+
+A world declares the `ShrinkPolicy` for `search::shrink` with the default cost
+of one per action, no simpler actions and a zero bound. The window search tries
+the four sampled actions from every state and merges states that are equal, so
+over a whole tape it finds the shortest path to the goal and proves it
+(`tests/shrink.rs`).
+
 ## Checks
 
 ```sh

@@ -11,7 +11,8 @@ use std::{
 
 use nes_games::smb::{
     campaign::{SmbButtonVocabulary, SmbCampaignRun, SmbTerminalPredicate},
-    shrink::with_level_end_waits,
+    plan::SmbRoute,
+    shrink::{until_terminal, with_level_end_waits},
     target::SmbInput,
 };
 use nes_workload::{
@@ -33,6 +34,9 @@ struct Arguments {
     job_budget: Option<u64>,
     work_budget: Option<u64>,
     progress_every: u64,
+    terminal: SmbTerminalPredicate,
+    root_at: Option<SmbTerminalPredicate>,
+    route: SmbRoute,
 }
 
 fn parse() -> Result<Arguments, Box<dyn Error>> {
@@ -46,6 +50,9 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
         job_budget: None,
         work_budget: None,
         progress_every: 16,
+        terminal: SmbTerminalPredicate::GameVictory,
+        root_at: None,
+        route: SmbRoute::AllLevels,
     };
     let mut values = env::args().skip(1);
     while let Some(flag) = values.next() {
@@ -62,11 +69,16 @@ fn parse() -> Result<Arguments, Box<dyn Error>> {
             "--job-budget" => arguments.job_budget = Some(value.parse()?),
             "--work-budget" => arguments.work_budget = Some(value.parse()?),
             "--progress-every" => arguments.progress_every = value.parse()?,
+            "--terminal" => arguments.terminal = SmbTerminalPredicate::from_identifier(&value)?,
+            "--route" => arguments.route = SmbRoute::from_identifier(&value)?,
+            "--root-at" => {
+                arguments.root_at = Some(SmbTerminalPredicate::from_identifier(&value)?);
+            }
             _ => return Err(format!("unknown flag {flag}").into()),
         }
     }
     if arguments.input.as_os_str().is_empty() || arguments.out.as_os_str().is_empty() {
-        return Err("usage: smb-shrink --input <tape.json> --out <dir> [--seed N] [--workers N] [--batch N] [--redraw-length N] [--job-budget N] [--work-budget N]".into());
+        return Err("usage: smb-shrink --input <tape.json> --out <dir> [--seed N] [--workers N] [--batch N] [--redraw-length N] [--job-budget N] [--work-budget N] [--terminal game_victory|control_in:W,L] [--root-at control_in:W,L] [--route IDENTIFIER]".into());
     }
     Ok(arguments)
 }
@@ -85,17 +97,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rom = fs::read(PathBuf::from(
         env::var_os("HARMONY_SMB_ROM").ok_or("HARMONY_SMB_ROM must name the ROM")?,
     ))?;
-    let game = SmbGame::from_environment(&rom)?;
+    let input: SmbInput = serde_json::from_slice(&fs::read(&arguments.input)?)?;
+    let mut target = SmbGame::from_environment(&rom)?.new_target()?;
+    let canonical = with_level_end_waits(&mut target, &input)?;
+    let canonical = until_terminal(&mut target, &canonical, arguments.terminal)?;
+    let root = arguments
+        .root_at
+        .map(|root_at| until_terminal(&mut target, &canonical, root_at))
+        .transpose()?
+        .unwrap_or_default();
+    drop(target);
+    let incumbent = SmbInput {
+        actions: canonical.actions[root.actions.len()..].to_vec(),
+    };
+    let game = SmbGame::from_environment(&rom)?
+        .with_root(root.clone())
+        .with_route(arguments.route);
+    let boot_frames = game.new_target()?.boot_frames();
     let run = SmbCampaignRun {
         vocabulary: SmbButtonVocabulary::default(),
-        terminal: Some(SmbTerminalPredicate::GameVictory),
+        terminal: Some(arguments.terminal),
     };
-    let input: SmbInput = serde_json::from_slice(&fs::read(&arguments.input)?)?;
-    let mut target = game.new_target()?;
-    let boot_frames = target.boot_frames();
-    let incumbent = with_level_end_waits(&mut target, &input)?;
-    drop(target);
-    write_json(arguments.out.join("incumbent-input.json"), &incumbent)?;
+    let rooted = |tail: &SmbInput| SmbInput {
+        actions: root.actions.iter().chain(&tail.actions).copied().collect(),
+    };
+    write_json(arguments.out.join("root-input.json"), &root)?;
+    write_json(
+        arguments.out.join("incumbent-input.json"),
+        &rooted(&incumbent),
+    )?;
     let mut config = ShrinkConfig::new(run, arguments.seed);
     config.workers = arguments.workers;
     config.batch = arguments.batch;
@@ -110,7 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let outcome = shrink(&game, &config, &incumbent, |event| {
         match event {
             ShrinkEvent::Improved { input, improvement } => {
-                write_json(out.join("best-input.json"), input)?;
+                write_json(out.join("best-input.json"), &rooted(input))?;
                 let line = json!({
                     "seconds": started.elapsed().as_secs_f64(),
                     "frames_from_power_on": boot_frames + improvement.cost.primary,
@@ -132,12 +162,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })?;
-    write_json(arguments.out.join("best-input.json"), &outcome.input)?;
+    write_json(
+        arguments.out.join("best-input.json"),
+        &rooted(&outcome.input),
+    )?;
     write_json(
         arguments.out.join("outcome.json"),
         &json!({
             "seconds": started.elapsed().as_secs_f64(),
             "boot_frames": boot_frames,
+            "terminal": arguments.terminal.identifier(),
+            "root_at": arguments.root_at.map(SmbTerminalPredicate::identifier),
+            "root_actions": root.actions.len(),
+            "route": arguments.route.identifier(),
             "initial_frames_from_power_on": boot_frames + outcome.progress.initial_cost.primary,
             "frames_from_power_on": boot_frames + outcome.progress.cost.primary,
             "stop": outcome.stop,

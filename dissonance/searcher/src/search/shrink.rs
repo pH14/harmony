@@ -10,6 +10,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod window;
+
 use super::{
     archive::{ArchiveKey, Input, Slot, slot_of_key},
     campaign::Workload,
@@ -71,6 +73,16 @@ pub trait ShrinkPolicy: Workload {
     fn remaining_cost_bound(&self, run: &Self::Run, target: &Self::Target) -> ShrinkCost {
         let _ = (run, target);
         ShrinkCost::ZERO
+    }
+
+    fn window_actions(&self, run: &Self::Run) -> Vec<Self::Action> {
+        let _ = run;
+        Vec::new()
+    }
+
+    fn window_fingerprint(&self, target: &Self::Target) -> Option<u64> {
+        let _ = target;
+        None
     }
 }
 

@@ -6,7 +6,7 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::shrink::{ShrinkCost, ShrinkPolicy},
     smb::{
-        campaign::{SmbCampaignRun, SmbGame},
+        campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         target::{
             ButtonChord, ROOM_IDENTITY_BYTES, SmbInput, SmbTarget, WAIT_FOR_CONTROL_HOLD,
             smb_player_has_control, smb_player_position, wait_for_control,
@@ -26,19 +26,47 @@ struct LevelExit {
     exit_x: u32,
 }
 
-const LEVEL_EXITS: [LevelExit; 4] = [
+const LEVEL_EXITS: [LevelExit; 8] = [
+    LevelExit {
+        world: 0,
+        level: 0,
+        room: [1, 5],
+        from_x: 0,
+        exit_x: 3_155,
+    },
+    LevelExit {
+        world: 0,
+        level: 1,
+        room: [2, 0],
+        from_x: 0,
+        exit_x: 2_881,
+    },
+    LevelExit {
+        world: 3,
+        level: 0,
+        room: [1, 2],
+        from_x: 0,
+        exit_x: 3_496,
+    },
+    LevelExit {
+        world: 3,
+        level: 1,
+        room: [1, 15],
+        from_x: 0,
+        exit_x: 872,
+    },
     LevelExit {
         world: 7,
         level: 0,
         room: [1, 16],
-        from_x: 1_848,
+        from_x: 0,
         exit_x: 6_009,
     },
     LevelExit {
         world: 7,
         level: 1,
         room: [1, 18],
-        from_x: 2_616,
+        from_x: 0,
         exit_x: 3_449,
     },
     LevelExit {
@@ -115,6 +143,19 @@ where
     fn remaining_cost_bound(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
         let frames = remaining_frames_bound(target);
         ShrinkCost::new(frames, frames)
+    }
+
+    fn window_actions(&self, run: &SmbCampaignRun) -> Vec<ButtonChord> {
+        run.vocabulary
+            .masks()
+            .iter()
+            .map(|&buttons| ButtonChord::new(buttons, 1))
+            .chain([wait_for_control(0)])
+            .collect()
+    }
+
+    fn window_fingerprint(&self, target: &SmbTarget<M, P>) -> Option<u64> {
+        Some(Target::fingerprint(target))
     }
 }
 
@@ -229,6 +270,47 @@ where
     Ok(canonical)
 }
 
+pub fn until_terminal<M, P>(
+    target: &mut SmbTarget<M, P>,
+    input: &SmbInput,
+    terminal: SmbTerminalPredicate,
+) -> Result<SmbInput, Box<dyn Error>>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
+    target.reset();
+    for (index, action) in input.actions.iter().enumerate() {
+        if target.is_dead() || target.is_victory() {
+            break;
+        }
+        target.apply(action);
+        if terminal.reached(target)? {
+            return Ok(SmbInput {
+                actions: input.actions[..=index].to_vec(),
+            });
+        }
+    }
+    Err(format!("the tape never reaches {}", terminal.identifier()).into())
+}
+
+pub fn splice<M, P>(
+    target: &mut SmbTarget<M, P>,
+    prefix: &SmbInput,
+    full: &SmbInput,
+    terminal: SmbTerminalPredicate,
+) -> Result<SmbInput, Box<dyn Error>>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
+    let prefix = until_terminal(target, prefix, terminal)?;
+    let head = until_terminal(target, full, terminal)?;
+    let mut actions = prefix.actions;
+    actions.extend_from_slice(&full.actions[head.actions.len()..]);
+    Ok(SmbInput { actions })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -261,6 +343,25 @@ mod tests {
             game.simpler_actions(&run(), &ButtonChord::new(0x81, 1))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_frame_ceiling_dooms_a_state_whose_frames_and_bound_reach_it() {
+        use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution};
+        let game = SmbGame::loopback_for_tests(&[0]);
+        let target = game.new_target().expect("target");
+        let frames = target.boot_frames() + target.frame_count();
+        assert!(!game.is_doomed(&target));
+        let ceiled = SmbGame::loopback_for_tests(&[0]).with_frame_ceiling(Some(frames + 1));
+        assert!(!ceiled.is_doomed(&target));
+        let reached = SmbGame::loopback_for_tests(&[0]).with_frame_ceiling(Some(frames));
+        assert!(reached.is_doomed(&target));
+        assert!(
+            reached.policies(&run())["doomed_policy"].ends_with(&format!(
+                "_or_frames_from_power_on_plus_bound_at_least_{frames}"
+            ))
+        );
+        assert!(!game.policies(&run())["doomed_policy"].contains("frames_from_power_on"));
     }
 
     #[test]

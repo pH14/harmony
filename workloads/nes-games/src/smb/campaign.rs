@@ -40,10 +40,11 @@ use crate::{
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
     smb::plan::SmbRoute,
+    smb::shrink::remaining_frames_bound,
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
-        smb_mechanical_state_from_wram,
+        smb_mechanical_state_from_wram, smb_player_has_control,
     },
     target::{ExitKind, Target},
 };
@@ -95,6 +96,7 @@ where
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
     route: SmbRoute,
+    frame_ceiling: Option<u64>,
 }
 
 #[must_use]
@@ -118,16 +120,50 @@ where
     ) -> Self {
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
-            identity,
+            identity: format!("{identity};{}", crate::smb::target::boot_identifier()),
             checkpoint_format,
             targets,
             route: SmbRoute::AllLevels,
+            frame_ceiling: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_root(self, root: SmbInput) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        if root.actions.is_empty() {
+            return self;
+        }
+        let digest = Sha256::digest(serde_json::to_vec(&root).unwrap_or_default());
+        let targets = self.targets;
+        let actions = root.actions;
+        Self {
+            identity: format!("{};genesis=rooted:prefix-sha256={digest:x}", self.identity),
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target
+                    .root_after(&actions)
+                    .map_err(|error| error.to_string())?;
+                Ok(target)
+            }),
+            ..self
         }
     }
 
     #[must_use]
     pub fn with_route(self, route: SmbRoute) -> Self {
         Self { route, ..self }
+    }
+
+    #[must_use]
+    pub fn with_frame_ceiling(self, frame_ceiling: Option<u64>) -> Self {
+        Self {
+            frame_ceiling,
+            ..self
+        }
     }
 
     #[must_use]
@@ -140,12 +176,18 @@ where
     }
 
     fn doomed_policy(&self) -> String {
-        match self.route {
+        let doomed = match self.route {
             SmbRoute::AllLevels => DOOMED_POLICY_IDENTIFIER.to_owned(),
             route => format!(
-                "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen",
+                "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen_without_the_vine_and_its_area_pointer",
                 route.identifier()
             ),
+        };
+        match self.frame_ceiling {
+            Some(ceiling) => {
+                format!("{doomed}_or_frames_from_power_on_plus_bound_at_least_{ceiling}")
+            }
+            None => doomed,
         }
     }
 
@@ -274,6 +316,10 @@ pub enum SmbTerminalPredicate {
         world: u8,
         level: u8,
     },
+    ControlIn {
+        world: u8,
+        level: u8,
+    },
 }
 
 impl SmbTerminalPredicate {
@@ -284,6 +330,7 @@ impl SmbTerminalPredicate {
             Self::LevelTransition { world, level } => {
                 format!("level_transition:{world},{level}")
             }
+            Self::ControlIn { world, level } => format!("control_in:{world},{level}"),
         }
     }
 
@@ -291,18 +338,24 @@ impl SmbTerminalPredicate {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
         }
-        let fields = identifier
-            .strip_prefix("level_transition:")
-            .ok_or("SMB terminal predicate is not recognized")?;
+        let (control, fields) = if let Some(fields) = identifier.strip_prefix("level_transition:") {
+            (false, fields)
+        } else if let Some(fields) = identifier.strip_prefix("control_in:") {
+            (true, fields)
+        } else {
+            return Err("SMB terminal predicate is not recognized".into());
+        };
         let (world, level) = fields
             .split_once(',')
-            .ok_or("level-transition predicate is missing world or level")?;
+            .ok_or("level predicate is missing world or level")?;
         if level.contains(',') {
-            return Err("level-transition predicate has extra fields".into());
+            return Err("level predicate has extra fields".into());
         }
-        Ok(Self::LevelTransition {
-            world: world.parse()?,
-            level: level.parse()?,
+        let (world, level) = (world.parse()?, level.parse()?);
+        Ok(if control {
+            Self::ControlIn { world, level }
+        } else {
+            Self::LevelTransition { world, level }
         })
     }
 
@@ -322,6 +375,11 @@ impl SmbTerminalPredicate {
             Self::LevelTransition { world, level } => {
                 let state = target.mechanical_state();
                 (state.world, state.level) != (world, level)
+            }
+            Self::ControlIn { world, level } => {
+                let state = target.mechanical_state();
+                (state.world, state.level) == (world, level)
+                    && smb_player_has_control(&target.wram())
             }
         })
     }
@@ -746,7 +804,12 @@ where
     }
 
     fn is_doomed(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_doomed() || (!target.is_dead() && self.route.is_doomed(&target.wram()))
+        target.is_doomed()
+            || (!target.is_dead() && self.route.is_doomed(&target.wram()))
+            || self.frame_ceiling.is_some_and(|ceiling| {
+                target.boot_frames() + target.frame_count() + remaining_frames_bound(target)
+                    >= ceiling
+            })
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {

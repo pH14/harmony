@@ -2,6 +2,15 @@
 
 # Super Mario Bros. workload
 
+## Boot
+
+The target idles 39 frames from power-on, presses Start for one frame and
+waits for play, which begins at frame 192. A Start press after 33 to 39 idle
+frames reaches play at that frame; a later press waits for the next 21-frame
+boundary of the title screen. The game's emulator identity names the boot
+(`boot=start-after-39-idle-frames`), so tapes recorded after another boot are
+rejected.
+
 ## Actions
 
 An action is a controller chord held for 2–12 or 96–120 frames. A new chord
@@ -104,7 +113,7 @@ the column as each level's objective kept the front two or three columns as the
 top tiers, which took 77% to 97% of the draws, and seven of 16 seeds spent 32M
 frames in 1-3; the band keeps 64 columns in one tier.
 
-The `warps_1_2_to_4_vine_4_2_to_8` route follows the warp zones: 1-1; 1-2 to
+The `warps_1_2_to_4_vine_area_4_2_to_8` route follows the warp zones: 1-1; 1-2 to
 its warp zone (WarpZoneControl, `$06D6`, = 4) and the pipe to 4-1; 4-1; 4-2 to
 the vine, to the vine area's warp zone (`$06D6` = 6) and the pipe to 8-1; 8-1,
 8-2, 8-3; 8-4 until the ending; and the ending. Warp-zone stages use the band as
@@ -115,16 +124,27 @@ row 3, above hidden coin blocks at (63,6), (64,5), (65,6) and (66,7). The vine
 stage's objective is a ladder of what the player has done there: 1 once he is
 at x 960, plus one for each hidden block hit (its metatile in the block buffer
 is no longer `$5F`, read while the camera is between x 784 and 1040, where
-those pages are loaded), 6 once an enemy slot holds the vine (ID `$2F`), 7 while
-he climbs (`$1D` = 3), and 8 in the vine area. The route climbs the vine
-rather than the pipe clip of tool-assisted runs, which has no RAM signal before
-the warp.
+those pages are loaded), 6 once the vine has spawned (an enemy slot holds the
+vine, ID `$2F`, or, with the player at x 960 or more, VineStart_Y `$039D` is
+nonzero, which stays set after the vine leaves the screen), 7 while he climbs
+(`$1D` = 3), and 8 in the vine area (room (1,15)); 4-2's other rooms, such as
+its bonus room and its normal exit, count 0. After the vine spawns, the pipe at x 1348
+also leads to the vine area's warp zone while AreaPointer (`$0750`) still holds
+the vine area's pointer `$2F`; later enemy data overwrites it with the normal
+exit's. This is the route of tool-assisted runs, so the stage is done either way.
 
 Under the warp route a state is doomed when the world and level numbers name a
 level the route omits, or when the camera in 4-2's underground area has passed
-x 1040 while the player is not climbing, since the brick is then left of the
-screen. `smb-route <tape> --route <identifier>` replays a tape and prints each
+x 1040 while the player is not climbing, unless the vine has spawned and
+AreaPointer still holds `$2F`, since the brick is then left of the screen. `smb-route <tape> --route <identifier>` replays a tape and prints each
 stage it visits with its objectives and the number of doomed actions.
+
+`SmbGame::with_frame_ceiling` adds one more rule: a state is doomed once its
+frames from power-on plus the shrink's lower bound (see [Shrink](#shrink))
+reach the ceiling. A search under a ceiling taken from the incumbent drops
+every state that cannot beat it, so its first goal is a cheaper tape, and a
+search run again under that tape's frames looks for a cheaper one still. The
+doomed policy identifier names the ceiling.
 
 ## Snapshots
 
@@ -153,10 +173,10 @@ charges it. A compressed native snapshot stores about 1.8 KB.
 run's terminal predicate, the ending for a speedrun. The cost is frames, then
 frames inside a level. A simpler action is the same chord held one frame less,
 and held half as long when the hold is above 3; a wait for control has none.
-The lower bound is the distance left to the exit of a world-8 level over the
-top running speed of 2.5 pixels per frame, less a 16-pixel margin, counted only
-in the level's final area past the point where that area's route begins, and
-zero elsewhere.
+The lower bound is the distance left to the level's exit over the top running
+speed of 2.5 pixels per frame, less a 16-pixel margin, counted in the final area
+of each level on the warp route (1-1, 1-2, 4-1, 4-2 and world 8), and zero
+elsewhere.
 
 A level ends on a 21-frame boundary, and the random number generator and the
 frame counter carry into the next level, where some enemies read them. So a
@@ -171,4 +191,38 @@ boundary be accepted until they add up to a whole boundary.
 `smb-shrink --input <tape.json> --out <dir>` rewrites the tape, shrinks it and
 writes `incumbent-input.json`, `best-input.json` after each improvement,
 `improvements.jsonl`, `progress.jsonl` and `outcome.json`, with frames counted
-from power-on.
+from power-on. `--terminal control_in:<world>,<level>` makes the goal the first
+frame with control in that level (zero-based numbers), and cuts the tape there,
+so one level can be shrunk to the next level's start. `--root-at
+control_in:<world>,<level>` starts the game at the tape's first frame with
+control in that level, so only the actions after it are shrunk; the tapes it
+writes still start at power-on. `--route <identifier>` keys the shrink's
+archive by that route plan.
+
+A rooted game (`SmbGame::with_root`) replays a prefix tape after the boot and
+takes that state as its genesis, and its emulator identity names the prefix's
+digest. `nes-eval` builds one from `root_input` and takes `smb_terminal` as the
+goal, so a search can find one level again from a new prefix. `smb-splice
+<prefix.json> <full.json> control_in:<world>,<level> <out.json>` replaces the
+full tape's actions up to control in that level with the prefix's, writes the
+result, and reports whether it still reaches the ending. `smb-route` reports the
+first frame with control in each level beside the level's start frame, and the
+room, x position and frame of the last state with control in it.
+
+`smb-window --input <tape.json> --out <dir> --window <actions>` runs the window
+search (see the [searcher README](../../../../dissonance/searcher/README.md#window-search))
+over the tape's last `<actions>` actions before the goal, with the same
+`--terminal`, `--root-at` and `--route` flags as `smb-shrink`. Its actions are
+each vocabulary chord held one frame and a wait for control, and its states
+merge by `Target::fingerprint`: a hash of the bytes that set Mario's motion,
+the level, the area and the timers that decide when he moves next, and the
+jump and run bits of the last frame's buttons. `--expansion-budget` and
+`--frontier-limit` (default 100,000) bound it. It writes `best-input.json`,
+`improvements.jsonl`, `progress.jsonl` and `outcome.json` with frames from
+power-on and the lower bound the search has proved.
+
+`smb-fm2-stages <movie.fm2> [shift]` replays an FCEUX movie's first-controller
+inputs one frame per line, from power-on, dropping the first `shift` lines or
+adding idle frames for a positive one, and prints each level's start, control
+and last-control frames and the victory frame, for comparing a tape's levels
+with a reference movie.

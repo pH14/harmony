@@ -65,6 +65,10 @@ pub struct Request {
     #[serde(default)]
     pub smb_route: Option<String>,
     #[serde(default)]
+    pub smb_terminal: Option<String>,
+    #[serde(default)]
+    pub smb_frame_ceiling: Option<u64>,
+    #[serde(default)]
     pub root_input: Option<PathBuf>,
     #[serde(default)]
     pub checkpoint_every: Option<NonZeroU64>,
@@ -216,7 +220,7 @@ where
     }
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states}),
+        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states, "root_input":request.root_input}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
