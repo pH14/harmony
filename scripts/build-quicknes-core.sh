@@ -1663,7 +1663,8 @@ PATCH
 
 # HARMONY_QUICKNES_COVERAGE=1 builds a shared core that records which parts of
 # the ROM's program ran: each conditional branch with its outcome, each
-# indirect jump with its target, and each PRG ROM address read as data.
+# indirect jump with its target, and each PRG ROM address read as data. A
+# comma-separated list of branch, jump and data records only those kinds.
 # retro_harmony_coverage returns the ids hit since its previous call. Without
 # the option the hooks expand to nothing and the core's bytes are unchanged.
 # Translated blocks would run without the hooks, so the option refuses
@@ -1673,11 +1674,14 @@ diff --git a/nes_emu/Nes_Cpu.cpp b/nes_emu/Nes_Cpu.cpp
 index f9476f8..7e30692 100644
 --- a/nes_emu/Nes_Cpu.cpp
 +++ b/nes_emu/Nes_Cpu.cpp
-@@ -50,6 +50,95 @@ static void xl_note( uint8_t const* prg, long size, unsigned pc, uint8_t const*
+@@ -50,6 +50,98 @@ static void xl_note( uint8_t const* prg, long size, unsigned pc, uint8_t const*
  #define XL_NOTE()
  #endif
  
 +#ifdef QUICKNES_COVERAGE
++#ifndef QUICKNES_COVERAGE_KINDS
++#define QUICKNES_COVERAGE_KINDS 7
++#endif
 +enum { cov_index_bits = 23, cov_hit_capacity = 1 << 18, cov_jump_slots = 1 << 13 };
 +static uint8_t cov_seen [(1u << cov_index_bits) / 8];
 +static uint32_t cov_hits [cov_hit_capacity];
@@ -1715,7 +1719,7 @@ index f9476f8..7e30692 100644
 +		cov_mark( 1u << 22 | (unsigned) off );
 +}
 +
-+static void cov_jump( uint64_t id )
++static inline void cov_jump( uint64_t id )
 +{
 +	unsigned h = (unsigned) ((id * 0x9E3779B97F4A7C15ull) >> 51);
 +	for ( ;; )
@@ -1769,7 +1773,7 @@ index f9476f8..7e30692 100644
  /* Copyright (C) 2003-2006 Shay Green. This module is free software; you
  can redistribute it and/or modify it under the terms of the GNU Lesser
  General Public License as published by the Free Software Foundation; either
-@@ -200,6 +289,31 @@ static const unsigned char clock_table [256] = {
+@@ -200,6 +292,44 @@ static const unsigned char clock_table [256] = {
  #define WRITE( addr, data )     {effects++; NES_CPU_WRITE( this, (addr), (data), (clock_count) );}
  #define WRITE_LOW( addr, data ) (void) (effects++, READ_LOW( addr ) = (data))
  
@@ -1780,16 +1784,29 @@ index f9476f8..7e30692 100644
 +#ifdef QUICKNES_COVERAGE
 +#define DUMMY_READ( addr )      (NOTE_READ( addr ), !((addr) & 0xE000) ? (int) low_mem [(addr) & 0x7FF] : \
 +		(addr) > 0x7FFF ? (int) *get_code( addr ) : NES_CPU_READ( this, (addr), (clock_count) ))
++#if QUICKNES_COVERAGE_KINDS & 4
 +#define COV_READ( addr )        ((addr) > 0x7FFF ? cov_data( xl_prg, xl_prg_size, get_code( addr ) ) : (void) 0)
++#else
++#define COV_READ( addr )        ((void) 0)
++#endif
 +#undef READ_LIKELY_PPU
 +#undef READ
 +#define READ_LIKELY_PPU( addr ) (NOTE_READ( addr ), COV_READ( addr ), NES_CPU_READ_PPU( this, (addr), (clock_count) ))
 +#define READ( addr )            (COV_READ( addr ), DUMMY_READ( addr ))
 +#define COV_PROG( addr )        COV_READ( addr );
++#if QUICKNES_COVERAGE_KINDS & 1
 +#define COV_BRANCH( cond )      cov_mark( cov_site( xl_prg, xl_prg_size, page + pc - 1, pc - 1 ) << 1 | ((cond) ? 1 : 0) );
++#else
++#define COV_BRANCH( cond )
++#endif
++#if QUICKNES_COVERAGE_KINDS & 2
 +#define COV_JUMP_FROM()         cov_from = cov_site( xl_prg, xl_prg_size, page + pc - 1, pc - 1 );
 +#define COV_JUMP_TO()           cov_jump( 1ull << 62 | (uint64_t) cov_from << 21 | \
 +		cov_site( xl_prg, xl_prg_size, code_map [pc >> page_bits] + pc, pc ) );
++#else
++#define COV_JUMP_FROM()         (void) cov_from;
++#define COV_JUMP_TO()
++#endif
 +#else
 +#define DUMMY_READ( addr )      READ( addr )
 +#define COV_PROG( addr )
@@ -1801,7 +1818,7 @@ index f9476f8..7e30692 100644
  #define IDLE_CHECK()                                                    \
  {                                                                       \
  	if ( pc == idle_pc && effects == idle_effects && a == idle_a &&     \
-@@ -278,6 +392,9 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
+@@ -278,6 +408,9 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
  	}
  	
  	unsigned long effects = 0;
@@ -1811,7 +1828,7 @@ index f9476f8..7e30692 100644
  	unsigned long idle_effects = 0;
  	unsigned idle_pc = ~0u;
  	nes_time_t idle_clock = 0;
-@@ -346,7 +463,7 @@ loop:
+@@ -346,7 +479,7 @@ loop:
  		data = temp + 0x100 * READ_LOW( uint8_t (data + 1) );   \
  		if (c) HANDLE_PAGE_CROSSING( temp );                    \
  		if (!(r) || (temp & 0x100))                             \
@@ -1820,7 +1837,7 @@ index f9476f8..7e30692 100644
  	}
  	
  #define IND_X {                                                 \
-@@ -376,7 +493,7 @@ ind##op: {                              \
+@@ -376,7 +509,7 @@ ind##op: {                              \
  	int temp = data;                    \
  	ADD_PAGE                            \
  	if ( temp & 0x100 )                 \
@@ -1829,7 +1846,7 @@ index f9476f8..7e30692 100644
  	goto ptr##op;                       \
  }                                       \
  op_##ab: /* abs */               \
-@@ -404,7 +521,7 @@ op_##ax: /* abs,X */             \
+@@ -404,7 +537,7 @@ op_##ax: /* abs,X */             \
  ind##op: {                              \
  	int temp = data;                    \
  	ADD_PAGE                            \
@@ -1838,7 +1855,7 @@ index f9476f8..7e30692 100644
  	goto imm##op;                       \
  }                                       \
  op_##ab: /* abs */               \
-@@ -414,6 +531,7 @@ imm##op:                                \
+@@ -414,6 +547,7 @@ imm##op:                                \
  
  #define BRANCH( cond )      \
  {                           \
@@ -1846,7 +1863,7 @@ index f9476f8..7e30692 100644
  	pc++;                   \
  	int offset = (int8_t) data;  \
  	int extra_clock = (pc & 0xFF) + offset; \
-@@ -514,7 +632,7 @@ imm##op:                                \
+@@ -514,7 +648,7 @@ imm##op:                                \
  	sta_ind_common: {
  		int temp = data;
  		ADD_PAGE
@@ -1855,7 +1872,7 @@ index f9476f8..7e30692 100644
  		goto sta_ptr;
  	}
  	op_0x8D: // STA abs
-@@ -545,10 +663,11 @@ imm##op:                                \
+@@ -545,10 +679,11 @@ imm##op:                                \
  		int temp = data;
  		data += msb * 0x100;
  		a = nz = READ_PROG( uint16_t( data ) );
@@ -1868,7 +1885,7 @@ index f9476f8..7e30692 100644
  		a = nz = READ( data );
  		DISPATCH
  	}
-@@ -562,10 +681,11 @@ imm##op:                                \
+@@ -562,10 +697,11 @@ imm##op:                                \
  		int temp = data;
  		data += msb * 0x100;
  		a = nz = READ_PROG( uint16_t( data ) );
@@ -1881,7 +1898,7 @@ index f9476f8..7e30692 100644
  		a = nz = READ( data );
  		DISPATCH
  	}
-@@ -641,7 +761,7 @@ imm##op:                                \
+@@ -641,7 +777,7 @@ imm##op:                                \
  		pc++;
  		unsigned addr = data + 0x100 * GET_OPERAND( pc );
  		if ( data & 0x100 )
@@ -1890,7 +1907,7 @@ index f9476f8..7e30692 100644
  		pc++;
  		y = nz = READ( addr );
  		DISPATCH
-@@ -655,7 +775,7 @@ imm##op:                                \
+@@ -655,7 +791,7 @@ imm##op:                                \
  		unsigned addr = data + 0x100 * GET_OPERAND( pc );
  		pc++;
  		if ( data & 0x100 )
@@ -1899,7 +1916,7 @@ index f9476f8..7e30692 100644
  		x = nz = READ( addr );
  		DISPATCH
  	}
-@@ -810,7 +930,7 @@ imm##op:                                \
+@@ -810,7 +946,7 @@ imm##op:                                \
  	rol_abs: {
  		int temp = data;
  		ADD_PAGE
@@ -1908,7 +1925,7 @@ index f9476f8..7e30692 100644
  		WRITE( data, temp = READ( data ) );
  		nz = (c >> 8) & 1;
  		nz |= (c = temp << 1);
-@@ -832,7 +952,7 @@ imm##op:                                \
+@@ -832,7 +968,7 @@ imm##op:                                \
  	ror_abs: {
  		int temp = data;
  		ADD_PAGE
@@ -1917,7 +1934,7 @@ index f9476f8..7e30692 100644
  		WRITE( data, temp = READ( data ) );
  		nz = ((c >> 1) & 0x80) | (temp >> 1);
  		c = temp << 8;
-@@ -895,7 +1015,7 @@ imm##op:                                \
+@@ -895,7 +1031,7 @@ imm##op:                                \
  	op_0xFE: { // INC abs,x
  		int temp = data + x;
  		data = x + GET_ADDR();
@@ -1926,7 +1943,7 @@ index f9476f8..7e30692 100644
  		goto inc_ptr;
  	}
  	
-@@ -908,7 +1028,7 @@ imm##op:                                \
+@@ -908,7 +1044,7 @@ imm##op:                                \
  	op_0xDE: { // DEC abs,x
  		int temp = data + x;
  		data = x + GET_ADDR();
@@ -1935,7 +1952,7 @@ index f9476f8..7e30692 100644
  		goto dec_ptr;
  	}
  	
-@@ -995,9 +1115,11 @@ imm##op:                                \
+@@ -995,9 +1131,11 @@ imm##op:                                \
  	}
  	
  	op_0x6C: // JMP (ind)
@@ -1947,7 +1964,7 @@ index f9476f8..7e30692 100644
  		DISPATCH
  	
  	op_0x00: { // BRK
-@@ -1074,8 +1196,8 @@ imm##op:                                \
+@@ -1074,8 +1212,8 @@ imm##op:                                \
  		HANDLE_PAGE_CROSSING( data );
  		int addr = GET_ADDR() + x;
  		if ( data & 0x100 )
@@ -1958,7 +1975,7 @@ index f9476f8..7e30692 100644
  	}
  	op_0x0C: // SKW
  		pc++;
-@@ -1188,7 +1310,7 @@ imm##op:                                \
+@@ -1188,7 +1326,7 @@ imm##op:                                \
  		int temp = data;
  		ADD_PAGE;
  		if ( temp & 0x100 )
@@ -1967,7 +1984,7 @@ index f9476f8..7e30692 100644
  		goto lax_ptr;
  	}
  
-@@ -1236,7 +1358,7 @@ imm##op:                                \
+@@ -1236,7 +1374,7 @@ imm##op:                                \
  		data += y;
  		int temp = data;
  		ADD_PAGE
@@ -1976,7 +1993,7 @@ index f9476f8..7e30692 100644
  		pc++;
  		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
  		DISPATCH
-@@ -1246,7 +1368,7 @@ imm##op:                                \
+@@ -1246,7 +1384,7 @@ imm##op:                                \
  		data += y;
  		int temp = data;
  		ADD_PAGE
@@ -1985,7 +2002,7 @@ index f9476f8..7e30692 100644
  		pc++;
  		if ( !( temp & 0x100 ) )
  			WRITE( data, uint8_t( x & ( ( data >> 8 ) + 1 ) ) );
-@@ -1257,7 +1379,7 @@ imm##op:                                \
+@@ -1257,7 +1395,7 @@ imm##op:                                \
  		data += x;
  		int temp = data;
  		ADD_PAGE
@@ -1994,7 +2011,7 @@ index f9476f8..7e30692 100644
  		pc++;
  		if ( !( temp & 0x100) )
  			WRITE( data, uint8_t( y & ( ( data >> 8 ) + 1 ) ) );
-@@ -1268,7 +1390,7 @@ imm##op:                                \
+@@ -1268,7 +1406,7 @@ imm##op:                                \
  		data += y;
  		int temp = data;
  		ADD_PAGE
@@ -2003,7 +2020,7 @@ index f9476f8..7e30692 100644
  		pc++;
  		SET_SP( a & x );
  		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
-@@ -1281,7 +1403,7 @@ imm##op:                                \
+@@ -1281,7 +1419,7 @@ imm##op:                                \
  		int temp = data;
  		ADD_PAGE
  		if ( temp & 0x100 )
@@ -2031,7 +2048,24 @@ if [ -n "${HARMONY_QUICKNES_PROFILE:-}" ]; then
     shared_cxxflags="$shared_cxxflags -DQUICKNES_XLAT_PROFILE"
 fi
 if [ -n "${HARMONY_QUICKNES_COVERAGE:-}" ]; then
-    shared_cxxflags="$shared_cxxflags -DQUICKNES_COVERAGE"
+    coverage_kinds=0
+    case $HARMONY_QUICKNES_COVERAGE in
+        1 | all) coverage_kinds=7 ;;
+        *)
+            for kind in $(echo "$HARMONY_QUICKNES_COVERAGE" | tr ',' ' '); do
+                case $kind in
+                    branch) coverage_kinds=$((coverage_kinds | 1)) ;;
+                    jump) coverage_kinds=$((coverage_kinds | 2)) ;;
+                    data) coverage_kinds=$((coverage_kinds | 4)) ;;
+                    *)
+                        echo "FAIL: HARMONY_QUICKNES_COVERAGE kind '$kind' is not branch, jump or data" >&2
+                        exit 1
+                        ;;
+                esac
+            done
+            ;;
+    esac
+    shared_cxxflags="$shared_cxxflags -DQUICKNES_COVERAGE -DQUICKNES_COVERAGE_KINDS=$coverage_kinds"
 fi
 CXXFLAGS=$shared_cxxflags make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
     DEBUG=0 OPTIMIZE=-O2 GIT_VERSION="$revision"

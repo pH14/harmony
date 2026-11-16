@@ -8,7 +8,7 @@ use std::{
     io::{BufWriter, Write},
     ops::Range,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 
@@ -121,6 +121,28 @@ impl Core {
             &self.execution_sha256,
         )
     }
+
+    fn covered(
+        &self,
+        rom: &[u8],
+        log: &Arc<Mutex<Log>>,
+        place: &'static [usize],
+    ) -> Result<Covered, MachineError> {
+        Ok(Covered {
+            inner: self.machine(rom)?,
+            log: Arc::clone(log),
+            ids: Vec::new(),
+            place,
+        })
+    }
+
+    fn duplicate(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            sha256: self.sha256.clone(),
+            execution_sha256: self.execution_sha256.clone(),
+        }
+    }
 }
 
 fn rom(variable: &str) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -162,7 +184,12 @@ impl TapeWriter {
         value
     }
 
-    fn record(&mut self, mut line: Value, wram: &[u8]) -> Result<(), Box<dyn Error>> {
+    fn record(
+        &mut self,
+        mut line: Value,
+        wram: &[u8],
+        (start, end): (Vec<u8>, Vec<u8>),
+    ) -> Result<(), Box<dyn Error>> {
         self.total_ids += self.ids.len();
         let Some(out) = self.out.as_mut() else {
             return Ok(());
@@ -170,6 +197,8 @@ impl TapeWriter {
         line["frame"] = json!(self.frames);
         line["wram_sha256"] = json!(format!("{:x}", Sha256::digest(wram)));
         if self.coverage {
+            line["place_start"] = json!(start);
+            line["place_end"] = json!(end);
             line["ids"] = json!(self.ids);
         }
         serde_json::to_writer(&mut *out, &line)?;
@@ -200,26 +229,20 @@ impl TapeWriter {
 fn tape_smb(core: &Core, input: &Path, output: &Path, quiet: bool) -> Result<(), Box<dyn Error>> {
     let rom = rom("HARMONY_SMB_ROM")?;
     let tape: SmbInput = serde_json::from_slice(&fs::read(input)?)?;
-    let mut target = SmbTarget::from_machine(core.machine(&rom)?)?;
+    let log = Arc::new(Mutex::new(Log::default()));
+    let machine = core.covered(&rom, &log, &SMB_PLACE)?;
+    let coverage = machine.inner.has_coverage();
+    let mut target = SmbTarget::from_machine(machine)?;
     target.reset();
-    let mut writer = TapeWriter::new(output, quiet, target.has_coverage())?;
-    if writer.coverage {
-        target.take_coverage(&mut writer.ids)?;
-    }
+    let mut writer = TapeWriter::new(output, quiet, coverage)?;
+    lock(&log)?.drain(&mut writer.ids);
     let mut applied = 0;
     for (index, action) in tape.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() {
             break;
         }
         writer.timed(|| target.apply(action));
-        if writer.coverage {
-            let ids = &mut writer.ids;
-            writer.emulating += {
-                let started = now();
-                target.take_coverage(ids)?;
-                started.elapsed().as_secs_f64()
-            };
-        }
+        let places = lock(&log)?.drain(&mut writer.ids);
         writer.frames += u64::from(action.bounded_hold_frames());
         applied = index + 1;
         if writer.out.is_none() {
@@ -245,7 +268,7 @@ fn tape_smb(core: &Core, input: &Path, output: &Path, quiet: bool) -> Result<(),
             "dead": target.is_dead(),
             "victory": target.is_victory(),
         });
-        writer.record(line, &wram)?;
+        writer.record(line, &wram, places)?;
     }
     writer.finish(applied)
 }
@@ -259,13 +282,13 @@ fn tape_metroid(
     let rom = machine::nes::with_cartridge_ram(&rom("HARMONY_METROID_ROM")?)?;
     let tape: MetroidInput = serde_json::from_slice(&fs::read(input)?)?;
     let prefix = metroid_power_on();
-    let mut target =
-        MetroidTarget::from_machine(core.machine(&rom)?, &prefix, GenesisDepth::NewGame)?;
+    let log = Arc::new(Mutex::new(Log::default()));
+    let machine = core.covered(&rom, &log, &METROID_PLACE)?;
+    let coverage = machine.inner.has_coverage();
+    let mut target = MetroidTarget::from_machine(machine, &prefix, GenesisDepth::NewGame)?;
     target.reset();
-    let mut writer = TapeWriter::new(output, quiet, target.has_coverage())?;
-    if writer.coverage {
-        target.take_coverage(&mut writer.ids)?;
-    }
+    let mut writer = TapeWriter::new(output, quiet, coverage)?;
+    lock(&log)?.drain(&mut writer.ids);
     let mut applied = 0;
     for (index, action) in tape.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() {
@@ -273,14 +296,7 @@ fn tape_metroid(
         }
         let before = target.frames_clocked();
         writer.timed(|| target.apply(action));
-        if writer.coverage {
-            let ids = &mut writer.ids;
-            writer.emulating += {
-                let started = now();
-                target.take_coverage(ids)?;
-                started.elapsed().as_secs_f64()
-            };
-        }
+        let places = lock(&log)?.drain(&mut writer.ids);
         writer.frames += target.frames_clocked().saturating_sub(before);
         applied = index + 1;
         if writer.out.is_none() {
@@ -296,7 +312,7 @@ fn tape_metroid(
             "dead": target.is_dead(),
             "victory": target.is_victory(),
         });
-        writer.record(line, &wram)?;
+        writer.record(line, &wram, places)?;
     }
     writer.finish(applied)
 }
@@ -314,22 +330,99 @@ const KIND_SHIFT: u32 = 62;
 fn now() -> Instant {
     Instant::now()
 }
-const SMB_PLACE: [usize; 2] = [0x075f, 0x075c];
+const SMB_PLACE: [usize; 5] = [0x075f, 0x075c, 0x00e7, 0x00e8, 0x006d];
 const METROID_PLACE: [usize; 3] = [0x0074, 0x0050, 0x004f];
+const PLACE_BYTES: usize = 8;
+
+struct Step {
+    ids: Vec<u64>,
+    frames: usize,
+    start: Vec<u8>,
+    end: Vec<u8>,
+}
+
+struct IdStream {
+    actions: BufWriter<fs::File>,
+    ids: BufWriter<fs::File>,
+    index: BTreeMap<u64, u32>,
+    table: Vec<u64>,
+}
+
+impl IdStream {
+    fn create(output: &Path) -> Result<Self, Box<dyn Error>> {
+        Ok(Self {
+            actions: BufWriter::new(fs::File::create(output.join("actions.bin"))?),
+            ids: BufWriter::new(fs::File::create(output.join("ids.bin"))?),
+            index: BTreeMap::new(),
+            table: Vec::new(),
+        })
+    }
+
+    fn write(&mut self, job: u32, action: usize, step: &Step) -> Result<(), Box<dyn Error>> {
+        let mut row = [0_u8; 16 + 2 * PLACE_BYTES];
+        row[0..4].copy_from_slice(&job.to_le_bytes());
+        row[4..8].copy_from_slice(&u32::try_from(action)?.to_le_bytes());
+        row[8..12].copy_from_slice(&u32::try_from(step.frames)?.to_le_bytes());
+        row[12..16].copy_from_slice(&u32::try_from(step.ids.len())?.to_le_bytes());
+        for (slot, place) in [(16, &step.start), (16 + PLACE_BYTES, &step.end)] {
+            let len = place.len().min(PLACE_BYTES);
+            row[slot..slot + len].copy_from_slice(&place[..len]);
+        }
+        self.actions.write_all(&row)?;
+        for id in &step.ids {
+            let next = u32::try_from(self.table.len())?;
+            let index = *self.index.entry(*id).or_insert(next);
+            if index == next {
+                self.table.push(*id);
+            }
+            self.ids.write_all(&index.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, output: &Path) -> Result<(), Box<dyn Error>> {
+        self.actions.flush()?;
+        self.ids.flush()?;
+        fs::write(
+            output.join("id-table.json"),
+            serde_json::to_vec(&self.table)?,
+        )?;
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct Log {
-    actions: Vec<(Vec<u64>, usize, Vec<u8>)>,
+    steps: Vec<Step>,
     counts: BTreeMap<u64, u32>,
     distinct: [u32; 3],
     jobs: u32,
     out: Option<BufWriter<fs::File>>,
+    stream: Option<IdStream>,
     error: Option<String>,
 }
 
+fn lock(log: &Arc<Mutex<Log>>) -> Result<MutexGuard<'_, Log>, Box<dyn Error>> {
+    log.lock().map_err(|_| "coverage log lock poisoned".into())
+}
+
 impl Log {
-    fn action(&mut self, ids: &[u64], frames: usize, place: Vec<u8>) {
-        self.actions.push((ids.to_vec(), frames, place));
+    fn drain(&mut self, ids: &mut Vec<u64>) -> (Vec<u8>, Vec<u8>) {
+        let steps = std::mem::take(&mut self.steps);
+        ids.clear();
+        ids.extend(steps.iter().flat_map(|step| step.ids.iter().copied()));
+        ids.sort_unstable();
+        ids.dedup();
+        (
+            steps
+                .first()
+                .map(|step| step.start.clone())
+                .unwrap_or_default(),
+            steps
+                .last()
+                .map(|step| step.end.clone())
+                .unwrap_or_default(),
+        )
     }
 
     fn end_job(&mut self) {
@@ -339,10 +432,10 @@ impl Log {
     }
 
     fn flush_job(&mut self) -> Result<(), Box<dyn Error>> {
-        let actions = std::mem::take(&mut self.actions);
-        let union: BTreeSet<u64> = actions
+        let steps = std::mem::take(&mut self.steps);
+        let union: BTreeSet<u64> = steps
             .iter()
-            .flat_map(|(ids, _, _)| ids.iter().copied())
+            .flat_map(|step| step.ids.iter().copied())
             .collect();
         if union.is_empty() {
             return Ok(());
@@ -357,13 +450,18 @@ impl Log {
                 *kind += 1;
             }
         }
+        if let Some(stream) = self.stream.as_mut() {
+            for (index, step) in steps.iter().enumerate() {
+                stream.write(self.jobs, index, step)?;
+            }
+        }
         let Some(out) = self.out.as_mut() else {
             return Ok(());
         };
-        for (index, (ids, frames, place)) in actions.iter().enumerate() {
+        for (index, step) in steps.iter().enumerate() {
             let mut rarest: [Option<(u32, u64)>; 4] = [None; 4];
             let mut new = 0_u32;
-            for id in ids {
+            for id in &step.ids {
                 let count = self.counts[id];
                 if count == 1 {
                     new += 1;
@@ -378,9 +476,10 @@ impl Log {
             let line = json!({
                 "job": self.jobs,
                 "action": index,
-                "frames": frames,
-                "place": place,
-                "ids": ids.len(),
+                "frames": step.frames,
+                "place": step.start,
+                "place_end": step.end,
+                "ids": step.ids.len(),
                 "new": new,
                 "c": rarest.map(|slot| slot.map(|(count, _)| count)),
                 "distinct": self.distinct,
@@ -392,13 +491,16 @@ impl Log {
         Ok(())
     }
 
-    fn finish(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
+    fn finish(&mut self, output: &Path) -> Result<(), Box<dyn Error>> {
         self.end_job();
         if let Some(error) = self.error.take() {
             return Err(error.into());
         }
         if let Some(out) = self.out.as_mut() {
             out.flush()?;
+        }
+        if let Some(stream) = self.stream.as_mut() {
+            stream.finish(output)?;
         }
         let mut counts: Vec<(u64, u32)> = self.counts.iter().map(|(id, c)| (*id, *c)).collect();
         counts.sort_unstable();
@@ -409,7 +511,7 @@ impl Log {
             }
         }
         fs::write(
-            path,
+            output.join("counts.json"),
             serde_json::to_vec(&json!({
                 "jobs": self.jobs,
                 "distinct": {"branch": kinds[0], "jump": kinds[1], "data": kinds[2]},
@@ -428,6 +530,11 @@ struct Covered {
 }
 
 impl Covered {
+    fn place(&self) -> Result<Vec<u8>, MachineError> {
+        let wram = self.inner.read_wram()?;
+        Ok(self.place.iter().map(|addr| wram[*addr]).collect())
+    }
+
     fn end_job(&self) {
         if let Ok(mut log) = self.log.lock() {
             log.end_job();
@@ -460,15 +567,23 @@ impl Machine for Covered {
         until: StopConditions,
         resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
+        if !self.inner.has_coverage() {
+            return self.inner.run(until, resolve);
+        }
+        let start = self.place()?;
         let stop = self.inner.run(until, resolve)?;
         self.inner.take_coverage(&mut self.ids)?;
-        let frames = self.inner.frames().len();
-        let wram = self.inner.read_wram()?;
-        let place = self.place.iter().map(|addr| wram[*addr]).collect();
+        let step = Step {
+            ids: self.ids.clone(),
+            frames: self.inner.frames().len(),
+            start,
+            end: self.place()?,
+        };
         self.log
             .lock()
             .map_err(|_| MachineError::Backend("coverage log lock poisoned".to_owned()))?
-            .action(&self.ids, frames, place);
+            .steps
+            .push(step);
         Ok(stop)
     }
 
@@ -563,14 +678,13 @@ fn shared_log(output: &Path) -> Result<Arc<Mutex<Log>>, Box<dyn Error>> {
         out: Some(BufWriter::new(fs::File::create(
             output.join("actions.jsonl"),
         )?)),
+        stream: Some(IdStream::create(output)?),
         ..Log::default()
     })))
 }
 
 fn finish_log(log: &Arc<Mutex<Log>>, output: &Path, report: Value) -> Result<(), Box<dyn Error>> {
-    log.lock()
-        .map_err(|_| "coverage log lock poisoned")?
-        .finish(&output.join("counts.json"))?;
+    lock(log)?.finish(output)?;
     fs::write(
         output.join("summary.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -591,26 +705,16 @@ fn campaign_smb(
     let log = shared_log(output)?;
     let target_log = Arc::clone(&log);
     let target_rom = rom.clone();
-    let target_core = Core {
-        path: core.path.clone(),
-        sha256: core.sha256.clone(),
-        execution_sha256: core.execution_sha256.clone(),
-    };
+    let target_core = core.duplicate();
     let game: SmbGame<Covered, Vec<u8>> = SmbGame::with_targets(
         &rom,
         reference.emulator_identity().to_owned(),
         reference.snapshot_checkpoint_format(),
         Box::new(move || {
-            let inner = target_core
-                .machine(&target_rom)
+            let machine = target_core
+                .covered(&target_rom, &target_log, &SMB_PLACE)
                 .map_err(|error| error.to_string())?;
-            SmbTarget::from_machine(Covered {
-                inner,
-                log: Arc::clone(&target_log),
-                ids: Vec::new(),
-                place: &SMB_PLACE,
-            })
-            .map_err(|error| error.to_string())
+            SmbTarget::from_machine(machine).map_err(|error| error.to_string())
         }),
     );
     let config = SmbCampaignConfig {
@@ -666,25 +770,14 @@ fn campaign_metroid(
     let image = machine::nes::with_cartridge_ram(&rom)?;
     let log = shared_log(output)?;
     let machine_log = Arc::clone(&log);
-    let machine_core = Core {
-        path: core.path.clone(),
-        sha256: core.sha256.clone(),
-        execution_sha256: core.execution_sha256.clone(),
-    };
+    let machine_core = core.duplicate();
     let game: MetroidGame<Covered> = MetroidGame::with_machines(
         &rom,
         &machine::quicknes::core_identity(),
         &native_identity_sha256(&core.sha256, &core.execution_sha256),
         metroid_power_on(),
         GenesisDepth::NewGame,
-        Box::new(move || {
-            Ok(Covered {
-                inner: machine_core.machine(&image)?,
-                log: Arc::clone(&machine_log),
-                ids: Vec::new(),
-                place: &METROID_PLACE,
-            })
-        }),
+        Box::new(move || machine_core.covered(&image, &machine_log, &METROID_PLACE)),
     );
     let config = MetroidCampaignConfig {
         campaign_seed: seed,

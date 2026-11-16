@@ -58,14 +58,20 @@ sum.
 `nes-coverage` needs a core built with `HARMONY_QUICKNES_COVERAGE=1`.
 `nes-coverage tape <smb|metroid> INPUT OUT` replays a power-on tape and writes
 one line per action: the decoded state, a few raw game bytes, the work RAM
-digest and the coverage ids the action hit, then a summary line with frames per
-second. With `--quiet` it writes only the summary, which is how the coverage
+digest, the place at the action's start and end, and the coverage ids the
+action hit, then a summary line with frames per second. A place is the world,
+level, address of the loaded area's object data and player page on Super Mario
+Bros., and the area and map coordinates on Metroid. With `--quiet` it writes only the summary, which is how the coverage
 core's cost is timed against the default core. `nes-coverage campaign
 <smb|metroid> SEED JOBS OUT` runs the game's campaign from power-on on machines
 that drain coverage after every run. A job is the runs between two state
 restores. The tool writes `actions.jsonl` with each action's rarest id per kind
 and that id's job count so far, `counts.json` with every id's final job count,
-and the campaign's own stream.
+and the campaign's own stream. It also writes every action's full id set:
+`actions.bin` has one 32-byte little-endian row per action (job, action index
+in the job, frames and id count as `u32`, then 8 bytes each for the start and
+end place), and `ids.bin` holds the actions' ids in the same order as `u32`
+indices into the list in `id-table.json`.
 
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds

@@ -143,7 +143,8 @@ with GCC 11, and three sets take about 15 minutes.
 the ROM's program ran, as 64-bit ids whose top two bits name the kind: a
 conditional branch with its outcome (kind 0), an indirect `JMP` with its target
 (kind 1), and a PRG ROM address read as data rather than fetched as an opcode
-(kind 2). A code site is its PRG ROM offset, so the same instruction in two
+(kind 2). A comma-separated list of `branch`, `jump` and `data` in place of `1`
+records only those kinds. A code site is its PRG ROM offset, so the same instruction in two
 mapped banks gives two ids, and code outside PRG ROM is named by its CPU
 address with bit 20 set. The core exports `retro_harmony_coverage`, which
 copies the ids hit since its previous call and clears them.
