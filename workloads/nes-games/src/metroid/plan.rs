@@ -8,6 +8,7 @@ use crate::{
 const BRINSTAR: u8 = 0x10;
 const NORFAIR: u8 = 0x11;
 const KRAID: u8 = 0x12;
+const TOURIAN: u8 = 0x13;
 const RIDLEY: u8 = 0x14;
 
 const MARU_MARI: u8 = 0x10;
@@ -23,6 +24,8 @@ const NORFAIR_TOUCH: u16 = 10;
 const TOUCHES_BEFORE_NORFAIR_ROUTE: u16 = 8;
 const RIDLEY_HIDEOUT_TOUCH: u16 = 24;
 const TOUCHES_BEFORE_RIDLEY: u16 = 4;
+const TOUCHES_BEFORE_TOURIAN: u16 = 12;
+const MISSILES_BEFORE_TOURIAN: u8 = 80;
 
 pub type Cell = (u8, u8, u8);
 
@@ -32,8 +35,11 @@ pub enum Done {
     MissileCapacity,
     RouteEnd,
     Energy(u16),
+    Missiles(u8),
     Kraid,
     Ridley,
+    MotherBrain,
+    Ending,
     Never,
 }
 
@@ -41,6 +47,7 @@ pub enum Done {
 pub enum Objective {
     Route(&'static [Cell]),
     Energy,
+    Missiles,
     BossDamage,
     None,
 }
@@ -66,6 +73,10 @@ const fn k(x: u8, y: u8) -> Cell {
 
 const fn r(x: u8, y: u8) -> Cell {
     (RIDLEY, x, y)
+}
+
+const fn t(x: u8, y: u8) -> Cell {
+    (TOURIAN, x, y)
 }
 
 const TO_MARU_MARI: &[Cell] = &[b(3, 14), b(2, 14)];
@@ -319,8 +330,143 @@ const TO_RIDLEY_DOOR: &[Cell] = &[
     r(18, 29),
 ];
 
+const RIDLEY_EXIT: &[Cell] = &[
+    r(18, 29),
+    r(19, 29),
+    r(20, 29),
+    r(21, 29),
+    r(22, 29),
+    r(23, 29),
+    r(24, 29),
+    r(25, 29),
+    r(26, 29),
+    r(27, 29),
+    r(28, 29),
+    r(29, 29),
+    r(30, 29),
+    r(30, 28),
+    r(30, 27),
+    r(30, 26),
+    r(30, 25),
+    r(29, 25),
+    r(28, 25),
+    r(27, 25),
+    r(26, 25),
+    r(25, 25),
+    r(25, 24),
+    r(25, 23),
+    n(25, 23),
+    n(25, 22),
+];
+
+const NORFAIR_RETURN: &[Cell] = &[
+    n(25, 22),
+    n(24, 22),
+    n(24, 21),
+    n(25, 21),
+    n(26, 21),
+    n(27, 21),
+    n(28, 21),
+    n(29, 21),
+    n(30, 21),
+    n(30, 20),
+    n(30, 19),
+    n(30, 18),
+    n(30, 17),
+    n(30, 16),
+    n(30, 15),
+    n(30, 14),
+    n(29, 14),
+    n(28, 14),
+    n(27, 14),
+    n(26, 14),
+    n(25, 14),
+    n(24, 14),
+    n(23, 14),
+    n(22, 14),
+    n(22, 13),
+    n(22, 12),
+    b(22, 12),
+    b(22, 11),
+];
+
+const TO_TOURIAN: &[Cell] = &[
+    b(22, 11),
+    b(21, 11),
+    b(20, 11),
+    b(19, 11),
+    b(18, 11),
+    b(17, 11),
+    b(16, 11),
+    b(15, 11),
+    b(14, 11),
+    b(13, 11),
+    b(13, 10),
+    b(13, 9),
+    b(13, 8),
+    b(13, 7),
+    b(12, 7),
+    b(11, 7),
+    b(11, 6),
+    b(11, 5),
+    b(11, 4),
+    b(11, 3),
+    b(11, 2),
+    b(10, 2),
+    b(9, 2),
+    b(8, 2),
+    b(7, 2),
+    b(6, 2),
+    b(5, 2),
+    b(4, 2),
+    b(3, 2),
+    b(3, 3),
+    t(3, 3),
+    t(3, 4),
+];
+
+const TO_ZEBETITES: &[Cell] = &[
+    t(3, 4),
+    t(3, 5),
+    t(3, 6),
+    t(3, 7),
+    t(4, 7),
+    t(5, 7),
+    t(6, 7),
+    t(7, 7),
+    t(8, 7),
+    t(9, 7),
+    t(10, 7),
+    t(10, 8),
+    t(10, 9),
+    t(10, 10),
+    t(10, 11),
+    t(9, 11),
+    t(8, 11),
+    t(7, 11),
+    t(6, 11),
+    t(5, 11),
+    t(4, 11),
+];
+
+const TO_MOTHER_BRAIN: &[Cell] = &[t(4, 11), t(3, 11), t(2, 11)];
+
+const ESCAPE: &[Cell] = &[
+    t(2, 11),
+    t(1, 11),
+    t(1, 10),
+    t(1, 9),
+    t(1, 8),
+    t(1, 7),
+    t(1, 6),
+    t(1, 5),
+    t(1, 4),
+    t(1, 3),
+];
+
 const BEFORE_BRINSTAR_ROUTE: Done = Done::Energy(BRINSTAR_TOUCH * TOUCHES_BEFORE_BRINSTAR_ROUTE);
 const IN_RIDLEY_HIDEOUT: Done = Done::Energy(RIDLEY_HIDEOUT_TOUCH * TOUCHES_BEFORE_RIDLEY);
+const BEFORE_NORFAIR_ROUTE: Done = Done::Energy(NORFAIR_TOUCH * TOUCHES_BEFORE_NORFAIR_ROUTE);
 
 pub const PLAN: &[Stage] = &[
     Stage {
@@ -380,7 +526,7 @@ pub const PLAN: &[Stage] = &[
     },
     Stage {
         name: "energy_before_ridley_elevator",
-        done: Done::Energy(NORFAIR_TOUCH * TOUCHES_BEFORE_NORFAIR_ROUTE),
+        done: BEFORE_NORFAIR_ROUTE,
         objective: Objective::Energy,
     },
     Stage {
@@ -409,7 +555,62 @@ pub const PLAN: &[Stage] = &[
         objective: Objective::BossDamage,
     },
     Stage {
-        name: "after_ridley",
+        name: "energy_after_ridley",
+        done: IN_RIDLEY_HIDEOUT,
+        objective: Objective::Energy,
+    },
+    Stage {
+        name: "ridley_exit",
+        done: Done::RouteEnd,
+        objective: Objective::Route(RIDLEY_EXIT),
+    },
+    Stage {
+        name: "energy_before_norfair_return",
+        done: BEFORE_NORFAIR_ROUTE,
+        objective: Objective::Energy,
+    },
+    Stage {
+        name: "norfair_return",
+        done: Done::RouteEnd,
+        objective: Objective::Route(NORFAIR_RETURN),
+    },
+    Stage {
+        name: "energy_before_tourian",
+        done: Done::Energy(BRINSTAR_TOUCH * TOUCHES_BEFORE_TOURIAN),
+        objective: Objective::Energy,
+    },
+    Stage {
+        name: "missiles_before_tourian",
+        done: Done::Missiles(MISSILES_BEFORE_TOURIAN),
+        objective: Objective::Missiles,
+    },
+    Stage {
+        name: "tourian_elevator",
+        done: Done::RouteEnd,
+        objective: Objective::Route(TO_TOURIAN),
+    },
+    Stage {
+        name: "zebetite_door",
+        done: Done::RouteEnd,
+        objective: Objective::Route(TO_ZEBETITES),
+    },
+    Stage {
+        name: "mother_brain_room",
+        done: Done::RouteEnd,
+        objective: Objective::Route(TO_MOTHER_BRAIN),
+    },
+    Stage {
+        name: "mother_brain",
+        done: Done::MotherBrain,
+        objective: Objective::BossDamage,
+    },
+    Stage {
+        name: "escape",
+        done: Done::Ending,
+        objective: Objective::Route(ESCAPE),
+    },
+    Stage {
+        name: "after_ending",
         done: Done::Never,
         objective: Objective::None,
     },
@@ -446,6 +647,7 @@ impl plan::Stage for Stage {
         match self.objective {
             Objective::Route(route) => route_index(route, state.state).or(carried).unwrap_or(0),
             Objective::Energy => whole_energy(state.state.health),
+            Objective::Missiles => u16::from(state.state.missiles),
             Objective::BossDamage => u16::from(state.boss_damage),
             Objective::None => 0,
         }
@@ -461,14 +663,20 @@ impl plan::Stage for Stage {
                 _ => false,
             },
             Done::Energy(target) => energy_reached(state, target),
+            Done::Missiles(target) => state.missiles >= target,
             Done::Kraid => state.kraid_defeated,
             Done::Ridley => state.bosses > u8::from(state.kraid_defeated),
+            Done::MotherBrain => state.mother_brain_defeated || state.ending,
+            Done::Ending => state.ending,
             Done::Never => false,
         }
     }
 
     fn latches(self) -> bool {
-        matches!(self.done, Done::RouteEnd | Done::Energy(_))
+        matches!(
+            self.done,
+            Done::RouteEnd | Done::Energy(_) | Done::Missiles(_)
+        )
     }
 }
 
@@ -690,14 +898,86 @@ mod tests {
     }
 
     #[test]
-    fn ridley_damage_climbs_the_boss_stage_and_his_defeat_ends_the_plan() {
+    fn ridley_damage_climbs_the_boss_stage_and_his_defeat_starts_the_way_back() {
         let mut state = after_kraid(RIDLEY, 17, 29);
         state.health = 960;
         assert_eq!(locate(state, 0, Some((15, 96))), (16, 0));
         assert_eq!(locate(state, 5, Some((16, 0))), (16, 5));
         state.bosses = 2;
-        assert_eq!(locate(state, 0, Some((16, 5))), (17, 0));
-        assert_eq!(stage_name(17), "after_ridley");
+        assert_eq!(locate(state, 0, Some((16, 5))), (18, 0));
+        state.health = 400;
+        assert_eq!(locate(state, 0, Some((16, 5))), (17, 40));
+        assert_eq!(stage_name(17), "energy_after_ridley");
+    }
+
+    fn after_ridley(area: u8, map_x: u8, map_y: u8) -> MetroidMechanicalState {
+        MetroidMechanicalState {
+            bosses: 2,
+            missile_capacity: 155,
+            ..after_kraid(area, map_x, map_y)
+        }
+    }
+
+    #[test]
+    fn the_way_back_climbs_routes_through_ridley_norfair_and_brinstar() {
+        let mut state = after_ridley(RIDLEY, 30, 27);
+        state.health = 500;
+        assert_eq!(locate(state, 0, Some((18, 13))), (18, 14));
+        let norfair = MetroidMechanicalState {
+            area: NORFAIR,
+            map_x: 30,
+            map_y: 18,
+            ..state
+        };
+        assert_eq!(locate(norfair, 0, Some((19, 50))), (19, 50));
+        let healed = MetroidMechanicalState {
+            health: 800,
+            ..norfair
+        };
+        assert_eq!(locate(healed, 0, Some((19, 79))), (20, 11));
+        let brinstar = MetroidMechanicalState {
+            area: BRINSTAR,
+            map_x: 22,
+            map_y: 11,
+            ..healed
+        };
+        assert_eq!(locate(brinstar, 0, Some((20, 26))), (21, 80));
+    }
+
+    #[test]
+    fn the_missile_target_latches_before_the_tourian_route() {
+        let mut state = after_ridley(BRINSTAR, 13, 9);
+        state.health = 960;
+        state.missiles = 40;
+        assert_eq!(locate(state, 0, Some((21, 96))), (22, 40));
+        state.missiles = 80;
+        assert_eq!(locate(state, 0, Some((22, 79))), (23, 11));
+        state.missiles = 10;
+        state.health = 300;
+        assert_eq!(locate(state, 0, Some((23, 11))), (23, 11));
+    }
+
+    #[test]
+    fn mother_brain_damage_leads_to_the_escape_and_the_ending_ends_the_plan() {
+        let mut state = after_ridley(TOURIAN, 2, 11);
+        state.health = 300;
+        assert_eq!(locate(state, 0, Some((25, 1))), (26, 0));
+        assert_eq!(locate(state, 7, Some((26, 0))), (26, 7));
+        state.mother_brain_defeated = true;
+        assert_eq!(locate(state, 0, Some((26, 7))), (27, 0));
+        let climbing = MetroidMechanicalState {
+            map_x: 1,
+            map_y: 6,
+            ..state
+        };
+        assert_eq!(locate(climbing, 0, Some((27, 5))), (27, 6));
+        let ended = MetroidMechanicalState {
+            ending: true,
+            mother_brain_defeated: false,
+            ..climbing
+        };
+        assert_eq!(locate(ended, 0, Some((27, 9))), (28, 0));
+        assert_eq!(stage_name(28), "after_ending");
     }
 
     #[test]

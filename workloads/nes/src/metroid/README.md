@@ -108,12 +108,15 @@ The searcher owns the suffix draw and the retained-input table.
 The progress tier is the pair (stage, objective) of a staged plan in
 [`nes-games/src/metroid/plan.rs`](../../../nes-games/src/metroid/plan.rs),
 declared through the searcher's `search::plan`.
-The plan is an ordered list of stages from power-on to Ridley's defeat: the
+The plan is an ordered list of stages from power-on to the ending: the
 Maru Mari, energy, the first missile tank, energy, the bombs, energy, Kraid's
 door, energy, Kraid, energy, the Norfair elevator, energy, the elevator to
-Ridley's hideout, energy, Ridley's door, energy, and Ridley. The glitchless
-route to Ridley needs no item beyond the Maru Mari, the bombs and missiles, so
-the stages after Kraid are route, energy and boss stages only. A state's stage is the first stage whose done test it
+Ridley's hideout, energy, Ridley's door, energy, Ridley, energy, the way out of
+Ridley's hideout, energy, the way back through Norfair to Brinstar, energy,
+missiles, the Tourian elevator, the Zebetite door, Mother Brain's room, Mother
+Brain, and the escape. The glitchless route to the ending needs no item beyond
+the Maru Mari, the bombs and missiles, so the stages after Kraid are route,
+energy, missile and boss stages only. A state's stage is the first stage whose done test it
 fails, so an item taken out of order skips its stage when the plan reaches it.
 Each stage climbs one integer:
 
@@ -137,13 +140,24 @@ Each stage climbs one integer:
   Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
   the Ridley elevator is done at 80, one touch for each of the eight screens of
   the shaft at Norfair column 30. A touch in Ridley's hideout costs 24 (`$40`
-  at `$95CE`, `$02` at `$95CF`), and both stages there are done at 96, four
-  touches.
+  at `$95CE`, `$02` at `$95CF`), and the stages there are done at 96, four
+  touches. The stage before the way back through Norfair is done at 80 again,
+  and the stage before Tourian at 96, twelve Brinstar touches, which a state
+  holding no energy tank can reach.
+- The missile stage climbs missiles held and is done at 80, and like an energy
+  stage stays done after missiles are spent. The five Zebetite columns take
+  eight missiles each and Mother Brain dies at 32 hits, 72 missiles in all, and
+  the rest is margin for a column that heals before it falls. Samus holds at
+  least 155 missiles once both bosses are defeated, so the target is reachable
+  by refilling from enemies.
 - A boss stage climbs boss damage. The Kraid stage is done when Kraid is
   defeated and the Ridley stage when Ridley is, each read from that boss's own
   status byte (`$687B`, `$687C`): the key keeps the defeated bosses as bits
   (bit 0 Kraid, bit 1 Ridley), because either boss can fall first and a boss
-  count would then complete a stage with its boss alive.
+  count would then complete a stage with its boss alive. The Mother Brain stage
+  is done on her defeat as the preferences read it (below), kept as bit 2, and
+  the escape stage climbs the route from her room to the exit elevator and is
+  done on the cartridge's ending flag, kept as bit 3.
 
 The routes come from the ROM's own tables, read through the
 [disassembly](https://github.com/nmikstas/metroid-disassembly/tree/4270d57f9468daebdeea485686e31e26218a780c):
@@ -161,8 +175,13 @@ open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
 avoids red doors, since they open only to missiles. Each route is a shortest
 path in that graph. Elevators join Brinstar `(7,18)` to Kraid's hideout
-`(7,20)`, Brinstar `(22,11)` to Norfair `(22,13)`, and Norfair `(25,22)` to
-Ridley's hideout `(25,24)`. In the Ridley bank, room pointers 0 and 1 point to
+`(7,20)`, Brinstar `(22,11)` to Norfair `(22,13)`, Norfair `(25,22)` to
+Ridley's hideout `(25,24)`, and Brinstar `(3,2)` to Tourian `(3,4)`, with the
+ride itself passing through `(3,3)` on both maps. Two links on the way back
+and through Tourian are not shown by this graph and come from published
+walkthroughs: the climb from Norfair `(30,16)` to `(30,15)` passes a blast band
+two tiles wide, shot open from below, and the Zebetite screen at Tourian
+`(3,11)` is blocked by the columns until they are destroyed. In the Ridley bank, room pointers 0 and 1 point to
 the same data, so rooms are read through the pointer table rather than the
 disassembly's room labels.
 
