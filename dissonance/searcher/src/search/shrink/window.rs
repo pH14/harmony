@@ -173,6 +173,11 @@ where
             progress.lower_bound = floor.unwrap_or(best);
             break WindowStop::FrontierEmpty;
         };
+        if estimate >= best {
+            frontier.clear();
+            open.clear();
+            continue;
+        }
         progress.lower_bound = evicted.map_or(estimate, |evicted| evicted.min(estimate));
         if config
             .expansion_budget
