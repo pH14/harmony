@@ -31,6 +31,17 @@ const GOAL: u8 = 12;
 const MAX_STRIDE: u8 = 3;
 const DEATH: Step = Step(MAX_STRIDE + 1);
 const DEAD: u8 = u8::MAX;
+const STAGE_LENGTH: u8 = 4;
+const WHOLE: WalkRun = WalkRun {
+    goal: GOAL,
+    staged: false,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WalkRun {
+    goal: u8,
+    staged: bool,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct Step(u8);
@@ -95,7 +106,7 @@ impl CampaignTypes for Walk {
     type Observations = ();
     type Evidence = ();
     type ArchiveReport = WalkArchiveReport;
-    type Run = ();
+    type Run = WalkRun;
 }
 
 impl Reporting for Walk {
@@ -153,14 +164,26 @@ impl Reporting for Walk {
 }
 
 impl InputPolicy for Walk {
-    fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
-        [("step_policy".to_owned(), "walk-v1".to_owned())]
-            .into_iter()
-            .collect()
+    fn policies(&self, run: &Self::Run) -> WorkloadPolicies {
+        [
+            ("step_policy".to_owned(), "walk-v1".to_owned()),
+            ("walk_goal".to_owned(), run.goal.to_string()),
+            ("walk_staged".to_owned(), run.staged.to_string()),
+        ]
+        .into_iter()
+        .collect()
     }
 
-    fn resolve_recorded(&self, _policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
-        Ok(())
+    fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
+        let field = |name: &str| {
+            policies
+                .get(name)
+                .ok_or(format!("walk stream has no {name}"))
+        };
+        Ok(WalkRun {
+            goal: field("walk_goal")?.parse()?,
+            staged: field("walk_staged")?.parse()?,
+        })
     }
 
     fn sample_alphabet(
@@ -242,7 +265,11 @@ impl TargetExecution for Walk {
 }
 
 fn remaining_steps(position: u8) -> u64 {
-    u64::from(GOAL.saturating_sub(position).div_ceil(MAX_STRIDE))
+    steps_to(GOAL, position)
+}
+
+fn steps_to(goal: u8, position: u8) -> u64 {
+    u64::from(goal.saturating_sub(position).div_ceil(MAX_STRIDE))
 }
 
 impl Evaluation for Walk {
@@ -256,14 +283,24 @@ impl Evaluation for Walk {
 
     fn objective_reached(
         &self,
-        _run: &Self::Run,
+        run: &Self::Run,
         target: &Self::Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.position >= GOAL && target.position != DEAD)
+        Ok(target.position >= run.goal && target.position != DEAD)
     }
 
-    fn remaining_cost_bound(&self, _run: &Self::Run, target: &Self::Target) -> ShrinkCost {
-        ShrinkCost::new(remaining_steps(target.position), 0)
+    fn remaining_cost_bound(&self, run: &Self::Run, target: &Self::Target) -> ShrinkCost {
+        ShrinkCost::new(steps_to(run.goal, target.position), 0)
+    }
+
+    fn stage(&self, run: &Self::Run, target: &Self::Target) -> Option<u32> {
+        run.staged
+            .then(|| u32::from(target.position.min(GOAL) / STAGE_LENGTH))
+    }
+
+    fn stage_run(&self, run: &Self::Run, stage: u32) -> Option<Self::Run> {
+        let goal = u8::try_from(stage).ok()?.checked_mul(STAGE_LENGTH)?;
+        (goal < GOAL).then_some(WalkRun { goal, ..*run })
     }
 
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
@@ -344,7 +381,7 @@ fn walk_config(workers: u32) -> CampaignConfig<Walk> {
         window: 4,
         memory_budget_mib: None,
         materialize_final_artifacts: true,
-        run: (),
+        run: WHOLE,
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
@@ -914,10 +951,10 @@ fn shortcut_jobs_reach_the_same_cost_at_each_job_budget() {
     }
 }
 
-fn shrink_config(label: &str) -> (ShrinkConfig<()>, PathBuf) {
+fn shrink_config(label: &str) -> (ShrinkConfig<WalkRun>, PathBuf) {
     let directory = checkpoint_directory(label);
     std::fs::create_dir_all(&directory).unwrap();
-    let mut config = ShrinkConfig::new((), 0x3a1d_77e1);
+    let mut config = ShrinkConfig::new(WHOLE, 0x3a1d_77e1);
     config.workers = 2;
     config.job_budget = Some(160);
     config.stream = Some(directory.join("stream.jsonl"));
@@ -1007,8 +1044,44 @@ fn shrink_from_an_unsolved_tape_reports_its_first_arrival_and_replays() {
 }
 
 #[test]
+fn a_staged_shrink_runs_one_campaign_per_stage_and_joins_their_tapes() {
+    let (mut config, directory) = shrink_config("shrink-staged");
+    config.run.staged = true;
+    let tape = padded_tape();
+    let outcome = shrink(&Walk, &config, &tape, |_| Ok(())).expect("shrink");
+    let initial = walk_cost(&tape).1;
+    let cost = outcome.progress.cost.expect("an arrival");
+    assert_eq!(outcome.progress.initial_cost, Some(initial));
+    assert_eq!(
+        walk_cost(&outcome.input),
+        (Some(outcome.input.actions.len() - 1), cost)
+    );
+    assert!(cost < initial);
+    let stages: Vec<_> = outcome
+        .improvements
+        .iter()
+        .map(|improvement| improvement.stage)
+        .collect();
+    assert!(stages.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(stages.iter().all(Option::is_some));
+    assert!(
+        outcome
+            .improvements
+            .windows(2)
+            .all(|pair| pair[0].execution_work <= pair[1].execution_work)
+    );
+    for stage in 0..u32::from(GOAL / STAGE_LENGTH) {
+        let stream = directory.join(format!("stream-stage-{stage}.jsonl"));
+        let stream = std::fs::read(&stream).expect("a stream per stage");
+        replay_campaign_checkpointed(&Walk, &stream, None, None).expect("stage stream replay");
+    }
+    assert!(!directory.join("stream.jsonl").exists());
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn shrink_without_an_arrival_stops_with_no_arrival_and_returns_its_tape() {
-    let mut config = ShrinkConfig::new((), 1);
+    let mut config = ShrinkConfig::new(WHOLE, 1);
     let tape = Input {
         actions: vec![Step(1)],
     };
@@ -1212,7 +1285,7 @@ fn a_window_search_that_drops_states_never_proves_more_than_the_shortest_walk() 
             frontier_limit,
         };
         let outcome =
-            search_window(&Walk, &(), &incumbent, &config, |_| Ok(())).expect("window search");
+            search_window(&Walk, &WHOLE, &incumbent, &config, |_| Ok(())).expect("window search");
         assert!(
             outcome.progress.lower_bound <= shortest,
             "frontier {frontier_limit} proved {:?}",

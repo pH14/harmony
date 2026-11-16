@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
-use machine::quicknes::QuickNesMachine;
+use machine::{nes::WRAM_SIZE, quicknes::QuickNesMachine};
 
 #[cfg(all(
     feature = "consonance",
@@ -293,6 +293,11 @@ pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveRepor
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
 pub type SmbCampaignActionResult<M, P = Vec<u8>> = CampaignActionResult<SmbGame<M, P>>;
 
+#[must_use]
+pub fn route_stage(route: SmbRoute, wram: &[u8; WRAM_SIZE]) -> u8 {
+    route.locate(&archive_key(wram).plan_state()).0
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmbTerminalPredicate {
     #[default]
@@ -305,6 +310,10 @@ pub enum SmbTerminalPredicate {
         world: u8,
         level: u8,
     },
+    Stage {
+        route: SmbRoute,
+        stage: u8,
+    },
 }
 
 impl SmbTerminalPredicate {
@@ -316,12 +325,22 @@ impl SmbTerminalPredicate {
                 format!("level_transition:{world},{level}")
             }
             Self::ControlIn { world, level } => format!("control_in:{world},{level}"),
+            Self::Stage { route, stage } => format!("stage:{}:{stage}", route.identifier()),
         }
     }
 
     pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
+        }
+        if let Some(fields) = identifier.strip_prefix("stage:") {
+            let (route, stage) = fields
+                .rsplit_once(':')
+                .ok_or("stage predicate is missing its route or stage")?;
+            return Ok(Self::Stage {
+                route: SmbRoute::from_identifier(route)?,
+                stage: stage.parse()?,
+            });
         }
         let (control, fields) = if let Some(fields) = identifier.strip_prefix("level_transition:") {
             (false, fields)
@@ -365,6 +384,10 @@ impl SmbTerminalPredicate {
                 let state = target.mechanical_state();
                 (state.world, state.level) == (world, level)
                     && smb_player_has_control(&target.wram())
+            }
+            Self::Stage { route, stage } => {
+                let wram = target.wram();
+                route_stage(route, &wram) >= stage && smb_player_has_control(&wram)
             }
         })
     }
@@ -668,9 +691,33 @@ where
             target.last_action_level_frames(),
         )
     }
-    fn remaining_cost_bound(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
+    fn remaining_cost_bound(&self, run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
+        if let Some(SmbTerminalPredicate::Stage { route, stage }) = run.terminal {
+            let state = target.mechanical_state();
+            let here = (state.world, state.level);
+            if route
+                .plan()
+                .get(usize::from(stage))
+                .is_none_or(|goal| (goal.world, goal.level) == here)
+            {
+                return ShrinkCost::ZERO;
+            }
+        }
         let frames = remaining_frames_bound(target);
         ShrinkCost::new(frames, frames)
+    }
+    fn stage(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> Option<u32> {
+        Some(u32::from(route_stage(self.route, &target.wram())))
+    }
+    fn stage_run(&self, run: &SmbCampaignRun, stage: u32) -> Option<SmbCampaignRun> {
+        let stage = u8::try_from(stage).ok()?;
+        (usize::from(stage) + 1 < self.route.plan().len()).then_some(SmbCampaignRun {
+            terminal: Some(SmbTerminalPredicate::Stage {
+                route: self.route,
+                stage,
+            }),
+            ..*run
+        })
     }
     fn merge_milestones(&self, into: &mut SmbMilestones, from: SmbMilestones) {
         merge_milestones(into, from);

@@ -176,7 +176,17 @@ and held half as long when the hold is above 3; a wait for control has none.
 The lower bound is the distance left to the level's exit over the top running
 speed of 2.5 pixels per frame, less a 16-pixel margin, counted in the final area
 of each level on the warp route (1-1, 1-2, 4-1, 4-2 and world 8), and zero
-elsewhere.
+elsewhere. The stages are the route plan's: a state's stage is the plan stage
+its archive key locates, and the run for stage `n` has the terminal predicate
+`stage:<route>:<n>`, reached at the first state with control once the plan
+locates stage `n` or a later one. Control is part of the goal because two lines
+can enter a stage's room with different cutscenes ahead of them: climbing the
+4-2 vine can enter the vine area earlier than taking the pipe does and then
+gives control about 400 frames later. The last plan stage, the ending, has no
+stage run, so the last segment's goal is the run's own terminal.
+Under a stage predicate whose stage lies in the current level the lower bound
+is zero, since the exit bound measures distance to the level's end and not to
+the stage. `search::shrink` therefore shrinks a tape one plan stage at a time.
 
 A level ends on a 21-frame boundary, and the random number generator and the
 frame counter carry into the next level, where some enemies read them. So a

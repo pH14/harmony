@@ -21,6 +21,7 @@ use super::{
     },
     cost::ShrinkCost,
     draw::DrawMixture,
+    rollout::classify,
 };
 
 pub trait ShrinkPolicy: Workload {
@@ -129,6 +130,7 @@ impl<R> ShrinkConfig<R> {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Improvement {
+    pub stage: Option<u32>,
     pub job: u64,
     pub kind: JobKind,
     pub cost: ShrinkCost,
@@ -211,6 +213,8 @@ struct Observed<F> {
 
 struct ShrinkWatch<F> {
     observed: Mutex<Observed<F>>,
+    stage: Option<u32>,
+    work_offset: u64,
 }
 
 impl<F> ShrinkWatch<F> {
@@ -252,11 +256,12 @@ where
         let observed = &mut *observed;
         for incumbent in campaign.take_incumbents() {
             let improvement = Improvement {
+                stage: self.stage,
                 job: incumbent.sequence,
                 kind: incumbent.kind,
                 cost: incumbent.record.cost,
                 actions: incumbent.record.actions,
-                execution_work: incumbent.execution_work,
+                execution_work: incumbent.execution_work.saturating_add(self.work_offset),
             };
             observed.improvements.push(improvement);
             (observed.observe)(ShrinkEvent::Improved {
@@ -269,7 +274,7 @@ where
             campaign.executions(),
             campaign.incumbent_cost(),
             observed.initial_cost,
-            campaign.execution_work(),
+            campaign.execution_work().saturating_add(self.work_offset),
         );
         (observed.observe)(ShrinkEvent::Progress {
             progress: &progress,
@@ -277,10 +282,203 @@ where
     }
 }
 
+struct Walk {
+    stages: Vec<Option<u32>>,
+    costs: Vec<ShrinkCost>,
+    arrival: Option<usize>,
+}
+
+impl Walk {
+    fn end(&self) -> usize {
+        self.arrival.unwrap_or(self.costs.len() - 1)
+    }
+
+    fn next_stage(&self, root: usize, stage: u32) -> Option<usize> {
+        (root..=self.end()).find(|&position| self.stages[position].is_some_and(|here| here > stage))
+    }
+}
+
+fn walk<G: Workload>(
+    workload: &G,
+    run: &G::Run,
+    target: &mut G::Target,
+    tape: &Input<G::Action>,
+) -> Result<Walk, Box<dyn Error>> {
+    workload.reset(target);
+    let mut milestones = G::Milestones::default();
+    let mut walk = Walk {
+        stages: vec![workload.stage(run, target)],
+        costs: vec![ShrinkCost::ZERO],
+        arrival: None,
+    };
+    let mut cost = ShrinkCost::ZERO;
+    for action in &tape.actions {
+        workload.apply_action(target, action, &mut milestones)?;
+        cost = cost + workload.shrink_cost(action, target);
+        walk.stages.push(workload.stage(run, target));
+        walk.costs.push(cost);
+        let outcome = classify(workload, run, target)?;
+        if outcome.objective_reached {
+            walk.arrival = Some(walk.costs.len() - 1);
+            break;
+        }
+        if outcome.disposition.is_terminal() {
+            break;
+        }
+    }
+    Ok(walk)
+}
+
+fn share(budget: Option<u64>, part: u64, whole: u64) -> Option<u64> {
+    budget.map(|budget| {
+        if whole == 0 || part >= whole {
+            return budget;
+        }
+        u64::try_from(u128::from(budget) * u128::from(part) / u128::from(whole)).unwrap_or(budget)
+    })
+}
+
+fn segment_stream(stream: Option<&PathBuf>, stage: Option<u32>) -> Option<PathBuf> {
+    let stream = stream?;
+    let Some(stage) = stage else {
+        return Some(stream.clone());
+    };
+    let mut name = stream.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!("-stage-{stage}"));
+    if let Some(extension) = stream.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    Some(stream.with_file_name(name))
+}
+
 pub fn shrink<G>(
     workload: &G,
     config: &ShrinkConfig<G::Run>,
     tape: &Input<G::Action>,
+    mut observe: impl FnMut(ShrinkEvent<'_, G::Action>) -> Result<(), Box<dyn Error>> + Send,
+) -> Result<ShrinkOutcome<G::Action>, Box<dyn Error>>
+where
+    G: ShrinkPolicy,
+    G::ArchiveReport: Serialize,
+{
+    if workload.stage_run(&config.run, 0).is_none() {
+        let segment = SegmentConfig {
+            run: &config.run,
+            root: config.root,
+            stage: None,
+            work_budget: config.work_budget,
+            job_budget: config.job_budget,
+            stream: config.stream.clone(),
+            work_offset: 0,
+        };
+        return shrink_segment(workload, config, tape, &segment, &mut observe);
+    }
+    let mut target = workload.new_target()?;
+    let original = tape;
+    let mut tape = tape.clone();
+    let mut root = config.root;
+    let first = walk(workload, &config.run, &mut target, &tape)?;
+    let initial_cost = first.arrival.map(|arrival| first.costs[arrival]);
+    let mut work_budget = config.work_budget;
+    let mut job_budget = config.job_budget;
+    let mut jobs = KindCounts::default();
+    let mut accepted = KindCounts::default();
+    let mut improvements = Vec::new();
+    let mut execution_work = 0_u64;
+    loop {
+        let walked = walk(workload, &config.run, &mut target, &tape)?;
+        if root > walked.end() {
+            return Err("the shrink root is past the tape's objective, death or end".into());
+        }
+        let stage = walked.stages[root];
+        let next = match stage
+            .filter(|&stage| walked.next_stage(root, stage).is_some())
+            .and_then(|stage| workload.stage_run(&config.run, stage + 1))
+        {
+            Some(run) => walk(workload, &run, &mut target, &tape)?
+                .arrival
+                .filter(|&position| position > root && position <= walked.end())
+                .map(|position| (position, run)),
+            None => None,
+        };
+        let whole = walked.costs[walked.end()].primary - walked.costs[root].primary;
+        let (run, part) = match &next {
+            Some((position, run)) => (
+                run.clone(),
+                walked.costs[*position].primary - walked.costs[root].primary,
+            ),
+            None => (config.run.clone(), whole),
+        };
+        let segment = SegmentConfig {
+            run: &run,
+            root,
+            stage,
+            work_budget: share(work_budget, part, whole),
+            job_budget: share(job_budget, part, whole),
+            stream: segment_stream(config.stream.as_ref(), stage),
+            work_offset: execution_work,
+        };
+        let outcome = shrink_segment(workload, config, &tape, &segment, &mut observe)?;
+        jobs.shortcut += outcome.progress.jobs.shortcut;
+        jobs.ordinary += outcome.progress.jobs.ordinary;
+        jobs.continuation += outcome.progress.jobs.continuation;
+        accepted.shortcut += outcome.progress.accepted.shortcut;
+        accepted.ordinary += outcome.progress.accepted.ordinary;
+        accepted.continuation += outcome.progress.accepted.continuation;
+        let spent = outcome.progress.execution_work;
+        execution_work = execution_work.saturating_add(spent);
+        work_budget = work_budget.map(|budget| budget.saturating_sub(spent));
+        job_budget = job_budget.map(|budget| budget.saturating_sub(outcome.progress.jobs.total()));
+        improvements.extend_from_slice(&outcome.improvements);
+        let Some(&(position, _)) = next
+            .as_ref()
+            .filter(|_| outcome.stop != ShrinkStop::NoArrival)
+        else {
+            let input = if next.is_some() { tape } else { outcome.input };
+            let regressed = initial_cost
+                .is_some_and(|initial| outcome.progress.cost.is_none_or(|cost| cost > initial));
+            let progress = ShrinkProgress {
+                jobs,
+                accepted,
+                initial_cost,
+                execution_work,
+                cost: if regressed {
+                    initial_cost
+                } else {
+                    outcome.progress.cost
+                },
+                ..outcome.progress
+            };
+            return Ok(ShrinkOutcome {
+                input: if regressed { original.clone() } else { input },
+                progress,
+                improvements,
+                stop: outcome.stop,
+            });
+        };
+        root = outcome.input.actions.len();
+        let mut actions = outcome.input.actions;
+        actions.extend_from_slice(&tape.actions[position..]);
+        tape = Input { actions };
+    }
+}
+
+struct SegmentConfig<'a, R> {
+    run: &'a R,
+    root: usize,
+    stage: Option<u32>,
+    work_budget: Option<u64>,
+    job_budget: Option<u64>,
+    stream: Option<PathBuf>,
+    work_offset: u64,
+}
+
+fn shrink_segment<G>(
+    workload: &G,
+    config: &ShrinkConfig<G::Run>,
+    tape: &Input<G::Action>,
+    segment: &SegmentConfig<'_, G::Run>,
     observe: impl FnMut(ShrinkEvent<'_, G::Action>) -> Result<(), Box<dyn Error>> + Send,
 ) -> Result<ShrinkOutcome<G::Action>, Box<dyn Error>>
 where
@@ -291,7 +489,7 @@ where
     let campaign = CampaignConfig {
         campaign_seed: config.seed,
         workers,
-        execution_budget: config.job_budget.unwrap_or(u64::MAX),
+        execution_budget: segment.job_budget.unwrap_or(u64::MAX),
         host: "shrink".to_owned(),
         wall_budget: None,
         stop_rollout_on_objective: true,
@@ -303,7 +501,7 @@ where
             .max(1),
         memory_budget_mib: config.memory_budget_mib,
         materialize_final_artifacts: false,
-        run: config.run.clone(),
+        run: segment.run.clone(),
         mixture: config.mixture,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
@@ -318,7 +516,7 @@ where
     };
     let origin = CampaignOrigin::Tape {
         input: tape.clone(),
-        root: config.root,
+        root: segment.root,
     };
     let watch = ShrinkWatch {
         observed: Mutex::new(Observed {
@@ -326,8 +524,10 @@ where
             initial_cost: None,
             improvements: Vec::new(),
         }),
+        stage: segment.stage,
+        work_offset: segment.work_offset,
     };
-    let mut stream: Box<dyn Write> = match &config.stream {
+    let mut stream: Box<dyn Write> = match &segment.stream {
         Some(path) => Box::new(BufWriter::new(File::create(path)?)),
         None => Box::new(io::sink()),
     };
@@ -338,7 +538,7 @@ where
         &mut *stream,
         None,
         CampaignExecutionOptions {
-            work_budget: config.work_budget,
+            work_budget: segment.work_budget,
             ..CampaignExecutionOptions::default()
         },
         &watch,

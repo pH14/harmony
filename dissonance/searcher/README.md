@@ -1382,6 +1382,28 @@ input for every accepted incumbent, in admission order, and
 `ShrinkEvent::Progress` after each admission; an error from it ends the
 campaign and is returned.
 
+A workload declares stages by returning a run from `stage_run`. Without one,
+the shrink is a single minimize campaign over the whole tape. Where the
+workload declares stages, the shrink runs one minimize campaign per stage,
+front to back. It replays the tape and reads `Evaluation::stage` after
+each action. When a later stage follows the root's, the segment runs with
+`stage_run(run, stage + 1)`, whose objective is reaching that stage, and ends in
+the tape where the tape first meets that objective. Each segment receives the
+share of the remaining work and job budgets that its cost from the root is of
+the remaining tape's cost, and writes its stream to
+`<stem>-stage-<n>.<ext>`. After a segment the incumbent's tail is replayed from
+the segment's result: the next segment starts at the end of that result, and a
+tail that no longer reaches a later stage makes the next segment the last one,
+which searches for the run's own objective from the end of the result. The
+last segment, or the only one when `stage` returns `None` at the root, runs
+with `config.run`. The outcome sums the job, acceptance and work counts over
+the segments, offsets each improvement's and progress event's work by the work
+before its segment, and keeps the last segment's stop; a segment that ends
+without an arrival ends the shrink with the tape as it stood. A stage boundary
+inside a level is rarely the same state on two lines, so a joined tail often
+fails and the last segment searches the rest again; when its result costs more
+than the input tape, the shrink returns the input tape and its cost.
+
 A workload supplies the shrink hooks on its campaign traits, which the
 minimize campaign calls, and implements `ShrinkPolicy` for the window search's
 hooks:
@@ -1390,6 +1412,8 @@ hooks:
 |---|---|---|---|
 | `shrink_cost(action, target)` | `Evaluation` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
 | `remaining_cost_bound(run, target)` | `Evaluation` | zero | A lower bound on the cost still to pay from this state. |
+| `stage(run, target)` | `Evaluation` | `None` | The stage the state is in, in the workload's order. |
+| `stage_run(run, stage)` | `Evaluation` | `None` | The run whose objective is reaching `stage`, or `None` when there is no such stage. |
 | `simpler_actions(run, action)` | `InputPolicy` | none | Replacements for one action, simplest first. |
 | `goal_tail(run, last)` | `InputPolicy` | none | Actions appended to every shortcut proposal, so a change that delays the goal past the tape's end can still reach it; a job stops at the goal, so an unused tail costs nothing. |
 | `window_actions(run)` | `ShrinkPolicy` | none | The actions the window search tries from every state. |

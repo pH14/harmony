@@ -186,6 +186,7 @@ mod tests {
     use crate::{
         chord::CHANGE_ONE_CONTROL_IDENTIFIER,
         smb::archive::SmbArchiveReport,
+        smb::plan::SmbRoute,
         smb::target::{
             ButtonChord, SmbInput, SmbMechanicalState, SmbMilestones, SmbObservations,
             SmbProgressWatermark, SmbTarget,
@@ -599,6 +600,38 @@ mod tests {
             )
             .expect("execute job");
         assert!(result.actions.is_empty());
+    }
+
+    #[test]
+    fn a_stage_predicate_is_reached_at_control_once_the_route_plan_locates_that_stage() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        let stage = SmbTerminalPredicate::Stage {
+            route: SmbRoute::Warps,
+            stage: 1,
+        };
+        assert!(!stage.reached(&target).expect("initial stage state"));
+        target.poke_wram(0x075c, 1).unwrap();
+        target.poke_wram(0x0770, 1).unwrap();
+        target.poke_wram(0x0772, 3).unwrap();
+        target.poke_wram(0x000e, 0).unwrap();
+        assert!(!stage.reached(&target).expect("next stage without control"));
+        target.poke_wram(0x000e, 8).unwrap();
+        assert!(stage.reached(&target).expect("next stage with control"));
+        assert_eq!(
+            stage.identifier(),
+            "stage:warps_1_2_to_4_vine_area_4_2_to_8:1"
+        );
+        assert_eq!(
+            SmbTerminalPredicate::from_identifier(&stage.identifier())
+                .expect("stage predicate round trip"),
+            stage
+        );
+        assert!(
+            SmbTerminalPredicate::from_identifier("stage:warps_1_2_to_4_vine_area_4_2_to_8")
+                .is_err()
+        );
     }
 
     #[test]
