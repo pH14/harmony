@@ -6,6 +6,7 @@ use crate::{
     nes_backend::NesBackend,
     search::draw::DrawMixture,
     smb::{
+        archive::{SmbArchiveKey, SmbKey},
         campaign::{
             SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignRun, SmbGame,
             SmbTerminalPredicate, quicknes_identity,
@@ -115,12 +116,12 @@ fn view(wram: &[u8; WRAM_SIZE]) -> View {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for SmbGame<M> {
+impl<M: NesBackend<Vec<u8>> + 'static, K: SmbKey> ArcadeGame for SmbGame<M, Vec<u8>, K> {
     type Machine = M;
     type View = View;
 
     fn arcade(rom: &[u8], identity: &str, identity_sha256: &str, machines: Machines<M>) -> Self {
-        Self::with_targets(
+        SmbGame::<M, Vec<u8>, SmbArchiveKey>::with_targets(
             rom,
             quicknes_identity(identity, identity_sha256),
             SNAPSHOT_CHECKPOINT_FORMAT,
@@ -129,6 +130,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for SmbGame<M> {
                     .map_err(|error| error.to_string())
             }),
         )
+        .with_key()
     }
 
     fn run() -> SmbCampaignRun {

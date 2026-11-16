@@ -241,7 +241,7 @@ impl plan::Stage for Stage {
 }
 
 #[must_use]
-pub fn band(column: u16) -> u16 {
+pub const fn band(column: u16) -> u16 {
     column / PROGRESS_BAND
 }
 

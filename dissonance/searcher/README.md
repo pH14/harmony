@@ -511,6 +511,55 @@ cell/holder draws and complete parent selection with zero-sized place keys:
 DISSONANCE_BENCHMARK_CANDIDATES=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib indexed_candidate -- --nocapture --test-threads=1
 ```
 
+## Assertion key
+
+`search::assertion::AssertionKey<W>` is an `ArchiveKey` built from a
+workload's declarations and a strategy. The workload implements `Assertions`,
+a trait because the view, the declarations over it and the lineage completion
+are the only parts of a key that differ between workloads. `Assertions::View`
+is a typed, copyable view of a state, decoded from its memory and completed
+against its parent and lineage. The key stores the view, serializes as the
+view, and answers every `ArchiveKey` question through the static table
+`Assertions::DECLARATIONS` and the data `Assertions::STRATEGY`.
+
+A declaration has an SDK form and a name, and no part in the search of its
+own:
+
+| Declaration | Meaning |
+| --- | --- |
+| `Always { holds }` | A finding when false. `AssertionKey::violations` names the declarations a view breaks. |
+| `SometimesAll { plan, state }` | The plan's ordered stages, located by `plan::locate`. |
+| `SometimesEach { values }` | The values reached. |
+| `Value { value }` | A named number. |
+
+A `Strategy` names declarations in three lines:
+
+| Line | Names | Place in the key |
+| --- | --- | --- |
+| `stage` | A `sometimes_all` | The progress: `plan::locate` over its plan, so the tier is (stage, objective). A value inside a stage is that stage's `plan::Stage::objective`. Without one the progress is `(0, 0)`. |
+| `spread` | `sometimes_each`s | The place: `(index, values)`, where the index counts the spread line's names. Without one every state has the place `(0, Values::default())`. |
+| `prefer` | Lists of values | One preference per list, comparing the list's values in turn; a higher value is preferred. |
+
+`AssertionKey::unresolved` lists the strategy's names that match no
+declaration of the form the line needs, and those names add nothing to the
+key. `AssertionKey::policy_identifier` is `assertion_key_` and a SHA-256 prefix
+of the strategy and the declared forms and names.
+
+The identity, the slot capacity, `complete` and `record` come from the
+workload's `Assertions` methods. `AssertionKey::places` returns the cell of
+every name on the spread line, each tagged with its index, while
+`ArchiveKey::place` returns the first. The archive keeps one place per state,
+so a second spread name is visible in `places` and has no cells of its own
+yet; keeping a state under any one of several names, with an equal share of
+draws per name, is unbuilt.
+
+A violation is a finding, recorded by the workload in its evidence through
+`Findings`: the first job sequence that showed it, the number of actions that
+showed it, and the tape that reached it. The run continues, and the state is
+kept or dropped by the same rules as any other state. A workload's key policy
+identifier starts with `AssertionKey::policy_identifier`, so a recording made
+under another key, table or strategy is rejected.
+
 ## Adaptive duration policy
 
 Campaigns can ask the generic searcher for a duration choice through

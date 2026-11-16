@@ -6,6 +6,7 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::shrink::{ShrinkCost, ShrinkPolicy},
     smb::{
+        archive::SmbKey,
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         target::{
             ButtonChord, ROOM_IDENTITY_BYTES, SmbInput, SmbTarget, WAIT_FOR_CONTROL_HOLD,
@@ -116,10 +117,11 @@ where
         })
 }
 
-impl<M, P> ShrinkPolicy for SmbGame<M, P>
+impl<M, P, K> ShrinkPolicy for SmbGame<M, P, K>
 where
     M: NesBackend<P>,
     P: SnapshotState,
+    K: SmbKey,
 {
     fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
         ShrinkCost::new(

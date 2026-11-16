@@ -67,6 +67,8 @@ pub struct Request {
     #[serde(default)]
     pub smb_terminal: Option<String>,
     #[serde(default)]
+    pub smb_key: Option<String>,
+    #[serde(default)]
     pub smb_frame_ceiling: Option<u64>,
     #[serde(default)]
     pub root_input: Option<PathBuf>,

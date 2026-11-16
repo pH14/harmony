@@ -104,6 +104,41 @@ Camera and player coordinates used by the key are signed 16-bit positions.
 Negative positions at the left boundary clamp to zero before conversion to
 columns, so an underflow cannot create a false deepest band.
 
+### Declared key
+
+`SmbGame::with_key::<SmbAssertionKey>()` runs the campaign on
+`search::assertion::AssertionKey` (see the [searcher README](../../../../dissonance/searcher/README.md#assertion-key))
+instead of the hand-written `SmbArchiveKey`; `nes-eval` selects it with
+`"smb_key": "assertion"`, and `"hand_written"` or no field keeps the
+hand-written key. `SmbKey` is the trait the campaign uses for either key,
+because both are built from the same decoded fields. The view is those fields,
+`SmbArchiveKey` decoded from work RAM with its arrival room stamped and its
+room and band completed against the parent and lineage by the hand-written
+`complete`. `smb::assertion` declares, for either route:
+
+| Form | Declaration |
+| --- | --- |
+| `sometimes_all` | The route's stages, with the band and vine objectives of [Route plans](#route-plans). |
+| `sometimes_each` | Room, column, height bucket, loop-path bit and clock hundreds digit. |
+| value | The game clock. The identity is the screen column. |
+| `always` | The level is one of the 32 real levels (world 0–7, level 0–3). |
+| `always` | The band is one a level page can reach: at most the band of page 255's last column plus 15 screen columns. |
+| `always` | The vine step is 0 to 8. |
+| `always` | The warp zone (`$06D6`) is 0, 4, 5 or 6. |
+
+The strategy takes the route's stages as the stage line, the room tuple as the
+one spread line and the game clock as the one prefer line. With it the two keys
+compute the same progress, place, identity and preference from one view; a test compares them over 40,000
+decoded states completed against their parents. The campaign checks the
+`always`s on the decoded state of each observation an action records (a change
+of scroll column, a death or victory, and its last frame), and records each violated declaration in the campaign evidence
+and the archive report's `findings`, with the first tape that reached it. A
+campaign started from an archive report keeps that report's findings. The
+key policy identifier of the declared key starts with
+`AssertionKey::policy_identifier`, a hash of the strategy and the declared
+names, so recordings are not shared between the keys or across an edit of
+either.
+
 ## Route plans
 
 A route is a `search::plan` list of stages in `smb::plan`, chosen with
