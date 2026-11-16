@@ -55,6 +55,18 @@ line per action endpoint, for state the campaign report sums away: the map cell
 a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
 sum.
 
+`nes-coverage` needs a core built with `HARMONY_QUICKNES_COVERAGE=1`.
+`nes-coverage tape <smb|metroid> INPUT OUT` replays a power-on tape and writes
+one line per action: the decoded state, a few raw game bytes, the work RAM
+digest and the coverage ids the action hit, then a summary line with frames per
+second. With `--quiet` it writes only the summary, which is how the coverage
+core's cost is timed against the default core. `nes-coverage campaign
+<smb|metroid> SEED JOBS OUT` runs the game's campaign from power-on on machines
+that drain coverage after every run. A job is the runs between two state
+restores. The tool writes `actions.jsonl` with each action's rarest id per kind
+and that id's job count so far, `counts.json` with every id's final job count,
+and the campaign's own stream.
+
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds
 rendering that input to raw video and audio, and `Reel` owns the FFmpeg

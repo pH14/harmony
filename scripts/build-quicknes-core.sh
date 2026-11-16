@@ -1661,6 +1661,364 @@ index 0ea3b0b..4cf33e6 100644
  		emu().enable_prg_6000();
 PATCH
 
+# HARMONY_QUICKNES_COVERAGE=1 builds a shared core that records which parts of
+# the ROM's program ran: each conditional branch with its outcome, each
+# indirect jump with its target, and each PRG ROM address read as data.
+# retro_harmony_coverage returns the ids hit since its previous call. Without
+# the option the hooks expand to nothing and the core's bytes are unchanged.
+# Translated blocks would run without the hooks, so the option refuses
+# HARMONY_QUICKNES_ROMS, and the static archive never carries coverage.
+patch -d "$build_root/core" -f -p1 <<'PATCH'
+diff --git a/nes_emu/Nes_Cpu.cpp b/nes_emu/Nes_Cpu.cpp
+index f9476f8..7e30692 100644
+--- a/nes_emu/Nes_Cpu.cpp
++++ b/nes_emu/Nes_Cpu.cpp
+@@ -50,6 +50,95 @@ static void xl_note( uint8_t const* prg, long size, unsigned pc, uint8_t const*
+ #define XL_NOTE()
+ #endif
+ 
++#ifdef QUICKNES_COVERAGE
++enum { cov_index_bits = 23, cov_hit_capacity = 1 << 18, cov_jump_slots = 1 << 13 };
++static uint8_t cov_seen [(1u << cov_index_bits) / 8];
++static uint32_t cov_hits [cov_hit_capacity];
++static unsigned long cov_hit_count;
++static uint64_t cov_jumps [cov_jump_slots];
++static uint64_t cov_jump_list [cov_jump_slots / 2];
++static unsigned long cov_jump_count;
++static bool cov_overflow;
++
++static inline unsigned cov_site( uint8_t const* prg, long size, uint8_t const* host, unsigned addr )
++{
++	uintptr_t off = (uintptr_t) host - (uintptr_t) prg;
++	if ( prg && off < (uintptr_t) size && off < 0x100000 )
++		return (unsigned) off;
++	return 0x100000 | (addr & 0xFFFF);
++}
++
++static inline void cov_mark( unsigned index )
++{
++	uint8_t const bit = 1 << (index & 7);
++	uint8_t& cell = cov_seen [index >> 3];
++	if ( cell & bit )
++		return;
++	cell |= bit;
++	if ( cov_hit_count < cov_hit_capacity )
++		cov_hits [cov_hit_count++] = index;
++	else
++		cov_overflow = true;
++}
++
++static inline void cov_data( uint8_t const* prg, long size, uint8_t const* host )
++{
++	uintptr_t off = (uintptr_t) host - (uintptr_t) prg;
++	if ( prg && off < (uintptr_t) size && off < 0x100000 )
++		cov_mark( 1u << 22 | (unsigned) off );
++}
++
++static void cov_jump( uint64_t id )
++{
++	unsigned h = (unsigned) ((id * 0x9E3779B97F4A7C15ull) >> 51);
++	for ( ;; )
++	{
++		uint64_t const v = cov_jumps [h];
++		if ( v == id )
++			return;
++		if ( !v )
++			break;
++		h = (h + 1) & (cov_jump_slots - 1);
++	}
++	if ( cov_jump_count >= cov_jump_slots / 2 )
++	{
++		cov_overflow = true;
++		return;
++	}
++	cov_jumps [h] = id;
++	cov_jump_list [cov_jump_count++] = id;
++}
++
++// Returns the ids hit since the previous call and clears them. An id is a
++// branch site with its outcome (kind 0), an indirect jump site with its target
++// (kind 1) or a PRG ROM data address (kind 2), with the kind in the top two
++// bits. A site is a PRG ROM offset, or 0x100000 plus the CPU address outside
++// PRG ROM. Returns -1 when the ids do not fit in capacity.
++extern "C" long retro_harmony_coverage( uint64_t* out, unsigned long capacity )
++{
++	unsigned long const total = cov_hit_count + cov_jump_count;
++	bool const fits = !cov_overflow && total <= capacity;
++	for ( unsigned long i = 0; i < cov_hit_count; i++ )
++	{
++		uint32_t const index = cov_hits [i];
++		cov_seen [index >> 3] = 0;
++		if ( fits )
++			out [i] = index < (1u << 22) ? (uint64_t) index : 2ull << 62 | (index & 0xFFFFF);
++	}
++	for ( unsigned long i = 0; i < cov_jump_count; i++ )
++		if ( fits )
++			out [cov_hit_count + i] = cov_jump_list [i];
++	if ( cov_overflow )
++		memset( cov_seen, 0, sizeof cov_seen );
++	if ( cov_jump_count )
++		memset( cov_jumps, 0, sizeof cov_jumps );
++	cov_hit_count = 0;
++	cov_jump_count = 0;
++	cov_overflow = false;
++	return fits ? (long) total : -1;
++}
++#endif
++
+ /* Copyright (C) 2003-2006 Shay Green. This module is free software; you
+ can redistribute it and/or modify it under the terms of the GNU Lesser
+ General Public License as published by the Free Software Foundation; either
+@@ -200,6 +289,31 @@ static const unsigned char clock_table [256] = {
+ #define WRITE( addr, data )     {effects++; NES_CPU_WRITE( this, (addr), (data), (clock_count) );}
+ #define WRITE_LOW( addr, data ) (void) (effects++, READ_LOW( addr ) = (data))
+ 
++// Coverage counts a PRG ROM read whose value the instruction uses. The bus
++// reads a 6502 makes and discards, at page crossings and in unofficial NOPs,
++// are DUMMY_READ.
++
++#ifdef QUICKNES_COVERAGE
++#define DUMMY_READ( addr )      (NOTE_READ( addr ), !((addr) & 0xE000) ? (int) low_mem [(addr) & 0x7FF] : \
++		(addr) > 0x7FFF ? (int) *get_code( addr ) : NES_CPU_READ( this, (addr), (clock_count) ))
++#define COV_READ( addr )        ((addr) > 0x7FFF ? cov_data( xl_prg, xl_prg_size, get_code( addr ) ) : (void) 0)
++#undef READ_LIKELY_PPU
++#undef READ
++#define READ_LIKELY_PPU( addr ) (NOTE_READ( addr ), COV_READ( addr ), NES_CPU_READ_PPU( this, (addr), (clock_count) ))
++#define READ( addr )            (COV_READ( addr ), DUMMY_READ( addr ))
++#define COV_PROG( addr )        COV_READ( addr );
++#define COV_BRANCH( cond )      cov_mark( cov_site( xl_prg, xl_prg_size, page + pc - 1, pc - 1 ) << 1 | ((cond) ? 1 : 0) );
++#define COV_JUMP_FROM()         cov_from = cov_site( xl_prg, xl_prg_size, page + pc - 1, pc - 1 );
++#define COV_JUMP_TO()           cov_jump( 1ull << 62 | (uint64_t) cov_from << 21 | \
++		cov_site( xl_prg, xl_prg_size, code_map [pc >> page_bits] + pc, pc ) );
++#else
++#define DUMMY_READ( addr )      READ( addr )
++#define COV_PROG( addr )
++#define COV_BRANCH( cond )
++#define COV_JUMP_FROM()
++#define COV_JUMP_TO()
++#endif
++
+ #define IDLE_CHECK()                                                    \
+ {                                                                       \
+ 	if ( pc == idle_pc && effects == idle_effects && a == idle_a &&     \
+@@ -278,6 +392,9 @@ Nes_Cpu::result_t Nes_Cpu::run( nes_time_t end )
+ 	}
+ 	
+ 	unsigned long effects = 0;
++#ifdef QUICKNES_COVERAGE
++	unsigned cov_from = 0;
++#endif
+ 	unsigned long idle_effects = 0;
+ 	unsigned idle_pc = ~0u;
+ 	nes_time_t idle_clock = 0;
+@@ -346,7 +463,7 @@ loop:
+ 		data = temp + 0x100 * READ_LOW( uint8_t (data + 1) );   \
+ 		if (c) HANDLE_PAGE_CROSSING( temp );                    \
+ 		if (!(r) || (temp & 0x100))                             \
+-			READ( data - ( temp & 0x100 ) );                    \
++			DUMMY_READ( data - ( temp & 0x100 ) );                    \
+ 	}
+ 	
+ #define IND_X {                                                 \
+@@ -376,7 +493,7 @@ ind##op: {                              \
+ 	int temp = data;                    \
+ 	ADD_PAGE                            \
+ 	if ( temp & 0x100 )                 \
+-		 READ( data - 0x100 );          \
++		 DUMMY_READ( data - 0x100 );          \
+ 	goto ptr##op;                       \
+ }                                       \
+ op_##ab: /* abs */               \
+@@ -404,7 +521,7 @@ op_##ax: /* abs,X */             \
+ ind##op: {                              \
+ 	int temp = data;                    \
+ 	ADD_PAGE                            \
+-	READ( data - ( temp & 0x100 ) );    \
++	DUMMY_READ( data - ( temp & 0x100 ) );    \
+ 	goto imm##op;                       \
+ }                                       \
+ op_##ab: /* abs */               \
+@@ -414,6 +531,7 @@ imm##op:                                \
+ 
+ #define BRANCH( cond )      \
+ {                           \
++	COV_BRANCH( cond )      \
+ 	pc++;                   \
+ 	int offset = (int8_t) data;  \
+ 	int extra_clock = (pc & 0xFF) + offset; \
+@@ -514,7 +632,7 @@ imm##op:                                \
+ 	sta_ind_common: {
+ 		int temp = data;
+ 		ADD_PAGE
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		goto sta_ptr;
+ 	}
+ 	op_0x8D: // STA abs
+@@ -545,10 +663,11 @@ imm##op:                                \
+ 		int temp = data;
+ 		data += msb * 0x100;
+ 		a = nz = READ_PROG( uint16_t( data ) );
++		COV_PROG( uint16_t( data ) )
+ 		if ( (unsigned) (data - 0x2000) >= 0x6000 )
+ 			DISPATCH
+ 		if ( temp & 0x100 )
+-			READ( data - 0x100 );
++			DUMMY_READ( data - 0x100 );
+ 		a = nz = READ( data );
+ 		DISPATCH
+ 	}
+@@ -562,10 +681,11 @@ imm##op:                                \
+ 		int temp = data;
+ 		data += msb * 0x100;
+ 		a = nz = READ_PROG( uint16_t( data ) );
++		COV_PROG( uint16_t( data ) )
+ 		if ( (unsigned) (data - 0x2000) >= 0x6000 )
+ 			DISPATCH
+ 		if ( temp & 0x100 )
+-			READ( data - 0x100 );
++			DUMMY_READ( data - 0x100 );
+ 		a = nz = READ( data );
+ 		DISPATCH
+ 	}
+@@ -641,7 +761,7 @@ imm##op:                                \
+ 		pc++;
+ 		unsigned addr = data + 0x100 * GET_OPERAND( pc );
+ 		if ( data & 0x100 )
+-			READ( addr - 0x100 );
++			DUMMY_READ( addr - 0x100 );
+ 		pc++;
+ 		y = nz = READ( addr );
+ 		DISPATCH
+@@ -655,7 +775,7 @@ imm##op:                                \
+ 		unsigned addr = data + 0x100 * GET_OPERAND( pc );
+ 		pc++;
+ 		if ( data & 0x100 )
+-			READ( addr - 0x100 );
++			DUMMY_READ( addr - 0x100 );
+ 		x = nz = READ( addr );
+ 		DISPATCH
+ 	}
+@@ -810,7 +930,7 @@ imm##op:                                \
+ 	rol_abs: {
+ 		int temp = data;
+ 		ADD_PAGE
+-		if ( opcode == 0x1E || opcode == 0x3E ) READ( data - ( temp & 0x100 ) );
++		if ( opcode == 0x1E || opcode == 0x3E ) DUMMY_READ( data - ( temp & 0x100 ) );
+ 		WRITE( data, temp = READ( data ) );
+ 		nz = (c >> 8) & 1;
+ 		nz |= (c = temp << 1);
+@@ -832,7 +952,7 @@ imm##op:                                \
+ 	ror_abs: {
+ 		int temp = data;
+ 		ADD_PAGE
+-		if ( opcode == 0x5E || opcode == 0x7E ) READ( data - ( temp & 0x100 ) );
++		if ( opcode == 0x5E || opcode == 0x7E ) DUMMY_READ( data - ( temp & 0x100 ) );
+ 		WRITE( data, temp = READ( data ) );
+ 		nz = ((c >> 1) & 0x80) | (temp >> 1);
+ 		c = temp << 8;
+@@ -895,7 +1015,7 @@ imm##op:                                \
+ 	op_0xFE: { // INC abs,x
+ 		int temp = data + x;
+ 		data = x + GET_ADDR();
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		goto inc_ptr;
+ 	}
+ 	
+@@ -908,7 +1028,7 @@ imm##op:                                \
+ 	op_0xDE: { // DEC abs,x
+ 		int temp = data + x;
+ 		data = x + GET_ADDR();
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		goto dec_ptr;
+ 	}
+ 	
+@@ -995,9 +1115,11 @@ imm##op:                                \
+ 	}
+ 	
+ 	op_0x6C: // JMP (ind)
++		COV_JUMP_FROM()
+ 		data = GET_ADDR();
+ 		pc = READ( data );
+ 		pc |= READ( (data & 0xFF00) | ((data + 1) & 0xFF) ) << 8;
++		COV_JUMP_TO()
+ 		DISPATCH
+ 	
+ 	op_0x00: { // BRK
+@@ -1074,8 +1196,8 @@ imm##op:                                \
+ 		HANDLE_PAGE_CROSSING( data );
+ 		int addr = GET_ADDR() + x;
+ 		if ( data & 0x100 )
+-			READ( addr - 0x100 );
+-		READ( addr );
++			DUMMY_READ( addr - 0x100 );
++		DUMMY_READ( addr );
+ 	}
+ 	op_0x0C: // SKW
+ 		pc++;
+@@ -1188,7 +1310,7 @@ imm##op:                                \
+ 		int temp = data;
+ 		ADD_PAGE;
+ 		if ( temp & 0x100 )
+-			READ( data - 0x100 );
++			DUMMY_READ( data - 0x100 );
+ 		goto lax_ptr;
+ 	}
+ 
+@@ -1236,7 +1358,7 @@ imm##op:                                \
+ 		data += y;
+ 		int temp = data;
+ 		ADD_PAGE
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		pc++;
+ 		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
+ 		DISPATCH
+@@ -1246,7 +1368,7 @@ imm##op:                                \
+ 		data += y;
+ 		int temp = data;
+ 		ADD_PAGE
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		pc++;
+ 		if ( !( temp & 0x100 ) )
+ 			WRITE( data, uint8_t( x & ( ( data >> 8 ) + 1 ) ) );
+@@ -1257,7 +1379,7 @@ imm##op:                                \
+ 		data += x;
+ 		int temp = data;
+ 		ADD_PAGE
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		pc++;
+ 		if ( !( temp & 0x100) )
+ 			WRITE( data, uint8_t( y & ( ( data >> 8 ) + 1 ) ) );
+@@ -1268,7 +1390,7 @@ imm##op:                                \
+ 		data += y;
+ 		int temp = data;
+ 		ADD_PAGE
+-		READ( data - ( temp & 0x100 ) );
++		DUMMY_READ( data - ( temp & 0x100 ) );
+ 		pc++;
+ 		SET_SP( a & x );
+ 		WRITE( data, uint8_t( a & x & ( ( data >> 8 ) + 1 ) ) );
+@@ -1281,7 +1403,7 @@ imm##op:                                \
+ 		int temp = data;
+ 		ADD_PAGE
+ 		if ( temp & 0x100 )
+-			READ( data - 0x100 );
++			DUMMY_READ( data - 0x100 );
+ 		pc++;
+ 		a = GET_SP();
+ 		x = a &= READ( data );
+PATCH
+
+if [ -n "${HARMONY_QUICKNES_COVERAGE:-}" ] && [ -n "${HARMONY_QUICKNES_ROMS:-}" ]; then
+    echo "FAIL: HARMONY_QUICKNES_COVERAGE cannot be combined with HARMONY_QUICKNES_ROMS" >&2
+    exit 1
+fi
+
 if [ -n "${HARMONY_QUICKNES_ROMS:-}" ]; then
     # HARMONY_QUICKNES_ROMS is a whitespace-separated list of ROM paths.
     # shellcheck disable=SC2086
@@ -1671,6 +2029,9 @@ fi
 shared_cxxflags=${CXXFLAGS:-}
 if [ -n "${HARMONY_QUICKNES_PROFILE:-}" ]; then
     shared_cxxflags="$shared_cxxflags -DQUICKNES_XLAT_PROFILE"
+fi
+if [ -n "${HARMONY_QUICKNES_COVERAGE:-}" ]; then
+    shared_cxxflags="$shared_cxxflags -DQUICKNES_COVERAGE"
 fi
 CXXFLAGS=$shared_cxxflags make -C "$build_root/core" -j "${HARMONY_QUICKNES_BUILD_JOBS:-4}" \
     DEBUG=0 OPTIMIZE=-O2 GIT_VERSION="$revision"

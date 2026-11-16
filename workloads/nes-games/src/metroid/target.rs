@@ -628,6 +628,15 @@ impl MetroidTarget<QuickNesMachine> {
         self.machine.take_video_frames()
     }
 
+    #[must_use]
+    pub fn has_coverage(&self) -> bool {
+        self.machine.has_coverage()
+    }
+
+    pub fn take_coverage(&mut self, ids: &mut Vec<u64>) -> Result<(), MachineError> {
+        self.machine.take_coverage(ids)
+    }
+
     pub fn drain_audio(&mut self) -> Vec<i16> {
         self.machine.take_audio_samples()
     }

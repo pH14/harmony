@@ -3,6 +3,7 @@
 use std::{error::Error, io::Write, path::PathBuf};
 
 use machine::quicknes::QuickNesMachine;
+use nes_games::nes_backend::{NesBackend, NesMemory};
 
 pub use nes_games::metroid::campaign::*;
 
@@ -37,7 +38,7 @@ pub struct MetroidCampaignConfig {
 }
 
 impl MetroidCampaignConfig {
-    fn generic(&self) -> CampaignConfig<MetroidGame> {
+    fn generic<M: NesBackend<Vec<u8>> + NesMemory>(&self) -> CampaignConfig<MetroidGame<M>> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -58,10 +59,10 @@ impl MetroidCampaignConfig {
     }
 }
 
-pub fn run_metroid_campaign_checkpointed(
-    game: &MetroidGame,
+pub fn run_metroid_campaign_checkpointed<M: NesBackend<Vec<u8>> + NesMemory>(
+    game: &MetroidGame<M>,
     config: &MetroidCampaignConfig,
-    origin: &MetroidCampaignOrigin,
+    origin: &MetroidCampaignOrigin<M>,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(MetroidCampaignModeReport, MetroidSnapshotCheckpoint), Box<dyn Error>> {
