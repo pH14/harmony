@@ -153,7 +153,8 @@ as execution work, in the frame count and in the action's cost in the records
 file, but not in the archive's action cost, which sums the tape's chords. A move that runs past its bound ends the
 action as a doomed terminal and reports the `always` violation
 `forced_move_within_bound` with the job's input, under `violations` in the
-archive report and the diagnostics.
+archive report and the diagnostics, so the input and the run's identity
+replay the job.
 
 `with_records` hands the run's records to the searcher's `RecordsWriter`: the
 target keeps the record of every frame it decodes while recording, each

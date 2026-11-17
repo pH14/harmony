@@ -597,6 +597,7 @@ fn violations(evidence: &NesEvidence) -> serde_json::Value {
                 "kind": "always",
                 "count": violation.count,
                 "execution": violation.execution,
+                "input": violation.input,
             })
         })
         .collect()
@@ -1015,5 +1016,32 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
             })
             .map(|entry| entry.input.clone())
             .ok_or_else(|| format!("the {} source archive has no retained entries", G::NAME).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_violation_report_carries_the_input_that_reproduces_it() {
+        let input = Input {
+            actions: vec![ButtonChord::new(1, 2), ButtonChord::new(0, 120)],
+        };
+        let evidence = NesEvidence {
+            violations: vec![Violation {
+                name: FORCED_MOVE_BOUND.to_owned(),
+                count: 3,
+                execution: 167_208,
+                input: input.clone(),
+            }],
+            ..NesEvidence::default()
+        };
+        let report = violations(&evidence);
+        assert_eq!(report[0]["name"], FORCED_MOVE_BOUND);
+        assert_eq!(report[0]["execution"], 167_208);
+        let replayed: Input<ButtonChord> =
+            serde_json::from_value(report[0]["input"].clone()).expect("an input");
+        assert_eq!(replayed, input);
     }
 }
