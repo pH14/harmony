@@ -36,7 +36,7 @@ pub struct Checker<'a> {
 impl Checker<'_> {
     pub fn observe(&mut self, record: &Record, parent: &Accumulator) {
         self.records += 1;
-        let observation = self.strategy.observe(record, parent);
+        let observation = self.strategy.observe(record, &mut parent.clone());
         self.goal_met |= observation.goal;
         for (met, holds) in self
             .stage_met

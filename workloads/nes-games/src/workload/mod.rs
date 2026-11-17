@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
-pub use target::{NesObservation, NesSnapshot, NesTarget};
+pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
     arcade::Machines,
@@ -210,24 +210,19 @@ impl<G: Game> Lowered<G> {
         &self,
         frame_count: u64,
         state: G::State,
-        parent: &Accumulator,
-    ) -> (NesObservation<G::State>, Accumulator) {
+        accumulator: &mut Accumulator,
+    ) -> NesObservation<G::State> {
         let (record, satisfied) = self.record(&state);
-        let observed = self.compiled.observe(&record, parent);
-        (
-            NesObservation {
-                frame_count,
-                state,
-                key: observed.key,
-                rejected: observed.rejected,
-                goal: observed.goal,
-                satisfied,
-                overran: false,
-                cost: 0,
-                records: Vec::new(),
-            },
-            observed.accumulator,
-        )
+        let observed = self.compiled.observe(&record, accumulator);
+        NesObservation {
+            frame_count,
+            state,
+            key: observed.key,
+            rejected: observed.rejected,
+            goal: observed.goal,
+            satisfied,
+            overran: false,
+        }
     }
 }
 
@@ -446,7 +441,7 @@ fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>>>(
         return;
     }
     for observation in target.last_action_observations() {
-        aggregate.0 |= observation.satisfied.0;
+        aggregate.0 |= observation.observation.satisfied.0;
     }
 }
 
@@ -553,10 +548,10 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     })
 }
 
-fn watermark<S>(observations: &[NesObservation<S>]) -> Option<u32> {
+fn watermark<S>(observations: &[ActionObservation<S>]) -> Option<u32> {
     observations
         .iter()
-        .filter_map(|observation| observation.key.map(|key| key.progress))
+        .filter_map(|action| action.observation.key.map(|key| key.progress))
         .max()
 }
 
@@ -568,7 +563,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> CampaignTypes for NesWorkload<G, M> {
     type Milestones = Satisfied;
     type Progress = u32;
     type Snapshot = NesSnapshot<G::State>;
-    type Observations = NesObservation<G::State>;
+    type Observations = ActionObservation<G::State>;
     type Evidence = NesEvidence;
     type ArchiveReport = NesArchiveReport;
     type Run = NesRun;
@@ -941,7 +936,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                     || action
                         .observations
                         .iter()
-                        .any(|observation| observation.overran),
+                        .any(|observation| observation.observation.overran),
                 cost: action
                     .observations
                     .iter()
@@ -962,13 +957,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
         let champion = action
             .observations
             .last()
-            .and_then(|observation| observation.key)
+            .and_then(|observation| observation.observation.key)
             .map(|key| key.progress)
             .filter(|progress| evidence.champion.is_none_or(|current| *progress > current));
         let overran = action
             .observations
             .iter()
-            .any(|observation| observation.overran);
+            .any(|observation| observation.observation.overran);
         if overran
             && let Some(violation) = evidence
                 .violations

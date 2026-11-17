@@ -309,7 +309,7 @@ mod tests {
     fn observe(state: JoustState) -> NesObservation<JoustState> {
         let lowered = lowered();
         lowered.checked_record(&state).unwrap();
-        lowered.observe(0, state, &Accumulator::default()).0
+        lowered.observe(0, state, &mut Accumulator::default())
     }
 
     fn key(state: JoustState) -> Option<AssertionKey> {

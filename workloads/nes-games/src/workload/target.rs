@@ -30,16 +30,32 @@ pub struct NesObservation<S> {
     pub goal: bool,
     pub satisfied: Satisfied,
     pub overran: bool,
-    #[serde(skip)]
-    pub cost: u64,
-    #[serde(skip)]
-    pub records: Vec<Record>,
 }
 
 impl<S> NesObservation<S> {
     #[must_use]
     pub fn stops(&self) -> bool {
         self.rejected.is_some() || self.goal || self.overran
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ActionObservation<S> {
+    pub observation: NesObservation<S>,
+    #[serde(skip)]
+    pub cost: u64,
+    #[serde(skip)]
+    pub records: Vec<Record>,
+}
+
+impl<S> From<NesObservation<S>> for ActionObservation<S> {
+    fn from(observation: NesObservation<S>) -> Self {
+        Self {
+            observation,
+            cost: 0,
+            records: Vec::new(),
+        }
     }
 }
 
@@ -105,7 +121,7 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     genesis_accumulator: Accumulator,
     accumulator: Accumulator,
     observation: NesObservation<G::State>,
-    action_observations: Vec<NesObservation<G::State>>,
+    action_observations: Vec<ActionObservation<G::State>>,
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
@@ -120,7 +136,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             .game
             .genesis(&state)
             .map_err(MachineError::Backend)?;
-        let (observation, accumulator) = lowered.observe(0, state, &Accumulator::default());
+        let mut accumulator = Accumulator::default();
+        let observation = lowered.observe(0, state, &mut accumulator);
         let genesis = machine.snapshot()?;
         Ok(Self {
             lowered,
@@ -130,10 +147,10 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             genesis_observation: observation.clone(),
             genesis_wram: wram,
             current_wram: wram,
-            genesis_accumulator: accumulator,
+            genesis_accumulator: accumulator.clone(),
             accumulator,
             observation: observation.clone(),
-            action_observations: vec![observation],
+            action_observations: vec![observation.into()],
             failed: false,
             snapshot_base: None,
             execution_work: 0,
@@ -166,7 +183,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
     }
 
     #[must_use]
-    pub fn last_action_observations(&self) -> &[NesObservation<G::State>] {
+    pub fn last_action_observations(&self) -> &[ActionObservation<G::State>] {
         &self.action_observations
     }
 
@@ -188,12 +205,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         self.current_wram = wram;
         self.failed = false;
         self.snapshot_base = None;
-        let (observation, accumulator) =
-            self.lowered
-                .observe(frame_count, decoded, &Accumulator::default());
-        self.observation = observation;
-        self.accumulator = accumulator;
-        self.action_observations = vec![self.observation.clone()];
+        self.accumulator = Accumulator::default();
+        self.observation = self
+            .lowered
+            .observe(frame_count, decoded, &mut self.accumulator);
+        self.action_observations = vec![self.observation.clone().into()];
         self.snapshot()
             .ok_or_else(|| "failed to snapshot the restored state".into())
     }
@@ -262,10 +278,10 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         self.execution_work = self
             .execution_work
             .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
-        let mut emitted: Vec<NesObservation<G::State>> = Vec::new();
+        let mut emitted: Vec<ActionObservation<G::State>> = Vec::new();
         let mut prior_key = self.observation.key;
         let mut previous = self.observation.state.clone();
-        let mut accumulator = self.accumulator;
+        let mut accumulator = std::mem::take(&mut self.accumulator);
         let mut endpoint = None;
         let mut records = Vec::new();
         let mut logical_frames = produced_frames;
@@ -279,8 +295,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             if self.recording {
                 records.push(self.lowered.record(&state).0);
             }
-            let (observation, next) = self.lowered.observe(frame_count, state, &accumulator);
-            accumulator = next;
+            let observation = self.lowered.observe(frame_count, state, &mut accumulator);
             previous = observation.state.clone();
             if !observation.stops() {
                 forced = self.lowered.game.moves(&observation.state).forced;
@@ -288,9 +303,10 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             let last = offset + 1 == produced_frames || observation.stops() || forced.is_some();
             if observation.key != prior_key || observation.stops() || last {
                 prior_key = observation.key;
-                emitted.push(NesObservation {
+                emitted.push(ActionObservation {
+                    observation,
+                    cost: 0,
                     records: std::mem::take(&mut records),
-                    ..observation
                 });
             }
             if last {
@@ -335,11 +351,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let mut current_wram = endpoint_wram;
         let mut cost = u64::try_from(logical_frames).unwrap_or(u64::MAX);
         if let Some(mv) = forced {
-            let Some(mut arrival) = emitted.last().cloned() else {
+            let Some(departure) = emitted.last().map(|last| last.observation.clone()) else {
                 return self.fail();
             };
             let (frames, wram, state, overran) =
-                match self.play_forced(mv, arrival.state.clone(), endpoint_wram) {
+                match self.play_forced(mv, departure.state.clone(), endpoint_wram) {
                     Ok(Played::Arrived {
                         frames,
                         wram,
@@ -352,28 +368,27 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                     }) => (frames, wram, state, true),
                     Err(_) => return self.fail(),
                 };
-            let frame_count = arrival.frame_count.saturating_add(frames);
+            let frame_count = departure.frame_count.saturating_add(frames);
             cost = cost.saturating_add(frames);
-            if overran {
-                arrival = NesObservation {
+            let arrival = if overran {
+                NesObservation {
                     frame_count,
                     state,
                     key: None,
                     overran: true,
-                    records: Vec::new(),
-                    ..arrival
-                };
+                    ..departure
+                }
+                .into()
             } else {
                 if self.recording {
                     records.push(self.lowered.record(&state).0);
                 }
-                let (observation, next) = self.lowered.observe(frame_count, state, &accumulator);
-                accumulator = next;
-                arrival = NesObservation {
+                ActionObservation {
+                    observation: self.lowered.observe(frame_count, state, &mut accumulator),
+                    cost: 0,
                     records,
-                    ..observation
-                };
-            }
+                }
+            };
             emitted.push(arrival);
             current_wram = wram;
         }
@@ -381,11 +396,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             last.cost = cost;
         }
         self.action_observations = emitted;
-        if let Some(observation) = self.action_observations.last() {
-            self.observation = NesObservation {
-                records: Vec::new(),
-                ..observation.clone()
-            };
+        if let Some(last) = self.action_observations.last() {
+            self.observation = last.observation.clone();
         }
         self.accumulator = accumulator;
         self.current_wram = current_wram;
@@ -468,7 +480,7 @@ impl<G: Game> NesTarget<G, QuickNesMachine> {
         let result = (|| {
             let mut metadata = None;
             let mut skip = skip_frames;
-            let mut accumulator = self.genesis_accumulator;
+            let mut accumulator = self.genesis_accumulator.clone();
             for action in actions {
                 let forced = self.render_action(
                     *action,
@@ -508,8 +520,7 @@ impl<G: Game> NesTarget<G, QuickNesMachine> {
                             None => break,
                         }
                     }
-                    let (_, next) = self.lowered.observe(0, state, &accumulator);
-                    accumulator = next;
+                    let _ = self.lowered.observe(0, state, &mut accumulator);
                 }
             }
             let endpoint = self.lowered.game.decode(None, &read_wram(&self.machine)?);
@@ -618,8 +629,7 @@ impl<G: Game> NesTarget<G, QuickNesMachine> {
             return Ok(None);
         };
         let state = self.lowered.game.decode(None, &read_wram(&self.machine)?);
-        let (observation, next) = self.lowered.observe(0, state, accumulator);
-        *accumulator = next;
+        let observation = self.lowered.observe(0, state, accumulator);
         Ok(if observation.stops() {
             None
         } else {
@@ -663,9 +673,9 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         self.failed = failed;
         self.snapshot_base = None;
         self.current_wram = self.genesis_wram;
-        self.accumulator = self.genesis_accumulator;
+        self.accumulator = self.genesis_accumulator.clone();
         self.observation = self.genesis_observation.clone();
-        self.action_observations = vec![self.observation.clone()];
+        self.action_observations = vec![self.observation.clone().into()];
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -711,7 +721,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         Some(NesSnapshot {
             emulator_state,
             observation: self.observation.clone(),
-            accumulator: self.accumulator,
+            accumulator: self.accumulator.clone(),
             failed: self.failed,
         })
     }
@@ -743,9 +753,9 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         self.current = imported;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
         self.current_wram = restored_wram;
-        self.accumulator = snapshot.accumulator;
+        self.accumulator = snapshot.accumulator.clone();
         self.observation = snapshot.observation.clone();
-        self.action_observations = vec![self.observation.clone()];
+        self.action_observations = vec![self.observation.clone().into()];
         self.failed = snapshot.failed;
         Ok(())
     }

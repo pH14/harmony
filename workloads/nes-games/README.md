@@ -135,7 +135,10 @@ goal, and a game has at most 128 `sometimes` declarations.
 strategy rejects or that meets the goal, and the target replays the hold cut
 to that frame, so the endpoint is the stopping frame. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
-the end of each action. A goal frame is a terminal objective, and a rejected
+the end of each action. Each is an `ActionObservation`: the `NesObservation`,
+the action's cost in frames on the last one, and the records of the frames it
+covers when the workload keeps records. A snapshot holds the `NesObservation`
+and the accumulator alone. A goal frame is a terminal objective, and a rejected
 frame is a doomed terminal. Named progress reports each `sometimes`
 declaration by name with its first execution. The strategy's policy identifier
 is part of the recorded workload policies, and `with_strategy` builds the same

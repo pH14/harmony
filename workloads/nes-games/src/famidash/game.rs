@@ -440,7 +440,7 @@ mod tests {
     fn observe(state: FamidashState) -> NesObservation<FamidashState> {
         let lowered = lowered();
         lowered.checked_record(&state).unwrap();
-        lowered.observe(0, state, &Accumulator::default()).0
+        lowered.observe(0, state, &mut Accumulator::default())
     }
 
     fn key(state: FamidashState) -> AssertionKey {

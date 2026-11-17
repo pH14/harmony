@@ -254,15 +254,11 @@ enum Progress {
     Stages { stages: Vec<Stage>, radix: u64 },
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
-)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Accumulator {
     started: bool,
     stage: u8,
-    objective: [i64; OBJECTIVE_WIDTH],
-    values: [i64; MAX_AGGREGATES],
-    anchors: [i64; MAX_AGGREGATES],
+    values: Box<[i64]>,
 }
 
 impl Accumulator {
@@ -272,12 +268,26 @@ impl Accumulator {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct Held {
+    started: bool,
+    stage: u8,
+    objective: [i64; OBJECTIVE_WIDTH],
+    values: [i64; MAX_AGGREGATES],
+    anchors: [i64; MAX_AGGREGATES],
+}
+
+impl Held {
+    fn stage(&self) -> Option<u8> {
+        self.started.then_some(self.stage)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Observed {
     pub key: Option<AssertionKey>,
     pub rejected: Option<u8>,
     pub goal: bool,
-    pub accumulator: Accumulator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1341,6 +1351,7 @@ pub struct Compiled {
     progress: Progress,
     goal: Option<Vec<Op>>,
     goal_reachable: bool,
+    carries: bool,
 }
 
 impl Compiled {
@@ -1395,6 +1406,7 @@ impl Compiled {
             }
         };
         check_scope(strategy, &lines, &progress, catalog)?;
+        let carries = matches!(&progress, Progress::Stages { stages, .. } if stages.iter().any(|stage| stage.carry));
         let tables = strategy.table.values().cloned().collect();
         let identity = serde_json::to_vec(&(strategy, catalog.signals(), catalog.declarations()))?;
         let digest = Sha256::digest(identity);
@@ -1417,6 +1429,7 @@ impl Compiled {
             progress,
             goal,
             goal_reachable,
+            carries,
         })
     }
 
@@ -1478,12 +1491,47 @@ impl Compiled {
         }
     }
 
-    fn accumulate(
-        &self,
-        record: &Record,
-        parent: &Accumulator,
-        stack: &mut [i64; STACK],
-    ) -> Accumulator {
+    fn accumulator_width(&self) -> usize {
+        2 * self.aggregates.len() + if self.carries { OBJECTIVE_WIDTH } else { 0 }
+    }
+
+    fn held(&self, accumulator: &Accumulator) -> Held {
+        let mut held = Held {
+            started: accumulator.started,
+            stage: accumulator.stage,
+            ..Held::default()
+        };
+        if accumulator.values.len() == self.accumulator_width() {
+            let count = self.aggregates.len();
+            let (values, rest) = accumulator.values.split_at(count);
+            let (anchors, objective) = rest.split_at(count);
+            held.values[..count].copy_from_slice(values);
+            held.anchors[..count].copy_from_slice(anchors);
+            held.objective[..objective.len()].copy_from_slice(objective);
+        }
+        held
+    }
+
+    fn store(&self, held: &Held, accumulator: &mut Accumulator) {
+        accumulator.started = held.started;
+        accumulator.stage = held.stage;
+        let width = self.accumulator_width();
+        if width == 0 {
+            return;
+        }
+        if accumulator.values.len() != width {
+            accumulator.values = vec![0; width].into_boxed_slice();
+        }
+        let count = self.aggregates.len();
+        let (values, rest) = accumulator.values.split_at_mut(count);
+        let (anchors, objective) = rest.split_at_mut(count);
+        values.copy_from_slice(&held.values[..count]);
+        anchors.copy_from_slice(&held.anchors[..count]);
+        let width = objective.len();
+        objective.copy_from_slice(&held.objective[..width]);
+    }
+
+    fn accumulate(&self, record: &Record, parent: &Held, stack: &mut [i64; STACK]) -> Held {
         let mut next = *parent;
         let env = Env {
             record: record.slots(),
@@ -1532,8 +1580,9 @@ impl Compiled {
     }
 
     #[must_use]
-    pub fn observe(&self, record: &Record, parent: &Accumulator) -> Observed {
+    pub fn observe(&self, record: &Record, accumulator: &mut Accumulator) -> Observed {
         let mut stack = [0; STACK];
+        let parent = &self.held(accumulator);
         let mut next = if self.aggregates.is_empty() {
             *parent
         } else {
@@ -1621,23 +1670,23 @@ impl Compiled {
             .goal
             .as_deref()
             .is_some_and(|ops| truth(ops, &mut stack));
+        self.store(&next, accumulator);
         Observed {
             key,
             rejected,
             goal,
-            accumulator: next,
         }
     }
 
     #[must_use]
     pub fn key(&self, record: &Record) -> Option<AssertionKey> {
-        self.observe(record, &Accumulator::default()).key
+        self.observe(record, &mut Accumulator::default()).key
     }
 
     fn locate(
         stages: &[Stage],
         env: &Env<'_>,
-        parent: &Accumulator,
+        parent: &Held,
         stack: &mut [i64; STACK],
     ) -> (u8, [i64; OBJECTIVE_WIDTH]) {
         let parent_stage = parent.stage();
@@ -1679,6 +1728,7 @@ impl Compiled {
             return Vec::new();
         };
         let mut stack = [0; STACK];
+        let parent = &self.held(parent);
         let next = if self.aggregates.is_empty() {
             *parent
         } else {
