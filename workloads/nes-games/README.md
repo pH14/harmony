@@ -112,7 +112,9 @@ Famidash are written this way; the other games keep their own `target`,
   `Record` with `Record::push`, so a frame builds no list of assertions.
 - `setup` is the power-on tape, `setup_pokes` the RAM writes after it and
   `start` the tape after those (Famidash pokes its level and starts it);
-  `genesis` checks the state they reach.
+  `genesis` checks the state they reach. `genesis_id` names that state in
+  the workload's emulator identity, so a recording or checkpoint from another
+  start does not resume here; Famidash names its side, level and goal.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
 - `moves` declares a forced move on a state, a transition the game scripts

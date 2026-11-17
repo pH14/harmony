@@ -575,10 +575,11 @@ recording replays only under the strategy that wrote it.
 in different scopes compare by the `prefer_across` list, or equal without one.
 With `[[stage]]` tables the scope defaults to the stage index, `prefer_scope`
 overrides it, and without either a run is one scope. The compiler requires the
-scope to be a function of the cell: every catalog signal `prefer_scope` reads,
-through aggregates too, must also be read by the progress (the `tier`, or every
-stage's goal and objective) or by the `spread` of the same lines, and the error
-names the signal that is not. `prefer_across` with only one scope is rejected.
+scope to be a function of the cell: every name `prefer_scope` reads must be a
+whole `tier` item or a whole `spread` item of the same lines (or a field of a
+group named there), and it reads no aggregate. A name that a cell item only
+reads inside an expression is refused, because two keys in one cell can differ
+in it, and the error names it. `prefer_across` with only one scope is rejected.
 The rule matters at the archive's comparison sites, which a test in
 `assertion/tests.rs` lists so a new one fails it. Within one slot, admission
 ranking (`visit_preference_winners`), admission bookkeeping and

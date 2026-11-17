@@ -297,6 +297,15 @@ impl<const GROUP: usize> Game for Famidash<GROUP> {
         start_level_tape()
     }
 
+    fn genesis_id(&self) -> String {
+        format!(
+            "famidash-{}-level-{}-to-{}-v1",
+            self.stage.side.id(),
+            self.stage.level,
+            self.stage.goal
+        )
+    }
+
     fn genesis(&self, state: &FamidashState) -> Result<(), String> {
         Stage::new(self.stage.side, self.stage.level, self.stage.goal)?;
         if state.gameplay.is_some() && state.level == self.stage.level && state.percent() == 0 {
@@ -576,6 +585,21 @@ mod tests {
         let state = decode(Stage::single(Side::B, 30).unwrap(), &wram);
         assert!(state.finished());
         assert_eq!(state.side, Side::B);
+    }
+
+    #[test]
+    fn the_genesis_identity_names_the_side_and_the_levels() {
+        let identity = |level, goal| {
+            Famidash::<0>::new(Stage {
+                level,
+                goal,
+                ..main()
+            })
+            .genesis_id()
+        };
+        assert_eq!(identity(0, 21), "famidash-main-level-0-to-21-v1");
+        assert_ne!(identity(0, 0), identity(7, 9));
+        assert_ne!(identity(0, 0), identity(0, 21));
     }
 
     #[test]
