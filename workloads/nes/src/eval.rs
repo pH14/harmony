@@ -114,6 +114,7 @@ const WORKLOAD_FIELDS: [&str; 3] = [
 struct DecisionDigest {
     line: Vec<u8>,
     header: bool,
+    canonical: Vec<u8>,
     digest: Sha256,
     records: u64,
     marks: Vec<(u64, String)>,
@@ -137,20 +138,24 @@ impl DecisionDigest {
     }
 
     fn digest_line(&mut self) -> io::Result<()> {
-        let draw;
-        let mut fields: BTreeMap<&str, &RawValue> =
-            serde_json::from_slice(&self.line).map_err(io::Error::other)?;
-        for field in WORKLOAD_FIELDS {
-            fields.remove(field);
+        self.canonical.clear();
+        if canonical_record(&self.line, &mut self.canonical).is_err() {
+            self.canonical.clear();
+            let mut record: Value = serde_json::from_slice(&self.line).map_err(io::Error::other)?;
+            if let Some(fields) = record.as_object_mut() {
+                for field in WORKLOAD_FIELDS {
+                    fields.remove(field);
+                }
+                if let Some(draw) = fields
+                    .get_mut("duration_draw")
+                    .and_then(Value::as_object_mut)
+                {
+                    draw.remove("context");
+                }
+            }
+            serde_json::to_writer(&mut self.canonical, &record).map_err(io::Error::other)?;
         }
-        if let Some(raw) = fields.get("duration_draw")
-            && let Ok(mut object) = serde_json::from_str::<BTreeMap<&str, &RawValue>>(raw.get())
-        {
-            object.remove("context");
-            draw = serde_json::value::to_raw_value(&object).map_err(io::Error::other)?;
-            fields.insert("duration_draw", &draw);
-        }
-        serde_json::to_writer(&mut self.digest, &fields).map_err(io::Error::other)?;
+        self.digest.update(&self.canonical);
         self.records += 1;
         if self.records.is_multiple_of(DECISION_MARK_EVERY) {
             self.marks.push((
@@ -160,6 +165,62 @@ impl DecisionDigest {
         }
         Ok(())
     }
+}
+
+fn canonical_record(line: &[u8], out: &mut Vec<u8>) -> serde_json::Result<()> {
+    let mut fields: BTreeMap<&str, &RawValue> = serde_json::from_slice(line)?;
+    for field in WORKLOAD_FIELDS {
+        fields.remove(field);
+    }
+    canonical_object(fields, out, |key| key == "duration_draw")
+}
+
+fn canonical_object(
+    fields: BTreeMap<&str, &RawValue>,
+    out: &mut Vec<u8>,
+    drops_context: impl Fn(&str) -> bool,
+) -> serde_json::Result<()> {
+    out.push(b'{');
+    for (index, (key, value)) in fields.into_iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        serde_json::to_writer(&mut *out, key)?;
+        out.push(b':');
+        canonical_value(value, out, drops_context(key))?;
+    }
+    out.push(b'}');
+    Ok(())
+}
+
+fn canonical_value(
+    value: &RawValue,
+    out: &mut Vec<u8>,
+    drops_context: bool,
+) -> serde_json::Result<()> {
+    let text = value.get();
+    match text.as_bytes().first() {
+        Some(b'{') => {
+            let mut fields: BTreeMap<&str, &RawValue> = serde_json::from_str(text)?;
+            if drops_context {
+                fields.remove("context");
+            }
+            canonical_object(fields, out, |_| false)?;
+        }
+        Some(b'[') => {
+            let items: Vec<&RawValue> = serde_json::from_str(text)?;
+            out.push(b'[');
+            for (index, item) in items.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                canonical_value(item, out, false)?;
+            }
+            out.push(b']');
+        }
+        _ => out.extend_from_slice(text.as_bytes()),
+    }
+    Ok(())
 }
 
 impl Write for StreamDigest {
@@ -472,8 +533,9 @@ pub fn run_cli(
 
 #[cfg(test)]
 mod tests {
-    use super::{DecisionDigest, objective_within_budget};
-    use sha2::Digest;
+    use super::{DecisionDigest, WORKLOAD_FIELDS, objective_within_budget};
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
 
     fn decisions(lines: &[&str]) -> (String, u64) {
         let mut digest = DecisionDigest::default();
@@ -501,6 +563,37 @@ mod tests {
         assert_eq!(base, other_workload);
         assert_ne!(base.0, other_choice.0);
         assert_eq!(base.1, 1);
+    }
+
+    #[test]
+    fn the_decision_digest_matches_a_parsed_value_digest() {
+        let lines = [
+            r#"{"selector":{"path":"tiers","tier_rank":0,"best_preference":0},"job":1}"#,
+            r#"{"picks":[{"z":1,"a":[{"y":2,"b":null}]},3.5,"s\"q"],"duration_draw":{"steps":4,"context":{"x":1},"b":{"d":1,"c":2}}}"#,
+            r#"{"na\u006de":1,"result_sha256":"aa","inner":{"k\u0065y":{"b":1,"a":2}}}"#,
+            r#"[3,{"b":1,"a":2}]"#,
+            r#"{ "spaced" : { "b" : 1 , "a" : [ 1 , 2 ] } }"#,
+        ];
+        let mut reference = Sha256::new();
+        for line in lines {
+            let mut record: Value = serde_json::from_str(line).unwrap();
+            if let Some(fields) = record.as_object_mut() {
+                for field in WORKLOAD_FIELDS {
+                    fields.remove(field);
+                }
+                if let Some(draw) = fields
+                    .get_mut("duration_draw")
+                    .and_then(Value::as_object_mut)
+                {
+                    draw.remove("context");
+                }
+            }
+            reference.update(serde_json::to_vec(&record).unwrap());
+        }
+        assert_eq!(
+            decisions(&lines),
+            (format!("{:x}", reference.finalize()), lines.len() as u64)
+        );
     }
 
     #[test]
