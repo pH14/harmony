@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::error::Error;
-
 use crate::{
     famidash::{
-        campaign::{FamidashCampaignRun, FamidashGame},
-        levels::{GROUPS, Side, Stage},
-        target::{
-            FamidashMechanicalState, FamidashObservations, FamidashSnapshot, FamidashTarget,
-            decode_state,
-        },
+        game::{Famidash, FamidashState},
+        levels::{Side, Stage},
     },
-    nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
+    workload::Arcade,
 };
-use machine::nes::WRAM_SIZE;
 use serde::{Deserialize, Serialize};
 
-use super::{ArcadeGame, HIDDEN, Machines};
+pub use crate::famidash::levels::group_stage;
+
+use super::HIDDEN;
 
 const MAIN_MAP_TOPS: [i32; 43] = [
     662, 679, 679, 663, 598, 642, 709, 582, 660, 678, 480, 249, 612, 272, 647, 422, 643, 606, 558,
@@ -34,17 +29,7 @@ const C_MAP_TOPS: [i32; 25] = [
 ];
 const D_MAP_TOPS: [i32; 10] = [574, 480, 583, 670, 99, 480, 289, 679, 483, 574];
 
-#[must_use]
-pub fn group_stage(group: usize) -> Stage {
-    let group = GROUPS.get(group).unwrap_or(&GROUPS[0]);
-    Stage {
-        side: group.side,
-        level: group.first,
-        goal: group.last,
-    }
-}
-
-fn pose(state: FamidashMechanicalState) -> u16 {
+fn pose(state: FamidashState) -> u16 {
     state.gameplay.map_or(0, |gameplay| {
         u16::from(gameplay.gamemode.min(7)) * 2 + u16::from(gameplay.gravity)
     })
@@ -71,12 +56,8 @@ pub struct View {
     cleared: u8,
 }
 
-fn cleared(state: FamidashMechanicalState) -> u8 {
-    state.level + u8::from(state.complete())
-}
-
 #[must_use]
-pub fn view(state: FamidashMechanicalState) -> View {
+pub fn view(state: FamidashState) -> View {
     let gameplay = state.gameplay.unwrap_or_default();
     let (x, y) = map_point(state.side, state.level, gameplay.x, gameplay.y);
     View {
@@ -89,96 +70,40 @@ pub fn view(state: FamidashMechanicalState) -> View {
         gamemode: gameplay.gamemode,
         goal: state.finished(),
         loading: state.gameplay.is_none(),
-        cleared: cleared(state),
+        cleared: state.cleared(),
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, const GROUP: usize> ArcadeGame
-    for FamidashGame<M, GROUP>
-{
-    type Machine = M;
+impl<const GROUP: usize> Arcade for Famidash<GROUP> {
     type View = View;
-
-    fn arcade(rom: &[u8], identity: &str, identity_sha256: &str, machines: Machines<M>) -> Self {
-        Self::arcade_from(
-            rom,
-            identity,
-            identity_sha256,
-            machines,
-            group_stage(GROUP).level,
-        )
-    }
-
-    fn arcade_from(
-        rom: &[u8],
-        identity: &str,
-        identity_sha256: &str,
-        machines: Machines<M>,
-        level: u8,
-    ) -> Self {
-        let stage = Stage {
-            level,
-            ..group_stage(GROUP)
-        };
-        Self::with_targets(
-            rom,
-            identity,
-            identity_sha256,
-            stage,
-            Box::new(move || {
-                FamidashTarget::from_power_on(machines().map_err(|error| error.to_string())?, stage)
-                    .map_err(|error| error.to_string())
-            }),
-        )
-    }
-
-    fn run() -> FamidashCampaignRun {
-        FamidashCampaignRun
-    }
 
     fn mixture() -> DrawMixture {
         DrawMixture::AlphabetOnly
     }
 
-    fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
-        match decode_state(wram, group_stage(GROUP)) {
-            Ok(state) => match state.gameplay {
-                Some(gameplay) => {
-                    let (x, y) = map_point(state.side, state.level, gameplay.x, gameplay.y);
-                    [u16::from(state.level), x, y, pose(state)]
-                }
-                None => [HIDDEN, 0, 0, 0],
-            },
-            Err(_) => [HIDDEN, 0, 0, 0],
+    fn view(state: &FamidashState) -> View {
+        view(*state)
+    }
+
+    fn motion(state: &FamidashState) -> [u16; 4] {
+        match state.gameplay {
+            Some(gameplay) => {
+                let (x, y) = map_point(state.side, state.level, gameplay.x, gameplay.y);
+                [u16::from(state.level), x, y, pose(*state)]
+            }
+            None => [HIDDEN, 0, 0, 0],
         }
     }
 
-    fn memory_cleared(memory: &[u8]) -> u8 {
-        decode_state(memory, group_stage(GROUP)).map_or(0, cleared)
+    fn cleared(state: &FamidashState) -> u8 {
+        state.cleared()
     }
 
-    fn memory_view(memory: &[u8]) -> Result<View, Box<dyn Error>> {
-        Ok(view(decode_state(memory, group_stage(GROUP))?))
-    }
-
-    fn view(observation: &FamidashObservations) -> View {
-        view(observation.decoded)
-    }
-
-    fn frame_count(observation: &FamidashObservations) -> u64 {
-        observation.frame_count
-    }
-
-    fn cleared(observation: &FamidashObservations) -> u8 {
-        cleared(observation.decoded)
-    }
-
-    fn snapshot_frame_count(snapshot: &FamidashSnapshot) -> u64 {
-        snapshot.observation.frame_count
-    }
-
-    fn emulator_state(snapshot: &FamidashSnapshot) -> &[u8] {
-        &snapshot.emulator_state
+    fn at_level(level: u8) -> Self {
+        Self::new(Stage {
+            level,
+            ..group_stage(GROUP)
+        })
     }
 }
 
@@ -196,19 +121,6 @@ pub fn map_top(side: Side, level: u8) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_group_starts_at_its_first_level_and_ends_at_its_last() {
-        for (index, group) in GROUPS.iter().enumerate() {
-            let stage = group_stage(index);
-            assert_eq!(
-                (stage.side, stage.level, stage.goal),
-                (group.side, group.first, group.last)
-            );
-            assert_eq!(Stage::through_group(group.side, group.first), Ok(stage));
-        }
-        assert_eq!(group_stage(GROUPS.len()), group_stage(0));
-    }
 
     #[test]
     fn every_level_has_a_map_top() {

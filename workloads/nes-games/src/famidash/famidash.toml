@@ -1,0 +1,8 @@
+goal = "finished"
+absent = "not gameplay"
+reject = "dead"
+capacity = 1
+tier = ["level", "x / 512"]
+spread = ["level", "x / 32", "y / 16", "gamemode", "gravity", "mini", "dual", "speed"]
+identity = ["motion", "camera_subpixel / 32", "x % 32 / 8"]
+prefer = [["x: less"]]

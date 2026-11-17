@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     castlevania::target::CastlevaniaSnapshot,
-    famidash::target::FamidashSnapshot,
     ice_climbers::target::IceClimbersSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
@@ -23,7 +22,6 @@ use crate::{
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
     twin_dragons::target::TwinDragonsSnapshot,
-    zelda::target::ZeldaSnapshot,
 };
 use nes_games::donkey_kong::target::DonkeyKongSnapshot;
 
@@ -36,8 +34,6 @@ pub trait EndpointIdentity: Serialize {
 impl EndpointIdentity for CastlevaniaSnapshot {}
 
 impl EndpointIdentity for DonkeyKongSnapshot {}
-
-impl EndpointIdentity for FamidashSnapshot {}
 
 impl EndpointIdentity for IceClimbersSnapshot {}
 
@@ -52,8 +48,6 @@ impl EndpointIdentity for PunchOutSnapshot {}
 impl EndpointIdentity for StbSnapshot {}
 
 impl EndpointIdentity for TwinDragonsSnapshot {}
-
-impl EndpointIdentity for ZeldaSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {

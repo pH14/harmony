@@ -10,39 +10,26 @@ use nes_games::{
         trail::Traced,
     },
     famidash::{
-        campaign::FamidashGame,
-        levels::GROUPS,
-        target::{
-            FamidashObservations, FamidashSnapshot, FamidashTarget, decode_state,
-            level_select_tape, start_level_tape,
-        },
+        self as game, FamidashState, decode, level_select_tape, levels::GROUPS, start_level_tape,
     },
     nes_backend::pack_quicknes_state,
+    workload::{NesSnapshot, NesTarget, NesWorkload},
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use crate::campaign::{BrowserGame, JsMachine, js_error, restore_ram};
+use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type Famidash<const GROUP: usize> = FamidashGame<Traced<JsMachine>, GROUP>;
+pub type Famidash<const GROUP: usize> = NesWorkload<game::Famidash<GROUP>, Traced<JsMachine>>;
 
 impl<const GROUP: usize> BrowserGame for Famidash<GROUP> {
     fn root_snapshot(
-        target: &mut FamidashTarget<Traced<JsMachine>>,
-        core: u32,
+        target: &mut NesTarget<game::Famidash<GROUP>, Traced<JsMachine>>,
+        _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<FamidashSnapshot, Box<dyn Error>> {
-        let decoded = decode_state(&restore_ram(core, raw)?, target.stage())?;
-        Ok(FamidashSnapshot {
-            emulator_state: pack_quicknes_state(raw)?,
-            observation: FamidashObservations {
-                frame_count: frames,
-                decoded,
-                terminal: decoded.terminal(),
-            },
-            failed: false,
-        })
+    ) -> Result<NesSnapshot<FamidashState>, Box<dyn Error>> {
+        target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)
     }
 }
 
@@ -109,7 +96,7 @@ pub fn famidash_observation(game: &str, ram: &[u8]) -> Result<String, JsValue> {
     if ram.len() != WRAM_SIZE {
         return Err(js_error("Famidash observations need 2 KiB of work RAM"));
     }
-    let state = decode_state(ram, group_stage(group(game)?)).map_err(js_error)?;
+    let state = decode(group_stage(group(game)?), ram);
     serde_json::to_string(&arcade::view(state)).map_err(js_error)
 }
 

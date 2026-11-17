@@ -5,26 +5,24 @@ use std::error::Error;
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced},
     nes_backend::pack_quicknes_state,
-    zelda::{
-        campaign::ZeldaGame,
-        target::{MODE_PLAY, ZeldaSnapshot, ZeldaTarget},
-    },
+    workload::{NesSnapshot, NesTarget, NesWorkload},
+    zelda::game::{self as game, MODE_PLAY, ZeldaState},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type Zelda = ZeldaGame<Traced<JsMachine>>;
+pub type Zelda = NesWorkload<game::Zelda, Traced<JsMachine>>;
 
 impl BrowserGame for Zelda {
     fn root_snapshot(
-        target: &mut ZeldaTarget<Traced<JsMachine>>,
+        target: &mut NesTarget<game::Zelda, Traced<JsMachine>>,
         _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<ZeldaSnapshot, Box<dyn Error>> {
+    ) -> Result<NesSnapshot<ZeldaState>, Box<dyn Error>> {
         let snapshot = target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)?;
-        if snapshot.state().mode != MODE_PLAY {
+        if snapshot.observation.state.mode != MODE_PLAY {
             return Err("Zelda cannot play on from this state".into());
         }
         Ok(snapshot)

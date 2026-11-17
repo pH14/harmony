@@ -349,6 +349,16 @@ impl Stage {
 }
 
 #[must_use]
+pub fn group_stage(group: usize) -> Stage {
+    let group = GROUPS.get(group).unwrap_or(&GROUPS[0]);
+    Stage {
+        side: group.side,
+        level: group.first,
+        goal: group.last,
+    }
+}
+
+#[must_use]
 pub fn percent(side: Side, level: u8, scroll_x: i32) -> u8 {
     let Some(length) = side.level_length(level) else {
         return 0;
@@ -415,6 +425,19 @@ mod tests {
             Stage::single(Side::Main, 22).unwrap().group().menu,
             Menu::CommunityLevels
         );
+    }
+
+    #[test]
+    fn every_group_starts_at_its_first_level_and_ends_at_its_last() {
+        for (index, group) in GROUPS.iter().enumerate() {
+            let stage = group_stage(index);
+            assert_eq!(
+                (stage.side, stage.level, stage.goal),
+                (group.side, group.first, group.last)
+            );
+            assert_eq!(Stage::through_group(group.side, group.first), Ok(stage));
+        }
+        assert_eq!(group_stage(GROUPS.len()), group_stage(0));
     }
 
     #[test]

@@ -4,10 +4,11 @@
 
 This module adapts [Famidash](https://github.com/tfdsoft/famidash) by TFDSoft,
 an unofficial NES fan demake of RobTop's Geometry Dash, to Dissonance's search
-interfaces. The game logic lives in `nes-games/src/famidash`; this module adds
-the QuickNES type alias, films and endpoint identities. The adapter implements
-`CampaignTypes`, `TargetExecution`, `InputPolicy`, `Evaluation` and `Reporting`
-the same way the [Twin Dragons](../twin_dragons/README.md) adapter does.
+interfaces. Famidash is declared through assertions: `nes-games/src/famidash/game.rs`
+holds the `Famidash` game, its decoder and declarations, and
+`nes-games/src/famidash/famidash.toml` its strategy. `FamidashGame` is
+`NesWorkload<Famidash, QuickNesMachine>`, the workload every such game shares
+(see the `nes-games` README, "Games declared through assertions").
 
 ## ROMs
 
@@ -81,7 +82,9 @@ table, and stops at 99 until the level is complete.
 Setup presses A at the title, waits for the menu and presses A for the main
 levels, or Right, 20 idle frames and A for the community levels. At level
 select it writes the level number to `$047B` when the menu shows another
-level, as the browser demo does, then presses A and waits 40 frames. For Stereo Madness that is 1,091 frames. The
+level, as the browser demo does, then presses A and waits 40 frames.
+`Game::setup` is the tape up to level select, `Game::setup_pokes` the level
+write and `Game::start` the A press and wait. For Stereo Madness that is 1,091 frames. The
 genesis check requires gameplay at 0 percent in the chosen level. On all 109
 levels the level loads 30 frames after A and the player first moves 57 frames
 after A.
@@ -89,8 +92,8 @@ after A.
 A `Stage` names the side, the starting level and the goal level, both in one
 group. A `nes-eval` request's `stage` alone runs that one level, and the goal
 is the same level. `whole_game` runs from `stage`, or the group's first level,
-through the group's last level. A live request takes `stage` as the level the campaign starts from and runs through the group's last level. The side comes from the ROM. The emulator
-identity names the side, the start and the goal.
+through the group's last level. A live request takes `stage` as the level the campaign starts from and runs through the group's last level. The side comes from the ROM. A `Famidash` value holds its
+stage; the workload's policies name the game and the strategy, not the stage.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
 6 to 40. A death bit is a terminal death once the player's screen x is past
@@ -98,26 +101,33 @@ The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
 death. Every level's end trigger sits at or before that x, and a trigger
 fires only while it is on screen, so a run past it can never finish the level. The game clears death bits while the player is at screen x `$20` or
 less. Slaughterhouse on the D-Sides sets one 18 frames after the level start
-and the level goes on. The search plays the group's levels in order from the
-starting level, and the objective is game state 3 in the goal level. Frames
-outside gameplay are not archived.
+and the level goes on. The objective is game state 3 in the goal level.
+Frames outside gameplay are not archived.
 
-Game state 3 in a level before the goal ends the action at that frame. The
-target then presses buttons to start the next level: A once every 16 frames
-until the level-select state 6 appears, 20 idle frames, Right, 20 idle frames,
-A, and the 40-frame wait from setup. Level select keeps the menu the setup
-chose, so Right stays within the group. It checks that the level number went up by one
-and that gameplay is running. The advance takes about 240 frames. Its presses
-are part of the recorded input, so replays and films follow the same path.
-The action's observation list ends with the arrival in the next level.
+Game state 3 in a level before the goal has no key. It declares the forced
+level advance: the target presses A every 16 frames until level select, then
+Right and A to start the next level, inside the same action.
 
-The archive key is the level, world x and y, game mode, gravity, size, dual
-mode, the speed `$045E`, the sign of the vertical velocity and the camera's
-vertical sub-pixel `$04A8` in eighths. The place is the level and the 32 ×
-16-pixel cell with the mode fields and the speed, progress is the level and
-the 512-pixel band of world x, and the identity is the vertical motion, the
-camera eighth and the 8-pixel slot of x within the cell. Each identity at a
-place keeps one entry, the one furthest left. At one speed x is also time, and
+The strategy keys a state by the level, world x and y, game mode, gravity,
+size, dual mode, the speed `$045E`, the sign of the vertical velocity and the
+camera's vertical sub-pixel `$04A8` in eighths:
+
+```toml
+goal = "finished"
+absent = "not gameplay"
+reject = "dead"
+capacity = 1
+tier = ["level", "x / 512"]
+spread = ["level", "x / 32", "y / 16", "gamemode", "gravity", "mini", "dual", "speed"]
+identity = ["motion", "camera_subpixel / 32", "x % 32 / 8"]
+prefer = [["x: less"]]
+```
+
+The place is the level and the 32 × 16-pixel cell with the mode fields and
+the speed, progress is the level and the 512-pixel band of world x, and the
+identity is the vertical motion, the camera eighth and the 8-pixel slot of x
+within the cell. Each identity at a place keeps one entry, the one furthest
+left. At one speed x is also time, and
 a later arrival in the same slot has had fewer frames to line up the next
 jump. Many later arrivals are already doomed whatever the player presses.
 
@@ -152,9 +162,8 @@ That route kept reaching new cells, so its tiers never went dry. The route that
 passes leaves it near x 7,690 as a UFO in normal gravity. With 512-pixel bands
 that branch is one or two tiers below the shaft and still gets draws.
 
-The milestones are the levels cleared, the percent of the level being played,
-the finished game and a death. The progress watermark orders levels cleared,
-then percent, then world x.
+Named progress reports the first `level_complete` and the first `finished`
+state. A death is a rejected, doomed terminal.
 
 ## Running
 

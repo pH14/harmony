@@ -1,0 +1,7 @@
+goal = "ending"
+absent = "dead or ending or in_transition"
+reject = "dead"
+capacity = 1
+tier = ["popcount(triforce)"]
+spread = ["mode", "level", "room", "x / 64", "y / 64"]
+prefer = [["containers: more", "health: more", "rupees: more"]]

@@ -11,7 +11,7 @@ use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     famidash::{
-        campaign::{FamidashCampaignRun, FamidashGame},
+        Famidash, FamidashGame,
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
@@ -26,7 +26,7 @@ use nes_workload::{
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
     witness::replay_witness,
-    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
+    zelda::{Zelda, ZeldaGame},
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -310,13 +310,13 @@ fn main() -> Result<()> {
             let stage = Stage::new(side, args.level, args.goal.unwrap_or(args.level))?;
             produce(
                 FamidashGame::new(
+                    Famidash::new(stage),
                     &rom,
                     &args.core,
                     &args.core_sha256,
                     &execution_sha256,
-                    stage,
-                ),
-                FamidashCampaignRun,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )
@@ -326,8 +326,8 @@ fn main() -> Result<()> {
                 return Err("Zelda takes no ai option".into());
             }
             produce(
-                ZeldaGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                ZeldaCampaignRun,
+                ZeldaGame::new(Zelda, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

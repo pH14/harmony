@@ -26,10 +26,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!!, Zelda, Donkey Kong, Ice Climber and Pac-Man
+Twin Dragons, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man
 also have a `campaign` module with their `Workload` implementation.
-`CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `FamidashGame<M, GROUP>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PunchOutGame<M>`, `ZeldaGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
+`CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>`,
+`MetroidGame<M>`, `PunchOutGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -53,7 +53,7 @@ native live campaign. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `castlevania`, `famidash`,
 `twin_dragons`, `punchout`, `zelda`, `joust`, `donkey_kong`, `ice_climbers` and `pac_man` submodules implement it for each campaign game over any
-backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
+backend. `ArcadeGame` decodes RAM in static functions, so `Famidash` takes
 the index of a level group in `famidash::levels::GROUPS` as the const
 parameter `GROUP`. Each group is its own game type, with that group's side,
 levels and map tops. Punch-Out!! has no screen position for Mac, so its motion sample places a point by damage: x is the opponent's damage across the screen and y is Mac's damage in a band along the bottom edge. `trail::Traced` wraps a machine and records each job's motion trail
@@ -82,9 +82,9 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Donkey Kong v2, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Twin Dragons v2, Punch-Out!! v2, Donkey Kong v2, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
-Joust, declared through assertions, uses `nes-workload-snapshot-checkpoint-v1`.
+The games declared through assertions share `nes-workload-snapshot-checkpoint-v1`.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain
 re-export shims and do not supply separate checkpoint implementations.
@@ -102,8 +102,8 @@ a native coordinator facility.
 ## Games declared through assertions
 
 `workload` lowers a game to the searcher's assertion representation
-(`search::assertion`, described in the searcher README). Joust is written
-this way; the other games keep their own `target`,
+(`search::assertion`, described in the searcher README). Joust, Zelda and
+Famidash are written this way; the other games keep their own `target`,
 `archive` and `campaign` modules. A game implements `Game`:
 
 - `decode` turns work RAM, and the previous state, into the game's `State`.
@@ -111,14 +111,16 @@ this way; the other games keep their own `target`,
   events, one at a time to a sink. `Lowered` writes each into the frame's
   `Record` with `Record::push`, so a frame builds no list of assertions.
 - `setup` is the power-on tape, `setup_pokes` the RAM writes after it and
-  `start` the tape after those; `genesis` checks the state they reach.
+  `start` the tape after those (Famidash pokes its level and starts it);
+  `genesis` checks the state they reach.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
 - `moves` declares a forced move on a state, a transition the game scripts
   rather than a search decision. `play` gives the move's next chord and what
-  follows it, and `move_frames` bounds its frames. Joust declares none. The
-  setup tapes stay before the genesis, because they run once per machine and
-  `genesis` checks where they arrive.
+  follows it, and `move_frames` bounds its frames. Famidash's level advance is
+  the one forced move. The setup tapes stay before the genesis, because they
+  run once per machine, `genesis` checks where they arrive, and Famidash's
+  level poke is not controller input.
 
 `Lowered` builds the catalog from the declarations of a decoded all-zero RAM,
 compiles the strategy, and turns a state into a `NesObservation`: its
@@ -139,7 +141,9 @@ workload under another strategy. The `Arcade` trait gives a game state's
 arcade view, motion sample and cleared count, and the draw mixture, and
 `NesWorkload` implements `ArcadeGame` from it, with `MEMORY_BYTES` naming the
 memory the live feed reads. `joust/mod.rs` holds Joust's decoder and
-declarations and `joust/joust.toml` its strategy.
+declarations and `joust/joust.toml` its strategy; `zelda/game.rs` and
+`zelda/zelda.toml` do the same for Zelda, and `famidash/game.rs` and
+`famidash/famidash.toml` for Famidash.
 
 An action also stops at the first frame whose state declares a forced move.
 The target plays the move to its end inside that action and reports the
