@@ -58,6 +58,7 @@ SMALL_WORDS = (
 VARIANT_SEPARATOR = " — "
 PR_BOUNDED_MINUTES = 15
 PR_ARTIFACT_BUILD_BUDGETS = {
+    (f"{WORKFLOW_DIR}/twin-dragons-browser.yml", "Twin Dragons Build"): 30,
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
@@ -848,7 +849,7 @@ TWIN_DRAGONS_BROWSER_CHECKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
-        Job("Twin Dragons Build", "pr", 15, crates=("twin-dragons-browser",)),
+        Job("Twin Dragons Build", "pr", 30, crates=("twin-dragons-browser",)),
         Job("Twin Dragons Browser — <Suite>", "pr", 15),
     ),
 )

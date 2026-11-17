@@ -18,7 +18,7 @@ jobs:
   twin-dragons-build:
     name: Twin Dragons Build
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,6 +37,11 @@ jobs:
           git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
           "$RUNNER_TEMP/emsdk/emsdk" install 4.0.15
           "$RUNNER_TEMP/emsdk/emsdk" activate 4.0.15
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: demos/twin-dragons/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: twin-dragons-browser
       - name: Build pinned runtime and static site
         run: |
           source "$RUNNER_TEMP/emsdk/emsdk_env.sh"
