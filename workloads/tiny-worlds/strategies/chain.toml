@@ -1,0 +1,21 @@
+# chain.family: 0 resource, 1 route, 2 delayed, 3 trap
+capacity = 1
+tier = ["goal", "if chain.ranked then inner_tier + (if staged then 32 * chain.stage else 0) else 0"]
+spread = "place"
+identity = "if chain.family == 2 and delayed.placement == 0 then level else 0"
+prefer = [["stock: more", "charge: more", "health: more"], ["health: more", "charge: more", "stock: more"]]
+prefer_scope = "place / 1024"
+prefer_across = ["stock: more"]
+
+[define]
+staged = "chain.carry or not broken"
+stock = "if chain.carry and not broken then chain.charge else 0"
+place = "inner_place + (if staged then 1024 * chain.stage else 0)"
+inner_place = "if chain.family == 0 then resource.place else if chain.family == 1 then 2 * route.position + route.lane else if chain.family == 2 then delayed_place else trap_place"
+delayed_place = "if delayed.placement == 1 or delayed.placement == 2 then delayed.lane * (delayed.horizon + 1) + level else delayed.lane"
+trap_place = "if trap.item then 64 + trap.room else if trap.trap > 0 then 32 + trap.trap else trap.position"
+level = "if delayed.lane == 0 then delayed.progress else if delayed.sticky then delayed.memory else 0"
+inner_tier = "if chain.family == 1 then route.ranked_upgrade and route.phase == 2 else if chain.family == 2 then delayed_tier else if chain.family == 3 then trap.item else 0"
+delayed_tier = "if delayed.placement == 2 then level > 0 else if delayed.placement == 3 then level else 0"
+charge = "if chain.family == 0 then resource.charge else if chain.family == 1 then route.phase else if chain.family == 2 then delayed.ammo else 0"
+health = "if chain.family == 0 then resource.health else 0"

@@ -170,6 +170,22 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct KeyShape {
+    pub capacity: usize,
+    pub preferences: usize,
+}
+
+impl KeyShape {
+    #[must_use]
+    pub fn of<K: ArchiveKey>() -> Self {
+        Self {
+            capacity: K::capacity(),
+            preferences: K::preferences(),
+        }
+    }
+}
+
 pub type Cell<K> = (<K as ArchiveKey>::Progress, <K as ArchiveKey>::Place);
 
 pub type Slot<K> = (Cell<K>, <K as ArchiveKey>::Identity);
@@ -700,6 +716,7 @@ pub struct ArchiveCandidate<T, K, M> {
 ))]
 pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub max_entries: usize,
+    shape: KeyShape,
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     id_to_index: BTreeMap<u64, usize>,
     next_entry_id: u64,
@@ -1312,8 +1329,19 @@ where
 {
     #[must_use]
     pub fn new(action_cost: fn(&A) -> u64) -> Self {
+        Self::with_shape(action_cost, KeyShape::of::<K>())
+    }
+
+    #[must_use]
+    pub fn shape(&self) -> KeyShape {
+        self.shape
+    }
+
+    #[must_use]
+    pub fn with_shape(action_cost: fn(&A) -> u64, shape: KeyShape) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
+            shape,
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
@@ -1333,7 +1361,7 @@ where
             opened_slot: Vec::new(),
             opened_novel_slot: Vec::new(),
             selector_accounting: SelectorAccounting {
-                best_holder_draws: vec![0; K::preferences()],
+                best_holder_draws: vec![0; shape.preferences],
                 ..SelectorAccounting::default()
             },
             cost_in_group: Vec::new(),
@@ -1341,7 +1369,7 @@ where
             remaining_bound: Vec::new(),
             rank_by_origin_cost: false,
             replacement_cost_displaced: 0,
-            portfolio_replacements: vec![0; K::preferences().max(1)],
+            portfolio_replacements: vec![0; shape.preferences.max(1)],
             portfolio_cross_improvements: 0,
             replacement_preferences: Vec::new(),
             in_place_lengths: Vec::new(),
@@ -2184,7 +2212,7 @@ where
         let places = self.cells.len().min(active);
         let removals = self.entries.len().saturating_sub(active);
         let tiers = self.tiers.len();
-        let preferences = K::preferences();
+        let preferences = self.shape.preferences;
         heap::btree_bytes::<usize, ()>(1, active)
             .saturating_add(heap::btree_bytes::<K::Progress, TierCells<K>>(1, tiers))
             .saturating_add(heap::btree_bytes::<K::Place, CellMembers<K>>(tiers, places))
@@ -2321,7 +2349,7 @@ where
             let slot_full = self
                 .slots
                 .get(&slot_key)
-                .is_some_and(|slot| slot.len() >= K::capacity().max(1));
+                .is_some_and(|slot| slot.len() >= self.shape.capacity.max(1));
             if slot_full {
                 let replaced = self
                     .slots
@@ -2401,7 +2429,9 @@ where
         tier.weights.insert(place, place_weight);
         let members = tier.places.entry(place).or_default();
         members.ids.insert(id, holder_weight);
-        members.ranked.resize_with(K::preferences(), BTreeSet::new);
+        members
+            .ranked
+            .resize_with(self.shape.preferences, BTreeSet::new);
         for (preference, ranked) in members.ranked.iter_mut().enumerate() {
             ranked.insert(HolderRank { preference, ..rank });
         }
@@ -2426,7 +2456,7 @@ where
     }
 
     fn cell_best(&self, ids: &WeightedSet<usize>) -> Vec<usize> {
-        (0..K::preferences())
+        (0..self.shape.preferences)
             .filter_map(|preference| {
                 ids.iter().reduce(|best, id| {
                     if self.holder_order(preference, id, best) == Ordering::Greater {
@@ -2450,7 +2480,7 @@ where
     }
 
     fn cell_ranks(&self, ids: &WeightedSet<usize>) -> Vec<BTreeSet<HolderRank<K>>> {
-        (0..K::preferences())
+        (0..self.shape.preferences)
             .map(|preference| {
                 ids.iter()
                     .map(|id| self.holder_rank(preference, id))
@@ -2629,7 +2659,7 @@ where
         self.action_cost = action_cost;
         self.selector_accounting
             .best_holder_draws
-            .resize(K::preferences(), 0);
+            .resize(self.shape.preferences, 0);
         self.snapshot_memory_charge = if self.memory_limit.is_some() {
             Some(charge.ok_or("a memory-budgeted archive needs its snapshot charge")?)
         } else {
@@ -2701,11 +2731,12 @@ where
     }
 
     fn visit_preference_winners(
+        shape: KeyShape,
         members: &[(K, ShrinkCost, u64)],
         mut winner: impl FnMut(usize, usize),
     ) {
-        let capacity = K::capacity().max(1);
-        let preferences = K::preferences().max(1);
+        let capacity = shape.capacity.max(1);
+        let preferences = shape.preferences.max(1);
         let mut order: Vec<usize> = (0..members.len()).collect();
         for preference in 0..preferences {
             order.sort_by(|left, right| {
@@ -2723,9 +2754,9 @@ where
         }
     }
 
-    fn preferences_won(members: &[(K, ShrinkCost, u64)]) -> Vec<Vec<usize>> {
+    fn preferences_won(shape: KeyShape, members: &[(K, ShrinkCost, u64)]) -> Vec<Vec<usize>> {
         let mut won = vec![Vec::new(); members.len()];
-        Self::visit_preference_winners(members, |index, preference| {
+        Self::visit_preference_winners(shape, members, |index, preference| {
             won[index].push(preference);
         });
         won
@@ -2742,7 +2773,7 @@ where
         members.push((key, cost, self.next_entry_id));
         let mut retained = vec![false; members.len()];
         let mut candidate = Vec::new();
-        Self::visit_preference_winners(&members, |index, preference| {
+        Self::visit_preference_winners(self.shape, &members, |index, preference| {
             retained[index] = true;
             if index == slot.len() {
                 candidate.push(preference);
@@ -2756,7 +2787,7 @@ where
             .slots
             .values()
             .flat_map(|holders| {
-                Self::preferences_won(&self.slot_members(holders))
+                Self::preferences_won(self.shape, &self.slot_members(holders))
                     .into_iter()
                     .zip(holders.iter().copied())
                     .filter_map(|(won, id)| won.is_empty().then_some(id))
@@ -2770,9 +2801,9 @@ where
             }
         }
         self.portfolio_replacements
-            .resize(K::preferences().max(1), 0);
+            .resize(self.shape.preferences.max(1), 0);
         if let Some(bank) = &mut self.continuations {
-            bank.retain_preferences(K::preferences());
+            bank.retain_preferences(self.shape.preferences);
         }
         retired
     }
@@ -3039,7 +3070,7 @@ where
                     .map(|action| (self.action_cost)(action))
                     .sum();
                 let entry = &self.entries[parent];
-                let gains = (0..K::preferences().min(8))
+                let gains = (0..self.shape.preferences.min(8))
                     .filter(|preference| {
                         key.preference_cmp(*preference, entry.key) == Ordering::Greater
                     })
@@ -3462,7 +3493,7 @@ where
                         .ids
                         .iter()
                         .all(|id| members.ids.weight(&id) == Some(count_decay(self.selected[id])))
-                    && members.ranked.len() == K::preferences()
+                    && members.ranked.len() == self.shape.preferences
                     && members
                         .ranked
                         .iter()
@@ -3487,7 +3518,7 @@ where
     }
 
     fn draw_best_share(&self, rand: &mut RomuDuoJrRand) -> Result<Option<usize>, Box<dyn Error>> {
-        let preferences = K::preferences();
+        let preferences = self.shape.preferences;
         let Some(outcomes) =
             NonZeroUsize::new(preferences.saturating_mul(BEST_HOLDER_SHARE_DENOMINATOR))
         else {
@@ -3531,7 +3562,7 @@ where
     }
 
     fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
-        let capacity = K::capacity().max(1);
+        let capacity = self.shape.capacity.max(1);
         let better = slot
             .iter()
             .filter(|other| **other != id)
@@ -3680,7 +3711,7 @@ where
     }
 
     pub(crate) fn resume_continuations(&mut self, longest_edge: usize) {
-        match (&mut self.continuations, K::preferences() > 0) {
+        match (&mut self.continuations, self.shape.preferences > 0) {
             (Some(bank), true) => bank.set_longest_edge(longest_edge),
             (None, true) => self.continuations = Some(ContinuationBank::new(longest_edge)),
             (_, false) => self.continuations = None,
@@ -3688,7 +3719,8 @@ where
     }
 
     pub(crate) fn enable_continuations(&mut self, longest_edge: usize) {
-        self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(longest_edge));
+        self.continuations =
+            (self.shape.preferences > 0).then(|| ContinuationBank::new(longest_edge));
     }
 
     pub(crate) fn set_admission_wave(&mut self, wave: u32) {
@@ -3858,7 +3890,9 @@ where
         heap::btree_bytes::<Cell<K>, CellState>(1, self.cells.len())
             .saturating_add(heap::btree_bytes::<Slot<K>, Vec<usize>>(1, slots))
             .saturating_add(heap::btree_bytes::<Slot<K>, ()>(1, self.seen_slots.len()))
-            .saturating_add(slots.saturating_mul(heap::vec_bytes::<usize>(K::capacity().max(1))))
+            .saturating_add(
+                slots.saturating_mul(heap::vec_bytes::<usize>(self.shape.capacity.max(1))),
+            )
             .saturating_add(self.selector_memory_bytes())
     }
 
@@ -4025,7 +4059,7 @@ where
                 {
                     continue;
                 }
-                let held = if slot.len() <= K::capacity().max(1) {
+                let held = if slot.len() <= self.shape.capacity.max(1) {
                     preferences.min(2)
                 } else {
                     (0..preferences)
@@ -4100,7 +4134,7 @@ where
             .filter(|(_, state)| state.draws_total > 0)
             .map(|(cell, state)| (format!("{cell:?}"), state.draws_total))
             .collect();
-        let preferences = K::preferences().max(1);
+        let preferences = self.shape.preferences.max(1);
         if preferences > 1 {
             let (exclusive, shared) = self.portfolio_holders(preferences);
             accounting.portfolio = Some(PortfolioAccounting {
@@ -4347,7 +4381,7 @@ where
             .and_then(|tier| tier.places.get(&place))
             .ok_or("cell draw chose an absent cell")?;
         let ids = members.ids.iter().collect::<Vec<_>>();
-        let preferences = K::preferences();
+        let preferences = self.shape.preferences;
         if preferences > 0 {
             let outcome = rand.below(
                 NonZeroUsize::new(preferences * BEST_HOLDER_SHARE_DENOMINATOR)
@@ -4374,7 +4408,7 @@ where
     }
 
     fn champions_slot_reference(&self, slot: &[usize], id: usize, preference: usize) -> bool {
-        let capacity = K::capacity().max(1);
+        let capacity = self.shape.capacity.max(1);
         let better = slot
             .iter()
             .filter(|other| **other != id)

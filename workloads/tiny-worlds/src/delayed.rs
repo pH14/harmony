@@ -518,6 +518,7 @@ mod tests {
                     continue;
                 }
                 let workload = crate::Workload {
+                    keying: crate::Hand::<false>,
                     config: crate::worlds::World::Delayed(world),
                     broken: false,
                     scale: None,

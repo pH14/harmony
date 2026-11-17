@@ -1,0 +1,9 @@
+# delayed.placement: 0 identity, 1 place, 2 engaged, 3 tier
+capacity = 1
+tier = ["goal", "if delayed.placement == 2 then level > 0 else if delayed.placement == 3 then level else 0"]
+spread = "if delayed.placement == 1 or delayed.placement == 2 then delayed.lane * (delayed.horizon + 1) + level else delayed.lane"
+identity = "if delayed.placement == 0 then level else 0"
+prefer = [["delayed.ammo: more"], ["delayed.ammo: more"]]
+
+[define]
+level = "if broken then 0 else if delayed.lane == 0 then delayed.progress else if delayed.sticky then delayed.memory else 0"

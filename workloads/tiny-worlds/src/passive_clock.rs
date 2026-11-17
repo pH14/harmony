@@ -182,6 +182,7 @@ mod tests {
     #[test]
     fn a_suffix_crosses_the_hidden_clock_and_replays() {
         let workload = Workload {
+            keying: crate::Hand::<false>,
             config: World::PassiveClock(config()),
             broken: false,
             scale: None,
@@ -190,6 +191,8 @@ mod tests {
             let report = run_kept(
                 &workload,
                 Keep::Portfolio,
+                crate::KeyKind::Hand,
+                None,
                 crate::test_seed(),
                 12_000,
                 true,
@@ -246,6 +249,7 @@ mod tests {
     fn snapshot_restore_keeps_the_clock_separate_from_charged_work() {
         use searcher::search::campaign::TargetExecution;
         let workload: Workload = Workload {
+            keying: crate::Hand::<false>,
             config: World::PassiveClock(config()),
             broken: false,
             scale: None,
@@ -283,6 +287,7 @@ mod tests {
     #[test]
     fn scaled_calibration_stops_at_its_first_objective_and_reports_ticks_and_tries() {
         let workload = Workload {
+            keying: crate::Hand::<false>,
             config: World::PassiveClock(Config {
                 events: vec![1],
                 holds: vec![HoldBand {

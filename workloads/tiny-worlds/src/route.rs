@@ -317,6 +317,7 @@ mod tests {
                 ..config()
             };
             let workload = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Route(w),
                 broken: false,
                 scale: None,
@@ -448,6 +449,7 @@ mod tests {
             0
         );
         let workload = crate::Workload {
+            keying: crate::Hand::<false>,
             config: crate::worlds::World::Route(w),
             broken: false,
             scale: None,

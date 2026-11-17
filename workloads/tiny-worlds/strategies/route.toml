@@ -1,0 +1,4 @@
+capacity = 1
+tier = ["goal", "route.ranked_upgrade and route.phase == 2"]
+spread = "2 * route.position + route.lane"
+prefer = [["route.phase: more"], ["route.phase: more"]]

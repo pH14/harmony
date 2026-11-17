@@ -23,6 +23,7 @@ fn maze() -> Workload {
         }),
         broken: false,
         scale: None,
+        keying: tiny_worlds::Hand::<false>,
     }
 }
 
@@ -112,6 +113,7 @@ fn graph_world(layout: u64) -> (Workload, graph::Config) {
             config: World::Graph(config),
             broken: false,
             scale: None,
+            keying: tiny_worlds::Hand::<false>,
         },
         config,
     )

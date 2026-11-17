@@ -1,0 +1,11 @@
+capacity = 1
+tier = ["goal", "if broken then 0 else if map.items == 1 then map.item + (map.locked and map.found == 1) + (map.hit_tier and map.hits > 0) else popcount(map.found)"]
+spread = "place"
+identity = "if map.tail_slots then map.tail else 0"
+prefer = [["map.stock: more", "map.health: more"], ["map.health: more", "map.stock: more"]]
+prefer_scope = "place / 1024"
+prefer_across = ["map.stock: more"]
+
+[define]
+arena = "map.arena > 0 and map.item and map.arm == 0 and not map.dead and map.at_goal"
+place = "if arena then 2048 + (map.shield + map.hits) * map.arena + (if map.hits == 0 then map.spot else 0) else if map.dead then 1056 else if map.hits > 0 then 1024 + map.hits else if map.shield > 0 and map.arm == 0 then 1088 + map.shield else 16 * map.cell + (if map.arm == 0 then 0 else 3 * map.arm + map.progress - 3)"

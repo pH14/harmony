@@ -3,7 +3,10 @@
 use searcher::search::draw::draw_mixture_from_identifier;
 use serde::Deserialize;
 use std::{error::Error, io::Read};
-use tiny_worlds::{Keep, Scale, SearchSettings, Workload, run_kept, run_scaled, worlds::World};
+use tiny_worlds::{
+    Hand, Keep, KeyKind, Scale, SearchSettings, Strategic, Workload, run_kept, run_scaled,
+    worlds::World,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +17,10 @@ struct Request {
     broken: bool,
     verify: bool,
     keep: Keep,
+    #[serde(default)]
+    key: KeyKind,
+    #[serde(default)]
+    strategy: Option<String>,
     #[serde(default)]
     scale: Option<Scale>,
     #[serde(default)]
@@ -37,6 +44,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("request exceeds 16KB".into());
     }
     let request: Request = serde_json::from_str(&input)?;
+    if request.strategy.is_some() && request.key != KeyKind::Strategy {
+        return Err("a strategy text needs key strategy".into());
+    }
     let mut settings = SearchSettings::default();
     if let Some(search) = &request.search {
         settings.mixture = search
@@ -47,6 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         settings.stop_on_objective = search.stop_on_objective;
     }
     let workload = Workload {
+        keying: Hand::<false>,
         config: request.config,
         broken: request.broken,
         scale: request.scale,
@@ -63,16 +74,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err("scaled runs need verify false and keep portfolio".into());
         }
         let mut progress = std::io::LineWriter::new(std::io::stderr().lock());
-        println!(
-            "{}",
-            run_scaled(
+        let report = match request.key {
+            KeyKind::Hand => run_scaled(
                 &workload,
                 request.seed,
                 request.work_budget,
                 &mut progress,
-                settings
-            )?
-        );
+                settings,
+            )?,
+            KeyKind::Strategy => {
+                let keying = match request.strategy.as_deref() {
+                    Some(text) => Strategic::new(&workload.config, workload.broken, text)?,
+                    None => Strategic::shipped(&workload.config, workload.broken, request.keep)?,
+                };
+                run_scaled(
+                    &Workload {
+                        config: workload.config.clone(),
+                        broken: workload.broken,
+                        scale: workload.scale,
+                        keying,
+                    },
+                    request.seed,
+                    request.work_budget,
+                    &mut progress,
+                    settings,
+                )?
+            }
+        };
+        println!("{report}");
         return Ok(());
     }
     println!(
@@ -80,6 +109,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         run_kept(
             &workload,
             request.keep,
+            request.key,
+            request.strategy.as_deref(),
             request.seed,
             request.work_budget,
             request.verify,

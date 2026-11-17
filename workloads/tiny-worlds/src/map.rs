@@ -702,7 +702,7 @@ impl Config {
             && s.goal == (self.complete(s) && s.arm == 0 && s.cell == layout.goal)
     }
 
-    fn spot(&self, cell: u8, tail: u8) -> u8 {
+    pub(crate) fn spot(&self, cell: u8, tail: u8) -> u8 {
         u8::try_from(self.roll(cell, tail ^ 0xc0) % u64::from(self.arena)).expect("spot fits")
     }
 
@@ -1253,6 +1253,7 @@ mod tests {
     fn real_campaign_replays_and_orders_its_milestones() {
         for broken in [false, true] {
             let workload = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Map(config(crate::test_seed())),
                 broken,
                 scale: None,
@@ -1618,6 +1619,7 @@ mod tests {
     #[test]
     fn a_boss_campaign_arrives_stocked_between_the_item_and_the_goal() {
         let workload = crate::Workload {
+            keying: crate::Hand::<false>,
             config: crate::worlds::World::Map(Config {
                 farms: 2,
                 farm_cap: 3,
@@ -2036,6 +2038,7 @@ mod tests {
         assert!(damaged.is_disjoint(&undamaged));
         let report = crate::run(
             &crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Map(w),
                 broken: false,
                 scale: None,

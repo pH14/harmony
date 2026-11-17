@@ -1,0 +1,4 @@
+capacity = 1
+tier = "goal"
+spread = "if broken then 0 else passive.phase"
+prefer = [[], []]

@@ -1,0 +1,4 @@
+capacity = 1
+tier = ["goal", "if broken then 0 else trap.item"]
+spread = "if trap.item then 64 + trap.room else if trap.trap > 0 then 32 + trap.trap else trap.position"
+prefer = [[], []]

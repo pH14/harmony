@@ -513,6 +513,75 @@ cell/holder draws and complete parent selection with zero-sized place keys:
 DISSONANCE_BENCHMARK_CANDIDATES=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib indexed_candidate -- --nocapture --test-threads=1
 ```
 
+## Assertion keys
+
+`search::assertion` gives every workload one concrete `ArchiveKey`,
+`AssertionKey`, compiled from a strategy file over the values the workload
+declares. The workload names no key type of its own.
+
+**Declarations.** A workload's front end describes a state as a list of
+`Assertion` values. The forms and names follow the Antithesis SDK: `always`,
+`always_or_unreachable`, `sometimes`, `reachable`, `unreachable`, the eight
+numeric forms (`always_greater_than` through `sometimes_less_than_or_equal_to`),
+`always_some` and `sometimes_all`. Three forms are ours: `sometimes_each` (a
+tuple of up to four named numbers), `value` (one named number) and `coverage`
+(a reserved slot for a coverage reader; it records 0 today). Every number is a
+`Number` with a value, a range and a unit.
+
+**Catalog and record.** `Catalog::from_assertions` turns one declaration list
+into named signals with fixed ranges. A boolean form is one signal named after
+the assertion. A numeric form is four: `name`, `name.left`, `name.right` and
+`name.gap`. `always_some` and `sometimes_all` are a count `name` plus one flag
+`name.<term>` per term. `sometimes_each` is `name.<field>` per field. A
+`Record` is a fixed array of 96 `i64` slots filled from the same list in the
+same order, so building a key allocates nothing. `Catalog::checked_record`
+checks a record's order and ranges.
+
+**Strategy file.** A TOML file of lines, each holding expressions over
+catalog names:
+
+| Line | Meaning |
+| --- | --- |
+| `capacity` | Entries a slot keeps under each preference (default 2). |
+| `tier` | Progress as a tuple; tuples order lexicographically. |
+| `[[stage]]` | Progress as a staged plan: `name`, `goal`, `objective`, `step`, `latch`, `carry`, with the same locate rules as `plan::locate`. A goal that names a numeric `sometimes` declaration defaults its objective to the gap (negated for the less-than forms) stepped by the left unit. |
+| `spread` | The place, as a tuple. |
+| `identity` | The slot identity, as a tuple. |
+| `prefer` | Up to two preference lists of `expression: more` or `expression: less`. |
+| `prefer_scope`, `prefer_across` | Two keys whose scope values differ compare by the across list instead of `prefer`. |
+| `absent` | A condition under which the state gets no key. |
+| `reject` | Named conditions; the first that holds is reported by index. |
+| `[table]`, `[define]` | Integer tables for `in`, `index` and `bucket`, and named sub-expressions. |
+| `every_stage` | Lines every stage inherits unless it gives its own. |
+
+Expressions have integers, `none`, names (quote a name with spaces as
+`'name'`), tuples, arithmetic (division and remainder take a literal divisor),
+comparisons, `and`/`or`/`not`, `if … then … else …`, and the functions `min`,
+`max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`. The lineage
+aggregates `highest`, `ever`, `count`, `last` and `first` (each with an
+optional `since` argument that resets it) read a value along the parent chain;
+a strategy holds at most eight.
+
+**Compilation.** `Compiled::new` checks every name against the catalog, runs
+interval analysis from the declared ranges, and packs each tuple into an
+integer by mixed radix, so packed order is the tuple's order. Expressions run
+as postfix programs on a fixed stack. The policy identifier is
+`assertion_key_<16 hex digits>` of the SHA-256 of the strategy, the signals and
+the declarations, and goes in the recording's workload policies, so a
+recording replays only under the strategy that wrote it.
+
+**Key.** `AssertionKey` is 28 bytes: packed `progress` (32 bits), `place` (64
+bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
+padding), `identity` (32 bits), two `prefer` values (32 bits each), and
+`across` and `scope` (16 bits each). A strategy whose tuple needs more than
+its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
+stage latch and carry state live in an `Accumulator` that the front end keeps
+beside its state and passes to `Compiled::observe`; a strategy without them
+`is_pure` and needs only `Compiled::key`. Capacity and preference count come
+from the strategy, so `Archive` and the campaign take them as a `KeyShape`
+from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
+`ArchiveKey::preferences`.
+
 ## Adaptive duration policy
 
 Campaigns can ask the generic searcher for a duration choice through

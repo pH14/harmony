@@ -253,6 +253,7 @@ mod tests {
             refill_available: true,
         };
         let workload = crate::Workload {
+            keying: crate::Hand::<false>,
             config: crate::worlds::World::Chain(crate::chain::Config {
                 stages: vec![stage.clone(), stage],
                 carry_charge: false,
@@ -273,6 +274,7 @@ mod tests {
         for placement in [Placement::Tier, Placement::Identity, Placement::Preference] {
             for broken in [false, true] {
                 let workload = crate::Workload {
+                    keying: crate::Hand::<false>,
                     config: crate::worlds::World::Backtrack(config(placement)),
                     broken,
                     scale: None,

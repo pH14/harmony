@@ -1,0 +1,10 @@
+# backtrack.placement: 0 tier, 1 identity, 2 preference
+capacity = 1
+tier = ["goal", "if backtrack.placement == 0 then items else 0"]
+spread = "backtrack.position"
+identity = "if backtrack.placement == 1 then 2 * items + backtrack.scouted else backtrack.scouted"
+prefer = [["charge: more"], ["charge: more"]]
+
+[define]
+items = "if broken then 0 else backtrack.items"
+charge = "if backtrack.placement == 2 then items else 0"
