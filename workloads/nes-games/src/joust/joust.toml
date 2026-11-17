@@ -1,0 +1,7 @@
+goal = "target_wave"
+absent = "not playing or target_wave"
+reject = "game_over"
+capacity = 1
+tier = ["waves_cleared", "defeated"]
+spread = ["wave", "x / 32", "y / 32"]
+prefer = [["lives: more", "score: more"]]

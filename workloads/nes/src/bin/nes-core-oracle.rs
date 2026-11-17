@@ -12,6 +12,7 @@ use machine::{
     nes::{self, ButtonChord},
     quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
+use nes_games::workload::Game as _;
 use nes_workload::{
     castlevania, chord::ChordVocabulary, donkey_kong, famidash, ice_climbers, joust, metroid, mm2,
     pac_man, punchout, search::rand::RomuDuoJrRand, smb, twin_dragons, zelda,
@@ -88,8 +89,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "joust" => Game {
-            setup: joust::target::setup_tape(),
-            chords: joust::archive::CHORDS,
+            setup: joust::Joust.setup(),
+            chords: joust::Joust::CHORDS,
             cartridge_ram: false,
         },
         other => return Err(format!("unknown game {other}").into()),

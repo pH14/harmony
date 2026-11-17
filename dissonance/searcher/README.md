@@ -553,6 +553,7 @@ catalog names:
 | `reject` | Named conditions; the first that holds is reported by index. |
 | `[table]`, `[define]` | Integer tables for `in`, `index` and `bucket`, and named sub-expressions. |
 | `every_stage` | Lines every stage inherits unless it gives its own. |
+| `goal` | The campaign objective: a declared `sometimes` name (a `sometimes_all` holds when every term holds) or a condition. |
 
 Expressions have integers, `none`, names (quote a name with spaces as
 `'name'`), tuples, arithmetic (division and remainder take a literal divisor),
@@ -570,6 +571,24 @@ as postfix programs on a fixed stack. The policy identifier is
 the declarations, and goes in the recording's workload policies, so a
 recording replays only under the strategy that wrote it.
 
+**Preference scope.** A preference compares two keys in the same scope; keys
+in different scopes compare by the `prefer_across` list, or equal without one.
+With `[[stage]]` tables the scope defaults to the stage index, `prefer_scope`
+overrides it, and without either a run is one scope. The compiler requires the
+scope to be a function of the cell: every catalog signal `prefer_scope` reads,
+through aggregates too, must also be read by the progress (the `tier`, or every
+stage's goal and objective) or by the `spread` of the same lines, and the error
+names the signal that is not. `prefer_across` with only one scope is rejected.
+The rule matters at the archive's comparison sites, which a test in
+`assertion/tests.rs` lists so a new one fails it. Within one slot, admission
+ranking (`visit_preference_winners`), admission bookkeeping and
+`champions_slot` compare one slot's keys. Across the slots of one cell,
+`HolderRank` orders `CellMembers::ranked` and `holder_order` finds the cell's
+best holder: both sort, and both see one scope because the scope is constant
+in a cell. Across cells, the gains mask recorded in the continuation bank and
+`outranks_slot_holders` compare a pair of keys, so a scope change there decides
+by `prefer_across`.
+
 **Key.** `AssertionKey` is 28 bytes: packed `progress` (32 bits), `place` (64
 bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
 padding), `identity` (32 bits), two `prefer` values (32 bits each), and
@@ -581,6 +600,54 @@ beside its state and passes to `Compiled::observe`; a strategy without them
 from the strategy, so `Archive` and the campaign take them as a `KeyShape`
 from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 `ArchiveKey::preferences`.
+
+**Records.** A front end that keeps records writes a file beside the run's
+stream with `RecordsWriter`. The header holds the stream's identity (campaign
+seed and workload identity), the policy identifier, the strategy text, the
+catalog and the genesis record. Each entry is one job: its sequence number,
+which joins it to the stream's `CampaignJobRecord`, and for each action the
+action, whether it failed, its cost in frames (including frames the front end
+ran for it outside the tape), and the record of every frame it decoded, stored
+as changes from the previous frame. The writer
+writes a job whole once the next job starts or the file finishes, so a file
+cut short by a crash ends in at most one partial job. `Recording::from_bytes`
+reads the whole jobs and reports the bytes left over, `check_stream` refuses a
+stream with another identity or key policy, and `continue_with` joins a resumed
+run's file, whose jobs replace the earlier file's from its first job on.
+
+**Re-keying.** `Rekeying::run` keys a recording again under another strategy
+without a target. It replays the stream's jobs in sequence order into a fresh
+`Archive` with unit snapshots. Each job starts from the entry the recording
+named as its parent, and every action's frames fold into an accumulator under
+both the recorded strategy and the new one. The recorded strategy finds the
+actions that were candidates, so the stream's decisions name the archive entry
+each one became. The new strategy makes the candidates that are inserted. A
+parent the new strategy did not keep is reached from its nearest kept ancestor
+with the actions between them as the suffix. `Rekeyed` holds the cells, the
+tiers with their cell and entry counts, the holders of every slot, the
+decisions made, and the check findings. Under the recorded strategy the
+decisions equal the stream's, and `same_decisions` counts the jobs where they
+do. The archive does not drop entries for memory, so a run that dropped
+entries under its memory budget keys again with those entries still held.
+
+**Checks.** `Compiled::checker` reads observed states one at a time, each with
+the accumulator of its parent under the checked strategy, and `Compiled::check`
+reads a list of them. Both return `Finding`s: `UnreachableGoal` when no state
+meets the `goal` line or a stage's goal and the declared ranges of the values
+it reads rule it out, and `ThinLeadingTier` when a staged
+strategy's highest tier holds fewer than `THIN_TIER_STATES` (100) states, the
+sign of a `step` finer than the run can fill. A goal a run stops short of is
+not a finding: records cannot tell an unreached goal from an unreachable one,
+so the compiler carries each goal's range check (`goal_reachable`,
+`stages_reachable`), which works through comparisons, `and`, `or` and `not`
+over the expression ranges it already computes. Re-keying feeds the checker
+the last frame of every action.
+
+**Front ends.** `Compiled::observe` returns the key, the index of the first
+`reject` line that holds, whether the `goal` holds, and the next accumulator.
+`workloads/tiny-worlds` keys every world from a strategy file. An emulated
+program's workload lowers each target to a decoder and a declaration list and
+runs every such target through one `Workload` implementation.
 
 ## Adaptive duration policy
 

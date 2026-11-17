@@ -16,4 +16,5 @@ pub mod punchout;
 pub mod smb;
 pub mod stb;
 pub mod twin_dragons;
+pub mod workload;
 pub mod zelda;

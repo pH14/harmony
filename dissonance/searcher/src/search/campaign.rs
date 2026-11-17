@@ -308,6 +308,12 @@ pub trait Reporting: CampaignTypes {
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
     }
+    fn direct_records(
+        &self,
+        _path: Option<&Path>,
+    ) -> Result<Option<crate::search::assertion::RecordsSize>, Box<dyn Error>> {
+        Ok(None)
+    }
     fn retained_diagnostics<'a>(
         _snapshots: impl Iterator<Item = (Option<&'a Self::Snapshot>, u64)>,
     ) -> Option<serde_json::Value>

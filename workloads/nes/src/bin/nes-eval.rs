@@ -10,7 +10,7 @@ use nes_workload::{
         levels::{GROUPS, Side, Stage},
     },
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
-    joust::campaign::{JoustCampaignRun, JoustGame},
+    joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
@@ -139,7 +139,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
             rom, request, out, started, "pac-man",
         ),
-        "joust" => evaluate_live::<nes_games::joust::campaign::JoustGame<NativeMachine>>(
+        "joust" => evaluate_live::<nes_games::workload::NesWorkload<Joust, NativeMachine>>(
             rom, request, out, started, "joust",
         ),
         _ => Err("this game has no live view".into()),
@@ -211,6 +211,12 @@ fn main() -> Result<()> {
                 if request.ai.is_some() || (request.stage.is_none() && !request.whole_game) =>
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
+            }
+            "joust" => {}
+            _ if request.strategy.is_some() || request.records => {
+                return Err(
+                    "only games declared through assertions take a strategy or records".into(),
+                );
             }
             _ => {}
         }
@@ -411,8 +417,12 @@ fn main() -> Result<()> {
                 <PacManGame>::memory_view,
             ),
             "joust" => evaluate_watching(
-                JoustGame::new(&rom, p, h, &execution_sha256),
-                JoustCampaignRun,
+                nes_workload::workload::configured(
+                    JoustGame::new(Joust, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,

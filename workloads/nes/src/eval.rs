@@ -13,6 +13,7 @@ use crate::{
     },
     witness::replay_witness,
 };
+use nes_games::workload::{RECORDS_FILE, REPLAY_RECORDS_FILE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -85,19 +86,83 @@ pub struct Request {
     pub live: Option<String>,
     #[serde(default)]
     pub live_site: Option<PathBuf>,
+    #[serde(default)]
+    pub strategy: Option<PathBuf>,
+    #[serde(default)]
+    pub records: bool,
+    #[serde(default)]
+    pub keep_stream: bool,
 }
 
 struct StreamDigest {
     file: Option<BufWriter<fs::File>>,
     digest: Sha256,
     bytes: u64,
+    decisions: DecisionDigest,
 }
+
+pub const DECISION_MARKS_FILE: &str = "decision-marks.jsonl";
+const DECISION_MARK_EVERY: u64 = 1024;
+const WORKLOAD_FIELDS: [&str; 3] = [
+    "result_sha256",
+    "draw_checkpoint_before",
+    "draw_checkpoint_after",
+];
+
+#[derive(Default)]
+struct DecisionDigest {
+    line: Vec<u8>,
+    header: bool,
+    digest: Sha256,
+    records: u64,
+    marks: Vec<(u64, String)>,
+}
+
+impl DecisionDigest {
+    fn update(&mut self, buf: &[u8]) -> io::Result<()> {
+        for chunk in buf.split_inclusive(|byte| *byte == b'\n') {
+            self.line.extend_from_slice(chunk);
+            if self.line.last() != Some(&b'\n') {
+                continue;
+            }
+            let line = std::mem::take(&mut self.line);
+            if !self.header {
+                self.header = true;
+                continue;
+            }
+            let mut record: Value = serde_json::from_slice(&line).map_err(io::Error::other)?;
+            if let Some(fields) = record.as_object_mut() {
+                for field in WORKLOAD_FIELDS {
+                    fields.remove(field);
+                }
+                if let Some(draw) = fields
+                    .get_mut("duration_draw")
+                    .and_then(Value::as_object_mut)
+                {
+                    draw.remove("context");
+                }
+            }
+            self.digest
+                .update(serde_json::to_vec(&record).map_err(io::Error::other)?);
+            self.records += 1;
+            if self.records.is_multiple_of(DECISION_MARK_EVERY) {
+                self.marks.push((
+                    self.records,
+                    format!("{:x}", self.digest.clone().finalize()),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Write for StreamDigest {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Some(file) = &mut self.file {
             file.write_all(buf)?;
         }
         self.digest.update(buf);
+        self.decisions.update(buf)?;
         self.bytes += buf.len() as u64;
         Ok(buf.len())
     }
@@ -220,18 +285,24 @@ where
     {
         return Err("search limits must be positive".into());
     }
+    let strategy_sha256 = request
+        .strategy
+        .as_ref()
+        .map(|path| fs::read(path).map(|text| format!("{:x}", Sha256::digest(text))))
+        .transpose()?;
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states, "root_input":request.root_input, "minimize":request.minimize}),
+        &json!({"format":"nes-eval-identity-v5", "strategy":request.strategy, "strategy_sha256":strategy_sha256, "records":request.records, "keep_stream":request.keep_stream, "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states, "root_input":request.root_input, "minimize":request.minimize}),
     )?;
     let mut stream = StreamDigest {
-        file: if full {
+        file: if full || request.keep_stream {
             Some(BufWriter::new(fs::File::create(out.join("stream.jsonl"))?))
         } else {
             None
         },
         digest: Sha256::new(),
         bytes: 0,
+        decisions: DecisionDigest::default(),
     };
     let mut progress = LineWriter::new(fs::File::create(out.join("progress.jsonl"))?);
     let preparation_seconds = started.elapsed().as_secs_f64();
@@ -254,6 +325,7 @@ where
     stream.flush()?;
     progress.flush()?;
     let search_seconds = search_started.elapsed().as_secs_f64();
+    let records = game.direct_records(None)?;
     phase(out, "export", started)?;
     let export_started = telemetry_now();
     let mut value = serde_json::to_value(&report)?;
@@ -288,9 +360,18 @@ where
     if report.objectives_reached > 0 && first["victory"] != true {
         return Err("reported victory was not reproduced by its witness".into());
     }
+    let mut replay_records_identical = None;
     if full {
         let bytes = fs::read(out.join("stream.jsonl"))?;
+        if records.is_some() {
+            game.direct_records(Some(&out.join(REPLAY_RECORDS_FILE)))?;
+        }
         let (replayed, replay_checkpoint) = replay_campaign_checkpointed(game, &bytes, None, None)?;
+        if records.is_some() {
+            game.direct_records(None)?;
+            replay_records_identical =
+                Some(fs::read(out.join(RECORDS_FILE))? == fs::read(out.join(REPLAY_RECORDS_FILE))?);
+        }
         if serde_json::to_value(&replayed)? != serde_json::to_value(&report)?
             || checkpoint != replay_checkpoint
         {
@@ -330,6 +411,11 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
+    let mut marks = BufWriter::new(fs::File::create(out.join(DECISION_MARKS_FILE))?);
+    for (records, digest) in &stream.decisions.marks {
+        writeln!(marks, "{}", json!({"records": records, "sha256": digest}))?;
+    }
+    marks.flush()?;
     let solved = objective_within_budget(report.work_to_first_objective, request.frames);
     write_json(
         &out.join("result.json"),
@@ -343,7 +429,10 @@ where
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "witness_replays":2, "campaign_replay":full,
             "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
-            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
+            "strategy_sha256":strategy_sha256,
+            "records":records.map(|size| json!({"jobs":size.jobs, "bytes":size.bytes, "bytes_per_job":size.bytes as f64 / size.jobs.max(1) as f64, "replay_identical":replay_records_identical})),
+            "decision_stream_sha256":format!("{:x}",stream.decisions.digest.clone().finalize()), "decision_stream_records":stream.decisions.records,
+            "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full || request.keep_stream,
             "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
         }),
     )?;

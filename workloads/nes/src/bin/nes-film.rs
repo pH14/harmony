@@ -16,7 +16,7 @@ use nes_workload::{
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
-    joust::campaign::{JoustCampaignRun, JoustGame},
+    joust::{Joust, JoustGame},
     pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::archive::Input,
@@ -370,8 +370,8 @@ fn main() -> Result<()> {
                 return Err("Joust takes no ai option".into());
             }
             produce(
-                JoustGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                JoustCampaignRun,
+                JoustGame::new(Joust, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

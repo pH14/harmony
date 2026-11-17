@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, error::Error};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -241,6 +244,7 @@ struct Stage {
     latch: bool,
     carry: bool,
     lines: Option<LineSet>,
+    reachable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +276,7 @@ impl Accumulator {
 pub struct Observed {
     pub key: Option<AssertionKey>,
     pub rejected: Option<u8>,
+    pub goal: bool,
     pub accumulator: Accumulator,
 }
 
@@ -884,6 +889,110 @@ impl Compiler<'_> {
         Ok(ops)
     }
 
+    fn goal_text(&self, text: &str) -> String {
+        match self.catalog.declaration(text.trim()) {
+            Some(declaration) if declaration.form == "sometimes_all" => {
+                format!("'{}' == {}", declaration.name, declaration.slots.len() - 1)
+            }
+            _ => text.to_owned(),
+        }
+    }
+
+    fn goal(&mut self, text: &str) -> Result<Vec<Op>, Box<dyn Error>> {
+        let text = self.goal_text(text);
+        self.condition(&text)
+    }
+
+    fn reachable(&self, text: &str) -> bool {
+        let text = text.trim();
+        let expr = if self.catalog.slot(text).is_some() {
+            Expr::Name(text.to_owned())
+        } else {
+            match expr::parse(text) {
+                Ok(expr) => expr,
+                Err(_) => return true,
+            }
+        };
+        let mut scratch = Compiler {
+            catalog: self.catalog,
+            tables: self.tables,
+            defines: self.defines,
+            resolving: Vec::new(),
+            table_order: self.table_order.clone(),
+            aggregates: Vec::new(),
+            aggregate_spans: Vec::new(),
+            in_aggregate: false,
+            locals: self.locals.clone(),
+        };
+        scratch.truth(&expr) != Some(false)
+    }
+
+    fn span(&mut self, expr: &Expr) -> Option<Span> {
+        self.scalar(expr, &mut Vec::new()).ok()
+    }
+
+    fn span_truth(&mut self, expr: &Expr) -> Option<bool> {
+        let span = self.span(expr)?;
+        if span.lo == 0 && span.hi == 0 {
+            Some(false)
+        } else if span.none || (span.lo <= 0 && span.hi >= 0) {
+            None
+        } else {
+            Some(true)
+        }
+    }
+
+    fn truth(&mut self, expr: &Expr) -> Option<bool> {
+        match expr {
+            Expr::Name(name) => match self.defined(name) {
+                Ok(Some(defined)) => self
+                    .expand(name, &defined, |compiler, expr| Ok(compiler.truth(expr)))
+                    .ok()
+                    .flatten(),
+                _ => self.span_truth(expr),
+            },
+            Expr::Not(inner) => self.truth(inner).map(|holds| !holds),
+            Expr::Binary(Binary::And, left, right) => match (self.truth(left), self.truth(right)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            Expr::Binary(Binary::Or, left, right) => match (self.truth(left), self.truth(right)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+            Expr::Binary(
+                op @ (Binary::Eq | Binary::Ne | Binary::Lt | Binary::Le | Binary::Gt | Binary::Ge),
+                left,
+                right,
+            ) => {
+                let (a, b) = (self.span(left)?, self.span(right)?);
+                if a.none || b.none {
+                    return None;
+                }
+                let overlap = a.lo <= b.hi && b.lo <= a.hi;
+                let single = a.lo == a.hi && b.lo == b.hi && a.lo == b.lo;
+                let (possible, always) = match op {
+                    Binary::Eq => (overlap, single),
+                    Binary::Ne => (!single, !overlap),
+                    Binary::Lt => (a.lo < b.hi, a.hi < b.lo),
+                    Binary::Le => (a.lo <= b.hi, a.hi <= b.lo),
+                    Binary::Gt => (a.hi > b.lo, a.lo > b.hi),
+                    _ => (a.hi >= b.lo, a.lo >= b.hi),
+                };
+                if always {
+                    Some(true)
+                } else if possible {
+                    None
+                } else {
+                    Some(false)
+                }
+            }
+            _ => self.span_truth(expr),
+        }
+    }
+
     fn tuple(&mut self, items: &[&str], limit: u128, line: &str) -> Result<Tuple, Box<dyn Error>> {
         let mut ops = Vec::new();
         let mut lanes = Vec::new();
@@ -986,9 +1095,6 @@ impl Compiler<'_> {
             (None, Some(fallback)) => fallback.across.clone(),
             (None, None) => Tuple::empty(),
         };
-        if scope.is_some() != !across.lanes.is_empty() {
-            return Err("`prefer_scope` and `prefer_across` must be given together".into());
-        }
         Ok(LineSet {
             absent,
             reject,
@@ -1070,6 +1176,7 @@ impl Compiler<'_> {
             .collect::<Result<Vec<_>, _>>()?;
         depth_of(&objective_ops)?;
         self.locals = Some(spans);
+        let reachable = self.reachable(&goal);
         let goal = self.condition(&goal);
         self.locals = None;
         let stage_lines = lines.lines();
@@ -1091,9 +1198,73 @@ impl Compiler<'_> {
             },
             latch: lines.latch,
             carry: lines.carry,
+            reachable,
             lines: stage_set,
         })
     }
+}
+
+fn reads(ops: &[Op], aggregates: &[Aggregate], into: &mut BTreeSet<usize>) {
+    for op in ops {
+        match op {
+            Op::Load(slot) => {
+                into.insert(usize::from(*slot));
+            }
+            Op::Aggregate(index) => {
+                if let Some(aggregate) = aggregates.get(usize::from(*index)) {
+                    reads(&aggregate.value, aggregates, into);
+                    if let Some(since) = &aggregate.since {
+                        reads(since, aggregates, into);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn check_scope(
+    lines: &LineSet,
+    progress: &Progress,
+    aggregates: &[Aggregate],
+    catalog: &Catalog,
+) -> Result<(), Box<dyn Error>> {
+    let mut cell = BTreeSet::new();
+    let mut sets = vec![lines];
+    match progress {
+        Progress::Flat => {}
+        Progress::Tier(tier) => reads(&tier.ops, aggregates, &mut cell),
+        Progress::Stages { stages, .. } => {
+            for stage in stages {
+                reads(&stage.goal, aggregates, &mut cell);
+                reads(&stage.objective.ops, aggregates, &mut cell);
+                sets.extend(stage.lines.as_ref());
+            }
+        }
+    }
+    for set in sets {
+        let Some(scope) = &set.scope else {
+            if !set.across.lanes.is_empty() && !matches!(progress, Progress::Stages { .. }) {
+                return Err(
+                    "`prefer_across` needs more than one scope: give `prefer_scope` or stages"
+                        .into(),
+                );
+            }
+            continue;
+        };
+        let mut allowed = cell.clone();
+        reads(&set.spread.ops, aggregates, &mut allowed);
+        let mut read = BTreeSet::new();
+        reads(&scope.ops, aggregates, &mut read);
+        if let Some(slot) = read.difference(&allowed).next() {
+            return Err(format!(
+                "`prefer_scope` reads `{}`, which neither the progress nor `spread` reads, so the scope is not a function of the cell",
+                catalog.signals()[*slot].name
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -1105,6 +1276,8 @@ pub struct Compiled {
     aggregates: Vec<Aggregate>,
     lines: LineSet,
     progress: Progress,
+    goal: Option<Vec<Op>>,
+    goal_reachable: bool,
 }
 
 impl Compiled {
@@ -1122,6 +1295,15 @@ impl Compiled {
             locals: None,
         };
         let lines = compiler.lines(&strategy.lines()?, None)?;
+        let goal = strategy
+            .goal
+            .as_deref()
+            .map(|text| compiler.goal(text))
+            .transpose()?;
+        let goal_reachable = strategy
+            .goal
+            .as_deref()
+            .is_none_or(|text| compiler.reachable(&compiler.goal_text(text)));
         let progress = if let Some(tier) = &strategy.tier {
             Progress::Tier(compiler.tuple(&tier.items(), u128::from(u32::MAX) + 1, "tier")?)
         } else if strategy.stage.is_empty() {
@@ -1149,6 +1331,7 @@ impl Compiled {
                 radix: u64::try_from(radix)?,
             }
         };
+        check_scope(&lines, &progress, &compiler.aggregates, catalog)?;
         let tables = strategy.table.values().cloned().collect();
         let identity = serde_json::to_vec(&(strategy, catalog.signals(), catalog.declarations()))?;
         let digest = Sha256::digest(identity);
@@ -1169,11 +1352,18 @@ impl Compiled {
             aggregates: compiler.aggregates,
             lines,
             progress,
+            goal,
+            goal_reachable,
         })
     }
 
     pub fn parse(text: &str, catalog: &Catalog) -> Result<Self, Box<dyn Error>> {
         Self::new(&Strategy::parse(text)?, catalog)
+    }
+
+    #[must_use]
+    pub fn has_goal(&self) -> bool {
+        self.goal.is_some()
     }
 
     #[must_use]
@@ -1200,6 +1390,19 @@ impl Compiled {
                 }
                 _ => true,
             }
+    }
+
+    #[must_use]
+    pub fn goal_reachable(&self) -> bool {
+        self.goal_reachable
+    }
+
+    #[must_use]
+    pub fn stages_reachable(&self) -> Vec<bool> {
+        match &self.progress {
+            Progress::Stages { stages, .. } => stages.iter().map(|stage| stage.reachable).collect(),
+            _ => Vec::new(),
+        }
     }
 
     #[must_use]
@@ -1338,9 +1541,10 @@ impl Compiled {
                 identity: u32::try_from(lines.identity.pack(&env, &mut stack)).unwrap_or(u32::MAX),
                 across: u16::try_from(lines.across.pack(&env, &mut stack)).unwrap_or(u16::MAX),
                 prefer,
-                scope: lines.scope.as_ref().map_or(0, |scope| {
-                    u16::try_from(scope.pack(&env, &mut stack)).unwrap_or(u16::MAX)
-                }),
+                scope: lines.scope.as_ref().map_or_else(
+                    || stage.map_or(0, |(index, _)| u16::from(index)),
+                    |scope| u16::try_from(scope.pack(&env, &mut stack)).unwrap_or(u16::MAX),
+                ),
             }
         });
         if let Some((index, objective)) = stage
@@ -1350,9 +1554,14 @@ impl Compiled {
             next.objective = objective;
         }
         next.started = true;
+        let goal = self
+            .goal
+            .as_deref()
+            .is_some_and(|ops| truth(ops, &mut stack));
         Observed {
             key,
             rejected,
+            goal,
             accumulator: next,
         }
     }
@@ -1400,6 +1609,50 @@ impl Compiled {
             u8::try_from(stages.len().saturating_sub(1)).unwrap_or(u8::MAX),
             [0; OBJECTIVE_WIDTH],
         )
+    }
+
+    pub(super) fn stage_goals(&self, record: &Record, parent: &Accumulator) -> Vec<bool> {
+        let Progress::Stages { stages, .. } = &self.progress else {
+            return Vec::new();
+        };
+        let mut stack = [0; STACK];
+        let next = if self.aggregates.is_empty() {
+            *parent
+        } else {
+            self.accumulate(record, parent, &mut stack)
+        };
+        let none = [0; OBJECTIVE_WIDTH];
+        let env = Env {
+            record: record.slots(),
+            aggregates: &next.values,
+            locals: &none,
+            tables: &self.tables,
+        };
+        stages
+            .iter()
+            .enumerate()
+            .map(|(index, stage)| {
+                let mut objective = [0; OBJECTIVE_WIDTH];
+                let depth = eval(&stage.objective.ops, &env, &mut stack);
+                let width = stage.objective.lanes.len();
+                objective[..width].copy_from_slice(&stack[depth - width..depth]);
+                if stage.carry && parent.stage() == u8::try_from(index).ok() {
+                    for (value, carried) in objective.iter_mut().zip(parent.objective) {
+                        if *value == NONE {
+                            *value = carried;
+                        }
+                    }
+                }
+                let goal_env = Env {
+                    record: env.record,
+                    aggregates: env.aggregates,
+                    locals: &objective,
+                    tables: env.tables,
+                };
+                let depth = eval(&stage.goal, &goal_env, &mut stack);
+                truthy(stack[depth - 1])
+            })
+            .collect()
     }
 
     #[must_use]

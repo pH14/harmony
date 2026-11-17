@@ -8,7 +8,7 @@ Zelda, Donkey Kong, Ice Climber, Pac-Man and Joust. It builds for the
 host and for `wasm32-unknown-unknown`, so the browser demo can run the same
 game logic as the native workload.
 
-Each game module has a `target` with the RAM decoder, observations, snapshots,
+Each game module not declared through assertions (below) has a `target` with the RAM decoder, observations, snapshots,
 setup tapes and the `Target` implementation, and an `archive` with the
 controller vocabulary, archive keys and milestones. Mega Man 2, Metroid and
 Castlevania also have a `progress` module for named progress. Famidash has a `levels`
@@ -29,7 +29,7 @@ test constructors and the scripted Super Tilt Bro machine to the tests of
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!!, Zelda, Donkey Kong, Ice Climber and Pac-Man
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `FamidashGame<M, GROUP>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PunchOutGame<M>`, `ZeldaGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>` and `PacManGame<M>` are
+`MetroidGame<M>`, `PunchOutGame<M>`, `ZeldaGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -52,7 +52,7 @@ passes the hash of its core WASM module instead.
 native live campaign. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `castlevania`, `famidash`,
-`twin_dragons`, `punchout`, `zelda`, `donkey_kong`, `ice_climbers` and `pac_man` submodules implement it for each campaign game over any
+`twin_dragons`, `punchout`, `zelda`, `joust`, `donkey_kong`, `ice_climbers` and `pac_man` submodules implement it for each campaign game over any
 backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
 the index of a level group in `famidash::levels::GROUPS` as the const
 parameter `GROUP`. Each group is its own game type, with that group's side,
@@ -84,6 +84,7 @@ Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
 formats are Castlevania v1, Famidash v2, Twin Dragons v2, Punch-Out!! v2, Zelda v1, Donkey Kong v2, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
+Joust, declared through assertions, uses `nes-workload-snapshot-checkpoint-v1`.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain
 re-export shims and do not supply separate checkpoint implementations.
@@ -97,6 +98,67 @@ Metroid, Mega Man 2 and SMB stream evidence from borrowed fields, preserving the
 existing resume bytes without building another owned evidence graph. These shared
 implementations also serve native and browser consumers; file publication remains
 a native coordinator facility.
+
+## Games declared through assertions
+
+`workload` lowers a game to the searcher's assertion representation
+(`search::assertion`, described in the searcher README). Joust is written
+this way; the other games keep their own `target`,
+`archive` and `campaign` modules. A game implements `Game`:
+
+- `decode` turns work RAM, and the previous state, into the game's `State`.
+- `declare` passes the state's assertions, named values and `sometimes`
+  events, one at a time to a sink. `Lowered` writes each into the frame's
+  `Record` with `Record::push`, so a frame builds no list of assertions.
+- `setup` is the power-on tape, `setup_pokes` the RAM writes after it and
+  `start` the tape after those; `genesis` checks the state they reach.
+- `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
+  compiled against the catalog the declarations form.
+- `moves` declares a forced move on a state, a transition the game scripts
+  rather than a search decision. `play` gives the move's next chord and what
+  follows it, and `move_frames` bounds its frames. Joust declares none. The
+  setup tapes stay before the genesis, because they run once per machine and
+  `genesis` checks where they arrive.
+
+`Lowered` builds the catalog from the declarations of a decoded all-zero RAM,
+compiles the strategy, and turns a state into a `NesObservation`: its
+`AssertionKey`, the `reject` line that holds, whether the goal holds, and the
+bitmask of the `sometimes` declarations that hold. The strategy must name a
+goal, and a game has at most 128 `sometimes` declarations.
+
+`NesWorkload<G, M>` is the `Workload` implementation for every such game, with
+`NesTarget<G, M>` as its target. An action stops at the first frame the
+strategy rejects or that meets the goal, and the target replays the hold cut
+to that frame, so the endpoint is the stopping frame. The target reports an
+interior observation when the compiled key changes, at a stopping frame and at
+the end of each action. A goal frame is a terminal objective, and a rejected
+frame is a doomed terminal. Named progress reports each `sometimes`
+declaration by name with its first execution. The strategy's policy identifier
+is part of the recorded workload policies, and `with_strategy` builds the same
+workload under another strategy. The `Arcade` trait gives a game state's
+arcade view, motion sample and cleared count, and the draw mixture, and
+`NesWorkload` implements `ArcadeGame` from it, with `MEMORY_BYTES` naming the
+memory the live feed reads. `joust/mod.rs` holds Joust's decoder and
+declarations and `joust/joust.toml` its strategy.
+
+An action also stops at the first frame whose state declares a forced move.
+The target plays the move to its end inside that action and reports the
+arrival state as the action's last observation. The move's chords are absent
+from the tape: replay and films rebuild them from the state. Its frames count
+as execution work, in the frame count and in the action's cost in the records
+file, but not in the archive's action cost, which sums the tape's chords. A move that runs past its bound ends the
+action as a doomed terminal and reports the `always` violation
+`forced_move_within_bound` with the job's input, under `violations` in the
+archive report and the diagnostics.
+
+`with_records` hands the run's records to the searcher's `RecordsWriter`: the
+target keeps the record of every frame it decodes while recording, each
+interior observation carries the records of the frames since the one before,
+and `merge_action_evidence` passes them per action with the job's sequence
+number. `Reporting::direct_records` closes the file or starts another one, so a
+replay of the stream writes its own copy. The snapshot identity hashes the
+policy identifier with the snapshot, so saved states taken under one strategy
+are rebuilt by replay when a run resumes from them under another.
 
 ## Arcade live-feed observations
 

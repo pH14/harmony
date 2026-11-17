@@ -4,27 +4,25 @@ use std::error::Error;
 
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced},
-    joust::{
-        campaign::JoustGame,
-        target::{JoustSnapshot, JoustTarget},
-    },
+    joust::{self as game, JoustState},
     nes_backend::pack_quicknes_state,
+    workload::{NesSnapshot, NesTarget, NesWorkload},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type Joust = JoustGame<Traced<JsMachine>>;
+pub type Joust = NesWorkload<game::Joust, Traced<JsMachine>>;
 
 impl BrowserGame for Joust {
     fn root_snapshot(
-        target: &mut JoustTarget<Traced<JsMachine>>,
+        target: &mut NesTarget<game::Joust, Traced<JsMachine>>,
         _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<JoustSnapshot, Box<dyn Error>> {
+    ) -> Result<NesSnapshot<JoustState>, Box<dyn Error>> {
         let snapshot = target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)?;
-        if !snapshot.state().playing() {
+        if !snapshot.observation.state.playing() {
             return Err("Joust cannot play on from this state".into());
         }
         Ok(snapshot)

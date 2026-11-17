@@ -190,6 +190,7 @@ impl Assertion {
     }
 
     #[must_use]
+    #[inline]
     pub fn is_sometimes(&self) -> bool {
         matches!(
             self,
@@ -204,6 +205,7 @@ impl Assertion {
     }
 
     #[must_use]
+    #[inline]
     pub fn holds(&self) -> bool {
         match *self {
             Self::Always { condition, .. }
@@ -227,6 +229,7 @@ impl Assertion {
         }
     }
 
+    #[inline]
     fn numbers(&self) -> Option<(Number, Number)> {
         match *self {
             Self::AlwaysGreaterThan { left, right, .. }
@@ -282,6 +285,7 @@ impl Assertion {
         }
     }
 
+    #[inline]
     fn write(&self, out: &mut [i64]) -> usize {
         if let Some((left, right)) = self.numbers() {
             out[0] = i64::from(self.holds());
@@ -336,12 +340,25 @@ pub struct Declared {
     pub slots: Range<usize>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Catalog {
     signals: Vec<Signal>,
     declarations: Vec<Declared>,
     #[serde(skip)]
     by_name: BTreeMap<String, usize>,
+}
+
+#[derive(Deserialize)]
+struct CatalogParts {
+    signals: Vec<Signal>,
+    declarations: Vec<Declared>,
+}
+
+impl<'de> Deserialize<'de> for Catalog {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let parts = CatalogParts::deserialize(deserializer)?;
+        Self::index(parts.signals, parts.declarations).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Catalog {
@@ -500,12 +517,17 @@ impl Record {
     #[must_use]
     pub fn from_assertions(assertions: impl IntoIterator<Item = Assertion>) -> Self {
         let mut record = Self::default();
-        let mut slot = 0;
         for assertion in assertions {
-            slot += assertion.write(&mut record.values[slot..]);
+            record.push(&assertion);
         }
-        record.len = u8::try_from(slot).unwrap_or(u8::MAX);
         record
+    }
+
+    #[inline]
+    pub fn push(&mut self, assertion: &Assertion) {
+        let slot = usize::from(self.len);
+        let written = assertion.write(&mut self.values[slot..]);
+        self.len = u8::try_from(slot + written).unwrap_or(u8::MAX);
     }
 
     #[must_use]

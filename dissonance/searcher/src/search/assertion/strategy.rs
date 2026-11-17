@@ -111,6 +111,8 @@ pub struct StageLines {
 #[serde(deny_unknown_fields)]
 pub struct Strategy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Lines>,
