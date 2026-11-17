@@ -1,0 +1,7 @@
+capacity = 1
+tier = "goal"
+spread = "resource.place"
+prefer = [["charge: more", "resource.health: more"], ["resource.health: more", "charge: more"]]
+
+[define]
+charge = "if broken then 0 else resource.charge"

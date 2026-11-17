@@ -61,5 +61,6 @@ jobs:
         run: |
           cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml
           cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml -- --test-threads=1
+          cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml -- --ignored --exact equivalence_tests::compiled_keys_match_hand_keys_on_the_ladder
           cargo "+$HARMONY_RUST_TOOLCHAIN" fmt --manifest-path workloads/tiny-worlds/Cargo.toml -- --check
           cargo "+$HARMONY_RUST_TOOLCHAIN" clippy --locked --release --manifest-path workloads/tiny-worlds/Cargo.toml --all-targets -- -D warnings

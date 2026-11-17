@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod actions;
+pub mod assertions;
 pub mod backtrack;
 pub mod chain;
 pub mod crossing;
@@ -29,7 +30,7 @@ pub struct SearchSettings {
 }
 
 impl SearchSettings {
-    fn apply<const CAPACITY_TWO: bool>(self, config: &mut CampaignConfig<Workload<CAPACITY_TWO>>) {
+    fn apply<K: Keying>(self, config: &mut CampaignConfig<Workload<K>>) {
         if let Some(mixture) = self.mixture {
             config.mixture = mixture;
         }
@@ -99,9 +100,10 @@ fn path_name(path: SelectorPath) -> &'static str {
 
 use searcher::search::{
     archive::{
-        ArchiveEntryReport, ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPath,
-        entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, Input, KeyShape, MAX_ARCHIVE_ENTRIES, RetentionPolicy,
+        SelectorPath, entries_by_suffix,
     },
+    assertion::{AssertionKey, Compiled, Strategy},
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
         CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamHeader,
@@ -243,9 +245,10 @@ pub struct Evidence {
     pub fork_first: Vec<Option<u64>>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
+#[serde(bound = "K: ArchiveKey")]
+pub struct ArchiveReport<K = Key> {
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<ArchiveEntryReport<u8, Key<CAPACITY_TWO>, bool>>,
+    pub entries: Vec<ArchiveEntryReport<u8, K, bool>>,
     pub evidence: Evidence,
     pub selector: searcher::search::archive::SelectorAccounting,
 }
@@ -320,12 +323,92 @@ impl Scale {
         Ok(())
     }
 }
-pub struct Workload<const CAPACITY_TWO: bool = false> {
+pub trait Keying: Sync {
+    type Key: ArchiveKey + std::fmt::Debug + Eq + Send + Sync;
+    fn key(&self, world: &World, state: State, broken: bool) -> Result<Self::Key, Box<dyn Error>>;
+    fn shape(&self) -> KeyShape;
+    fn identity(&self) -> String;
+    fn policy(&self) -> Option<&str>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hand<const CAPACITY_TWO: bool>;
+
+impl<const CAPACITY_TWO: bool> Keying for Hand<CAPACITY_TWO> {
+    type Key = Key<CAPACITY_TWO>;
+    fn key(&self, world: &World, state: State, broken: bool) -> Result<Self::Key, Box<dyn Error>> {
+        Ok(world.key(state, broken).kept())
+    }
+    fn shape(&self) -> KeyShape {
+        KeyShape::of::<Key<CAPACITY_TWO>>()
+    }
+    fn identity(&self) -> String {
+        format!("hand-key-capacity-two-{CAPACITY_TWO}")
+    }
+    fn policy(&self) -> Option<&str> {
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Strategic {
+    pub compiled: Compiled,
+}
+
+impl Strategic {
+    pub fn new(world: &World, broken: bool, text: &str) -> Result<Self, Box<dyn Error>> {
+        Self::compiled(world, broken, &Strategy::parse(text)?)
+    }
+
+    pub fn compiled(
+        world: &World,
+        broken: bool,
+        strategy: &Strategy,
+    ) -> Result<Self, Box<dyn Error>> {
+        let compiled = Compiled::new(strategy, &assertions::catalog(world, broken)?)?;
+        if !compiled.is_pure() {
+            return Err(
+                "tiny-world strategies hold no lineage aggregates or latched stages".into(),
+            );
+        }
+        Ok(Self { compiled })
+    }
+
+    pub fn shipped(world: &World, broken: bool, keep: Keep) -> Result<Self, Box<dyn Error>> {
+        Self::compiled(world, broken, &assertions::shipped_strategy(world, keep)?)
+    }
+}
+
+impl Keying for Strategic {
+    type Key = AssertionKey;
+    fn key(
+        &self,
+        world: &World,
+        state: State,
+        broken: bool,
+    ) -> Result<AssertionKey, Box<dyn Error>> {
+        self.compiled
+            .key(&assertions::record(world, state, broken))
+            .ok_or_else(|| "a tiny-world strategy marked a state absent".into())
+    }
+    fn shape(&self) -> KeyShape {
+        self.compiled.shape()
+    }
+    fn identity(&self) -> String {
+        self.compiled.policy_identifier().to_owned()
+    }
+    fn policy(&self) -> Option<&str> {
+        Some(self.compiled.policy_identifier())
+    }
+}
+
+pub struct Workload<K: Keying = Hand<false>> {
     pub config: World,
     pub broken: bool,
     pub scale: Option<Scale>,
+    pub keying: K,
 }
-impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
+impl<K: Keying> Workload<K> {
     fn payload(&self, state: State) -> Vec<u8> {
         let bytes = self.scale.map_or(0, |scale| scale.snapshot_bytes);
         if bytes == 0 {
@@ -365,20 +448,20 @@ impl<const CAPACITY_TWO: bool> Workload<CAPACITY_TWO> {
         }
     }
 }
-impl<const CAPACITY_TWO: bool> CampaignTypes for Workload<CAPACITY_TWO> {
+impl<K: Keying> CampaignTypes for Workload<K> {
     type JobObservation = ();
     type Target = Target;
     type Action = u8;
-    type Key = Key<CAPACITY_TWO>;
+    type Key = K::Key;
     type Milestones = bool;
     type Progress = bool;
     type Snapshot = Snapshot;
     type Observations = Observation;
     type Evidence = Evidence;
-    type ArchiveReport = ArchiveReport<CAPACITY_TWO>;
+    type ArchiveReport = ArchiveReport<K::Key>;
     type Run = ();
 }
-impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
+impl<K: Keying> Reporting for Workload<K> {
     fn stream_format(&self) -> &'static str {
         "tiny-world-v1"
     }
@@ -396,8 +479,13 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         Ok(serde_json::from_slice(bytes)?)
     }
     fn workload_identity_sha256(&self) -> String {
-        postcard_value_sha256(&(&self.config, self.broken, CAPACITY_TWO, self.scale))
-            .expect("serializable config")
+        postcard_value_sha256(&(
+            &self.config,
+            self.broken,
+            self.keying.identity(),
+            self.scale,
+        ))
+        .expect("serializable config")
     }
     fn action_cost_unit(&self) -> &'static str {
         self.config.work_unit()
@@ -434,7 +522,7 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         &self,
         evidence: &Evidence,
         state: ArchiveReportState<Self>,
-    ) -> ArchiveReport<CAPACITY_TWO> {
+    ) -> ArchiveReport<K::Key> {
         ArchiveReport {
             entries: state.entries,
             evidence: evidence.clone(),
@@ -442,7 +530,7 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         }
     }
 }
-impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
+impl<K: Keying> InputPolicy for Workload<K> {
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [(
             "tiny_actions".into(),
@@ -462,6 +550,11 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             },
         )]
         .into_iter()
+        .chain(
+            self.keying
+                .policy()
+                .map(|policy| ("tiny_key".to_owned(), policy.to_owned())),
+        )
         .collect()
     }
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<(), Box<dyn Error>> {
@@ -487,7 +580,7 @@ impl<const CAPACITY_TWO: bool> InputPolicy for Workload<CAPACITY_TWO> {
             .sample_action(rand.below(NonZeroUsize::new(4).unwrap()) as u8, self.broken))
     }
 }
-impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
+impl<K: Keying> TargetExecution for Workload<K> {
     fn new_target(&self) -> Result<Target, String> {
         self.config.validate()?;
         Ok(Target {
@@ -595,7 +688,7 @@ impl<const CAPACITY_TWO: bool> TargetExecution for Workload<CAPACITY_TWO> {
         })
     }
 }
-impl<const CAPACITY_TWO: bool> searcher::search::shrink::ShrinkPolicy for Workload<CAPACITY_TWO> {
+impl<K: Keying> searcher::search::shrink::ShrinkPolicy for Workload<K> {
     fn window_actions(&self, _: &()) -> Vec<u8> {
         (0..4)
             .map(|action| self.config.sample_action(action, self.broken))
@@ -613,21 +706,20 @@ impl<const CAPACITY_TWO: bool> searcher::search::shrink::ShrinkPolicy for Worklo
     }
 }
 
-impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
+impl<K: Keying> Evaluation for Workload<K> {
+    fn key_shape(&self) -> KeyShape {
+        self.keying.shape()
+    }
     fn execution_disposition(&self, _: &Target) -> ExecutionDisposition {
         ExecutionDisposition::Runnable
     }
     fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
         Ok(self.config.goal(target.state))
     }
-    fn current_key(&self, target: &Target) -> Result<Key<CAPACITY_TWO>, Box<dyn Error>> {
-        Ok(self.config.key(target.state, self.broken).kept())
+    fn current_key(&self, target: &Target) -> Result<K::Key, Box<dyn Error>> {
+        self.keying.key(&self.config, target.state, self.broken)
     }
-    fn complete_candidate_key(
-        &self,
-        key: Key<CAPACITY_TWO>,
-        _: &Snapshot,
-    ) -> Result<Key<CAPACITY_TWO>, Box<dyn Error>> {
+    fn complete_candidate_key(&self, key: K::Key, _: &Snapshot) -> Result<K::Key, Box<dyn Error>> {
         Ok(key)
     }
     fn merge_milestones(&self, into: &mut bool, from: bool) {
@@ -639,7 +731,7 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     fn aggregate_progress(e: &Evidence) -> bool {
         e.objectives > 0
     }
-    fn merge_origin_evidence(&self, e: &mut Evidence, s: &ArchiveReport<CAPACITY_TWO>) {
+    fn merge_origin_evidence(&self, e: &mut Evidence, s: &ArchiveReport<K::Key>) {
         *e = s.evidence.clone();
     }
     fn merge_snapshot_root_evidence(
@@ -930,11 +1022,11 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
     }
     fn source_entries<'a>(
         &self,
-        s: &'a ArchiveReport<CAPACITY_TWO>,
-    ) -> &'a [ArchiveEntryReport<u8, Key<CAPACITY_TWO>, bool>] {
+        s: &'a ArchiveReport<K::Key>,
+    ) -> &'a [ArchiveEntryReport<u8, K::Key, bool>] {
         &s.entries
     }
-    fn resume_input(&self, _: &ArchiveReport<CAPACITY_TWO>) -> Result<Input<u8>, Box<dyn Error>> {
+    fn resume_input(&self, _: &ArchiveReport<K::Key>) -> Result<Input<u8>, Box<dyn Error>> {
         Err("archive origin unsupported".into())
     }
 }
@@ -964,8 +1056,8 @@ impl Write for CountingStream {
     }
 }
 
-pub fn run_scaled(
-    workload: &Workload,
+pub fn run_scaled<K: Keying>(
+    workload: &Workload<K>,
     seed: u64,
     budget: u64,
     progress: &mut dyn Write,
@@ -1031,9 +1123,20 @@ pub fn run_scaled(
     }))
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum KeyKind {
+    #[default]
+    Hand,
+    Strategy,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run_kept(
     workload: &Workload,
     keep: Keep,
+    key: KeyKind,
+    strategy: Option<&str>,
     seed: u64,
     budget: u64,
     verify: bool,
@@ -1043,22 +1146,45 @@ pub fn run_kept(
     if !(1..=64).contains(&workers) {
         return Err("workers must be 1..=64".into());
     }
-    let mut report = match keep {
-        Keep::Portfolio => campaign(workload, seed, budget, verify, workers, settings)?,
-        Keep::CapacityTwo => campaign(
-            &Workload::<true> {
-                config: workload.config.clone(),
-                broken: workload.broken,
-                scale: workload.scale,
-            },
+    if strategy.is_some() && key != KeyKind::Strategy {
+        return Err("a strategy text needs key strategy".into());
+    }
+    let rekeyed = |keying| Workload {
+        config: workload.config.clone(),
+        broken: workload.broken,
+        scale: workload.scale,
+        keying,
+    };
+    let mut report = match (key, keep) {
+        (KeyKind::Hand, Keep::Portfolio) => {
+            campaign(workload, seed, budget, verify, workers, settings)?
+        }
+        (KeyKind::Hand, Keep::CapacityTwo) => campaign(
+            &rekeyed(Hand::<true>),
             seed,
             budget,
             verify,
             workers,
             settings,
         )?,
+        (KeyKind::Strategy, keep) => {
+            let keying = match strategy {
+                Some(text) => Strategic::new(&workload.config, workload.broken, text)?,
+                None => Strategic::shipped(&workload.config, workload.broken, keep)?,
+            };
+            let strategic = Workload {
+                config: workload.config.clone(),
+                broken: workload.broken,
+                scale: workload.scale,
+                keying,
+            };
+            let mut report = campaign(&strategic, seed, budget, verify, workers, settings)?;
+            report["policy"] = serde_json::to_value(strategic.keying.compiled.policy_identifier())?;
+            report
+        }
     };
     report["keep"] = serde_json::to_value(keep)?;
+    report["key"] = serde_json::to_value(key)?;
     Ok(report)
 }
 
@@ -1071,8 +1197,8 @@ pub fn run(
     campaign(workload, seed, budget, verify, 1, SearchSettings::default())
 }
 
-fn campaign<const CAPACITY_TWO: bool>(
-    workload: &Workload<CAPACITY_TWO>,
+fn campaign<K: Keying>(
+    workload: &Workload<K>,
     seed: u64,
     budget: u64,
     verify: bool,
@@ -1275,16 +1401,17 @@ fn campaign<const CAPACITY_TWO: bool>(
         "first_objective_work":first_objective_work,"parent_draws":parent_draws,"skipped_draws":skipped_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
-        "resident_memory_bytes":report.resident_memory_bytes,"evidence":report.archive.evidence,
+        "resident_memory_bytes":report.resident_memory_bytes,"history_memory_bytes":report.history_memory_bytes,
+        "evidence":report.archive.evidence,
         "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify}))
 }
 
-fn campaign_config<const CAPACITY_TWO: bool>(
-    workload: &Workload<CAPACITY_TWO>,
+fn campaign_config<K: Keying>(
+    workload: &Workload<K>,
     seed: u64,
     budget: u64,
     workers: u32,
-) -> CampaignConfig<Workload<CAPACITY_TWO>> {
+) -> CampaignConfig<Workload<K>> {
     let scale = workload.scale.unwrap_or(Scale {
         workers,
         window: searcher::search::campaign::default_window(workers),
@@ -1330,11 +1457,18 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
 }
 
 #[cfg(test)]
+mod equivalence_tests;
+#[cfg(test)]
 fn test_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
-    let seed = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let seed = std::env::var("HARMONY_TEST_SEED")
+        .ok()
+        .and_then(|seed| seed.parse().ok())
+        .unwrap_or_else(|| {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        });
     eprintln!("campaign replay seed: {seed}");
     seed
 }
@@ -1356,6 +1490,7 @@ mod tests {
 
     fn world() -> Workload {
         Workload {
+            keying: crate::Hand::<false>,
             config: World::Resource(resource::Config {
                 initial_charge: 0,
                 initial_health: 3,
@@ -1375,6 +1510,7 @@ mod tests {
     #[test]
     fn saved_states_resumed_under_the_same_key_keep_their_recorded_keys() {
         let w: Workload = Workload {
+            keying: crate::Hand::<false>,
             config: World::Maze(maze::Config {
                 length: 8,
                 pattern: 0b1011_0011,
@@ -1455,6 +1591,7 @@ mod tests {
     #[test]
     fn a_stall_report_leaves_the_stream_unchanged_and_names_the_stalled_tier() {
         let w: Workload = Workload {
+            keying: crate::Hand::<false>,
             config: World::Maze(maze::Config {
                 length: 4,
                 pattern: 10,
@@ -1593,6 +1730,7 @@ mod tests {
             reverse_actions: true,
         };
         let w = Workload {
+            keying: crate::Hand::<false>,
             config: World::Maze(config),
             broken: false,
             scale: None,
@@ -1762,6 +1900,7 @@ mod tests {
         for config in configs {
             for broken in [false, true] {
                 let workload = Workload {
+                    keying: crate::Hand::<false>,
                     config: config.clone(),
                     broken,
                     scale: None,
@@ -1782,6 +1921,7 @@ mod tests {
             obstacle_ticks: 2,
         };
         let w = Workload {
+            keying: crate::Hand::<false>,
             config: World::Deadline(config),
             broken: false,
             scale: None,
@@ -1903,6 +2043,7 @@ mod tests {
         };
         for broken in [false, true] {
             let w = Workload {
+                keying: crate::Hand::<false>,
                 config: World::Maze(config),
                 broken,
                 scale: None,
@@ -1981,6 +2122,8 @@ mod tests {
             let report = run_kept(
                 &w,
                 Keep::Portfolio,
+                crate::KeyKind::Hand,
+                None,
                 test_seed(),
                 2000,
                 true,
@@ -1994,6 +2137,8 @@ mod tests {
             run_kept(
                 &w,
                 Keep::Portfolio,
+                crate::KeyKind::Hand,
+                None,
                 test_seed(),
                 2000,
                 true,
@@ -2003,6 +2148,7 @@ mod tests {
             .is_err()
         );
         let clock = Workload {
+            keying: crate::Hand::<false>,
             config: World::PassiveClock(passive_clock::Config {
                 events: vec![33, 41],
                 holds: vec![passive_clock::HoldBand {
@@ -2017,6 +2163,8 @@ mod tests {
         let spent = run_kept(
             &clock,
             Keep::Portfolio,
+            crate::KeyKind::Hand,
+            None,
             test_seed(),
             40,
             true,
@@ -2046,6 +2194,8 @@ mod tests {
             let report = run_kept(
                 &w,
                 keep,
+                crate::KeyKind::Hand,
+                None,
                 test_seed(),
                 2000,
                 true,
@@ -2134,6 +2284,7 @@ mod tests {
         let seed = crate::test_seed();
         let scaled = |snapshot_bytes| {
             let workload = Workload {
+                keying: crate::Hand::<false>,
                 config: config.clone(),
                 broken: false,
                 scale: Some(Scale {
@@ -2161,6 +2312,7 @@ mod tests {
         let resident = |r: &serde_json::Value| r["resident_memory_bytes"].as_u64().unwrap();
         assert!(resident(&padded) >= resident(&plain) + 4096);
         let workload = Workload {
+            keying: crate::Hand::<false>,
             config,
             broken: false,
             scale: Some(Scale::default()),
@@ -2178,6 +2330,7 @@ mod tests {
         );
         let mut target = workload.new_target().unwrap();
         let snapshot = Workload {
+            keying: crate::Hand::<false>,
             scale: Some(Scale {
                 snapshot_bytes: 100,
                 ..Scale::default()

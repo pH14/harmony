@@ -44,6 +44,15 @@ PY
 preferences: charge first and health first. `capacity_two` keeps two holders
 per slot under the charge-first preference alone.
 
+`key` selects how states become archive keys. `hand` (the default) uses the
+family's own key function. `strategy` lowers each state to a record of
+assertions and compiles the family's strategy file from `strategies/` into a
+searcher `AssertionKey`; an optional `strategy` field replaces the shipped file
+with the given TOML text. Under `keep: capacity_two` the shipped strategy is
+read with `capacity = 2` and its first preference list only. The strategy's
+policy identifier is recorded as the `tiny_key` workload policy, and the report
+gives it as `policy`.
+
 An optional `search` object selects existing campaign policies without changing
 the world: `mixture` accepts the identifiers documented in the searcher
 README, including `energy_splice:6`, and `stop_on_objective` overrides campaign
@@ -67,8 +76,11 @@ With `verify=true`, the runner replays the campaign stream, repeats execution wi
 the same runtime seed, checks any objective witness against world transitions,
 independently sums admitted job work, and checks that the last job started
 before the work budget was spent. Tests check these invariants using
-runtime-generated seeds; controlled transition and archive tests check the
-mechanics directly.
+runtime-generated seeds, printed as `campaign replay seed`; set
+`HARMONY_TEST_SEED` to rerun a test with one. A test that checks how a
+campaign spends its work uses a fixed seed, because a runtime seed can reach
+the goal before the archive forms the structure it checks. Controlled
+transition and archive tests check the mechanics directly.
 
 ## Scaled runs
 
@@ -339,6 +351,31 @@ forecasts compare search attempts without treating action work as attempts.
 `parent_draws` counts jobs by (before objective, selector path, tier rank,
 parent tier, parent place). `skipped_draws` counts draws whose parent and
 suffix were already executed; they produce no job.
+
+### Strategy keys
+
+`src/assertions.rs` declares each family's state as `value` assertions named
+`<family>.<field>` plus `sometimes` for `goal` and a `broken` flag; config
+values a key reads (placements, `ranked`, `carry_charge`, `tail_slots`, map
+item counts) are declared too. Three values need world code and are declared
+already computed: `map.at_goal` and `map.spot` read the layout, and
+`passive.phase` counts the events passed. A chain record holds the chain's own
+values (`chain.stage`, `chain.charge`, `chain.family`, `chain.ranked`,
+`chain.carry`) and the resource, route, delayed and trap values of the current
+stage, with the other families' values zero. Families without a strategy (maze,
+actions, deadline, deadline actions, graph, targets, and chains holding them)
+reject `key: strategy`.
+
+Each file in `strategies/` writes its family's hand key in the strategy
+language, with the same capacity and two preference lists. Every family key
+compares only stock when two places lie in different 1024-place ranges; the map
+and chain strategies state that with `prefer_scope = "place / 1024"` and
+`prefer_across`, and the other families have no stock. The equivalence test
+`compiled_keys_match_hand_keys` samples states of every panel world by random
+play from a growing pool (chains also start from every stage's entry state) and
+checks that both keys agree on cell, slot, progress order and every preference
+comparison. The ignored `compiled_keys_match_hand_keys_on_the_ladder` runs the
+same check on 20,000 states per world.
 
 ## Boss room with targets
 

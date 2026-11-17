@@ -232,6 +232,7 @@ mod tests {
     fn campaign_replays_in_both_arms() {
         for broken in [false, true] {
             let workload = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Trap(config()),
                 broken,
                 scale: None,

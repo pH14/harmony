@@ -185,6 +185,7 @@ mod tests {
     fn sampled_choices_replay_with_an_independent_entry_execution() {
         for rooted in [false, true] {
             let workload = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Crossing(Config {
                     cells: 11,
                     rooted,
@@ -206,6 +207,7 @@ mod tests {
             assert_eq!(entry == 0, rooted);
             let scaled = crate::run_scaled(
                 &crate::Workload {
+                    keying: crate::Hand::<false>,
                     config: workload.config.clone(),
                     broken: false,
                     scale: Some(crate::Scale {
@@ -301,6 +303,7 @@ mod tests {
                 ..config()
             };
             let world = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Crossing(config),
                 broken: false,
                 scale: None,

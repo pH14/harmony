@@ -234,7 +234,7 @@ LIB_PARTITIONS = {
     "searcher": {
         "Archive": (
             "search::archive", "search::draw", "search::draw_tables",
-            "search::plan", "search::shortcut", "search::shrink", "search::weighted_set",
+            "search::assertion", "search::plan", "search::shortcut", "search::shrink", "search::weighted_set",
         ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",
@@ -681,7 +681,8 @@ DISSONANCE_TINY_WORLDS_CHECKS = Workflow(
     triggers=("pull_request", "push"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
-        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",), select="rust_checks"),
+        Job("World Mechanics", "pr", 15, crates=("tiny-worlds",), select="rust_checks",
+            ignored_tests=("tiny-worlds equivalence_tests::compiled_keys_match_hand_keys_on_the_ladder",)),
     ),
 )
 

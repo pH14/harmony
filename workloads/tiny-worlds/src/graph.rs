@@ -204,6 +204,7 @@ mod tests {
     #[test]
     fn a_scaled_campaign_fills_many_slots() {
         let workload = crate::Workload {
+            keying: crate::Hand::<false>,
             config: crate::worlds::World::Graph(config(1 << 22, 64)),
             broken: false,
             scale: Some(crate::Scale {

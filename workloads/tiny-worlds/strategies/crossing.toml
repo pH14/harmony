@@ -1,0 +1,4 @@
+capacity = 1
+tier = "goal"
+spread = "if broken and crossing.position >= crossing.cells then crossing.cells else crossing.position"
+prefer = [[], []]

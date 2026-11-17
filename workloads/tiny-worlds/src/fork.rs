@@ -306,11 +306,14 @@ mod tests {
     fn campaign_replays_in_both_arms() {
         for broken in [false, true] {
             let workload = crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Fork(config()),
                 broken,
                 scale: None,
             };
             let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
+            assert_eq!(report["verified"], true);
+            let report = crate::run(&workload, 1, 2000, true).unwrap();
             assert_eq!(report["verified"], true);
             let runs = report["selector"]["tier_runs"].as_object().unwrap();
             let most = |field: &str| runs.values().filter_map(|r| r[field].as_u64()).max();

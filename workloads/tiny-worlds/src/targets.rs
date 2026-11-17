@@ -506,6 +506,7 @@ mod tests {
         assert!(w.reachable().unwrap());
         let report = crate::run(
             &crate::Workload {
+                keying: crate::Hand::<false>,
                 config: crate::worlds::World::Targets(w),
                 broken: false,
                 scale: None,

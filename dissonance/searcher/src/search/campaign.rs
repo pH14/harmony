@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SavedStateRecord,
+    KeyShape, Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SavedStateRecord,
     SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
     retention_policy_from_identifier, retention_policy_identifier, saved_state_entries,
 };
@@ -679,6 +679,9 @@ pub trait TargetExecution: CampaignTypes {
 }
 
 pub trait Evaluation: TargetExecution {
+    fn key_shape(&self) -> KeyShape {
+        KeyShape::of::<Self::Key>()
+    }
     fn execution_disposition(
         &self,
         target: &Self::Target,
@@ -1754,10 +1757,10 @@ fn verify_selector_observed_tiers(
     Ok(())
 }
 
-fn verify_selector_preference<K: ArchiveKey>(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
+fn verify_selector_preference(draw: &SelectorDraw, shape: KeyShape) -> Result<(), Box<dyn Error>> {
     if draw
         .best_preference
-        .is_some_and(|preference| usize::from(preference) >= K::preferences())
+        .is_some_and(|preference| usize::from(preference) >= shape.preferences)
     {
         return Err("selector best preference is outside the key portfolio".into());
     }
@@ -1810,7 +1813,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         archive_entry_limit: usize,
         memory_budget_mib: Option<usize>,
     ) -> Self {
-        let mut archive = Archive::new(workload.action_cost_fn());
+        let mut archive = Archive::with_shape(workload.action_cost_fn(), workload.key_shape());
         archive.max_entries = archive_entry_limit;
         archive.set_snapshot_retention(G::snapshot_retention());
         if let Some(memory_budget_mib) = memory_budget_mib {
@@ -3196,11 +3199,11 @@ fn resolve_origin<G: Workload>(
 pub const PREFERENCE_PORTFOLIO_PREFIX: &str = "preference_portfolio_v1:";
 
 #[must_use]
-pub fn preference_portfolio_identifier<K: ArchiveKey>() -> String {
+pub fn preference_portfolio_identifier(shape: KeyShape) -> String {
     format!(
         "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
-        K::preferences(),
-        K::capacity().max(1)
+        shape.preferences,
+        shape.capacity.max(1)
     )
 }
 
@@ -3249,7 +3252,7 @@ fn stream_header<G: Workload>(
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
-        preference_portfolio: preference_portfolio_identifier::<G::Key>(),
+        preference_portfolio: preference_portfolio_identifier(workload.key_shape()),
         executor_mode: EXECUTOR_MODE.to_owned(),
         selection_seed_derivation: SELECTION_SEED_DERIVATION.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
@@ -4746,7 +4749,7 @@ fn search_checkpoint_header<G: Workload>(
         ("continuation_policy", CONTINUATION_IDENTIFIER.to_owned()),
         (
             PREFERENCE_PORTFOLIO_FIELD,
-            preference_portfolio_identifier::<G::Key>(),
+            preference_portfolio_identifier(workload.key_shape()),
         ),
         (
             "stop_rollout_on_objective",
@@ -4895,6 +4898,9 @@ fn restore_search_checkpoint<G: Workload>(
     let _: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
     let state: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
+    if archive.shape() != workload.key_shape() {
+        return Err("search checkpoint key shape differs from the workload".into());
+    }
     let evidence: Vec<u8> = reader.next()?;
     let draw: Vec<u8> = reader.next()?;
     let durations = reader.next()?;
@@ -5362,7 +5368,7 @@ where
     if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
         return Err("campaign stream schema version is not recognized".into());
     }
-    if header.preference_portfolio != preference_portfolio_identifier::<G::Key>() {
+    if header.preference_portfolio != preference_portfolio_identifier(workload.key_shape()) {
         return Err("campaign stream preference portfolio does not match the key".into());
     }
     if !archive_entry_limit_is_valid(header.archive_entry_limit) {
@@ -6103,7 +6109,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
-                verify_selector_preference::<G::Key>(&skip.selector)?;
+                verify_selector_preference(&skip.selector, workload.key_shape())?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
@@ -6471,7 +6477,7 @@ where
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
-                verify_selector_preference::<G::Key>(&job.selector)?;
+                verify_selector_preference(&job.selector, workload.key_shape())?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -6721,7 +6727,7 @@ where
                     .ok_or("recorded cancelled job has no rebuilt selection tier bound")?;
                 verify_selector_annotation(&cancel.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&cancel.selector, selector_tier_limit)?;
-                verify_selector_preference::<G::Key>(&cancel.selector)?;
+                verify_selector_preference(&cancel.selector, workload.key_shape())?;
                 replay_selections.remove(&slot);
                 replay_ceilings.remove(&slot);
                 replay_continuations.remove(&slot);

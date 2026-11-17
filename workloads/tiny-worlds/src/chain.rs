@@ -135,7 +135,7 @@ impl Config {
         Ok(())
     }
 
-    fn enter(&self, stage: u8, charge: u8) -> State {
+    pub(crate) fn enter(&self, stage: u8, charge: u8) -> State {
         let mut local = self.stages[usize::from(stage)].world.initial();
         if self.carry_charge
             && let WorldState::Resource(s) = &mut local
@@ -498,6 +498,7 @@ mod tests {
         for config in [independent(1), independent(4), carrying()] {
             for broken in [false, true] {
                 let w = Workload {
+                    keying: crate::Hand::<false>,
                     config: World::Chain(config.clone()),
                     broken,
                     scale: None,
@@ -586,6 +587,7 @@ mod tests {
         }
         for broken in [false, true] {
             let workload = Workload {
+                keying: crate::Hand::<false>,
                 config: World::Chain(w.clone()),
                 broken,
                 scale: None,

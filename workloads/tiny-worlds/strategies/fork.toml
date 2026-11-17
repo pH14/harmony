@@ -1,0 +1,5 @@
+# fork.route: 0 shared, 1 dead, 2 live
+capacity = 1
+tier = ["goal", "fork.position"]
+spread = "if fork.route == 2 then 64 + fork.position else if fork.room > 0 and not broken then 128 + 17 * fork.position + fork.room else fork.position"
+prefer = [[], []]
