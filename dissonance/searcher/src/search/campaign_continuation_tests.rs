@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::search::archive::{SelectorAccounting, entries_by_suffix};
+use crate::search::choice::{CERTAIN, ChoiceProfile, ChoiceProfiles};
 use crate::search::rollout::ExecutionDisposition;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -92,10 +93,27 @@ struct TestArchiveReport {
 thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
     static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static TEST_CHOICE_POLICY: std::cell::Cell<Option<ChoicePolicy>> = const { std::cell::Cell::new(None) };
 }
 
-struct TestWorkload;
-impl CampaignTypes for TestWorkload {
+const TEST_ASK: u8 = 200;
+const TEST_DEFAULT: u8 = 201;
+
+fn test_offered(value: u8) -> (Vec<u16>, u16) {
+    if value.is_multiple_of(2) {
+        (vec![0, 1, 2, 3], u16::from(value / 2 % 4))
+    } else {
+        (vec![1, 3], 1 + 2 * u16::from(value / 2 % 2))
+    }
+}
+
+struct ChoiceTestWorkload<const CHOICES: bool>;
+
+type TestWorkload = ChoiceTestWorkload<false>;
+
+#[allow(non_upper_case_globals)]
+const TestWorkload: TestWorkload = ChoiceTestWorkload;
+impl<const CHOICES: bool> CampaignTypes for ChoiceTestWorkload<CHOICES> {
     type JobObservation = ();
     type Target = TestTarget;
     type Action = TestAction;
@@ -109,7 +127,7 @@ impl CampaignTypes for TestWorkload {
     type Run = ();
 }
 
-impl Reporting for TestWorkload {
+impl<const CHOICES: bool> Reporting for ChoiceTestWorkload<CHOICES> {
     fn diagnostics(_: &()) -> Option<serde_json::Value> {
         Some(serde_json::json!({"observed": 42}))
     }
@@ -165,7 +183,7 @@ impl Reporting for TestWorkload {
     }
 }
 
-impl InputPolicy for TestWorkload {
+impl<const CHOICES: bool> InputPolicy for ChoiceTestWorkload<CHOICES> {
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         WorkloadPolicies::from([(
             PREFERENCE_POLICY_FIELD.to_owned(),
@@ -181,7 +199,23 @@ impl InputPolicy for TestWorkload {
         _previous: Option<&Self::Action>,
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>> {
-        Ok(TestAction::new(rand.next_u64() as u8, 1))
+        let drawn = rand.next_u64() as u8;
+        Ok(TestAction::new(if CHOICES { TEST_ASK } else { drawn }, 1))
+    }
+    fn choice_sites(&self, _run: &Self::Run) -> Vec<ChoiceSite> {
+        if CHOICES {
+            vec![ChoiceSite::new(
+                "step",
+                (1..=4).map(|label: u8| label.to_string()),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+    fn choice_policy(&self, _run: &Self::Run) -> ChoicePolicy {
+        TEST_CHOICE_POLICY
+            .with(std::cell::Cell::get)
+            .unwrap_or_default()
     }
     fn draw_table_parameters(&self, _run: &Self::Run) -> EmpiricalStepParameters {
         EmpiricalStepParameters {
@@ -192,7 +226,7 @@ impl InputPolicy for TestWorkload {
     }
 }
 
-impl TargetExecution for TestWorkload {
+impl<const CHOICES: bool> TargetExecution for ChoiceTestWorkload<CHOICES> {
     fn new_target(&self) -> Result<Self::Target, String> {
         Ok(TestTarget::default())
     }
@@ -217,8 +251,39 @@ impl TargetExecution for TestWorkload {
         action: &Self::Action,
         _milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>> {
-        target.apply(action);
+        if CHOICES && action.input == TEST_DEFAULT {
+            let (_, default) = test_offered(target.value);
+            target.apply(&TestAction {
+                input: u8::try_from(default + 1)?,
+                ..*action
+            });
+        } else {
+            target.apply(action);
+        }
         Ok(())
+    }
+    fn resolve_action(
+        &self,
+        target: &Self::Target,
+        action: &Self::Action,
+        chooser: &mut Chooser,
+    ) -> Result<Self::Action, Box<dyn Error>> {
+        if action.input != TEST_ASK {
+            return Ok(*action);
+        }
+        let (offered, default) = test_offered(target.value);
+        let input = match chooser.choose(0, &offered, default) {
+            Choice::Ask | Choice::Default => TEST_DEFAULT,
+            Choice::Option(label) => u8::try_from(label + 1)?,
+        };
+        Ok(TestAction { input, ..*action })
+    }
+    fn action_choices(&self, action: &Self::Action) -> Vec<(u16, Choice)> {
+        match action.input {
+            TEST_DEFAULT if CHOICES => vec![(0, Choice::Default)],
+            input @ 1..=4 if CHOICES => vec![(0, Choice::Option(u16::from(input - 1)))],
+            _ => Vec::new(),
+        }
     }
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
         target.snapshot()
@@ -232,7 +297,7 @@ impl TargetExecution for TestWorkload {
     }
 }
 
-impl Evaluation for TestWorkload {
+impl<const CHOICES: bool> Evaluation for ChoiceTestWorkload<CHOICES> {
     fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
         ExecutionDisposition::Runnable
     }
@@ -1890,4 +1955,277 @@ fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
         error.contains("suffix limit diverged at reservation"),
         "{error}"
     );
+}
+
+fn choice_config(
+    workers: u32,
+    mixture: DrawMixture,
+    budget_mib: usize,
+) -> CampaignConfig<ChoiceTestWorkload<true>> {
+    let plain = continuation_config(workers, mixture, budget_mib);
+    CampaignConfig {
+        campaign_seed: plain.campaign_seed,
+        workers: plain.workers,
+        execution_budget: plain.execution_budget,
+        host: plain.host,
+        wall_budget: plain.wall_budget,
+        stop_rollout_on_objective: plain.stop_rollout_on_objective,
+        stop_campaign_on_objective: plain.stop_campaign_on_objective,
+        archive_entry_limit: plain.archive_entry_limit,
+        window: plain.window,
+        memory_budget_mib: plain.memory_budget_mib,
+        materialize_final_artifacts: plain.materialize_final_artifacts,
+        run: (),
+        mixture: plain.mixture,
+        retention: plain.retention,
+        objective_witness_path: plain.objective_witness_path,
+        minimize: plain.minimize,
+    }
+}
+
+fn run_choices_with_checkpoints(
+    config: &CampaignConfig<ChoiceTestWorkload<true>>,
+    origin: &CampaignOrigin<ChoiceTestWorkload<true>>,
+    checkpoints: Option<CheckpointPlan>,
+) -> (CampaignOutcome<ChoiceTestWorkload<true>>, Vec<u8>) {
+    let mut stream = Vec::new();
+    let mut progress = Vec::new();
+    let outcome = run_campaign_checkpointed_with_options(
+        &ChoiceTestWorkload::<true>,
+        config,
+        origin,
+        &mut stream,
+        Some(&mut progress),
+        CampaignExecutionOptions {
+            checkpoints,
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    (outcome, progress)
+}
+
+#[test]
+fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pressure() {
+    for (workers, mixture, budget_mib) in [
+        (1, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::BiasedHalf, 12),
+    ] {
+        let config = choice_config(workers, mixture, budget_mib);
+        let mut bytes = Vec::new();
+        let (live, checkpoint) = run_campaign_checkpointed(
+            &ChoiceTestWorkload::<true>,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut bytes,
+            None,
+        )
+        .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            text.lines()
+                .next()
+                .unwrap()
+                .contains("\"choice_policy\":\"choices_v1:inherited,untried_first\"")
+        );
+        let jobs: Vec<serde_json::Value> = text
+            .lines()
+            .skip(1)
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|record: &serde_json::Value| record["event"] == "job")
+            .collect();
+        let continuation = |job: &&serde_json::Value| job["selector"]["path"] == "continuation";
+        assert!(
+            jobs.iter().any(|job| continuation(&job)),
+            "{workers} workers never dispatched a continuation"
+        );
+        assert!(
+            jobs.iter()
+                .filter(continuation)
+                .all(|job| job.get("choices").is_none())
+        );
+        assert!(
+            jobs.iter()
+                .filter(|job| !continuation(job))
+                .all(|job| job.get("choices").is_some())
+        );
+        assert!(jobs.iter().any(|job| job["choices"]["redrawn"] == true));
+        assert!(
+            live.snapshot_evictions > 0,
+            "{workers} workers never met memory pressure"
+        );
+        let (replayed, replay_checkpoint) =
+            replay_campaign_checkpointed(&ChoiceTestWorkload::<true>, &bytes, None, None).unwrap();
+        assert_eq!(live, replayed, "{workers} workers diverged on replay");
+        assert_eq!(checkpoint, replay_checkpoint);
+    }
+    let label = "choices-resume";
+    let directory = checkpoint_directory(label);
+    let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let (original, original_progress) = run_choices_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: true,
+            on_top_progress: true,
+            on_stall: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let mut kept = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .collect::<Vec<_>>();
+    kept.sort();
+    assert!(kept.len() >= 2, "{label} kept {kept:?}");
+    for path in kept {
+        let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
+            .parse()
+            .unwrap();
+        let (resumed, resumed_progress) = run_choices_with_checkpoints(
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256: None,
+            },
+            None,
+        );
+        assert_eq!(
+            progress_lines_after(&resumed_progress, resume_at),
+            progress_lines_after(&original_progress, resume_at),
+            "resumed at {resume_at} diverged"
+        );
+        assert_eq!(resumed.0.archive, original.0.archive);
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_continuation_passes_its_parent_profile_to_the_entries_it_keeps() {
+    let config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    run_campaign_checkpointed(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let jobs: Vec<serde_json::Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|record: &serde_json::Value| record["event"] == "job")
+        .collect();
+    let root = jobs[0]["parent_id"].clone();
+    let root_profile = jobs
+        .iter()
+        .find(|job| job["parent_id"] == root && job["choices"]["redrawn"] != true)
+        .map(|job| job["choices"]["profile"].clone())
+        .unwrap();
+    let mut profiles = BTreeMap::new();
+    let mut from_continuations = BTreeSet::new();
+    let mut checked = 0;
+    for job in &jobs {
+        let parent = job["parent_id"].as_u64().unwrap();
+        let continuation = job["selector"]["path"] == "continuation";
+        let inherited = profiles.get(&parent).cloned();
+        if !continuation
+            && job["choices"]["redrawn"] != true
+            && from_continuations.contains(&parent)
+        {
+            let expected = inherited.clone().unwrap_or_else(|| root_profile.clone());
+            assert_eq!(job["choices"]["profile"], expected, "job {job}");
+            if expected != root_profile {
+                checked += 1;
+            }
+        }
+        let profile = if continuation {
+            inherited
+        } else {
+            Some(job["choices"]["profile"].clone())
+        };
+        for decision in job["decisions"].as_array().unwrap() {
+            if decision["decision"] == "retained" {
+                let id = decision["id"].as_u64().unwrap();
+                if let Some(profile) = &profile {
+                    profiles.insert(id, profile.clone());
+                }
+                if continuation {
+                    from_continuations.insert(id);
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no job drew from a continuation's entry with an evolved profile"
+    );
+}
+
+#[test]
+fn a_search_checkpoint_does_not_resume_under_another_choice_policy() {
+    let label = "choices-policy-change";
+    let directory = checkpoint_directory(label);
+    let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    run_choices_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: false,
+            on_top_progress: false,
+            on_stall: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let path = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .unwrap();
+    TEST_CHOICE_POLICY.with(|policy| {
+        policy.set(Some(ChoicePolicy {
+            profiles: ChoiceProfiles::Fixed(ChoiceProfile::new(CERTAIN, 0)),
+            untried_first: true,
+        }));
+    });
+    let error = run_campaign_checkpointed_with_options(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::SearchCheckpoint {
+            path,
+            expected_sha256: None,
+        },
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions::default(),
+    )
+    .expect_err("a checkpoint resumed under another choice policy")
+    .to_string();
+    TEST_CHOICE_POLICY.with(|policy| policy.set(None));
+    assert!(
+        error.contains("search checkpoint policies differ: choice_policy"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
 }

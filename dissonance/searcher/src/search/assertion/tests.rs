@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 
 use super::*;
 use crate::search::archive::{ArchiveKey, KeyShape};
+use crate::search::choice::{Choice, ChoiceRecord};
 
 #[derive(Clone, Copy, Default)]
 struct Walk {
@@ -780,6 +781,7 @@ fn walk_recording() -> (Record, Vec<RecordedJob>, Vec<RecordedAction<u8>>) {
         failed: false,
         cost: frames.len() as u64,
         frames,
+        choices: Vec::new(),
     };
     let actions = vec![
         action(1, 1, walk_frames(0, 0, 16)),
@@ -889,6 +891,10 @@ fn a_cut_records_file_reads_as_its_whole_jobs_and_a_later_file_replaces_the_jobs
             failed: false,
             cost: 17,
             frames: walk_frames(1, 48, 64),
+            choices: vec![
+                ChoiceRecord::new(0, vec![0, 2, 5], 2, Choice::Option(5)),
+                ChoiceRecord::new(1, vec![0, 2], 2, Choice::Option(5)),
+            ],
         }))
         .collect();
     let earlier = Recording::<u8>::from_bytes(&bytes[..bytes.len() - 1]).unwrap();
@@ -897,6 +903,15 @@ fn a_cut_records_file_reads_as_its_whole_jobs_and_a_later_file_replaces_the_jobs
     assert_eq!(joined.jobs, 3);
     assert_eq!(joined.actions[..2], actions[..2]);
     assert_eq!(joined.actions[2..], resumed[..]);
+    let fallbacks: Vec<bool> = joined
+        .actions
+        .last()
+        .unwrap()
+        .choices
+        .iter()
+        .map(ChoiceRecord::fell_back)
+        .collect();
+    assert_eq!(fallbacks, [false, true]);
 }
 
 #[test]
@@ -984,6 +999,7 @@ fn a_recorded_action_wider_than_the_record_is_an_error() {
         cost: u64,
         width: u8,
         changes: Vec<Vec<(u8, i64)>>,
+        choices: Vec<ChoiceRecord>,
     }
     let (genesis, _, _) = walk_recording();
     let mut bytes = postcard::to_allocvec(&walk_header(genesis)).unwrap();
@@ -997,6 +1013,7 @@ fn a_recorded_action_wider_than_the_record_is_an_error() {
                 cost: 1,
                 width,
                 changes: vec![Vec::new()],
+                choices: Vec::new(),
             }],
         })
         .unwrap(),
@@ -1062,4 +1079,36 @@ fn every_archive_preference_comparison_is_at_a_listed_site() {
     ] {
         assert!(!other.contains("preference_cmp("));
     }
+}
+
+#[test]
+fn catalog_choice_sites_round_trip_and_reject_duplicates() {
+    use crate::search::choice::ChoiceSite;
+    let site = |name: &str, labels: &[&str]| {
+        ChoiceSite::new(name, labels.iter().map(|label| (*label).to_owned()))
+    };
+    assert!(catalog().choices().is_empty());
+    let declared = catalog()
+        .with_choices(vec![
+            site("buttons", &["right", "right_b"]),
+            site("count", &["1", "2"]),
+        ])
+        .unwrap();
+    let json = serde_json::to_string(&declared).unwrap();
+    let decoded: Catalog = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, declared);
+    let bytes = postcard::to_allocvec(&declared).unwrap();
+    assert_eq!(postcard::from_bytes::<Catalog>(&bytes).unwrap(), declared);
+    assert_eq!(decoded.choices()[1].labels, ["1", "2"]);
+    assert!(
+        catalog()
+            .with_choices(vec![site("buttons", &["a"]), site("buttons", &["b"])])
+            .is_err()
+    );
+    assert!(
+        catalog()
+            .with_choices(vec![site("buttons", &["a", "a"])])
+            .is_err()
+    );
+    assert!(catalog().with_choices(vec![site("buttons", &[])]).is_err());
 }

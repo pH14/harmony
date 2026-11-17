@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::search::{
+    choice::ChoiceProfile,
     continuation::{Continuation, ContinuationBank},
     cost::ShrinkCost,
     draw::SUFFIX_DOUBLING_LIMIT,
@@ -697,6 +698,12 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct EntryChoices {
+    profile: Option<ChoiceProfile>,
+    jobs: u32,
+}
+
 pub(crate) struct CampaignSpliceTail<A> {
     pub(crate) donor_id: usize,
     pub(crate) leaf_id: usize,
@@ -769,6 +776,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     keyframe_id: Vec<u64>,
     keyframe_dependents: Vec<usize>,
     referenced: Vec<bool>,
+    choices: Option<Vec<EntryChoices>>,
     drop_hand: usize,
     entry_drops: u64,
     memory_limit: Option<usize>,
@@ -1393,6 +1401,7 @@ where
             keyframe_id: Vec::new(),
             keyframe_dependents: Vec::new(),
             referenced: Vec::new(),
+            choices: None,
             drop_hand: 0,
             entry_drops: 0,
             memory_limit: None,
@@ -1884,6 +1893,10 @@ where
         self.keyframe_dependents =
             retain_marked(std::mem::take(&mut self.keyframe_dependents), &keep);
         self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
+        self.choices = self
+            .choices
+            .take()
+            .map(|choices| retain_marked(choices, &keep));
         self.drop_hand = 0;
 
         self.id_to_index.clear();
@@ -2197,6 +2210,9 @@ where
             column(&self.keyframe_id, entries),
             column(&self.keyframe_dependents, entries),
             column(&self.referenced, entries),
+            self.choices
+                .as_ref()
+                .map_or(0, |choices| column(choices, entries)),
             heap::vec_bytes::<usize>(entries),
             heap::btree_bytes::<u64, usize>(1, entries),
         ]
@@ -3140,6 +3156,9 @@ where
         self.keyframe_dependents[keyframe_index] =
             self.keyframe_dependents[keyframe_index].saturating_add(1);
         self.referenced.push(true);
+        if let Some(choices) = self.choices.as_mut() {
+            choices.push(EntryChoices::default());
+        }
         if inherited_keyframe.is_some() {
             self.resident_snapshot_order.push_back(id);
         }
@@ -3924,6 +3943,37 @@ where
             interval.draws = interval.draws.saturating_add(1);
             interval.continuation = interval.continuation.saturating_add(1);
         }
+    }
+
+    pub(crate) fn enable_choices(&mut self) {
+        let entries = self.entries.len();
+        self.choices
+            .get_or_insert_with(Vec::new)
+            .resize(entries, EntryChoices::default());
+    }
+
+    pub(crate) fn choice_profile(&self, id: usize) -> Option<ChoiceProfile> {
+        self.choices
+            .as_ref()
+            .and_then(|choices| choices.get(id))
+            .and_then(|entry| entry.profile)
+    }
+
+    pub(crate) fn set_choice_profile(&mut self, id: usize, profile: ChoiceProfile) {
+        if let Some(entry) = self
+            .choices
+            .as_mut()
+            .and_then(|choices| choices.get_mut(id))
+        {
+            entry.profile = Some(profile);
+        }
+    }
+
+    pub(crate) fn take_choice_job(&mut self, id: usize) -> Option<u32> {
+        let entry = self.choices.as_mut()?.get_mut(id)?;
+        let ordinal = entry.jobs;
+        entry.jobs = entry.jobs.saturating_add(1);
+        Some(ordinal)
     }
 
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {

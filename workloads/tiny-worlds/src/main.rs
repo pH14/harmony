@@ -4,8 +4,8 @@ use searcher::search::draw::draw_mixture_from_identifier;
 use serde::Deserialize;
 use std::{error::Error, io::Read};
 use tiny_worlds::{
-    Hand, Keep, KeyKind, Scale, SearchSettings, Strategic, Workload, run_kept, run_scaled,
-    worlds::World,
+    Hand, Keep, KeyKind, Scale, SearchSettings, Strategic, Workload, root_jobs, run_kept,
+    run_scaled, worlds::World,
 };
 
 #[derive(Deserialize)]
@@ -27,6 +27,8 @@ struct Request {
     workers: Option<u32>,
     #[serde(default)]
     search: Option<SearchRequest>,
+    #[serde(default)]
+    root_jobs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +67,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     workload.config.validate()?;
     if !workload.config.reachable()? {
         return Err("world objective is unreachable".into());
+    }
+    if let Some(job_budget) = request.root_jobs {
+        if request.scale.is_some() || request.verify || request.key != KeyKind::Hand {
+            return Err("root jobs need no scale, verify false and key hand".into());
+        }
+        println!("{}", root_jobs(&workload, request.seed, job_budget)?);
+        return Ok(());
     }
     if request.scale.is_some() {
         if request.workers.is_some() {

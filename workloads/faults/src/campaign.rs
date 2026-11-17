@@ -1710,6 +1710,7 @@ mod tests {
                 ceiling: None,
                 incumbent: None,
                 shrink: None,
+                choices: None,
             });
             let line = serde_json::to_string(&record).unwrap();
             assert!(line.contains(&format!("\"digest\":\"{digest}\"")));

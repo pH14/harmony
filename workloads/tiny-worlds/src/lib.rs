@@ -14,6 +14,7 @@ pub mod held;
 pub mod map;
 pub mod maze;
 pub mod passive_clock;
+pub mod picks;
 pub mod resource;
 pub mod route;
 pub mod targets;
@@ -111,6 +112,7 @@ use searcher::search::{
         WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
+    choice::{ChoicePlan, ChoicePolicy, ChoiceSite, Chooser},
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
@@ -536,6 +538,11 @@ impl<K: Keying> InputPolicy for Workload<K> {
             "tiny_actions".into(),
             if matches!(self.config, World::PassiveClock(_)) {
                 "weighted_hold_bands_v1".into()
+            } else if let World::Picks(w) = &self.config {
+                match w.draw {
+                    picks::Draw::Flat => "picks-flat-eight-v1".into(),
+                    picks::Draw::Choices(_) => "picks-choices-v1".into(),
+                }
             } else if let World::Crossing(w) = &self.config
                 && w.action_denominator.is_some()
             {
@@ -563,6 +570,18 @@ impl<K: Keying> InputPolicy for Workload<K> {
         }
         Ok(())
     }
+    fn choice_sites(&self, _: &()) -> Vec<ChoiceSite> {
+        match &self.config {
+            World::Picks(w) if w.choices().is_some() => w.sites(),
+            _ => Vec::new(),
+        }
+    }
+    fn choice_policy(&self, _: &()) -> ChoicePolicy {
+        match &self.config {
+            World::Picks(w) => w.choices().unwrap_or_default(),
+            _ => ChoicePolicy::default(),
+        }
+    }
     fn sample_alphabet(
         &self,
         _: &(),
@@ -574,6 +593,14 @@ impl<K: Keying> InputPolicy for Workload<K> {
         }
         if let World::Crossing(w) = &self.config {
             return Ok(w.sample(rand));
+        }
+        if let World::Picks(w) = &self.config {
+            return Ok(match w.draw {
+                picks::Draw::Flat => {
+                    rand.below(NonZeroUsize::new(usize::from(picks::LABELS)).unwrap()) as u8
+                }
+                picks::Draw::Choices(_) => picks::ASK,
+            });
         }
         Ok(self
             .config
@@ -637,6 +664,25 @@ impl<K: Keying> TargetExecution for Workload<K> {
     }
     fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
+    }
+    fn resolve_action(
+        &self,
+        target: &Target,
+        action: &u8,
+        chooser: &mut Chooser,
+    ) -> Result<u8, Box<dyn Error>> {
+        match (&self.config, target.state) {
+            (World::Picks(w), State::Picks(s)) if *action == picks::ASK => {
+                let depth = s.depth.min(w.depth - 1);
+                let pick = w.pick(depth);
+                Ok(picks::Config::encode(chooser.choose(
+                    u16::from(depth),
+                    &pick.offered,
+                    pick.default,
+                )))
+            }
+            _ => Ok(*action),
+        }
     }
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
@@ -710,8 +756,11 @@ impl<K: Keying> Evaluation for Workload<K> {
     fn key_shape(&self) -> KeyShape {
         self.keying.shape()
     }
-    fn execution_disposition(&self, _: &Target) -> ExecutionDisposition {
-        ExecutionDisposition::Runnable
+    fn execution_disposition(&self, target: &Target) -> ExecutionDisposition {
+        match target.state {
+            State::Picks(s) if s.dead => ExecutionDisposition::Terminal,
+            _ => ExecutionDisposition::Runnable,
+        }
     }
     fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
         Ok(self.config.goal(target.state))
@@ -967,7 +1016,8 @@ impl<K: Keying> Evaluation for Workload<K> {
                     }
                     e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
-                (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
+                (World::Graph(_), State::Graph(_), State::Graph(_))
+                | (World::Picks(_), State::Picks(_), State::Picks(_)) => {}
                 (World::Fork(w), State::Fork(_), State::Fork(after)) => {
                     e.fork_first.resize(3, None);
                     let reached = [
@@ -1186,6 +1236,78 @@ pub fn run_kept(
     report["keep"] = serde_json::to_value(keep)?;
     report["key"] = serde_json::to_value(key)?;
     Ok(report)
+}
+
+pub const ROOT_JOB_ACTIONS: [usize; 3] = [64, 256, 1024];
+
+pub fn root_jobs<K: Keying>(
+    workload: &Workload<K>,
+    seed: u64,
+    job_budget: u64,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    workload.config.validate()?;
+    if job_budget == 0 {
+        return Err("root jobs need a job budget".into());
+    }
+    let policy = if workload.choice_sites(&()).is_empty() {
+        None
+    } else {
+        Some(workload.choice_policy(&()).validate()?)
+    };
+    let root_profile = policy.map(|policy| policy.root_profile(seed));
+    let mut target = workload.new_target()?;
+    let mut rand = RomuDuoJrRand::with_seed(seed);
+    let (mut jobs, mut actions, mut terminal_jobs) = (0_u64, 0_u64, 0_u64);
+    while jobs < job_budget {
+        workload.reset(&mut target);
+        let mutation_seed = rand.next_u64();
+        let mut draw = RomuDuoJrRand::with_seed(mutation_seed);
+        let mut chooser = policy.zip(root_profile).map(|(policy, profile)| {
+            Chooser::new(&ChoicePlan::new(
+                &policy,
+                profile,
+                mutation_seed,
+                policy
+                    .untried_first
+                    .then(|| u32::try_from(jobs).unwrap_or(u32::MAX)),
+                Vec::new(),
+            ))
+        });
+        let mut reached = false;
+        let mut previous = None;
+        for _ in 0..ROOT_JOB_ACTIONS[usize::try_from(jobs % 3)?] {
+            let drawn = workload.sample_alphabet(&(), previous.as_ref(), &mut draw)?;
+            let action = match chooser.as_mut() {
+                Some(chooser) => workload.resolve_action(&target, &drawn, chooser)?,
+                None => drawn,
+            };
+            workload.apply_action(&mut target, &action, &mut reached)?;
+            actions += 1;
+            previous = Some(action);
+            if reached {
+                break;
+            }
+            if workload.execution_disposition(&target).is_terminal() {
+                terminal_jobs += 1;
+                break;
+            }
+        }
+        jobs += 1;
+        if reached {
+            break;
+        }
+    }
+    let reached = workload.config.goal(target.state);
+    Ok(serde_json::json!({
+        "seed": seed,
+        "jobs": jobs,
+        "jobs_to_goal": reached.then_some(jobs),
+        "censored": !reached,
+        "actions": actions,
+        "terminal_jobs": terminal_jobs,
+        "root_profile": root_profile,
+        "job_actions": ROOT_JOB_ACTIONS,
+    }))
 }
 
 pub fn run(

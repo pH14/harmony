@@ -4,6 +4,8 @@ use std::{collections::BTreeMap, error::Error, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
+use crate::search::choice::ChoiceSite;
+
 pub const RECORD_SLOTS: usize = 96;
 pub const EACH_FIELDS: usize = 4;
 pub const NONE: i64 = i64::MIN;
@@ -344,6 +346,7 @@ pub struct Declared {
 pub struct Catalog {
     signals: Vec<Signal>,
     declarations: Vec<Declared>,
+    choices: Vec<ChoiceSite>,
     #[serde(skip)]
     by_name: BTreeMap<String, usize>,
 }
@@ -352,12 +355,15 @@ pub struct Catalog {
 struct CatalogParts {
     signals: Vec<Signal>,
     declarations: Vec<Declared>,
+    choices: Vec<ChoiceSite>,
 }
 
 impl<'de> Deserialize<'de> for Catalog {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let parts = CatalogParts::deserialize(deserializer)?;
-        Self::index(parts.signals, parts.declarations).map_err(serde::de::Error::custom)
+        Self::index(parts.signals, parts.declarations)
+            .and_then(|catalog| catalog.with_choices(parts.choices))
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -419,12 +425,44 @@ impl Catalog {
         Ok(Self {
             signals,
             declarations,
+            choices: Vec::new(),
             by_name,
         })
     }
 
+    pub fn with_choices(mut self, choices: Vec<ChoiceSite>) -> Result<Self, Box<dyn Error>> {
+        if choices.len() > usize::from(u16::MAX) {
+            return Err("the catalog declares more choice sites than a site id holds".into());
+        }
+        let mut names = BTreeMap::new();
+        for site in &choices {
+            if site.labels.is_empty() || site.labels.len() > usize::from(u16::MAX) {
+                return Err(format!("choice site {} declares no usable labels", site.name).into());
+            }
+            if names.insert(site.name.as_str(), ()).is_some() {
+                return Err(format!("choice site {} is declared twice", site.name).into());
+            }
+            let mut labels = BTreeMap::new();
+            if site
+                .labels
+                .iter()
+                .any(|label| labels.insert(label.as_str(), ()).is_some())
+            {
+                return Err(format!("choice site {} repeats a label", site.name).into());
+            }
+        }
+        self.choices = choices;
+        Ok(self)
+    }
+
     pub fn reindex(self) -> Result<Self, Box<dyn Error>> {
-        Self::index(self.signals, self.declarations)
+        let choices = self.choices;
+        Self::index(self.signals, self.declarations)?.with_choices(choices)
+    }
+
+    #[must_use]
+    pub fn choices(&self) -> &[ChoiceSite] {
+        &self.choices
     }
 
     #[must_use]
