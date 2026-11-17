@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use machine::nes::WRAM_SIZE;
 #[cfg(unix)]
-use machine::{nes::WRAM_SIZE, quicknes::QuickNesMachine};
+use machine::quicknes::QuickNesMachine;
 
 #[cfg(all(
     feature = "consonance",
