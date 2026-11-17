@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     archive::RetentionPolicy,
     campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
+    choice::{ChoicePlan, Chooser},
     cost::ShrinkCost,
 };
 
@@ -125,6 +126,7 @@ pub struct RolloutStop {
     cancel: Option<Arc<AtomicBool>>,
     ceiling: Option<JobCeiling>,
     candidates: bool,
+    choices: Option<ChoicePlan>,
 }
 
 impl RolloutStop {
@@ -134,7 +136,18 @@ impl RolloutStop {
             cancel: None,
             ceiling: None,
             candidates: true,
+            choices: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_choices(self, choices: Option<ChoicePlan>) -> Self {
+        Self { choices, ..self }
+    }
+
+    #[must_use]
+    pub const fn choices(&self) -> Option<&ChoicePlan> {
+        self.choices.as_ref()
     }
 
     #[must_use]
@@ -170,6 +183,14 @@ impl RolloutStop {
 }
 
 pub trait Rollout<G: Workload + ?Sized> {
+    fn resolve(
+        &mut self,
+        action: &G::Action,
+        chooser: &mut Chooser,
+    ) -> Result<G::Action, Box<dyn Error>> {
+        let _ = chooser;
+        Ok(*action)
+    }
     fn apply(
         &mut self,
         action: &G::Action,
@@ -201,6 +222,14 @@ impl<'a, G: Workload + ?Sized> WorkloadRollout<'a, G> {
 }
 
 impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
+    fn resolve(
+        &mut self,
+        action: &G::Action,
+        chooser: &mut Chooser,
+    ) -> Result<G::Action, Box<dyn Error>> {
+        self.workload.resolve_action(self.target, action, chooser)
+    }
+
     fn apply(
         &mut self,
         action: &G::Action,
@@ -304,7 +333,13 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         });
     }
     let mut running = stop.ceiling.map(|ceiling| ceiling.start);
-    for action in suffix {
+    let mut chooser = stop.choices.as_ref().map(Chooser::new);
+    for drawn in suffix {
+        let resolved = match chooser.as_mut() {
+            Some(chooser) => target.resolve(drawn, chooser)?,
+            None => *drawn,
+        };
+        let action = &resolved;
         target.apply(action, &mut milestones)?;
         let cost = target.shrink_cost(action);
         let bound = target.remaining_cost_bound();

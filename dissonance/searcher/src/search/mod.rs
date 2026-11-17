@@ -5,6 +5,7 @@ pub mod assertion;
 pub mod campaign;
 mod chain;
 pub mod checkpoint;
+pub mod choice;
 mod continuation;
 pub mod cost;
 pub mod draw;

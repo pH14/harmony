@@ -952,6 +952,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                     .iter()
                     .flat_map(|observation| observation.records.iter().copied())
                     .collect(),
+                choices: Vec::new(),
             })?;
         }
         if let Some(progress) = watermark(&action.observations) {

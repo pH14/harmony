@@ -301,6 +301,7 @@ fn family(world: &World) -> &'static str {
         World::PassiveClock(_) => "passive_clock",
         World::Targets(_) => "targets",
         World::Fork(_) => "fork",
+        World::Picks(_) => "picks",
     }
 }
 

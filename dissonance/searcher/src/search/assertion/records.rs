@@ -10,8 +10,9 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::catalog::{Catalog, RECORD_SLOTS, Record};
+use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v3";
+pub const RECORDS_FORMAT: &str = "assertion-records-v4";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -36,6 +37,7 @@ pub struct RecordedAction<A> {
     pub failed: bool,
     pub cost: u64,
     pub frames: Vec<Record>,
+    pub choices: Vec<ChoiceRecord>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -51,6 +53,7 @@ struct Encoded<A> {
     cost: u64,
     width: u8,
     changes: Vec<Vec<(u8, i64)>>,
+    choices: Vec<ChoiceRecord>,
 }
 
 impl<A: Clone> Encoded<A> {
@@ -81,6 +84,7 @@ impl<A: Clone> Encoded<A> {
             cost: recorded.cost,
             width: u8::try_from(width).unwrap_or(u8::MAX),
             changes,
+            choices: recorded.choices.clone(),
         }
     }
 }
@@ -110,6 +114,7 @@ impl<A> Encoded<A> {
             failed: self.failed,
             cost: self.cost,
             frames,
+            choices: self.choices,
         })
     }
 }

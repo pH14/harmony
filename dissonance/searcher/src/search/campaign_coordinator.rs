@@ -35,6 +35,7 @@ use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
 };
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
+use crate::search::choice::ChoicePlan;
 use crate::search::cost::ShrinkCost;
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
@@ -60,6 +61,7 @@ pub struct JobSpec<G: CampaignTypes + ?Sized> {
     pub suffix: Vec<G::Action>,
     pub ceiling: Option<JobCeiling>,
     pub candidates: bool,
+    pub choices: Option<ChoicePlan>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -96,7 +98,8 @@ pub fn run_job<G: Workload>(
     let stop = RolloutStop::new(config.stop_rollout_on_objective)
         .with_cancel(cancel)
         .with_ceiling(job.ceiling)
-        .with_candidates(job.candidates);
+        .with_candidates(job.candidates)
+        .with_choices(job.choices.clone());
     let work_before = workload.execution_work(target);
     let result = workload.execute_job_certified(
         &config.run,
@@ -479,6 +482,7 @@ where
                     suffix: job.spec.suffix.clone(),
                     ceiling: job.spec.ceiling,
                     candidates: job.spec.candidates,
+                    choices: job.spec.choices.clone(),
                 },
             );
             if coordinator.checkpoints.is_some() {
@@ -1214,6 +1218,7 @@ where
             core.archive
                 .record_selection(parent_index, &pending_job.selector);
         }
+        core.admit_choice_profile(pending_job.choices.as_ref(), parent_index, &decisions);
         let retained_ids = retained_archive_indexes(core, &decisions);
         let new_cell_descendant = retained_ids
             .iter()
@@ -1324,6 +1329,7 @@ where
             ceiling: pending_job.ceiling,
             shrink: pending_job.shrink.map(Box::new),
             incumbent,
+            choices: pending_job.choices.as_ref().map(ChoicePlan::record),
         }))?;
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns
@@ -1494,6 +1500,7 @@ where
                             suffix: job.suffix,
                             ceiling,
                             candidates: job.candidates,
+                            choices: None,
                         },
                         PendingJob {
                             snapshot_id,
@@ -1515,6 +1522,7 @@ where
                             planned_finish: 0,
                             ceiling,
                             shrink: Some(job.record),
+                            choices: None,
                         },
                     )));
                 }
@@ -1562,6 +1570,7 @@ where
                     suffix,
                     ceiling,
                     candidates: true,
+                    choices: None,
                 },
                 PendingJob {
                     snapshot_id,
@@ -1583,6 +1592,7 @@ where
                     planned_finish: 0,
                     ceiling,
                     shrink,
+                    choices: None,
                 },
             )));
         }
@@ -1665,9 +1675,8 @@ where
             let duration_remaining_work = duration_draw.and(remaining_work);
             let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
             let previous = core.archive.last_action(parent_index);
-            let suffix_limit = spliced
-                .is_none()
-                .then(|| core.suffix_limit(parent_id, parent_index));
+            let drawn = spliced.is_none();
+            let suffix_limit = drawn.then(|| core.suffix_limit(parent_id, parent_index));
             let mut suffix = match (spliced, duration_draw) {
                 (Some(tail), _) => tail,
                 (None, Some(draw)) => workload.expand_suffix_duration(
@@ -1730,6 +1739,13 @@ where
                 continue;
             }
             *reserved = reserved.saturating_add(1);
+            let choices = core.choice_plan(
+                workload,
+                parent_index,
+                mutation_seed,
+                config.campaign_seed,
+                drawn,
+            );
             core.start_suffix_job(parent_id, suffix_limit);
             core.archive.pin_metadata(parent_id)?;
             let (snapshot, replay, replay_certificates, snapshot_id) =
@@ -1747,6 +1763,7 @@ where
                     suffix,
                     ceiling,
                     candidates: true,
+                    choices: choices.clone(),
                 },
                 PendingJob {
                     snapshot_id,
@@ -1768,6 +1785,7 @@ where
                     planned_finish: 0,
                     ceiling,
                     shrink,
+                    choices,
                 },
             )));
         }

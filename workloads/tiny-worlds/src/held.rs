@@ -14,6 +14,7 @@ use searcher::search::{
         WorkloadPolicies, default_window, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
+    choice::{Choice, ChoicePolicy, ChoiceSite, Chooser},
     draw::draw_mixture_from_identifier,
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
@@ -42,6 +43,14 @@ const TIME_BUCKET_FRAMES: u32 = 1024;
 const CLOCK_FRAMES: u32 = 1 << 24;
 const MAX_WORK_BUDGET: u64 = 400_000_000;
 const MAX_VERIFIED_WORK_BUDGET: u64 = 20_000_000;
+const ASK: u8 = u8::MAX;
+const DEFAULT: u8 = u8::MAX - 1;
+const DEFAULT_BUTTONS: u8 = RIGHT | B;
+const BUTTONS_SITE: u16 = 0;
+const FRAMES_SITE: u16 = 1;
+const FRAME_LABELS: [u8; 5] = [8, 16, 32, 64, 128];
+const DEFAULT_FRAMES: u8 = 64;
+const FRAMES_ASK: u8 = 0;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Chord {
@@ -55,6 +64,44 @@ pub enum ChordDraw {
     #[default]
     ChangeOneControl,
     Fresh,
+    Choices(ChoicePolicy),
+}
+
+fn chord_labels() -> impl Iterator<Item = u8> {
+    DIRECTIONS
+        .into_iter()
+        .flat_map(|direction| [0, A, B, A | B].map(|face| direction | face))
+}
+
+fn chord_label(buttons: u8) -> Option<u16> {
+    chord_labels()
+        .position(|label| label == buttons)
+        .and_then(|label| u16::try_from(label).ok())
+}
+
+fn label_chord(label: u16) -> Option<u8> {
+    chord_labels().nth(usize::from(label))
+}
+
+fn pressed(buttons: u8) -> u8 {
+    match buttons {
+        ASK | DEFAULT => DEFAULT_BUTTONS,
+        buttons => buttons,
+    }
+}
+
+fn frames(hold: u8) -> u8 {
+    match hold {
+        FRAMES_ASK | DEFAULT => DEFAULT_FRAMES,
+        hold => hold,
+    }
+}
+
+fn frames_label(hold: u8) -> Option<u16> {
+    FRAME_LABELS
+        .iter()
+        .position(|frames| *frames == hold)
+        .and_then(|label| u16::try_from(label).ok())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -262,6 +309,13 @@ impl HeldWorkload {
         match self.chords {
             ChordDraw::Fresh => "fresh",
             ChordDraw::ChangeOneControl => "change_one_control_v1",
+            ChordDraw::Choices(_) => "choices_v1",
+        }
+    }
+    fn duration_identifier(&self) -> &'static str {
+        match self.chords {
+            ChordDraw::Choices(_) => "frames_choice_v1",
+            ChordDraw::Fresh | ChordDraw::ChangeOneControl => "stratified",
         }
     }
 }
@@ -346,7 +400,7 @@ impl InputPolicy for HeldWorkload {
     fn policies(&self, _: &()) -> WorkloadPolicies {
         [
             ("held_chord_draw", self.chord_identifier()),
-            ("held_duration", "stratified"),
+            ("held_duration", self.duration_identifier()),
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value.to_owned()))
@@ -358,6 +412,24 @@ impl InputPolicy for HeldWorkload {
         }
         Ok(())
     }
+    fn choice_sites(&self, _: &()) -> Vec<ChoiceSite> {
+        match self.chords {
+            ChordDraw::Choices(_) => vec![
+                ChoiceSite::new(
+                    "buttons",
+                    chord_labels().map(|buttons| format!("{buttons:#04x}")),
+                ),
+                ChoiceSite::new("frames", FRAME_LABELS.map(|frames| frames.to_string())),
+            ],
+            ChordDraw::Fresh | ChordDraw::ChangeOneControl => Vec::new(),
+        }
+    }
+    fn choice_policy(&self, _: &()) -> ChoicePolicy {
+        match self.chords {
+            ChordDraw::Choices(policy) => policy,
+            ChordDraw::Fresh | ChordDraw::ChangeOneControl => ChoicePolicy::default(),
+        }
+    }
     fn sample_alphabet(
         &self,
         _: &(),
@@ -365,6 +437,12 @@ impl InputPolicy for HeldWorkload {
         rand: &mut RomuDuoJrRand,
     ) -> Result<Chord, Box<dyn Error>> {
         let buttons = match (self.chords, previous) {
+            (ChordDraw::Choices(_), _) => {
+                return Ok(Chord {
+                    buttons: ASK,
+                    hold: FRAMES_ASK,
+                });
+            }
             (ChordDraw::ChangeOneControl, Some(previous)) => {
                 change_one_control(rand, previous.buttons)?
             }
@@ -399,7 +477,7 @@ impl TargetExecution for HeldWorkload {
         target.work
     }
     fn action_cost_fn(&self) -> fn(&Chord) -> u64 {
-        |chord| u64::from(chord.hold)
+        |chord| u64::from(frames(chord.hold))
     }
     fn snapshot_memory_charge(_: &State) -> usize {
         std::mem::size_of::<State>()
@@ -410,10 +488,12 @@ impl TargetExecution for HeldWorkload {
         action: &Chord,
         milestones: &mut bool,
     ) -> Result<(), Box<dyn Error>> {
-        for _ in 0..action.hold {
-            target.state = self.course.step(target.state, action.buttons);
+        let buttons = pressed(action.buttons);
+        let hold = frames(action.hold);
+        for _ in 0..hold {
+            target.state = self.course.step(target.state, buttons);
         }
-        target.work += u64::from(action.hold);
+        target.work += u64::from(hold);
         target.observation = Some(Observation {
             after: target.state,
             work_in_job: target.work,
@@ -424,6 +504,52 @@ impl TargetExecution for HeldWorkload {
     }
     fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
+    }
+    fn resolve_action(
+        &self,
+        _: &Target,
+        action: &Chord,
+        chooser: &mut Chooser,
+    ) -> Result<Chord, Box<dyn Error>> {
+        let mut resolved = *action;
+        if action.buttons == ASK {
+            let offered: Vec<u16> = (0..).take(chord_labels().count()).collect();
+            let default = chord_label(DEFAULT_BUTTONS).ok_or("the default chord has no label")?;
+            resolved.buttons = match chooser.choose(BUTTONS_SITE, &offered, default) {
+                Choice::Ask | Choice::Default => DEFAULT,
+                Choice::Option(label) => label_chord(label).ok_or("chord label out of range")?,
+            };
+        }
+        if action.hold == FRAMES_ASK {
+            let offered: Vec<u16> = (0..).take(FRAME_LABELS.len()).collect();
+            let default = frames_label(DEFAULT_FRAMES).ok_or("the default hold has no label")?;
+            resolved.hold = match chooser.choose(FRAMES_SITE, &offered, default) {
+                Choice::Ask | Choice::Default => DEFAULT,
+                Choice::Option(label) => *FRAME_LABELS
+                    .get(usize::from(label))
+                    .ok_or("hold label out of range")?,
+            };
+        }
+        Ok(resolved)
+    }
+    fn action_choices(&self, action: &Chord) -> Vec<(u16, Choice)> {
+        if !matches!(self.chords, ChordDraw::Choices(_)) {
+            return Vec::new();
+        }
+        let buttons = match action.buttons {
+            ASK => None,
+            DEFAULT => Some(Choice::Default),
+            buttons => chord_label(buttons).map(Choice::Option),
+        };
+        let hold = match action.hold {
+            FRAMES_ASK => None,
+            DEFAULT => Some(Choice::Default),
+            hold => frames_label(hold).map(Choice::Option),
+        };
+        [(BUTTONS_SITE, buttons), (FRAMES_SITE, hold)]
+            .into_iter()
+            .filter_map(|(site, choice)| choice.map(|choice| (site, choice)))
+            .collect()
     }
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
@@ -689,8 +815,8 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
     if let Some(witness) = &report.objective_witness {
         let mut state = State::default();
         for chord in &witness.actions {
-            for _ in 0..chord.hold {
-                state = workload.course.step(state, chord.buttons);
+            for _ in 0..frames(chord.hold) {
+                state = workload.course.step(state, pressed(chord.buttons));
             }
         }
         if !state.goal {
@@ -746,7 +872,13 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for State {
 
 #[cfg(test)]
 mod tests {
-    use super::{A, B, ChordDraw, Course, RIGHT, Request, State, change_one_control, run};
+    use super::{
+        A, ASK, B, BUTTONS_SITE, Chord, ChordDraw, Course, DEFAULT, DEFAULT_FRAMES, FRAMES_ASK,
+        FRAMES_SITE, HeldWorkload, RIGHT, Request, State, change_one_control, chord_label, frames,
+        run,
+    };
+    use searcher::search::campaign::{InputPolicy, TargetExecution};
+    use searcher::search::choice::{Choice, Chooser};
     use searcher::search::rand::RomuDuoJrRand;
 
     fn course() -> Course {
@@ -821,8 +953,66 @@ mod tests {
     }
 
     #[test]
+    fn a_choices_action_asks_the_chord_and_then_its_length() {
+        let workload = HeldWorkload {
+            course: course(),
+            chords: ChordDraw::Choices(searcher::search::choice::ChoicePolicy::default()),
+        };
+        assert_eq!(workload.choice_sites(&()).len(), 2);
+        let asked = Chord {
+            buttons: ASK,
+            hold: FRAMES_ASK,
+        };
+        assert_eq!(workload.action_choices(&asked), Vec::new());
+        let plan = searcher::search::choice::ChoicePlan::new(
+            &searcher::search::choice::ChoicePolicy::default(),
+            searcher::search::choice::ChoiceProfile::new(0, 0),
+            7,
+            None,
+            Vec::new(),
+        );
+        let target = workload.new_target().unwrap();
+        let resolved = workload
+            .resolve_action(&target, &asked, &mut Chooser::new(&plan))
+            .unwrap();
+        assert_eq!(
+            resolved,
+            Chord {
+                buttons: DEFAULT,
+                hold: DEFAULT
+            }
+        );
+        assert_eq!(frames(resolved.hold), DEFAULT_FRAMES);
+        assert_eq!(
+            workload.action_choices(&resolved),
+            [
+                (BUTTONS_SITE, Choice::Default),
+                (FRAMES_SITE, Choice::Default)
+            ]
+        );
+        let deviated = Chord {
+            buttons: RIGHT | A,
+            hold: 16,
+        };
+        assert_eq!(
+            workload.action_choices(&deviated),
+            [
+                (
+                    BUTTONS_SITE,
+                    Choice::Option(chord_label(RIGHT | A).unwrap())
+                ),
+                (FRAMES_SITE, Choice::Option(1))
+            ]
+        );
+    }
+
+    #[test]
     fn both_chord_draws_replay_their_own_streams() {
-        for chords in [ChordDraw::ChangeOneControl, ChordDraw::Fresh] {
+        for chords in [
+            ChordDraw::ChangeOneControl,
+            ChordDraw::Fresh,
+            ChordDraw::Choices(searcher::search::choice::ChoicePolicy::default()),
+        ] {
             let report = run(&Request {
                 course: Course {
                     ground_px: 64,

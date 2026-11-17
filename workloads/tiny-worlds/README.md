@@ -136,6 +136,7 @@ representation or action choice affects the same world transitions.
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
 | `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 | `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
+| `picks` | Make `depth` state-dependent picks in a row; an offered wrong pick ends the run. | None: `broken` changes nothing, and `draw` selects the flat draw or driver choices. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -454,6 +455,35 @@ live route until the live route passes them. The control keys every side room
 as its position. `evidence.fork_first` gives the first work on the live route,
 past the dead route's last position, and at the goal.
 
+## Twelve picks
+
+The picks world exercises driver choices (searcher README, "Driver choices").
+A run makes `depth` (1–16) picks in a row. At each depth the layout, drawn from
+`seed`, offers 2 to 6 of 8 labels, one of them right, and declares a default
+label that is right at `default_right` of the depths and an offered wrong label
+at the others. The right pick advances one depth; an offered wrong pick ends the
+run, and the dead state is terminal. The tier and the place are the depth, and
+the dead state has its own place.
+
+`draw` selects how a pick is drawn. `flat` draws a label uniformly from all 8
+before the job, as the other worlds draw; an unoffered label does nothing.
+`{"choices": POLICY}` declares a choice site per depth, `pick-0` to
+`pick-{depth-1}`, because a label means something different at each depth and a
+held answer from one depth says nothing about the next. Each action asks
+`choose` at its depth's site with the offered labels and the default; `POLICY`
+is the searcher's
+`ChoicePolicy` (`profiles` `inherited` or `{"fixed": {"contrary": c, "hold":
+h}}`, and `untried_first`). The action byte holds the answer: a label, 254 for
+the default or 255 for an unresolved slot.
+
+`root_jobs`, an optional request field, replaces the campaign with random jobs
+from the start state: jobs of 64, 256 and 1,024 actions in turn until the goal
+or the given number of jobs. With choices, the root's profile is drawn from the
+seed, each job inherits it and redraws one time in eight, and the job index is
+the untried ordinal of the root's first choice. The report gives `jobs`,
+`jobs_to_goal`, `censored`, `actions`, `terminal_jobs` and `root_profile`.
+It needs key `hand`, no `scale` and `verify` false.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
@@ -474,6 +504,7 @@ family's and passive clock's reachability hold by construction.
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
+| Picks | `depth` 1–16; any `seed`; `default_right` 0–`depth`; `draw` is `flat` or `{"choices": POLICY}`. Reachability holds by construction. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
@@ -522,9 +553,15 @@ progress tier is the 128-pixel band. The place is the 16-pixel column, the
 height and the 1,024-frame time bucket, and fewer frames spent is the
 preference.
 
-`chords` is `change_one_control`, the SMB draw and the default, or `fresh`,
-which draws whole new chords as the control. Holds are 2–12 or 96–120 frames,
-as in SMB. On 24 pits (16–112 pixels three times, 128-pixel ground), four
+`chords` is `change_one_control`, the SMB draw and the default, `fresh`,
+which draws whole new chords as the control, or `{"choices": POLICY}`. The
+first two hold each chord 2–12 or 96–120 frames, as in SMB. Under choices an
+action asks two sites: `buttons`, whose 36 labels are the nine directions with
+each of the four A and B combinations, default right and B; then `frames`, the
+action's length, with labels 8, 16, 32, 64 and 128, default 64. A running jump
+over the wider pits needs A held within one job, so the length is a choice
+rather than a fixed short action. Hold and CONTRARY come from the searcher's
+profile. On 24 pits (16–112 pixels three times, 128-pixel ground), four
 workers and eight seeds, change-one-control reaches the goal at a median of
 0.34 million frames with 1,087 live entries. Fresh chords take 0.91 million
 frames with 1,862 live entries.

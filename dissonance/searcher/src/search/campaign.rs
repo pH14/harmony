@@ -24,6 +24,9 @@ use crate::search::chain::{Chain, State};
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
+use crate::search::choice::{
+    Choice, ChoicePlan, ChoicePlanRecord, ChoicePolicy, ChoiceSite, Chooser,
+};
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::cost::ShrinkCost;
 use crate::search::draw::{
@@ -380,6 +383,15 @@ pub trait InputPolicy: CampaignTypes {
         rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>>;
 
+    fn choice_sites(&self, run: &Self::Run) -> Vec<ChoiceSite> {
+        let _ = run;
+        Vec::new()
+    }
+    fn choice_policy(&self, run: &Self::Run) -> ChoicePolicy {
+        let _ = run;
+        ChoicePolicy::default()
+    }
+
     fn simpler_actions(&self, run: &Self::Run, action: &Self::Action) -> Vec<Self::Action> {
         let _ = (run, action);
         Vec::new()
@@ -584,6 +596,19 @@ pub trait TargetExecution: CampaignTypes {
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     fn snapshot_retention() -> Option<Box<dyn SnapshotRetention<Self::Snapshot>>> {
         None
+    }
+    fn resolve_action(
+        &self,
+        target: &Self::Target,
+        action: &Self::Action,
+        chooser: &mut Chooser,
+    ) -> Result<Self::Action, Box<dyn Error>> {
+        let _ = (target, chooser);
+        Ok(*action)
+    }
+    fn action_choices(&self, action: &Self::Action) -> Vec<(u16, Choice)> {
+        let _ = action;
+        Vec::new()
     }
     fn apply_action(
         &self,
@@ -1036,6 +1061,8 @@ pub struct CampaignStreamHeader<T> {
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
     pub mixture_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_policy: Option<String>,
     #[serde(flatten)]
     pub workload_policies: WorkloadPolicies,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1124,6 +1151,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub shrink: Option<Box<ShrinkSelectionRecord>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub incumbent: Option<CampaignIncumbentRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<ChoicePlanRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1263,6 +1292,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
     pub mixture_policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_policy: Option<String>,
     #[serde(flatten)]
     pub workload_policies: WorkloadPolicies,
     pub retention_policy: String,
@@ -1513,7 +1544,7 @@ fn continuation_arrival<G: Workload>(
         })
 }
 
-fn retained_archive_indexes<G: Workload>(
+fn retained_archive_indexes<G: Workload + ?Sized>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Vec<usize> {
@@ -1818,6 +1849,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     root: usize,
     candidate_incumbent: Option<(Input<G::Action>, ShrinkCost)>,
     shrink: Option<minimize::ShrinkState>,
+    choices: Option<ChoicePolicy>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1829,6 +1861,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::with_shape(workload.action_cost_fn(), workload.key_shape());
         archive.max_entries = archive_entry_limit;
+        let choices = (!workload.choice_sites(run).is_empty()).then(|| workload.choice_policy(run));
+        if choices.is_some() {
+            archive.enable_choices();
+        }
         archive.set_snapshot_retention(G::snapshot_retention());
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
@@ -1867,6 +1903,56 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             root: 0,
             candidate_incumbent: None,
             shrink: None,
+            choices,
+        }
+    }
+
+    pub(crate) fn choice_plan(
+        &mut self,
+        workload: &G,
+        parent_index: usize,
+        mutation_seed: u64,
+        campaign_seed: u64,
+        untried: bool,
+    ) -> Option<ChoicePlan> {
+        let policy = self.choices?;
+        let parent = self
+            .archive
+            .choice_profile(parent_index)
+            .unwrap_or_else(|| policy.root_profile(campaign_seed));
+        let untried = if policy.untried_first && untried {
+            self.archive.take_choice_job(parent_index)
+        } else {
+            None
+        };
+        let held = self
+            .archive
+            .last_action(parent_index)
+            .map(|action| workload.action_choices(action))
+            .unwrap_or_default();
+        Some(ChoicePlan::new(
+            &policy,
+            parent,
+            mutation_seed,
+            untried,
+            held,
+        ))
+    }
+
+    pub(crate) fn admit_choice_profile(
+        &mut self,
+        plan: Option<&ChoicePlan>,
+        parent_index: usize,
+        decisions: &[CampaignAdmissionDecision],
+    ) {
+        let Some(profile) = plan
+            .map(|plan| plan.profile)
+            .or_else(|| self.archive.choice_profile(parent_index))
+        else {
+            return;
+        };
+        for index in retained_archive_indexes(self, decisions) {
+            self.archive.set_choice_profile(index, profile);
         }
     }
 
@@ -3221,6 +3307,16 @@ pub fn preference_portfolio_identifier(shape: KeyShape) -> String {
     )
 }
 
+fn choice_policy<G: Workload + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+) -> Result<Option<ChoicePolicy>, Box<dyn Error>> {
+    if workload.choice_sites(run).is_empty() {
+        return Ok(None);
+    }
+    workload.choice_policy(run).validate().map(Some)
+}
+
 fn stream_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
@@ -3262,6 +3358,7 @@ fn stream_header<G: Workload>(
             RESUME_IDENTIFIER.to_owned()
         },
         mixture_policy: draw_mixture_identifier(config.mixture),
+        choice_policy: choice_policy(workload, &config.run)?.map(|policy| policy.identifier()),
         workload_policies: recorded_policies(workload, &config.run),
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
@@ -3642,6 +3739,7 @@ fn build_report<G: Workload>(
         memory_budget_mib: header.memory_budget_mib,
         resume_policy: header.resume_policy.clone(),
         mixture_policy: header.mixture_policy.clone(),
+        choice_policy: header.choice_policy.clone(),
         workload_policies: header.workload_policies.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
@@ -3798,6 +3896,7 @@ struct JobSpecRecord<G: Workload + ?Sized> {
     suffix: Vec<G::Action>,
     ceiling: Option<JobCeiling>,
     candidates: bool,
+    choices: Option<ChoicePlan>,
 }
 
 impl<G: Workload + ?Sized> JobSpecRecord<G> {
@@ -3809,6 +3908,7 @@ impl<G: Workload + ?Sized> JobSpecRecord<G> {
             suffix: spec.suffix.clone(),
             ceiling: spec.ceiling,
             candidates: spec.candidates,
+            choices: spec.choices.clone(),
         }
     }
 }
@@ -3891,6 +3991,7 @@ struct PendingJob<G: Workload + ?Sized> {
     ceiling: Option<JobCeiling>,
     #[serde(with = "crate::search::checkpoint::json_bytes")]
     shrink: Option<ShrinkSelectionRecord>,
+    choices: Option<ChoicePlan>,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -4780,6 +4881,12 @@ fn search_checkpoint_header<G: Workload>(
     ] {
         policies.insert(field.to_owned(), value);
     }
+    if !workload.choice_sites(&config.run).is_empty() {
+        policies.insert(
+            "choice_policy".to_owned(),
+            workload.choice_policy(&config.run).identifier(),
+        );
+    }
     CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
         checkpoint_owner: None,
@@ -5644,6 +5751,11 @@ where
     }
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
+    if header.choice_policy
+        != choice_policy(workload, &replay_run)?.map(|policy| policy.identifier())
+    {
+        return Err("campaign replay choice policy does not match the recorded stream".into());
+    }
     let action_cost = workload.action_cost_fn();
     if let Some(checkpoint) = origin_checkpoint {
         if header.origin_kind == ORIGIN_ARCHIVE {
@@ -5832,6 +5944,7 @@ where
     let mut replay_job_lineage_durations = BTreeMap::<usize, Option<NonZeroU64>>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_ceilings = BTreeMap::<usize, Option<JobCeiling>>::new();
+    let mut replay_choice_plans = BTreeMap::<usize, Option<ChoicePlan>>::new();
     let mut replay_chain_jobs = BTreeMap::<usize, (Vec<G::Action>, bool)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -5858,6 +5971,7 @@ where
             replay_job_lineage_durations.insert(job_slot, None);
             replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(job.parent_index)?);
             replay_ceilings.insert(job_slot, core.job_ceiling(job.parent_index)?);
+            replay_choice_plans.insert(job_slot, None);
             replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
             replay_chain_jobs.insert(job_slot, (job.suffix, job.candidates));
             for metadata_id in &replay_job_metadata[job_slot] {
@@ -5904,6 +6018,18 @@ where
             actual_continuation,
             splice.as_ref(),
         )?;
+        let choices = if actual_continuation {
+            None
+        } else {
+            core.choice_plan(
+                workload,
+                parent_index,
+                *mutation_seed,
+                header.campaign_seed,
+                !matches!(splice, Some(CampaignSpliceRecord::Tail { .. })),
+            )
+        };
+        replay_choice_plans.insert(job_slot, choices);
         core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
         replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
         replay_ceilings.insert(job_slot, core.job_ceiling(parent_index)?);
@@ -6364,6 +6490,16 @@ where
                     )
                     .into());
                 }
+                let choices = replay_choice_plans
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt choice plan")?;
+                if choices.as_ref().map(ChoicePlan::record) != job.choices {
+                    return Err(format!(
+                        "replayed job {} choice plan diverged from the recorded stream",
+                        job.sequence
+                    )
+                    .into());
+                }
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job_certified(
                     &replay_run,
@@ -6376,6 +6512,7 @@ where
                     replay_retention,
                     crate::search::rollout::RolloutStop::new(header.stop_rollout_on_objective)
                         .with_ceiling(ceiling)
+                        .with_choices(choices.clone())
                         .with_candidates(
                             chain_job.as_ref().is_none_or(|(_, candidates)| *candidates),
                         ),
@@ -6517,6 +6654,7 @@ where
                     core.archive
                         .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
+                core.admit_choice_profile(choices.as_ref(), parent_index, &decisions);
                 let new_slot_descendant = retained_archive_indexes(&core, &decisions)
                     .iter()
                     .any(|id| core.archive.opened_new_slot(*id));
@@ -6641,6 +6779,7 @@ where
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(job.parent_index)?);
                     replay_ceilings.insert(next_slot, core.job_ceiling(job.parent_index)?);
+                    replay_choice_plans.insert(next_slot, None);
                     replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
                     replay_chain_jobs.insert(next_slot, (job.suffix, job.candidates));
                     for metadata_id in &replay_job_metadata[next_slot] {
@@ -6690,6 +6829,18 @@ where
                         actual_continuation,
                         splice.as_ref(),
                     )?;
+                    let choices = if actual_continuation {
+                        None
+                    } else {
+                        core.choice_plan(
+                            workload,
+                            parent_index,
+                            *mutation_seed,
+                            header.campaign_seed,
+                            !matches!(splice, Some(CampaignSpliceRecord::Tail { .. })),
+                        )
+                    };
+                    replay_choice_plans.insert(next_slot, choices);
                     core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
@@ -6744,6 +6895,7 @@ where
                 verify_selector_preference(&cancel.selector, workload.key_shape())?;
                 replay_selections.remove(&slot);
                 replay_ceilings.remove(&slot);
+                replay_choice_plans.remove(&slot);
                 replay_continuations.remove(&slot);
                 replay_chain_jobs.remove(&slot);
                 core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);

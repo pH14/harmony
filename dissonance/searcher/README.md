@@ -302,8 +302,8 @@ campaign and target contracts:
 
 | Contract | Workload responsibility |
 | --- | --- |
-| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
-| `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
+| `TargetExecution` | Construct, drive, restore, and snapshot targets; resolve choice slots from the live state; capture observations and account for deterministic execution work. |
+| `InputPolicy` | Define the action vocabulary, the choice sites, and the policy identifiers a recording must match. |
 | `Evaluation` | Classify outcomes, declare doomed states, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
@@ -513,6 +513,73 @@ cell/holder draws and complete parent selection with zero-sized place keys:
 DISSONANCE_BENCHMARK_CANDIDATES=1 cargo test --locked --manifest-path dissonance/Cargo.toml --release --lib indexed_candidate -- --nocapture --test-threads=1
 ```
 
+## Driver choices
+
+A workload decision the searcher should own is a choice site: a name and a
+list of stable labels, returned by `InputPolicy::choice_sites`. A label's index
+is its id. The method follows Antithesis's Test Composer, where every decision a
+driver makes is a branch point the platform answers and never a draw from the
+driver's own generator. A drawn action holds an unresolved slot
+(`Choice::Ask`). When a job with a plan reaches that action,
+`TargetExecution::resolve_action` reads the live state, calls
+`Chooser::choose(site, offered, default)` once per slot, and returns the action
+with each answer in place: `Choice::Default`, the site's default at that
+moment, or `Choice::Option(label)`, a deviation. `choose` never returns the
+default as an `Option`. The rollout applies and stores the resolved action, so
+the archive's input is the tape: the default at every site plus the recorded
+deviations, and `choice::deviations` lists them, empty for a run with none.
+Replay applies stored answers and asks nothing. An `Option` that is not
+offered when it is replayed, as after shrink or an edit of the tape, resolves
+to the default, and its `ChoiceRecord` keeps the stored choice beside the
+`resolved` label, so `fell_back` reports it and the tape still replays. `TargetExecution::action_choices` reports the answers an
+action holds, which seeds a job's hold memory from its parent's last action.
+
+One choice runs these rules in order. Untried first (ours): a job's first
+choice takes the option at position `ordinal` of the default followed by the
+other offered labels in label order, while the ordinal is below the offered
+count. The ordinal counts the jobs dispatched with a plan from the job's
+parent, at dispatch, so jobs in flight from one parent take different options.
+Hold: with the profile's `hold` probability the site repeats its previous
+answer, when that answer is still offered. CONTRARY: with the profile's
+`contrary` probability the answer is a uniform offered label other than the
+default, as in the NetHack player's CONTRARY chance. Otherwise the answer is
+the default. A site with fewer than two offered labels answers the default
+and draws nothing.
+
+`ChoiceProfile` holds `contrary` and `hold` in units of 1/65,536. It belongs
+to the searcher: each archive entry keeps one beside its selection counts, root
+entries draw it from the campaign seed, a job inherits its parent's profile and
+redraws it one time in eight from its own seed (ours; Hegel's swarm
+configuration redraws one time in fifty), and every candidate the job admits
+takes the job's profile. A drawn profile (ours) has `contrary` 2^-k for k
+uniform in 1..=6 and `hold` 1 - 2^-j for j uniform in 0..=8. Hold comes
+before CONTRARY, so a site whose previous answer was the default starts a
+deviation with probability (1 - hold) * contrary per ask, and a deviation
+lasts about 1 / (1 - hold) asks while its label stays offered. A site asked
+many times in a row under a high hold deviates rarely and for long stretches.
+A label that means something different at each ask belongs to a site of its
+own, as in the `picks` tiny world. `ChoicePolicy`
+is the campaign setting: `profiles` is `inherited` or `fixed` (one profile
+for every job), and `untried_first` turns the first rule on.
+`InputPolicy::choice_policy` returns it, and a workload overrides it only to
+pass an experiment's arm through from its request.
+
+A workload with no sites gets no plan and draws nothing new, so its stream and
+archive report are unchanged. Its checkpoint still carries the empty choice
+column of the archive and of each saved in-flight job. With sites, the stream
+header and the checkpoint's policies name the policy (`choice_policy`), and
+each job record carries its plan (`choices`: profile, whether it was redrawn,
+and the untried ordinal). Replay rebuilds each plan at its reservation from
+the replayed archive and refuses a stream whose plan or policy differs, and a
+checkpoint does not resume under another policy. A job without a plan, such
+as a continuation, gives the entries it keeps its parent's profile. The plan
+travels in `RolloutStop`, beside the ceiling, so a workload that overrides
+`execute_job` passes it on without a signature change. The assertion catalog
+lists the sites (`Catalog::with_choices`), and each recorded action lists the
+choices offered and taken (`ChoiceRecord`: site, offered labels, default, the
+stored choice and the label it resolved to), so learning can read them from
+records.
+
 ## Assertion keys
 
 `search::assertion` gives every workload one concrete `ArchiveKey`,
@@ -608,8 +675,8 @@ seed and workload identity), the policy identifier, the strategy text, the
 catalog and the genesis record. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
-ran for it outside the tape), and the record of every frame it decoded, stored
-as changes from the previous frame. The writer
+ran for it outside the tape), the record of every frame it decoded, stored
+as changes from the previous frame, and the choices it resolved. The writer
 writes a job whole once the next job starts or the file finishes, so a file
 cut short by a crash ends in at most one partial job. `Recording::from_bytes`
 reads the whole jobs and reports the bytes left over, `check_stream` refuses a
