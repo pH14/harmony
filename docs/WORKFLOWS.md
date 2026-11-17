@@ -775,11 +775,13 @@ cache; development builds can supply explicit runtime paths and `HARMONY_SDK_DIR
 The Twin Dragons browser lane (`Checks / Dissonance Workloads / Twin Dragons
 Browser`) owns the standalone `demos/twin-dragons/rust` adapter. It builds
 QuickNES into WebAssembly, fetches the pinned silent-effects Twin Dragons ROM
-through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs adapter
-checks, and uploads the static `twin-dragons-browser-dist` with corresponding
-sources. Its two browser jobs reuse that build: `games` runs the per-game
-search and replay suites and `interface` runs the tour and interaction suites,
-so each stays within the 15-minute pull-request limit. Both verify exact
+through `workloads/nes/scripts/build-twin-dragons-rom.sh`, runs the site's
+Node and launcher tests, and uploads the static `twin-dragons-browser-dist`
+with corresponding sources. `Twin Dragons Lint` runs the adapter's clippy,
+Cargo and `wasm-pack` tests in parallel, so the build job stays within the
+15-minute pull-request limit. The two browser jobs reuse that build: `games`
+runs the per-game search and replay suites and `interface` runs the tour and
+interaction suites, so each stays within the same limit. Both verify exact
 selected-history replays and upload `twin-dragons-browser-evidence-<suite>`
 screenshots. The bounded browser check asserts
 liveness, authentic starts in all 3 levels, exact replay and rooted

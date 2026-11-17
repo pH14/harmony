@@ -44,11 +44,8 @@ jobs:
           npm ci
           ./tools/build-runtime.sh
           npm run build
-      - name: Lint and test the browser adapter
+      - name: Test the static site
         run: |
-          cargo clippy --locked --manifest-path demos/twin-dragons/rust/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path demos/twin-dragons/rust/Cargo.toml
-          wasm-pack test --node demos/twin-dragons/rust
           cd demos/twin-dragons
           npm test
           python3 -m unittest discover -s tools -p test_launcher.py
@@ -68,6 +65,23 @@ jobs:
             demos/twin-dragons/rust/pkg
           if-no-files-found: error
           retention-days: 1
+
+  twin-dragons-lint:
+    name: Twin Dragons Lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust and wasm-pack
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup default 1.97.0
+          cargo install wasm-pack --version 0.14.0 --locked
+      - name: Lint and test the browser adapter
+        run: |
+          cargo clippy --locked --manifest-path demos/twin-dragons/rust/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path demos/twin-dragons/rust/Cargo.toml
+          wasm-pack test --node demos/twin-dragons/rust
 
   twin-dragons-browser:
     name: Twin Dragons Browser — ${{ matrix.suite }}
