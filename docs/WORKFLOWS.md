@@ -229,7 +229,9 @@ Every job declares a trigger class.
   `PostgreSQL CLI Package` and `Language CLI Tools` build the paired native
   frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
-  consumers keep the 15-minute budget. The separate `C Investigation` job has
+  consumers keep the 15-minute budget. `Twin Dragons Build` builds the browser
+  runtime, static site and adapter checks for the browser jobs and is capped
+  at 30 minutes. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks. The `Harness Kit` job has a 30-minute
   exception for building one instrumented target image from source.
