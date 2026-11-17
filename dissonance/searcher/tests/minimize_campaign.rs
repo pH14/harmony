@@ -1080,6 +1080,37 @@ fn a_staged_shrink_runs_one_campaign_per_stage_and_joins_their_tapes() {
 }
 
 #[test]
+fn a_staged_shrink_from_a_tape_that_dies_in_its_first_stage_runs_a_campaign_per_stage() {
+    let (mut config, directory) = shrink_config("shrink-staged-dying");
+    config.run.staged = true;
+    let tape = Input {
+        actions: vec![Step(1), Step(1), DEATH, Step(1)],
+    };
+    assert_eq!(walk_cost(&tape).0, None);
+    let outcome = shrink(&Walk, &config, &tape, |_| Ok(())).expect("shrink");
+    assert_eq!(outcome.progress.initial_cost, None);
+    let cost = outcome.progress.cost.expect("an arrival");
+    assert_eq!(
+        walk_cost(&outcome.input),
+        (Some(outcome.input.actions.len() - 1), cost)
+    );
+    let stages: std::collections::BTreeSet<_> = outcome
+        .improvements
+        .iter()
+        .map(|improvement| improvement.stage)
+        .collect();
+    let all: std::collections::BTreeSet<_> =
+        (0..u32::from(GOAL / STAGE_LENGTH)).map(Some).collect();
+    assert_eq!(stages, all);
+    for stage in 0..u32::from(GOAL / STAGE_LENGTH) {
+        let stream = directory.join(format!("stream-stage-{stage}.jsonl"));
+        let stream = std::fs::read(&stream).expect("a stream per stage");
+        replay_campaign_checkpointed(&Walk, &stream, None, None).expect("stage stream replay");
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
 fn shrink_without_an_arrival_stops_with_no_arrival_and_returns_its_tape() {
     let mut config = ShrinkConfig::new(WHOLE, 1);
     let tape = Input {

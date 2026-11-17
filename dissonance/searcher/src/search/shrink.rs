@@ -292,10 +292,6 @@ impl Walk {
     fn end(&self) -> usize {
         self.arrival.unwrap_or(self.costs.len() - 1)
     }
-
-    fn next_stage(&self, root: usize, stage: u32) -> Option<usize> {
-        (root..=self.end()).find(|&position| self.stages[position].is_some_and(|here| here > stage))
-    }
 }
 
 fn walk<G: Workload>(
@@ -336,6 +332,16 @@ fn share(budget: Option<u64>, part: u64, whole: u64) -> Option<u64> {
         }
         u64::try_from(u128::from(budget) * u128::from(part) / u128::from(whole)).unwrap_or(budget)
     })
+}
+
+fn segments_left<G: Workload>(workload: &G, run: &G::Run, stage: Option<u32>) -> u64 {
+    let Some(stage) = stage else {
+        return 1;
+    };
+    let later = (stage.saturating_add(1)..)
+        .take_while(|&later| workload.stage_run(run, later).is_some())
+        .count();
+    u64::try_from(later).unwrap_or(u64::MAX).saturating_add(1)
 }
 
 fn segment_stream(stream: Option<&PathBuf>, stage: Option<u32>) -> Option<PathBuf> {
@@ -392,23 +398,24 @@ where
             return Err("the shrink root is past the tape's objective, death or end".into());
         }
         let stage = walked.stages[root];
-        let next = match stage
-            .filter(|&stage| walked.next_stage(root, stage).is_some())
-            .and_then(|stage| workload.stage_run(&config.run, stage + 1))
-        {
-            Some(run) => walk(workload, &run, &mut target, &tape)?
-                .arrival
-                .filter(|&position| position > root && position <= walked.end())
-                .map(|position| (position, run)),
+        let next = match stage.and_then(|stage| workload.stage_run(&config.run, stage + 1)) {
+            Some(run) => {
+                let position = walk(workload, &run, &mut target, &tape)?
+                    .arrival
+                    .filter(|&position| position > root && position <= walked.end());
+                Some((position, run))
+            }
             None => None,
         };
         let whole = walked.costs[walked.end()].primary - walked.costs[root].primary;
-        let (run, part) = match &next {
-            Some((position, run)) => (
+        let (run, part, whole) = match &next {
+            Some((Some(position), run)) if walked.arrival.is_some() => (
                 run.clone(),
                 walked.costs[*position].primary - walked.costs[root].primary,
+                whole,
             ),
-            None => (config.run.clone(), whole),
+            Some((_, run)) => (run.clone(), 1, segments_left(workload, &config.run, stage)),
+            None => (config.run.clone(), 1, 1),
         };
         let segment = SegmentConfig {
             run: &run,
@@ -459,7 +466,9 @@ where
         };
         root = outcome.input.actions.len();
         let mut actions = outcome.input.actions;
-        actions.extend_from_slice(&tape.actions[position..]);
+        if let Some(position) = position {
+            actions.extend_from_slice(&tape.actions[position..]);
+        }
         tape = Input { actions };
     }
 }

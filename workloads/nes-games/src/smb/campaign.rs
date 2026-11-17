@@ -298,6 +298,26 @@ pub fn route_stage(route: SmbRoute, wram: &[u8; WRAM_SIZE]) -> u8 {
     route.locate(&archive_key(wram).plan_state()).0
 }
 
+fn terminal_stage(route: SmbRoute, terminal: Option<SmbTerminalPredicate>) -> usize {
+    let plan = route.plan();
+    let last = plan.len().saturating_sub(1);
+    let first = |world: u8, level: u8| {
+        plan.iter()
+            .position(|stage| (stage.world, stage.level) == (world, level))
+    };
+    match terminal {
+        None | Some(SmbTerminalPredicate::GameVictory) => last,
+        Some(SmbTerminalPredicate::ControlIn { world, level }) => {
+            first(world, level).unwrap_or(last)
+        }
+        Some(SmbTerminalPredicate::LevelTransition { world, level }) => plan
+            .iter()
+            .rposition(|stage| (stage.world, stage.level) == (world, level))
+            .map_or(last, |index| index + 1),
+        Some(SmbTerminalPredicate::Stage { stage, .. }) => usize::from(stage),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmbTerminalPredicate {
     #[default]
@@ -711,7 +731,7 @@ where
     }
     fn stage_run(&self, run: &SmbCampaignRun, stage: u32) -> Option<SmbCampaignRun> {
         let stage = u8::try_from(stage).ok()?;
-        (usize::from(stage) + 1 < self.route.plan().len()).then_some(SmbCampaignRun {
+        (usize::from(stage) < terminal_stage(self.route, run.terminal)).then_some(SmbCampaignRun {
             terminal: Some(SmbTerminalPredicate::Stage {
                 route: self.route,
                 stage,

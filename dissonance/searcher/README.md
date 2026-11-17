@@ -1386,23 +1386,25 @@ A workload declares stages by returning a run from `stage_run`. Without one,
 the shrink is a single minimize campaign over the whole tape. Where the
 workload declares stages, the shrink runs one minimize campaign per stage,
 front to back. It replays the tape and reads `Evaluation::stage` after
-each action. When a later stage follows the root's, the segment runs with
-`stage_run(run, stage + 1)`, whose objective is reaching that stage, and ends in
-the tape where the tape first meets that objective. Each segment receives the
-share of the remaining work and job budgets that its cost from the root is of
-the remaining tape's cost, and writes its stream to
-`<stem>-stage-<n>.<ext>`. After a segment the incumbent's tail is replayed from
-the segment's result: the next segment starts at the end of that result, and a
-tail that no longer reaches a later stage makes the next segment the last one,
-which searches for the run's own objective from the end of the result. The
-last segment, or the only one when `stage` returns `None` at the root, runs
+each action. While `stage_run(run, stage + 1)` returns a run for the root's
+stage, the segment runs with it, its objective being reaching that stage, and
+ends in the tape where the tape first meets that objective; a tape that dies or
+stops before then gives the segment no incumbent, and it searches from the
+tape's live states until it arrives. When the tape, the input or the one joined
+after the last segment, reaches the run's objective, each segment receives the share of the remaining work and job
+budgets that its cost from the root is of the remaining tape's cost; otherwise
+each remaining segment receives an equal share. Each segment writes its stream
+to `<stem>-stage-<n>.<ext>`. After a segment the incumbent's tail, where there
+is one, is replayed from the segment's result, and the next segment starts at
+the end of that result. The last segment, whose stage has no later stage run,
+or the only one when `stage` returns `None` at the root, runs
 with `config.run`. The outcome sums the job, acceptance and work counts over
 the segments, offsets each improvement's and progress event's work by the work
 before its segment, and keeps the last segment's stop; a segment that ends
 without an arrival ends the shrink with the tape as it stood. A stage boundary
 inside a level is rarely the same state on two lines, so a joined tail often
-fails and the last segment searches the rest again; when its result costs more
-than the input tape, the shrink returns the input tape and its cost.
+dies and the following segments search from its live states; when the joined
+result costs more than the input tape, the shrink returns the input tape and its cost.
 
 A workload supplies the shrink hooks on its campaign traits, which the
 minimize campaign calls, and implements `ShrinkPolicy` for the window search's

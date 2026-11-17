@@ -182,8 +182,11 @@ its archive key locates, and the run for stage `n` has the terminal predicate
 locates stage `n` or a later one. Control is part of the goal because two lines
 can enter a stage's room with different cutscenes ahead of them: climbing the
 4-2 vine can enter the vine area earlier than taking the pipe does and then
-gives control about 400 frames later. The last plan stage, the ending, has no
-stage run, so the last segment's goal is the run's own terminal.
+gives control about 400 frames later. Stage runs stop at the run's own
+terminal: the plan stage whose level a `control_in` terminal names, the stage
+after the level a level transition leaves, a stage predicate's own stage, and
+the ending for game victory. The stage there has no stage run, so the last
+segment's goal is the run's own terminal.
 Under a stage predicate whose stage lies in the current level the lower bound
 is zero, since the exit bound measures distance to the level's end and not to
 the stage. `search::shrink` therefore shrinks a tape one plan stage at a time.
