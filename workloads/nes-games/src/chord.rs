@@ -46,6 +46,28 @@ pub struct ChordVocabulary {
 }
 
 impl ChordVocabulary {
+    #[must_use]
+    pub fn identifier(&self) -> String {
+        let held: Vec<String> = self.held.iter().map(|mask| format!("{mask:02x}")).collect();
+        let tap = self.tap.map_or_else(
+            || "none".to_owned(),
+            |tap| {
+                format!(
+                    "{:02x}x{}@{}-{}",
+                    tap.buttons, tap.odds, tap.hold_frames.0, tap.hold_frames.1
+                )
+            },
+        );
+        format!(
+            "held={};tap={tap};short={}-{};long={}-{}",
+            held.join(","),
+            self.short_hold.0,
+            self.short_hold.1,
+            self.long_hold.0,
+            self.long_hold.1
+        )
+    }
+
     pub fn draw(
         &self,
         rand: &mut RomuDuoJrRand,

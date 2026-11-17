@@ -99,6 +99,31 @@ covers the video, and a duration floor. Its `--media` mode applies the same
 checks to an MP4 a workload wrote without a `film.json`, which is how the Super
 Tilt Bro campaign's own witness is checked.
 
+## Recorded runs
+
+Games declared through assertions (Joust) take two request fields.
+`"strategy": PATH` runs the campaign under that strategy instead of the
+built-in one, with no rebuild; the text is copied to `strategy.toml` in the run
+directory and its SHA-256 goes into `identity.json` and `result.json`.
+`"records": true` writes `records.bin` (the searcher's records file) beside the
+stream, and `result.json` reports its jobs, bytes and bytes per job. Records are
+off by default: at 10,000 executions they cost 158 bytes per job and 12% more
+search time on Joust. The stream is
+written under `"verification":"campaign"`, which bounds a run to 10,000
+executions, and under `"keep_stream": true` with witness verification, which
+keeps the stream of a run of any length. A campaign-verified run's replay writes
+`records-replay.bin`, and `result.json` says whether it equals `records.bin`
+byte for byte. Other games reject `strategy` and `records`.
+
+Every run also reports `decision_stream_sha256` and `decision_stream_records`
+in `result.json`, a digest of the stream's records after the header without
+the fields whose types belong to the workload: `result_sha256`, the draw
+checkpoints and the duration draw's context. `decision-marks.jsonl` holds the
+running digest every 1,024 records. Two workloads that differ only in how they
+key states produce the same decision digest when the search made the same
+choices, and the first differing mark bounds where they parted. The digest is
+computed whether or not the stream is kept, so it covers runs of any length.
+
 ## Chord draw
 
 `nes-games/src/chord.rs` draws the controller chords for every game. An action is a chord
