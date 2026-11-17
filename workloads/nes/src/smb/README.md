@@ -188,7 +188,8 @@ can enter a stage's room with different cutscenes ahead of them: climbing the
 gives control about 400 frames later. Stage runs stop at the run's own
 terminal: the plan stage whose level a `control_in` terminal names, the stage
 after the level a level transition leaves, a stage predicate's own stage, and
-the ending for game victory. The stage there has no stage run, so the last
+for game victory the ending stage, or, on a route without one such as
+`all_levels`, the position past its last stage, so that 8-4 has a stage run. The stage there has no stage run, so the last
 segment's goal is the run's own terminal.
 Under a stage predicate whose stage lies in the current level the lower bound
 is zero, since the exit bound measures distance to the level's end and not to

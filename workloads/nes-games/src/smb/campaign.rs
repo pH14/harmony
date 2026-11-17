@@ -41,7 +41,7 @@ use crate::{
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
-    smb::plan::SmbRoute,
+    smb::plan::{Goal, SmbRoute},
     smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
@@ -307,7 +307,10 @@ fn terminal_stage(route: SmbRoute, terminal: Option<SmbTerminalPredicate>) -> us
             .position(|stage| (stage.world, stage.level) == (world, level))
     };
     match terminal {
-        None | Some(SmbTerminalPredicate::GameVictory) => last,
+        None | Some(SmbTerminalPredicate::GameVictory) => plan
+            .iter()
+            .position(|stage| stage.goal == Goal::Ending)
+            .unwrap_or(plan.len()),
         Some(SmbTerminalPredicate::ControlIn { world, level }) => {
             first(world, level).unwrap_or(last)
         }

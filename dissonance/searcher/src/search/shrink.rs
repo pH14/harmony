@@ -330,7 +330,9 @@ fn share(budget: Option<u64>, part: u64, whole: u64) -> Option<u64> {
         if whole == 0 || part >= whole {
             return budget;
         }
-        u64::try_from(u128::from(budget) * u128::from(part) / u128::from(whole)).unwrap_or(budget)
+        u64::try_from(u128::from(budget) * u128::from(part) / u128::from(whole))
+            .unwrap_or(budget)
+            .max(budget.min(1))
     })
 }
 
@@ -392,10 +394,41 @@ where
     let mut accepted = KindCounts::default();
     let mut improvements = Vec::new();
     let mut execution_work = 0_u64;
+    let mut last: Option<(ShrinkStop, ShrinkProgress)> = None;
     loop {
         let walked = walk(workload, &config.run, &mut target, &tape)?;
         if root > walked.end() {
             return Err("the shrink root is past the tape's objective, death or end".into());
+        }
+        if let Some((last_stop, last_progress)) = &last {
+            let stop = if walked.arrival.is_some_and(|arrival| root >= arrival) {
+                Some(*last_stop)
+            } else if work_budget == Some(0) {
+                Some(ShrinkStop::WorkBudget)
+            } else if job_budget == Some(0) {
+                Some(ShrinkStop::JobBudget)
+            } else {
+                None
+            };
+            if let Some(stop) = stop {
+                let cost = walked.arrival.map(|arrival| walked.costs[arrival]);
+                let regressed =
+                    initial_cost.is_some_and(|initial| cost.is_none_or(|cost| cost > initial));
+                let progress = ShrinkProgress {
+                    jobs,
+                    accepted,
+                    initial_cost,
+                    execution_work,
+                    cost: if regressed { initial_cost } else { cost },
+                    ..last_progress.clone()
+                };
+                return Ok(ShrinkOutcome {
+                    input: if regressed { original.clone() } else { tape },
+                    progress,
+                    improvements,
+                    stop,
+                });
+            }
         }
         let stage = walked.stages[root];
         let next = match stage.and_then(|stage| workload.stage_run(&config.run, stage + 1)) {
@@ -438,6 +471,7 @@ where
         work_budget = work_budget.map(|budget| budget.saturating_sub(spent));
         job_budget = job_budget.map(|budget| budget.saturating_sub(outcome.progress.jobs.total()));
         improvements.extend_from_slice(&outcome.improvements);
+        last = Some((outcome.stop, outcome.progress.clone()));
         let Some(&(position, _)) = next
             .as_ref()
             .filter(|_| outcome.stop != ShrinkStop::NoArrival)

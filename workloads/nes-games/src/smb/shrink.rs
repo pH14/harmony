@@ -370,6 +370,21 @@ mod tests {
     }
 
     #[test]
+    fn game_victory_on_a_route_without_an_ending_stage_gives_its_last_level_a_stage_run() {
+        let game = SmbGame::loopback_for_tests(&[0]).with_route(SmbRoute::AllLevels);
+        let plan = SmbRoute::AllLevels.plan();
+        let victory = SmbCampaignRun {
+            terminal: Some(SmbTerminalPredicate::GameVictory),
+            ..run()
+        };
+        let stages = (0..64)
+            .take_while(|&stage| game.stage_run(&victory, stage).is_some())
+            .count();
+        assert_eq!(plan.last().map(|stage| stage.name), Some("8-4"));
+        assert_eq!(stages, plan.len());
+    }
+
+    #[test]
     fn a_hold_shrinks_by_one_frame_and_by_half() {
         let game = SmbGame::loopback_for_tests(&[0]);
         assert_eq!(

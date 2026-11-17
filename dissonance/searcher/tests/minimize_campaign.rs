@@ -1111,6 +1111,46 @@ fn a_staged_shrink_from_a_tape_that_dies_in_its_first_stage_runs_a_campaign_per_
 }
 
 #[test]
+fn a_staged_shrink_whose_budget_runs_out_between_stages_returns_its_tape() {
+    let tape = Input {
+        actions: vec![Step(1); usize::from(GOAL)],
+    };
+    for budget in [1, 12] {
+        let mut config = ShrinkConfig::new(
+            WalkRun {
+                staged: true,
+                ..WHOLE
+            },
+            1,
+        );
+        config.work_budget = Some(budget);
+        let outcome = shrink(&Walk, &config, &tape, |_| Ok(())).expect("shrink");
+        assert!(outcome.progress.execution_work >= budget, "{budget}");
+        let cost = outcome.progress.cost.expect("an arrival");
+        assert!(cost <= walk_cost(&tape).1, "{budget}");
+        assert_eq!(walk_cost(&outcome.input).1, cost, "{budget}");
+    }
+}
+
+#[test]
+fn a_staged_shrink_whose_stage_result_reaches_the_objective_ends_there() {
+    let mut config = ShrinkConfig::new(
+        WalkRun {
+            staged: true,
+            ..WHOLE
+        },
+        1,
+    );
+    config.work_budget = Some(64);
+    let tape = Input {
+        actions: vec![Step(GOAL)],
+    };
+    let outcome = shrink(&Walk, &config, &tape, |_| Ok(())).expect("shrink");
+    assert_eq!(outcome.input, tape);
+    assert_eq!(outcome.progress.cost, Some(walk_cost(&tape).1));
+}
+
+#[test]
 fn shrink_without_an_arrival_stops_with_no_arrival_and_returns_its_tape() {
     let mut config = ShrinkConfig::new(WHOLE, 1);
     let tape = Input {

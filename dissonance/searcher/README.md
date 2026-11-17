@@ -1401,7 +1401,12 @@ or the only one when `stage` returns `None` at the root, runs
 with `config.run`. The outcome sums the job, acceptance and work counts over
 the segments, offsets each improvement's and progress event's work by the work
 before its segment, and keeps the last segment's stop; a segment that ends
-without an arrival ends the shrink with the tape as it stood. A stage boundary
+without an arrival ends the shrink with the tape as it stood. The shrink also
+ends after a segment whose result already reaches the run's objective, and when
+the work or job budget is spent before the next segment, with the stop
+`WorkBudget` or `JobBudget`; a segment's share of a positive budget is at least
+1. The replays that find each segment's stages and the old tape's position are
+not charged to the work budget, which counts campaign work only. A stage boundary
 inside a level is rarely the same state on two lines, so a joined tail often
 dies and the following segments search from its live states; when the joined
 result costs more than the input tape, the shrink returns the input tape and its cost.
