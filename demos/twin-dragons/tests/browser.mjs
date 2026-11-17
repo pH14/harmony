@@ -751,6 +751,18 @@ try {
     pausedHeat,
     "The rendered heat overlay must stay frozen while the search is paused",
   );
+  const readOverlay = () =>
+    page
+      .locator('.map-row .area-map')
+      .first()
+      .evaluate((canvas) => window.tdTestHeatPixels(canvas));
+  let originalOverlay = await readOverlay();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await page.waitForTimeout(1000);
+    const next = await readOverlay();
+    if (JSON.stringify(next) === JSON.stringify(originalOverlay)) break;
+    originalOverlay = next;
+  }
   const manualAudioStart = Number(
     await page.locator("#film").getAttribute("data-audio-frames"),
   );
@@ -833,18 +845,6 @@ try {
     await page.locator("#search-here").innerText(),
     "↗ Branch search from here",
   );
-  const readOverlay = () =>
-    page
-      .locator('.map-row .area-map')
-      .first()
-      .evaluate((canvas) => window.tdTestHeatPixels(canvas));
-  let originalOverlay = await readOverlay();
-  for (let attempt = 0; attempt < 30; attempt++) {
-    await page.waitForTimeout(1000);
-    const next = await readOverlay();
-    if (JSON.stringify(next) === JSON.stringify(originalOverlay)) break;
-    originalOverlay = next;
-  }
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.tdTestFork);
   const manualTape = await page.evaluate(() => window.tdTestFork.tape);
