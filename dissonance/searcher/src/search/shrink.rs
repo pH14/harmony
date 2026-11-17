@@ -397,9 +397,6 @@ where
     let mut last: Option<(ShrinkStop, ShrinkProgress)> = None;
     loop {
         let walked = walk(workload, &config.run, &mut target, &tape)?;
-        if root > walked.end() {
-            return Err("the shrink root is past the tape's objective, death or end".into());
-        }
         if let Some((last_stop, last_progress)) = &last {
             let stop = if walked.arrival.is_some_and(|arrival| root >= arrival) {
                 Some(*last_stop)
@@ -429,6 +426,9 @@ where
                     stop,
                 });
             }
+        }
+        if root > walked.end() {
+            return Err("the shrink root is past the tape's objective, death or end".into());
         }
         let stage = walked.stages[root];
         let next = match stage.and_then(|stage| workload.stage_run(&config.run, stage + 1)) {

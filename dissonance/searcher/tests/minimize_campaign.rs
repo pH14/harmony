@@ -1151,6 +1151,21 @@ fn a_staged_shrink_whose_stage_result_reaches_the_objective_ends_there() {
 }
 
 #[test]
+fn a_staged_shrink_whose_objective_lies_before_its_next_stage_ends_at_the_objective() {
+    let run = WalkRun {
+        goal: MAX_STRIDE,
+        staged: true,
+    };
+    let mut config = ShrinkConfig::new(run, 1);
+    config.work_budget = Some(64);
+    let tape = Input {
+        actions: vec![Step(MAX_STRIDE), Step(1)],
+    };
+    let outcome = shrink(&Walk, &config, &tape, |_| Ok(())).expect("shrink");
+    assert_eq!(outcome.progress.cost, Some(ShrinkCost::new(1, 0)));
+}
+
+#[test]
 fn shrink_without_an_arrival_stops_with_no_arrival_and_returns_its_tape() {
     let mut config = ShrinkConfig::new(WHOLE, 1);
     let tape = Input {
