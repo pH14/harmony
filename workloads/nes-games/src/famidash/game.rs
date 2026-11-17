@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     chord::ChordVocabulary,
     famidash::levels::{self, Menu, Side, Stage, group_stage},
-    search::assertion::{Assertion, Number},
+    search::assertion::{Assertion, Declarations, Number},
     workload::{Game, Moves, Step},
 };
 use machine::nes::{ButtonChord, MAX_HOLD_FRAMES};
@@ -322,43 +322,43 @@ impl<const GROUP: usize> Game for Famidash<GROUP> {
         decode(self.stage, ram)
     }
 
-    fn declare(&self, state: &FamidashState, out: &mut impl FnMut(Assertion)) {
+    fn declare(&self, state: &FamidashState, out: &mut impl Declarations) {
         let state = *state;
         let gameplay = state.gameplay.unwrap_or_default();
-        out(byte_value("game_state", state.game_state));
-        out(byte_value("level", state.level));
-        out(flag("gameplay", state.gameplay.is_some()));
-        out(flag("dead", state.dead));
-        out(flag("paused", state.paused));
-        out(flag("complete", state.complete()));
-        out(value("percent", i64::from(state.percent()), 0, 100));
-        out(byte_value("cleared", state.cleared()));
-        out(value("x", i64::from(gameplay.x), X_MIN, X_MAX));
-        out(value("y", i64::from(gameplay.y), 0, i64::from(u16::MAX)));
-        out(value(
+        out.declare(byte_value("game_state", state.game_state));
+        out.declare(byte_value("level", state.level));
+        out.declare(flag("gameplay", state.gameplay.is_some()));
+        out.declare(flag("dead", state.dead));
+        out.declare(flag("paused", state.paused));
+        out.declare(flag("complete", state.complete()));
+        out.declare(value("percent", i64::from(state.percent()), 0, 100));
+        out.declare(byte_value("cleared", state.cleared()));
+        out.declare(value("x", i64::from(gameplay.x), X_MIN, X_MAX));
+        out.declare(value("y", i64::from(gameplay.y), 0, i64::from(u16::MAX)));
+        out.declare(value(
             "scroll_x",
             i64::from(gameplay.scroll_x),
             X_MIN,
             X_MAX,
         ));
-        out(byte_value("gamemode", gameplay.gamemode));
-        out(flag("gravity", gameplay.gravity));
-        out(flag("mini", gameplay.mini));
-        out(flag("dual", gameplay.dual));
-        out(byte_value("speed", gameplay.speed));
-        out(value("motion", i64::from(gameplay.vertical_motion()), 0, 2));
-        out(byte_value("camera_subpixel", gameplay.camera_subpixel));
-        out(value(
+        out.declare(byte_value("gamemode", gameplay.gamemode));
+        out.declare(flag("gravity", gameplay.gravity));
+        out.declare(flag("mini", gameplay.mini));
+        out.declare(flag("dual", gameplay.dual));
+        out.declare(byte_value("speed", gameplay.speed));
+        out.declare(value("motion", i64::from(gameplay.vertical_motion()), 0, 2));
+        out.declare(byte_value("camera_subpixel", gameplay.camera_subpixel));
+        out.declare(value(
             "velocity_y",
             i64::from(gameplay.velocity_y),
             i64::from(i16::MIN),
             i64::from(i16::MAX),
         ));
-        out(Assertion::Sometimes {
+        out.declare(Assertion::Sometimes {
             name: "level_complete",
             condition: state.complete(),
         });
-        out(Assertion::Sometimes {
+        out.declare(Assertion::Sometimes {
             name: "finished",
             condition: state.finished(),
         });

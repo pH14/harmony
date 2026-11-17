@@ -31,8 +31,9 @@ use crate::{
             SelectorAccounting, entries_by_suffix,
         },
         assertion::{
-            Accumulator, Assertion, AssertionKey, Catalog, Compiled, RECORDS_FORMAT, Record,
-            RecordedAction, RecordsHeader, RecordsSize, RecordsWriter, StreamIdentity,
+            Accumulator, Assertion, AssertionKey, Catalog, Compiled, Declarations, RECORDS_FORMAT,
+            Record, RecordWriter, RecordedAction, RecordsHeader, RecordsSize, RecordsWriter,
+            StreamIdentity,
         },
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
@@ -111,7 +112,7 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
         format!("{}-setup-v1", Self::NAME)
     }
     fn decode(&self, previous: Option<&Self::State>, ram: &[u8]) -> Self::State;
-    fn declare(&self, state: &Self::State, out: &mut impl FnMut(Assertion));
+    fn declare(&self, state: &Self::State, out: &mut impl Declarations);
     fn moves(&self, state: &Self::State) -> Moves<Self::Move>;
     fn play(&self, mv: Self::Move, state: &Self::State) -> Option<Step<Self::Move>>;
     fn move_frames(&self, mv: Self::Move) -> u64;
@@ -131,8 +132,27 @@ impl Satisfied {
 
 fn declared<G: Game>(game: &G, state: &G::State) -> Vec<Assertion> {
     let mut declared = Vec::new();
-    game.declare(state, &mut |assertion| declared.push(assertion));
+    game.declare(state, &mut declared);
     declared
+}
+
+struct Frame<'a> {
+    record: RecordWriter<'a>,
+    satisfied: u128,
+    sometimes: usize,
+}
+
+impl Declarations for Frame<'_> {
+    #[inline(always)]
+    fn declare(&mut self, assertion: Assertion) {
+        if assertion.is_sometimes() {
+            if assertion.holds() && self.sometimes < MAX_SOMETIMES {
+                self.satisfied |= 1 << self.sometimes;
+            }
+            self.sometimes += 1;
+        }
+        self.record.push(&assertion);
+    }
 }
 
 #[derive(Debug)]
@@ -186,19 +206,16 @@ impl<G: Game> Lowered<G> {
 
     #[must_use]
     pub fn record(&self, state: &G::State) -> (Record, Satisfied) {
-        let mut satisfied = 0_u128;
-        let mut index = 0;
         let mut record = Record::default();
-        self.game.declare(state, &mut |assertion| {
-            if assertion.is_sometimes() {
-                if assertion.holds() && index < MAX_SOMETIMES {
-                    satisfied |= 1 << index;
-                }
-                index += 1;
-            }
-            record.push(&assertion);
-        });
-        (record, Satisfied(satisfied))
+        let mut frame = Frame {
+            record: record.writer(),
+            satisfied: 0,
+            sometimes: 0,
+        };
+        self.game.declare(state, &mut frame);
+        let satisfied = Satisfied(frame.satisfied);
+        frame.record.finish();
+        (record, satisfied)
     }
 
     pub fn checked_record(&self, state: &G::State) -> Result<Record, Box<dyn Error>> {

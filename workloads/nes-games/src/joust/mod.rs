@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chord::{ChordVocabulary, Tap},
-    search::assertion::{Assertion, Number},
+    search::assertion::{Assertion, Declarations, Number},
     workload::{Game, Moves, Never, Step},
 };
 use machine::nes::ButtonChord;
@@ -214,39 +214,39 @@ impl Game for Joust {
         }
     }
 
-    fn declare(&self, state: &JoustState, out: &mut impl FnMut(Assertion)) {
+    fn declare(&self, state: &JoustState, out: &mut impl Declarations) {
         let state = *state;
-        out(value("wave", i64::from(state.wave), 0, 99));
-        out(value(
+        out.declare(value("wave", i64::from(state.wave), 0, 99));
+        out.declare(value(
             "waves_cleared",
             i64::from(state.waves_cleared()),
             0,
             98,
         ));
-        out(byte_value("lives", state.lives));
-        out(value("score", i64::from(state.score), 0, 999_999));
-        out(byte_value("x", state.x));
-        out(byte_value("y", state.y));
-        out(value("velocity_x", i64::from(state.velocity_x), -128, 127));
-        out(value("velocity_y", i64::from(state.velocity_y), -128, 127));
-        out(byte_value("enemies", state.enemies));
-        out(byte_value("spawned", state.spawned));
-        out(byte_value("defeated", state.defeated));
-        out(value("riders", i64::from(state.riders), 0, 16));
-        out(value("eggs", i64::from(state.eggs), 0, 64));
-        out(flag("facing_left", state.facing_left));
-        out(flag("in_game", state.in_game));
-        out(flag("playing", state.playing()));
-        out(Assertion::Sometimes {
+        out.declare(byte_value("lives", state.lives));
+        out.declare(value("score", i64::from(state.score), 0, 999_999));
+        out.declare(byte_value("x", state.x));
+        out.declare(byte_value("y", state.y));
+        out.declare(value("velocity_x", i64::from(state.velocity_x), -128, 127));
+        out.declare(value("velocity_y", i64::from(state.velocity_y), -128, 127));
+        out.declare(byte_value("enemies", state.enemies));
+        out.declare(byte_value("spawned", state.spawned));
+        out.declare(byte_value("defeated", state.defeated));
+        out.declare(value("riders", i64::from(state.riders), 0, 16));
+        out.declare(value("eggs", i64::from(state.eggs), 0, 64));
+        out.declare(flag("facing_left", state.facing_left));
+        out.declare(flag("in_game", state.in_game));
+        out.declare(flag("playing", state.playing()));
+        out.declare(Assertion::Sometimes {
             name: "target_wave",
             condition: state.victory(),
         });
-        out(Assertion::Sometimes {
+        out.declare(Assertion::Sometimes {
             name: "game_over",
             condition: state.game_over,
         });
         for (mark, name) in WAVES.iter().enumerate() {
-            out(Assertion::Sometimes {
+            out.declare(Assertion::Sometimes {
                 name,
                 condition: usize::from(state.wave) > mark,
             });

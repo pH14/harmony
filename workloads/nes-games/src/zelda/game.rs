@@ -6,7 +6,7 @@ use crate::{
     chord::{
         ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES, Tap,
     },
-    search::assertion::{Assertion, Number},
+    search::assertion::{Assertion, Declarations, Number},
     workload::{Game, Moves, Never, Step},
 };
 use machine::nes::ButtonChord;
@@ -280,25 +280,25 @@ impl Game for Zelda {
         }
     }
 
-    fn declare(&self, state: &ZeldaState, out: &mut impl FnMut(Assertion)) {
+    fn declare(&self, state: &ZeldaState, out: &mut impl Declarations) {
         let state = *state;
-        out(byte_value("mode", state.mode));
-        out(byte_value("level", state.level));
-        out(byte_value("room", state.room));
-        out(byte_value("x", state.x));
-        out(byte_value("y", state.y));
-        out(value("containers", i64::from(state.containers()), 1, 16));
-        out(value("health", i64::from(state.health()), 0, 32));
-        out(byte_value("rupees", state.rupees));
-        out(byte_value("bombs", state.bombs));
-        out(byte_value("keys", state.keys));
-        out(byte_value("sword", state.sword));
-        out(value("items", i64::from(state.items), 0, 1023));
-        out(byte_value("triforce", state.triforce));
-        out(flag("dead", state.dead()));
-        out(flag("in_transition", state.in_transition()));
+        out.declare(byte_value("mode", state.mode));
+        out.declare(byte_value("level", state.level));
+        out.declare(byte_value("room", state.room));
+        out.declare(byte_value("x", state.x));
+        out.declare(byte_value("y", state.y));
+        out.declare(value("containers", i64::from(state.containers()), 1, 16));
+        out.declare(value("health", i64::from(state.health()), 0, 32));
+        out.declare(byte_value("rupees", state.rupees));
+        out.declare(byte_value("bombs", state.bombs));
+        out.declare(byte_value("keys", state.keys));
+        out.declare(byte_value("sword", state.sword));
+        out.declare(value("items", i64::from(state.items), 0, 1023));
+        out.declare(byte_value("triforce", state.triforce));
+        out.declare(flag("dead", state.dead()));
+        out.declare(flag("in_transition", state.in_transition()));
         for index in 0..MARKS {
-            out(mark(index, state));
+            out.declare(mark(index, state));
         }
     }
 
