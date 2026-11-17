@@ -119,7 +119,9 @@ rejects `strategy`, `records` and `keep_stream`.
 Every run also reports `decision_stream_sha256` and `decision_stream_records`
 in `result.json`, a digest of the stream's records after the header without
 the fields whose types belong to the workload: `result_sha256`, the draw
-checkpoints and the duration draw's context. `decision-marks.jsonl` holds the
+checkpoints and the duration draw's context. The digest covers each record's
+remaining fields in sorted key order, with their values as the stream wrote
+them, so it parses no nested value. `decision-marks.jsonl` holds the
 running digest every 1,024 records. Two workloads that differ only in how they
 key states produce the same decision digest when the search made the same
 choices, and the first differing mark bounds where they parted. The digest is
