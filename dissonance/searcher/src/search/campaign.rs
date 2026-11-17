@@ -719,6 +719,14 @@ pub trait Evaluation: TargetExecution {
         let _ = (run, target);
         ShrinkCost::ZERO
     }
+    fn stage(&self, run: &Self::Run, target: &Self::Target) -> Option<u32> {
+        let _ = (run, target);
+        None
+    }
+    fn stage_run(&self, run: &Self::Run, stage: u32) -> Option<Self::Run> {
+        let _ = (run, stage);
+        None
+    }
     fn merge_preparation_failure(
         &self,
         _evidence: &mut Self::Evidence,

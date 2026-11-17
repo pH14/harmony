@@ -132,6 +132,9 @@ its bonus room and its normal exit, count 0. After the vine spawns, the pipe at 
 also leads to the vine area's warp zone while AreaPointer (`$0750`) still holds
 the vine area's pointer `$2F`; later enemy data overwrites it with the normal
 exit's. This is the route of tool-assisted runs, so the stage is done either way.
+Once the vine has spawned no objective step leads toward that pipe, only
+climbing (7) does, so a search from the spawn finds the climb first; a strategy
+file for this game should give the pipe its own step.
 
 Under the warp route a state is doomed when the world and level numbers name a
 level the route omits, or when the camera in 4-2's underground area has passed
@@ -176,7 +179,21 @@ and held half as long when the hold is above 3; a wait for control has none.
 The lower bound is the distance left to the level's exit over the top running
 speed of 2.5 pixels per frame, less a 16-pixel margin, counted in the final area
 of each level on the warp route (1-1, 1-2, 4-1, 4-2 and world 8), and zero
-elsewhere.
+elsewhere. The stages are the route plan's: a state's stage is the plan stage
+its archive key locates, and the run for stage `n` has the terminal predicate
+`stage:<route>:<n>`, reached at the first state with control once the plan
+locates stage `n` or a later one. Control is part of the goal because two lines
+can enter a stage's room with different cutscenes ahead of them: climbing the
+4-2 vine can enter the vine area earlier than taking the pipe does and then
+gives control about 400 frames later. Stage runs stop at the run's own
+terminal: the plan stage whose level a `control_in` terminal names, the stage
+after the level a level transition leaves, a stage predicate's own stage, and
+for game victory the ending stage, or, on a route without one such as
+`all_levels`, the position past its last stage, so that 8-4 has a stage run. The stage there has no stage run, so the last
+segment's goal is the run's own terminal.
+Under a stage predicate whose stage lies in the current level the lower bound
+is zero, since the exit bound measures distance to the level's end and not to
+the stage. `search::shrink` therefore shrinks a tape one plan stage at a time.
 
 A level ends on a 21-frame boundary, and the random number generator and the
 frame counter carry into the next level, where some enemies read them. So a
@@ -186,7 +203,9 @@ the generator in every later level. `with_level_end_waits` rewrites a tape so
 that each stretch without control that ends a level is one wait for control
 holding the buttons of its last frame, and checks by replay that the tape still
 ends at the same frame. The second part of the cost lets savings inside one
-boundary be accepted until they add up to a whole boundary.
+boundary be accepted until they add up to a whole boundary. Frame counts from
+power-on to a level's control therefore move in steps of 21 frames: a saving
+inside a level shows in the result only once it adds up to a whole boundary.
 
 `smb-shrink --input <tape.json> --out <dir>` rewrites the tape, runs
 `search::shrink` on it from power-on and writes `root-input.json`,

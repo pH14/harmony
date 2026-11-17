@@ -1382,6 +1382,38 @@ input for every accepted incumbent, in admission order, and
 `ShrinkEvent::Progress` after each admission; an error from it ends the
 campaign and is returned.
 
+A workload declares stages by returning a run from `stage_run`. Without one,
+the shrink is a single minimize campaign over the whole tape. Where the
+workload declares stages, the shrink runs one minimize campaign per stage,
+front to back. It replays the tape and reads `Evaluation::stage` after
+each action. While `stage_run(run, stage + 1)` returns a run for the root's
+stage, the segment runs with it, its objective being reaching that stage, and
+ends in the tape where the tape first meets that objective; a tape that dies or
+stops before then gives the segment no incumbent, and it searches from the
+tape's live states until it arrives. When the tape, the input or the one joined
+after the last segment, reaches the run's objective, each segment receives the share of the remaining work and job
+budgets that its cost from the root is of the remaining tape's cost; otherwise
+each remaining segment receives an equal share. Each segment writes its stream
+to `<stem>-stage-<n>.<ext>`. After a segment the incumbent's tail, where there
+is one, is replayed from the segment's result, and the next segment starts at
+the end of that result. The last segment, whose stage has no later stage run,
+or the only one when `stage` returns `None` at the root, runs
+with `config.run`. The outcome sums the job, acceptance and work counts over
+the segments, offsets each improvement's and progress event's work by the work
+before its segment, and keeps the last segment's stop; a segment that ends
+without an arrival ends the shrink with the tape as it stood. The shrink also
+ends after a segment whose result already reaches the run's objective, and when
+the work or job budget is spent before the next segment, with the stop
+`WorkBudget` or `JobBudget`; a segment's share of a positive budget is at least
+1. The replays that find each segment's stages and the old tape's position are
+not charged to the work budget, which counts campaign work only. A stage boundary
+inside a level is rarely the same state on two lines, so a joined tail often
+dies and the following segments search from its live states; when the joined
+result costs more than the input tape, the shrink returns the input tape and its cost.
+Each segment searches from the states of its incumbent, the input tape's line,
+and keeps that line wherever the search finds nothing cheaper, so the result
+depends on the input: give the shrink the cheapest tape owned, stage by stage.
+
 A workload supplies the shrink hooks on its campaign traits, which the
 minimize campaign calls, and implements `ShrinkPolicy` for the window search's
 hooks:
@@ -1390,6 +1422,8 @@ hooks:
 |---|---|---|---|
 | `shrink_cost(action, target)` | `Evaluation` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
 | `remaining_cost_bound(run, target)` | `Evaluation` | zero | A lower bound on the cost still to pay from this state. |
+| `stage(run, target)` | `Evaluation` | `None` | The stage the state is in, in the workload's order. |
+| `stage_run(run, stage)` | `Evaluation` | `None` | The run whose objective is reaching `stage`, or `None` when there is no such stage. |
 | `simpler_actions(run, action)` | `InputPolicy` | none | Replacements for one action, simplest first. |
 | `goal_tail(run, last)` | `InputPolicy` | none | Actions appended to every shortcut proposal, so a change that delays the goal past the tape's end can still reach it; a job stops at the goal, so an unused tail costs nothing. |
 | `window_actions(run)` | `ShrinkPolicy` | none | The actions the window search tries from every state. |

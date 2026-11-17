@@ -316,9 +316,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        search::campaign::InputPolicy,
+        search::campaign::{Evaluation, InputPolicy},
         smb::{
-            campaign::{SmbCampaignRun, SmbGame},
+            campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
+            plan::SmbRoute,
             target::{ButtonChord, wait_for_control},
         },
     };
@@ -328,6 +329,59 @@ mod tests {
             vocabulary: crate::smb::campaign::SmbButtonVocabulary::default(),
             terminal: None,
         }
+    }
+
+    #[test]
+    fn stage_runs_stop_at_the_stage_of_the_run_terminal() {
+        let game = SmbGame::loopback_for_tests(&[0]).with_route(SmbRoute::Warps);
+        let terminal = |terminal| SmbCampaignRun {
+            terminal: Some(terminal),
+            ..run()
+        };
+        let stages = |run: &SmbCampaignRun| {
+            (0..32)
+                .take_while(|&stage| game.stage_run(run, stage).is_some())
+                .count()
+        };
+        let plan = SmbRoute::Warps.plan();
+        let eight_one = plan
+            .iter()
+            .position(|stage| stage.name == "8-1")
+            .expect("8-1 on the warp route");
+        assert_eq!(stages(&run()), plan.len() - 1);
+        assert_eq!(
+            stages(&terminal(SmbTerminalPredicate::GameVictory)),
+            plan.len() - 1
+        );
+        assert_eq!(
+            stages(&terminal(SmbTerminalPredicate::ControlIn {
+                world: 7,
+                level: 0
+            })),
+            eight_one
+        );
+        assert_eq!(
+            stages(&terminal(SmbTerminalPredicate::Stage {
+                route: SmbRoute::Warps,
+                stage: 3,
+            })),
+            3
+        );
+    }
+
+    #[test]
+    fn game_victory_on_a_route_without_an_ending_stage_gives_its_last_level_a_stage_run() {
+        let game = SmbGame::loopback_for_tests(&[0]).with_route(SmbRoute::AllLevels);
+        let plan = SmbRoute::AllLevels.plan();
+        let victory = SmbCampaignRun {
+            terminal: Some(SmbTerminalPredicate::GameVictory),
+            ..run()
+        };
+        let stages = (0..64)
+            .take_while(|&stage| game.stage_run(&victory, stage).is_some())
+            .count();
+        assert_eq!(plan.last().map(|stage| stage.name), Some("8-4"));
+        assert_eq!(stages, plan.len());
     }
 
     #[test]
