@@ -50,6 +50,10 @@ pub fn configured<G: Game>(
         }
         None => workload,
     };
+    let workload = match request.choices {
+        Some(choices) => workload.with_choice_policy(choices)?,
+        None => workload,
+    };
     if request.records {
         fs::create_dir_all(out)?;
         workload.with_records(&out.join(RECORDS_FILE), request.seed)

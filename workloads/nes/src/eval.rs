@@ -95,6 +95,8 @@ pub struct Request {
     pub shadow: bool,
     #[serde(default)]
     pub keep_stream: bool,
+    #[serde(default)]
+    pub choices: Option<searcher::search::choice::ChoicePolicy>,
 }
 
 struct StreamDigest {
