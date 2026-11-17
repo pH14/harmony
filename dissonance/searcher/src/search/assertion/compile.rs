@@ -762,17 +762,20 @@ impl Compiler<'_> {
                     let next = self.scalar(arg, ops)?;
                     let min = function == "min";
                     ops.push(if min { Op::Min } else { Op::Max });
+                    let (mut lo, mut hi) = if min {
+                        (span.lo.min(next.lo), span.hi.min(next.hi))
+                    } else {
+                        (span.lo.max(next.lo), span.hi.max(next.hi))
+                    };
+                    if span.none {
+                        (lo, hi) = (lo.min(next.lo), hi.max(next.hi));
+                    }
+                    if next.none {
+                        (lo, hi) = (lo.min(span.lo), hi.max(span.hi));
+                    }
                     span = Span {
-                        lo: if min {
-                            span.lo.min(next.lo)
-                        } else {
-                            span.lo.max(next.lo)
-                        },
-                        hi: if min {
-                            span.hi.min(next.hi)
-                        } else {
-                            span.hi.max(next.hi)
-                        },
+                        lo,
+                        hi,
                         none: span.none && next.none,
                     };
                 }
@@ -862,6 +865,9 @@ impl Compiler<'_> {
                     _ => span,
                 };
                 depth_of(&value)?;
+                if let Some(since) = &since {
+                    depth_of(since)?;
+                }
                 ops.push(Op::Aggregate(u8::try_from(self.aggregates.len())?));
                 self.aggregates.push(Aggregate { kind, value, since });
                 self.aggregate_spans.push(result);
@@ -1144,8 +1150,8 @@ impl Compiler<'_> {
         for item in &objective_items {
             spans.extend(self.line(item, &mut objective_ops)?);
         }
-        if spans.len() > OBJECTIVE_WIDTH {
-            return Err(format!("an objective holds at most {OBJECTIVE_WIDTH} values").into());
+        if spans.is_empty() || spans.len() > OBJECTIVE_WIDTH {
+            return Err(format!("an objective holds from 1 to {OBJECTIVE_WIDTH} values").into());
         }
         let steps = match &lines.step {
             None => {
@@ -1204,62 +1210,110 @@ impl Compiler<'_> {
     }
 }
 
-fn reads(ops: &[Op], aggregates: &[Aggregate], into: &mut BTreeSet<usize>) {
-    for op in ops {
-        match op {
-            Op::Load(slot) => {
-                into.insert(usize::from(*slot));
+const AGGREGATE_FUNCTIONS: [&str; 5] = ["highest", "ever", "count", "last", "first"];
+
+fn whole_values(items: &[&str], catalog: &Catalog, into: &mut BTreeSet<String>) {
+    for item in items {
+        let item = item.trim();
+        into.insert(item.to_owned());
+        let names = if catalog.slot(item).is_some() || catalog.group(item).is_some() {
+            vec![item.to_owned()]
+        } else {
+            match expr::parse(item) {
+                Ok(Expr::Name(name)) => vec![name],
+                Ok(Expr::Tuple(parts)) => parts
+                    .into_iter()
+                    .filter_map(|part| match part {
+                        Expr::Name(name) => Some(name),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
             }
-            Op::Aggregate(index) => {
-                if let Some(aggregate) = aggregates.get(usize::from(*index)) {
-                    reads(&aggregate.value, aggregates, into);
-                    if let Some(since) = &aggregate.since {
-                        reads(since, aggregates, into);
-                    }
-                }
+        };
+        for name in names {
+            if let Some(slots) = catalog.group(&name) {
+                into.extend(slots.map(|slot| catalog.signals()[slot].name.clone()));
             }
-            _ => {}
+            into.insert(name);
         }
     }
 }
 
+fn outside_cell(
+    expr: &Expr,
+    cell: &BTreeSet<String>,
+    tables: &BTreeMap<String, Vec<i64>>,
+) -> Option<String> {
+    match expr {
+        Expr::Int(_) | Expr::None => None,
+        Expr::Name(name) => (!cell.contains(name)).then(|| name.clone()),
+        Expr::Tuple(items) => items
+            .iter()
+            .find_map(|item| outside_cell(item, cell, tables)),
+        Expr::Neg(inner) | Expr::Not(inner) => outside_cell(inner, cell, tables),
+        Expr::Binary(_, left, right) => {
+            outside_cell(left, cell, tables).or_else(|| outside_cell(right, cell, tables))
+        }
+        Expr::If(condition, then, otherwise) => outside_cell(condition, cell, tables)
+            .or_else(|| outside_cell(then, cell, tables))
+            .or_else(|| outside_cell(otherwise, cell, tables)),
+        Expr::Call(function, _) if AGGREGATE_FUNCTIONS.contains(&function.as_str()) => {
+            Some(format!("{function}(...)"))
+        }
+        Expr::Call(_, args) => args.iter().find_map(|arg| match arg {
+            Expr::Name(name) if tables.contains_key(name) => None,
+            arg => outside_cell(arg, cell, tables),
+        }),
+    }
+}
+
 fn check_scope(
+    strategy: &Strategy,
     lines: &LineSet,
     progress: &Progress,
-    aggregates: &[Aggregate],
     catalog: &Catalog,
 ) -> Result<(), Box<dyn Error>> {
-    let mut cell = BTreeSet::new();
-    let mut sets = vec![lines];
-    match progress {
-        Progress::Flat => {}
-        Progress::Tier(tier) => reads(&tier.ops, aggregates, &mut cell),
-        Progress::Stages { stages, .. } => {
-            for stage in stages {
-                reads(&stage.goal, aggregates, &mut cell);
-                reads(&stage.objective.ops, aggregates, &mut cell);
-                sets.extend(stage.lines.as_ref());
-            }
-        }
+    if lines.scope.is_none()
+        && !lines.across.lanes.is_empty()
+        && !matches!(progress, Progress::Stages { .. })
+    {
+        return Err(
+            "`prefer_across` needs more than one scope: give `prefer_scope` or stages".into(),
+        );
     }
-    for set in sets {
-        let Some(scope) = &set.scope else {
-            if !set.across.lanes.is_empty() && !matches!(progress, Progress::Stages { .. }) {
-                return Err(
-                    "`prefer_across` needs more than one scope: give `prefer_scope` or stages"
-                        .into(),
-                );
-            }
+    let shared = strategy.lines()?;
+    let mut tier = BTreeSet::new();
+    if let Some(items) = &strategy.tier {
+        whole_values(&items.items(), catalog, &mut tier);
+    }
+    let sets = std::iter::once((shared.prefer_scope.as_deref(), shared.spread.as_ref())).chain(
+        strategy.stage.iter().map(|stage| {
+            (
+                stage
+                    .prefer_scope
+                    .as_deref()
+                    .or(shared.prefer_scope.as_deref()),
+                stage.spread.as_ref().or(shared.spread.as_ref()),
+            )
+        }),
+    );
+    for (scope, spread) in sets {
+        let Some(scope) = scope.map(str::trim) else {
             continue;
         };
-        let mut allowed = cell.clone();
-        reads(&set.spread.ops, aggregates, &mut allowed);
-        let mut read = BTreeSet::new();
-        reads(&scope.ops, aggregates, &mut read);
-        if let Some(slot) = read.difference(&allowed).next() {
+        let mut cell = tier.clone();
+        if let Some(spread) = spread {
+            whole_values(&spread.items(), catalog, &mut cell);
+        }
+        let expr = if catalog.slot(scope).is_some() || catalog.group(scope).is_some() {
+            Expr::Name(scope.to_owned())
+        } else {
+            expr::parse(scope)?
+        };
+        if let Some(name) = outside_cell(&expr, &cell, &strategy.table) {
             return Err(format!(
-                "`prefer_scope` reads `{}`, which neither the progress nor `spread` reads, so the scope is not a function of the cell",
-                catalog.signals()[*slot].name
+                "`prefer_scope` reads `{name}`, which is not a whole value of the progress or `spread`, so the scope is not a function of the cell"
             )
             .into());
         }
@@ -1331,7 +1385,7 @@ impl Compiled {
                 radix: u64::try_from(radix)?,
             }
         };
-        check_scope(&lines, &progress, &compiler.aggregates, catalog)?;
+        check_scope(strategy, &lines, &progress, catalog)?;
         let tables = strategy.table.values().cloned().collect();
         let identity = serde_json::to_vec(&(strategy, catalog.signals(), catalog.declarations()))?;
         let digest = Sha256::digest(identity);

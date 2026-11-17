@@ -88,6 +88,9 @@ impl<A: Clone> Encoded<A> {
 impl<A> Encoded<A> {
     fn decode(self, sequence: u64) -> Result<RecordedAction<A>, Box<dyn Error>> {
         let width = usize::from(self.width);
+        if width > RECORD_SLOTS {
+            return Err("a recorded action is wider than the record".into());
+        }
         let mut values = [0_i64; RECORD_SLOTS];
         let mut frames = Vec::with_capacity(self.changes.len());
         for changed in self.changes {

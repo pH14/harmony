@@ -523,7 +523,7 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
             r#"prefer_scope = "lives""#,
-            "`prefer_scope` reads `lives`, which neither the progress nor `spread` reads",
+            "`prefer_scope` reads `lives`, which is not a whole value of the progress or `spread`",
         ),
         (
             r#"prefer_across = ["lives: more"]"#,
@@ -536,6 +536,75 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
     ] {
         let error = Compiled::parse(text, &catalog).unwrap_err().to_string();
         assert!(error.contains(message), "{text}: {error}");
+    }
+}
+
+#[test]
+fn a_preference_scope_reads_only_whole_values_of_the_cell() {
+    let catalog = catalog();
+    for (text, read) in [
+        (
+            "spread = \"time / 10\"\nprefer = [[\"lives: more\"]]\nprefer_scope = \"time\"\nprefer_across = [\"'position.room': more\"]",
+            "time",
+        ),
+        (
+            "spread = \"lives\"\nprefer_scope = \"highest(lives)\"",
+            "highest(...)",
+        ),
+        (
+            "spread = \"place\"\nprefer_scope = \"inner\"\n[define]\nplace = \"inner + lives\"\ninner = \"time / 10\"",
+            "inner",
+        ),
+    ] {
+        let error = Compiled::parse(text, &catalog).unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("`prefer_scope` reads `{read}`")),
+            "{text}: {error}"
+        );
+    }
+    for text in [
+        "spread = \"time\"\nprefer_scope = \"time / 10\"",
+        "spread = \"position\"\nprefer_scope = \"in('position.room', rooms)\"\n[table]\nrooms = [1, 2]",
+        "tier = \"lives\"\nspread = \"time / 10\"\nprefer_scope = \"lives / 2\"",
+    ] {
+        Compiled::parse(text, &catalog).unwrap_or_else(|error| panic!("{text}: {error}"));
+    }
+}
+
+#[test]
+fn malformed_strategies_return_errors_rather_than_panicking() {
+    let catalog = catalog();
+    let deep = (1..=40).fold("e0 = \"1\"".to_owned(), |text, depth| {
+        format!("{text}\ne{depth} = \"1 + (e{})\"", depth - 1)
+    });
+    for (text, message) in [
+        (
+            format!("spread = \"highest(lives, e40)\"\n[define]\n{deep}"),
+            "stack values",
+        ),
+        (
+            "[[stage]]\ngoal = \"false\"\nobjective = []".to_owned(),
+            "objective holds from 1",
+        ),
+        ("spread = \"\u{e9}\"".to_owned(), "unexpected `\u{e9}`"),
+    ] {
+        let error = Compiled::parse(&text, &catalog).unwrap_err().to_string();
+        assert!(error.contains(message), "{text}: {error}");
+    }
+}
+
+#[test]
+fn a_none_operand_of_min_and_max_keeps_the_other_operand_range() {
+    for function in ["min", "max"] {
+        let compiled =
+            Compiled::parse(&format!("spread = \"{function}(none, lives)\""), &catalog()).unwrap();
+        let key = |lives| {
+            compiled.key(&record(Walk {
+                lives,
+                ..Walk::default()
+            }))
+        };
+        assert_ne!(key(1), key(2), "{function}");
     }
 }
 
@@ -864,6 +933,71 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         .run(&genesis, &short, &actions, |_| 1)
         .is_err()
     );
+}
+
+#[test]
+fn rekeying_keeps_the_descendants_of_a_state_the_strategy_stops_at_stopped() {
+    let catalog = catalog();
+    let (genesis, jobs, actions) = walk_recording();
+    let recorded = Compiled::parse("spread = \"position\"\ncapacity = 1", &catalog).unwrap();
+    let rejecting = Compiled::parse(
+        "spread = \"position\"\ncapacity = 1\nreject = \"'position.x' == 16\"",
+        &catalog,
+    )
+    .unwrap();
+    let rekeyed = Rekeying {
+        recorded: &recorded,
+        strategy: &rejecting,
+        entry_limit: 1024,
+    }
+    .run(&genesis, &jobs, &actions, |_| 1)
+    .unwrap();
+    assert_eq!(
+        rekeyed
+            .holders
+            .iter()
+            .map(|held| held.ids.clone())
+            .collect::<Vec<_>>(),
+        [vec![0]]
+    );
+}
+
+#[test]
+fn a_recorded_action_wider_than_the_record_is_an_error() {
+    #[derive(serde::Serialize)]
+    struct Job {
+        sequence: u64,
+        actions: Vec<Action>,
+    }
+    #[derive(serde::Serialize)]
+    struct Action {
+        action: u8,
+        failed: bool,
+        cost: u64,
+        width: u8,
+        changes: Vec<Vec<(u8, i64)>>,
+    }
+    let (genesis, _, _) = walk_recording();
+    let mut bytes = postcard::to_allocvec(&walk_header(genesis)).unwrap();
+    let width = u8::try_from(RECORD_SLOTS + 1).unwrap();
+    bytes.extend(
+        postcard::to_allocvec(&Job {
+            sequence: 1,
+            actions: vec![Action {
+                action: 1,
+                failed: false,
+                cost: 1,
+                width,
+                changes: vec![Vec::new()],
+            }],
+        })
+        .unwrap(),
+    );
+    let error = Recording::<u8>::from_bytes(&bytes)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("wider than the record"), "{error}");
 }
 
 #[test]

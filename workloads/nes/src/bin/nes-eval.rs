@@ -93,9 +93,12 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.resume.is_some()
         || request.resume_states.is_some()
         || !request.mixture.is_empty()
+        || request.strategy.is_some()
+        || request.records
+        || request.keep_stream
     {
         return Err(
-            "a live view runs the arcade game from genesis with its own mixture, without ai, root, minimize, resume or mixture options"
+            "a live view runs the arcade game from genesis with its own mixture and built-in strategy, without ai, root, minimize, resume, mixture, strategy, records or keep_stream options"
                 .into(),
         );
     }

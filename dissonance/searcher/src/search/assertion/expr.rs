@@ -90,7 +90,10 @@ fn tokens(text: &str) -> Result<Vec<Token>, Box<dyn Error>> {
         let punct = PUNCTS
             .iter()
             .find(|punct| text[index..].starts_with(**punct))
-            .ok_or_else(|| format!("unexpected `{}` in `{text}`", &text[index..=index]))?;
+            .ok_or_else(|| {
+                let unexpected = text[index..].chars().next().unwrap_or_default();
+                format!("unexpected `{unexpected}` in `{text}`")
+            })?;
         out.push(Token::Punct(punct));
         index += punct.len();
     }

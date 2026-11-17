@@ -60,6 +60,7 @@ struct Node {
     suffix: Vec<usize>,
     recorded: Accumulator,
     keyed: Accumulator,
+    stopped: bool,
 }
 
 enum Step {
@@ -138,6 +139,7 @@ impl Rekeying<'_> {
                 suffix: Vec::new(),
                 recorded: recorded_genesis.accumulator,
                 keyed: keyed_genesis.accumulator,
+                stopped: false,
             },
         );
         let mut by_sequence: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
@@ -157,7 +159,7 @@ impl Rekeying<'_> {
             let mut place = parent.clone();
             let mut pending = std::mem::take(&mut place.suffix);
             let mut previous_key = None;
-            let mut keyed_stopped = false;
+            let mut keyed_stopped = place.stopped;
             let mut recorded_decisions = job
                 .decisions
                 .iter()
@@ -238,6 +240,7 @@ impl Rekeying<'_> {
                                 suffix: pending.clone(),
                                 recorded: place.recorded,
                                 keyed: place.keyed,
+                                stopped: keyed_stopped,
                             });
                         }
                         Some(_) => {}

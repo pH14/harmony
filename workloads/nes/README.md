@@ -113,7 +113,8 @@ written under `"verification":"campaign"`, which bounds a run to 10,000
 executions, and under `"keep_stream": true` with witness verification, which
 keeps the stream of a run of any length. A campaign-verified run's replay writes
 `records-replay.bin`, and `result.json` says whether it equals `records.bin`
-byte for byte. Other games reject `strategy` and `records`.
+byte for byte. Other games reject `strategy` and `records`, and a live view
+rejects `strategy`, `records` and `keep_stream`.
 
 Every run also reports `decision_stream_sha256` and `decision_stream_records`
 in `result.json`, a digest of the stream's records after the header without

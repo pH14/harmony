@@ -107,6 +107,9 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
         Vec::new()
     }
     fn genesis(&self, state: &Self::State) -> Result<(), String>;
+    fn genesis_id(&self) -> String {
+        format!("{}-setup-v1", Self::NAME)
+    }
     fn decode(&self, previous: Option<&Self::State>, ram: &[u8]) -> Self::State;
     fn declare(&self, state: &Self::State, out: &mut impl FnMut(Assertion));
     fn moves(&self, state: &Self::State) -> Moves<Self::Move>;
@@ -253,13 +256,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         core_sha256: &str,
         machines: Machines<M>,
     ) -> Result<Self, Box<dyn Error>> {
+        let identity = format!(
+            "{core};state=ppu-unused2-zero-v1;genesis={};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
+            game.genesis_id()
+        );
         Ok(Self {
             lowered: Arc::new(Lowered::new(game, strategy)?),
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
-            identity: format!(
-                "{core};state=ppu-unused2-zero-v1;genesis={}-setup-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
-                G::NAME
-            ),
+            identity,
             machines,
             records: None,
         })
