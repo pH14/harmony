@@ -1212,7 +1212,12 @@ impl Compiler<'_> {
 
 const AGGREGATE_FUNCTIONS: [&str; 5] = ["highest", "ever", "count", "last", "first"];
 
-fn whole_values(items: &[&str], catalog: &Catalog, into: &mut BTreeSet<String>) {
+fn whole_values(
+    items: &[&str],
+    catalog: &Catalog,
+    defines: &BTreeMap<String, String>,
+    into: &mut BTreeSet<String>,
+) {
     for item in items {
         let item = item.trim();
         into.insert(item.to_owned());
@@ -1232,38 +1237,42 @@ fn whole_values(items: &[&str], catalog: &Catalog, into: &mut BTreeSet<String>) 
             }
         };
         for name in names {
-            if let Some(slots) = catalog.group(&name) {
-                into.extend(slots.map(|slot| catalog.signals()[slot].name.clone()));
+            if !defines.contains_key(&name)
+                && let Some(slots) = catalog.group(&name)
+            {
+                into.extend(
+                    slots
+                        .map(|slot| catalog.signals()[slot].name.clone())
+                        .filter(|field| !defines.contains_key(field)),
+                );
             }
             into.insert(name);
         }
     }
 }
 
-fn outside_cell(
-    expr: &Expr,
-    cell: &BTreeSet<String>,
-    tables: &BTreeMap<String, Vec<i64>>,
-) -> Option<String> {
+fn outside_cell(expr: &Expr, cell: &BTreeSet<String>) -> Option<String> {
     match expr {
         Expr::Int(_) | Expr::None => None,
         Expr::Name(name) => (!cell.contains(name)).then(|| name.clone()),
-        Expr::Tuple(items) => items
-            .iter()
-            .find_map(|item| outside_cell(item, cell, tables)),
-        Expr::Neg(inner) | Expr::Not(inner) => outside_cell(inner, cell, tables),
+        Expr::Tuple(items) => items.iter().find_map(|item| outside_cell(item, cell)),
+        Expr::Neg(inner) | Expr::Not(inner) => outside_cell(inner, cell),
         Expr::Binary(_, left, right) => {
-            outside_cell(left, cell, tables).or_else(|| outside_cell(right, cell, tables))
+            outside_cell(left, cell).or_else(|| outside_cell(right, cell))
         }
-        Expr::If(condition, then, otherwise) => outside_cell(condition, cell, tables)
-            .or_else(|| outside_cell(then, cell, tables))
-            .or_else(|| outside_cell(otherwise, cell, tables)),
+        Expr::If(condition, then, otherwise) => outside_cell(condition, cell)
+            .or_else(|| outside_cell(then, cell))
+            .or_else(|| outside_cell(otherwise, cell)),
         Expr::Call(function, _) if AGGREGATE_FUNCTIONS.contains(&function.as_str()) => {
             Some(format!("{function}(...)"))
         }
-        Expr::Call(_, args) => args.iter().find_map(|arg| match arg {
-            Expr::Name(name) if tables.contains_key(name) => None,
-            arg => outside_cell(arg, cell, tables),
+        Expr::Call(function, args) => args.iter().enumerate().find_map(|(index, arg)| match arg {
+            Expr::Name(_)
+                if index == 1 && ["in", "index", "bucket"].contains(&function.as_str()) =>
+            {
+                None
+            }
+            arg => outside_cell(arg, cell),
         }),
     }
 }
@@ -1285,7 +1294,7 @@ fn check_scope(
     let shared = strategy.lines()?;
     let mut tier = BTreeSet::new();
     if let Some(items) = &strategy.tier {
-        whole_values(&items.items(), catalog, &mut tier);
+        whole_values(&items.items(), catalog, &strategy.define, &mut tier);
     }
     let sets = std::iter::once((shared.prefer_scope.as_deref(), shared.spread.as_ref())).chain(
         strategy.stage.iter().map(|stage| {
@@ -1304,14 +1313,14 @@ fn check_scope(
         };
         let mut cell = tier.clone();
         if let Some(spread) = spread {
-            whole_values(&spread.items(), catalog, &mut cell);
+            whole_values(&spread.items(), catalog, &strategy.define, &mut cell);
         }
         let expr = if catalog.slot(scope).is_some() || catalog.group(scope).is_some() {
             Expr::Name(scope.to_owned())
         } else {
             expr::parse(scope)?
         };
-        if let Some(name) = outside_cell(&expr, &cell, &strategy.table) {
+        if let Some(name) = outside_cell(&expr, &cell) {
             return Err(format!(
                 "`prefer_scope` reads `{name}`, which is not a whole value of the progress or `spread`, so the scope is not a function of the cell"
             )

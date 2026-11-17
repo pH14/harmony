@@ -555,6 +555,14 @@ fn a_preference_scope_reads_only_whole_values_of_the_cell() {
             "spread = \"place\"\nprefer_scope = \"inner\"\n[define]\nplace = \"inner + lives\"\ninner = \"time / 10\"",
             "inner",
         ),
+        (
+            "spread = \"time / 10\"\nprefer_scope = \"max(time, 0)\"\n[table]\ntime = [0]",
+            "time",
+        ),
+        (
+            "spread = \"position\"\nprefer_scope = \"'position.x'\"\n[define]\nposition = \"time / 10\"",
+            "position.x",
+        ),
     ] {
         let error = Compiled::parse(text, &catalog).unwrap_err().to_string();
         assert!(
