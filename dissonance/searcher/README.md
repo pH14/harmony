@@ -1405,6 +1405,9 @@ without an arrival ends the shrink with the tape as it stood. A stage boundary
 inside a level is rarely the same state on two lines, so a joined tail often
 dies and the following segments search from its live states; when the joined
 result costs more than the input tape, the shrink returns the input tape and its cost.
+Each segment searches from the states of its incumbent, the input tape's line,
+and keeps that line wherever the search finds nothing cheaper, so the result
+depends on the input: give the shrink the cheapest tape owned, stage by stage.
 
 A workload supplies the shrink hooks on its campaign traits, which the
 minimize campaign calls, and implements `ShrinkPolicy` for the window search's

@@ -132,6 +132,9 @@ its bonus room and its normal exit, count 0. After the vine spawns, the pipe at 
 also leads to the vine area's warp zone while AreaPointer (`$0750`) still holds
 the vine area's pointer `$2F`; later enemy data overwrites it with the normal
 exit's. This is the route of tool-assisted runs, so the stage is done either way.
+Once the vine has spawned no objective step leads toward that pipe, only
+climbing (7) does, so a search from the spawn finds the climb first; a strategy
+file for this game should give the pipe its own step.
 
 Under the warp route a state is doomed when the world and level numbers name a
 level the route omits, or when the camera in 4-2's underground area has passed
@@ -199,7 +202,9 @@ the generator in every later level. `with_level_end_waits` rewrites a tape so
 that each stretch without control that ends a level is one wait for control
 holding the buttons of its last frame, and checks by replay that the tape still
 ends at the same frame. The second part of the cost lets savings inside one
-boundary be accepted until they add up to a whole boundary.
+boundary be accepted until they add up to a whole boundary. Frame counts from
+power-on to a level's control therefore move in steps of 21 frames: a saving
+inside a level shows in the result only once it adds up to a whole boundary.
 
 `smb-shrink --input <tape.json> --out <dir>` rewrites the tape, runs
 `search::shrink` on it from power-on and writes `root-input.json`,
