@@ -25,7 +25,6 @@ const TOUCHES_BEFORE_NORFAIR_ROUTE: u16 = 8;
 const RIDLEY_HIDEOUT_TOUCH: u16 = 24;
 const TOUCHES_BEFORE_RIDLEY: u16 = 4;
 const TOUCHES_BEFORE_TOURIAN: u16 = 12;
-const MISSILES_BEFORE_TOURIAN: u8 = 80;
 
 pub type Cell = (u8, u8, u8);
 
@@ -35,7 +34,7 @@ pub enum Done {
     MissileCapacity,
     RouteEnd,
     Energy(u16),
-    Missiles(u8),
+    FullMissiles,
     Kraid,
     Ridley,
     MotherBrain,
@@ -581,7 +580,7 @@ pub const PLAN: &[Stage] = &[
     },
     Stage {
         name: "missiles_before_tourian",
-        done: Done::Missiles(MISSILES_BEFORE_TOURIAN),
+        done: Done::FullMissiles,
         objective: Objective::Missiles,
     },
     Stage {
@@ -663,7 +662,7 @@ impl plan::Stage for Stage {
                 _ => false,
             },
             Done::Energy(target) => energy_reached(state, target),
-            Done::Missiles(target) => state.missiles >= target,
+            Done::FullMissiles => state.missiles >= state.missile_capacity,
             Done::Kraid => state.kraid_defeated,
             Done::Ridley => state.bosses > u8::from(state.kraid_defeated),
             Done::MotherBrain => state.mother_brain_defeated || state.ending,
@@ -675,7 +674,7 @@ impl plan::Stage for Stage {
     fn latches(self) -> bool {
         matches!(
             self.done,
-            Done::RouteEnd | Done::Energy(_) | Done::Missiles(_)
+            Done::RouteEnd | Done::Energy(_) | Done::FullMissiles
         )
     }
 }
@@ -954,13 +953,15 @@ mod tests {
     }
 
     #[test]
-    fn the_missile_target_latches_before_the_tourian_route() {
+    fn the_missile_stage_fills_to_capacity_and_latches_before_the_tourian_route() {
         let mut state = after_ridley(BRINSTAR, 13, 9);
         state.health = 960;
         state.missiles = 40;
         assert_eq!(locate(state, 0, Some((21, 96))), (22, 40));
-        state.missiles = 80;
-        assert_eq!(locate(state, 0, Some((22, 79))), (23, 11));
+        state.missiles = 154;
+        assert_eq!(locate(state, 0, Some((22, 153))), (22, 154));
+        state.missiles = 155;
+        assert_eq!(locate(state, 0, Some((22, 154))), (23, 11));
         state.missiles = 10;
         state.health = 300;
         assert_eq!(locate(state, 0, Some((23, 11))), (23, 11));

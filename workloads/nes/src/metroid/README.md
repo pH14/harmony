@@ -147,12 +147,14 @@ Each stage climbs one integer:
   touches. The stage before the way back through Norfair is done at 80 again,
   and the stage before Tourian at 96, twelve Brinstar touches, which a state
   holding no energy tank can reach.
-- The missile stage climbs missiles held and is done at 80, and like an energy
-  stage stays done after missiles are spent. The five Zebetite columns take
-  eight missiles each and Mother Brain dies at 32 hits, 72 missiles in all, and
-  the rest is margin for a column that heals before it falls. Samus holds at
-  least 155 missiles once both bosses are defeated, so the target is reachable
-  by refilling from enemies.
+- The missile stage climbs missiles held and is done at full missile capacity,
+  and like an energy stage stays done after missiles are spent. Samus holds at
+  least 155 missiles once both bosses are defeated, so a full refill from
+  enemies is at least that many. Tourian needs most of it: the five Zebetite
+  columns take eight missiles each and heal when left alone, Mother Brain dies
+  at 32 hits, and the missile doors and volleys on the way to the Zebetites
+  spend 10 to 75 more, so a smaller target brings Samus to the Zebetites and
+  Mother Brain with too few missiles to finish.
 - A boss stage climbs boss damage. The Kraid stage is done when Kraid is
   defeated and the Ridley stage when Ridley is, each read from that boss's own
   status byte (`$687B`, `$687C`): the key keeps the defeated bosses as bits
