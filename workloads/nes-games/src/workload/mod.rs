@@ -207,6 +207,11 @@ impl<G: Game> Lowered<G> {
     #[must_use]
     pub fn record(&self, state: &G::State) -> (Record, Satisfied) {
         let mut record = Record::default();
+        let satisfied = self.write_record(state, &mut record);
+        (record, satisfied)
+    }
+
+    fn write_record(&self, state: &G::State, record: &mut Record) -> Satisfied {
         let mut frame = Frame {
             record: record.writer(),
             satisfied: 0,
@@ -215,7 +220,7 @@ impl<G: Game> Lowered<G> {
         self.game.declare(state, &mut frame);
         let satisfied = Satisfied(frame.satisfied);
         frame.record.finish();
-        (record, satisfied)
+        satisfied
     }
 
     pub fn checked_record(&self, state: &G::State) -> Result<Record, Box<dyn Error>> {
@@ -229,7 +234,8 @@ impl<G: Game> Lowered<G> {
         state: G::State,
         accumulator: &mut Accumulator,
     ) -> NesObservation<G::State> {
-        let (record, satisfied) = self.record(&state);
+        let mut record = Record::default();
+        let satisfied = self.write_record(&state, &mut record);
         let observed = self.compiled.observe(&record, accumulator);
         NesObservation {
             frame_count,

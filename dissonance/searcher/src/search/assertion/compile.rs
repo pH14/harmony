@@ -1582,12 +1582,10 @@ impl Compiled {
     #[must_use]
     pub fn observe(&self, record: &Record, accumulator: &mut Accumulator) -> Observed {
         let mut stack = [0; STACK];
-        let parent = &self.held(accumulator);
-        let mut next = if self.aggregates.is_empty() {
-            *parent
-        } else {
-            self.accumulate(record, parent, &mut stack)
-        };
+        let mut next = self.held(accumulator);
+        if !self.aggregates.is_empty() {
+            next = self.accumulate(record, &next, &mut stack);
+        }
         let mut locals = [0; OBJECTIVE_WIDTH];
         let stage = match &self.progress {
             Progress::Stages { stages, .. } => {
@@ -1597,7 +1595,7 @@ impl Compiled {
                     locals: &locals,
                     tables: &self.tables,
                 };
-                Some(Self::locate(stages, &env, parent, &mut stack))
+                Some(Self::locate(stages, &env, &next, &mut stack))
             }
             _ => None,
         };
@@ -1659,6 +1657,10 @@ impl Compiled {
                 ),
             }
         });
+        let goal = self
+            .goal
+            .as_deref()
+            .is_some_and(|ops| truth(ops, &mut stack));
         if let Some((index, objective)) = stage
             && key.is_some()
         {
@@ -1666,10 +1668,6 @@ impl Compiled {
             next.objective = objective;
         }
         next.started = true;
-        let goal = self
-            .goal
-            .as_deref()
-            .is_some_and(|ops| truth(ops, &mut stack));
         self.store(&next, accumulator);
         Observed {
             key,
