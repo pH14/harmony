@@ -39,8 +39,11 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "famidash" => Game {
-            setup: famidash::target::setup_tape(),
-            chords: famidash::archive::CHORDS,
+            setup: {
+                let game = famidash::Famidash::<0>::default();
+                [game.setup(), game.start()].concat()
+            },
+            chords: famidash::Famidash::<0>::CHORDS,
             cartridge_ram: true,
         },
         "super-mario-bros" => Game {
@@ -69,8 +72,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "zelda" => Game {
-            setup: zelda::target::setup_tape(),
-            chords: zelda::archive::CHORDS,
+            setup: zelda::Zelda.setup(),
+            chords: zelda::Zelda::CHORDS,
             cartridge_ram: false,
         },
         "donkey-kong" => Game {

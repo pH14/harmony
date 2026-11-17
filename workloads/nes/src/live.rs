@@ -1492,31 +1492,38 @@ mod tests {
         use nes_games::{
             arcade::ArcadeGame,
             famidash::{
-                campaign::FamidashGame,
+                Famidash,
                 levels::{Side, Stage},
             },
+            workload::{Game as _, NesWorkload},
         };
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         };
-        type Game = FamidashGame<super::NativeMachine>;
+        type Game = NesWorkload<Famidash, super::NativeMachine>;
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let configured = Arc::new(Game::with_targets(
-            b"test-rom",
-            "test-core",
-            "test-sha",
-            Stage {
-                side: Side::Main,
-                level: 7,
-                goal: 9,
-            },
-            Box::new(move || {
-                observed.fetch_add(1, Ordering::SeqCst);
-                Err("configured level7 factory".into())
-            }),
-        ));
+        let configured = Arc::new(
+            Game::with_machines(
+                Famidash::new(Stage {
+                    side: Side::Main,
+                    level: 7,
+                    goal: 9,
+                }),
+                Famidash::<0>::STRATEGY,
+                b"test-rom",
+                "test-core",
+                "test-sha",
+                Arc::new(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Err(machine::MachineError::Backend(
+                        "configured level7 factory".to_owned(),
+                    ))
+                }),
+            )
+            .unwrap(),
+        );
         let view = Game::memory_view(&[0_u8; machine::nes::WRAM_SIZE]).unwrap();
         let input = [machine::nes::ButtonChord::new(1, 4)];
         let ready =
@@ -1715,7 +1722,8 @@ mod tests {
             net::{TcpListener, TcpStream},
             sync::{Arc, OnceLock, mpsc},
         };
-        type Game = nes_games::famidash::campaign::FamidashGame<super::NativeMachine>;
+        type Game =
+            nes_games::workload::NesWorkload<nes_games::famidash::Famidash, super::NativeMachine>;
         let (events, received) = mpsc::channel();
         drop(received);
         let (lookups, _) = mpsc::channel();
@@ -1726,12 +1734,10 @@ mod tests {
             lookups,
             pending_lookups: Arc::new(AtomicUsize::new(0)),
             site: None,
-            workload: Arc::new(Game::with_targets(
+            workload: Arc::new(famidash_fixture(
                 b"test-rom",
-                "test-core",
                 "test-core-sha",
-                nes_games::arcade::famidash::group_stage(0),
-                Box::new(|| Err("this terminal-only test must not execute a target".into())),
+                "this terminal-only test must not execute a target",
             )),
             observe: Arc::new(|| None),
             terminal,
@@ -1757,19 +1763,31 @@ mod tests {
         assert!(reply.find("batch").unwrap() < reply.find("limit").unwrap());
     }
 
-    type LookupWorkload = nes_games::famidash::campaign::FamidashGame<super::NativeMachine>;
+    type LookupWorkload =
+        nes_games::workload::NesWorkload<nes_games::famidash::Famidash, super::NativeMachine>;
+
+    fn famidash_fixture(rom: &[u8], core_sha256: &str, refusal: &'static str) -> LookupWorkload {
+        use nes_games::workload::Game as _;
+        LookupWorkload::with_machines(
+            nes_games::famidash::Famidash::new(nes_games::arcade::famidash::group_stage(0)),
+            nes_games::famidash::Famidash::<0>::STRATEGY,
+            rom,
+            "test-core",
+            core_sha256,
+            std::sync::Arc::new(move || Err(machine::MachineError::Backend(refusal.to_owned()))),
+        )
+        .unwrap()
+    }
 
     fn state_lookup_fixture() -> (
         std::sync::Arc<super::Server<LookupWorkload>>,
         super::LiveWatch<LookupWorkload>,
     ) {
         use std::sync::{Arc, Mutex, OnceLock, atomic::AtomicBool, mpsc};
-        let workload = Arc::new(LookupWorkload::with_targets(
+        let workload = Arc::new(famidash_fixture(
             b"lookup-test-rom",
-            "lookup-test-core",
             "lookup-test-sha",
-            nes_games::arcade::famidash::group_stage(0),
-            Box::new(|| Err("lookup fixture must not execute a target".into())),
+            "lookup fixture must not execute a target",
         ));
         let (events, _) = mpsc::channel();
         let (lookups, receiver) = mpsc::channel();

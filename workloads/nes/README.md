@@ -101,14 +101,14 @@ Tilt Bro campaign's own witness is checked.
 
 ## Recorded runs
 
-Games declared through assertions (Joust) take two request fields.
+Games declared through assertions (Joust, Zelda and Famidash) take two request fields.
 `"strategy": PATH` runs the campaign under that strategy instead of the
 built-in one, with no rebuild; the text is copied to `strategy.toml` in the run
 directory and its SHA-256 goes into `identity.json` and `result.json`.
 `"records": true` writes `records.bin` (the searcher's records file) beside the
 stream, and `result.json` reports its jobs, bytes and bytes per job. Records are
 off by default: at 10,000 executions they cost 158 bytes per job and 12% more
-search time on Joust. The stream is
+search time on Joust, and 303 bytes per job and 8% more on Zelda. The stream is
 written under `"verification":"campaign"`, which bounds a run to 10,000
 executions, and under `"keep_stream": true` with witness verification, which
 keeps the stream of a run of any length. A campaign-verified run's replay writes
@@ -123,6 +123,17 @@ running digest every 1,024 records. Two workloads that differ only in how they
 key states produce the same decision digest when the search made the same
 choices, and the first differing mark bounds where they parted. The digest is
 computed whether or not the stream is kept, so it covers runs of any length.
+
+`nes-rekey GAME RUN_DIR [STRATEGY.toml]` reads `records.bin` and `stream.jsonl`,
+checks that the records belong to that stream and catalog, and prints the
+cells, tiers, holders and check findings the run has under the strategy, the
+recorded one by default, with no emulator. A records file cut short by a crash
+reads as its whole jobs. Under the recorded strategy the tool also counts the
+jobs whose decisions match the stream and compares the holders with the
+entries of `checkpoint.bin`. Every report gives the records' total cost and the count of
+each forced-move length (an action's cost beyond the frames it decoded). A run
+with no `stream.jsonl`, such as a witness-verified one, reports only those
+counts.
 
 ## Chord draw
 

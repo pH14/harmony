@@ -6,7 +6,7 @@ use nes_workload::{
     donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
-        campaign::{FamidashCampaignRun, FamidashGame},
+        Famidash, FamidashGame,
         levels::{GROUPS, Side, Stage},
     },
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
@@ -32,7 +32,7 @@ use nes_workload::{
         target::StbAi,
     },
     twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
-    zelda::campaign::{ZeldaCampaignRun, ZeldaGame},
+    zelda::{Zelda, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
 
@@ -80,7 +80,7 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
 }
 
 type LiveFamidash<const GROUP: usize> =
-    nes_games::famidash::campaign::FamidashGame<NativeMachine, GROUP>;
+    nes_games::workload::NesWorkload<Famidash<GROUP>, NativeMachine>;
 
 fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<()> {
     if (request.stage.is_some() && !request.game.starts_with("famidash"))
@@ -127,7 +127,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
-        "zelda" => evaluate_live::<nes_games::zelda::campaign::ZeldaGame<NativeMachine>>(
+        "zelda" => evaluate_live::<nes_games::workload::NesWorkload<Zelda, NativeMachine>>(
             rom, request, out, started, "zelda",
         ),
         "donkey-kong" => evaluate_live::<
@@ -212,7 +212,7 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" => {}
+            "joust" | "zelda" | "famidash" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -363,8 +363,12 @@ fn main() -> Result<()> {
                 <PunchOutGame>::memory_view,
             ),
             "zelda" => evaluate_watching(
-                ZeldaGame::new(&rom, p, h, &execution_sha256),
-                ZeldaCampaignRun,
+                nes_workload::workload::configured(
+                    ZeldaGame::new(Zelda, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
@@ -435,8 +439,12 @@ fn main() -> Result<()> {
                 let stage = famidash_stage(&rom, request.stage, request.whole_game)?;
                 let (id, view) = famidash_live(stage);
                 evaluate_watching(
-                    FamidashGame::new(&rom, p, h, &execution_sha256, stage),
-                    FamidashCampaignRun,
+                    nes_workload::workload::configured(
+                        FamidashGame::new(Famidash::new(stage), &rom, p, h, &execution_sha256)?,
+                        &request,
+                        &out,
+                    )?,
+                    nes_games::workload::NesRun,
                     &rom,
                     &request,
                     &execution_sha256,

@@ -2,15 +2,18 @@
 
 use std::{collections::BTreeMap, env, error::Error, fs, path::PathBuf};
 
+use machine::{nes::ButtonChord, quicknes::QuickNesMachine};
+use nes_games::workload::{NesSnapshot, NesTarget};
 use nes_workload::famidash::{
+    A_BUTTON, Famidash, FamidashGame, FamidashState, GAME_STATE_PLAYING,
     levels::{Side, Stage},
-    target::{
-        A_BUTTON, ButtonChord, FamidashInput, FamidashMechanicalState, FamidashSnapshot,
-        FamidashTarget,
-    },
 };
+use nes_workload::search::{archive::Input, campaign::TargetExecution};
 use nes_workload::target::Target;
-use sha2::{Digest, Sha256};
+
+type FamidashInput = Input<ButtonChord>;
+type FamidashSnapshot = NesSnapshot<FamidashState>;
+type FamidashTarget = NesTarget<Famidash, QuickNesMachine>;
 
 const USAGE: &str = "usage: famidash-probe ROM LEVEL [INPUT.json] [trace | frontier FRAMES [OUT.json] | timing STRIDE HORIZON SAMPLES]";
 const FRONTIER_LIMIT: usize = 4_096;
@@ -30,18 +33,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => serde_json::from_slice(&fs::read(path)?)?,
         None => FamidashInput::default(),
     };
-    let core = PathBuf::from(
-        env::var_os("HARMONY_QUICKNES_CORE").ok_or("HARMONY_QUICKNES_CORE must name QuickNES")?,
-    );
-    let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core)?));
     let rom = fs::read(&rom)?;
     let side = Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
-    let mut target = FamidashTarget::from_rom_bytes_headless(
-        &rom,
-        &core,
-        &core_sha256,
-        Stage::single(side, level)?,
-    )?;
+    let workload =
+        FamidashGame::from_environment(Famidash::new(Stage::single(side, level)?), &rom)?;
+    let mut target = workload.new_target()?;
+    target.reset();
     if args.get(3).map(String::as_str) == Some("timing") {
         let stride: u64 = args.get(4).ok_or(USAGE)?.parse()?;
         let horizon: u64 = args.get(5).ok_or(USAGE)?.parse()?;
@@ -58,9 +55,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "frame {frame} a={} {}",
                     action.buttons & A_BUTTON,
-                    describe(target.mechanical_state())
+                    describe(*target.state())
                 );
-                if target.is_terminal() {
+                if target.state().terminal() {
                     break;
                 }
             }
@@ -68,14 +65,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             target.apply(action);
             frame += u64::from(action.bounded_hold_frames());
         }
-        if target.is_terminal() {
+        if target.state().terminal() {
             break;
         }
     }
-    println!(
-        "endpoint frame {frame} {}",
-        describe(target.mechanical_state())
-    );
+    println!("endpoint frame {frame} {}", describe(*target.state()));
     if args.get(3).map(String::as_str) == Some("frontier") {
         let frames: u32 = args.get(4).ok_or(USAGE)?.parse()?;
         frontier(&mut target, &input, frames, args.get(5).map(PathBuf::from))?;
@@ -83,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn describe(state: FamidashMechanicalState) -> String {
+fn describe(state: FamidashState) -> String {
     match state.gameplay {
         Some(gameplay) => format!(
             "x={} y={} vy={} mode={} gravity={} mini={} dual={} percent={}",
@@ -105,7 +99,7 @@ fn describe(state: FamidashMechanicalState) -> String {
     }
 }
 
-fn frontier_key(state: FamidashMechanicalState, held: bool) -> Option<FrontierKey> {
+fn frontier_key(state: FamidashState, held: bool) -> Option<FrontierKey> {
     state.gameplay.map(|gameplay| {
         (
             gameplay.y,
@@ -120,7 +114,7 @@ fn frontier_key(state: FamidashMechanicalState, held: bool) -> Option<FrontierKe
 }
 
 fn frontier(
-    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    target: &mut FamidashTarget,
     prefix: &FamidashInput,
     frames: u32,
     out: Option<PathBuf>,
@@ -137,7 +131,7 @@ fn frontier(
             for buttons in [0, A_BUTTON] {
                 target.restore(&branch.snapshot)?;
                 target.apply(&ButtonChord::new(buttons, 1));
-                let state = target.mechanical_state();
+                let state = *target.state();
                 let mut frames = branch.frames.clone();
                 frames.push(buttons);
                 if state.complete() {
@@ -219,11 +213,7 @@ fn draw_chord(rng: &mut Rng, vocabulary: Vocabulary) -> ButtonChord {
     ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1))
 }
 
-fn alive_after(
-    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
-    actions: &[ButtonChord],
-    horizon: u64,
-) -> bool {
+fn alive_after(target: &mut FamidashTarget, actions: &[ButtonChord], horizon: u64) -> bool {
     let mut frames = 0_u64;
     for action in actions {
         if frames >= horizon {
@@ -235,15 +225,15 @@ fn alive_after(
             u8::try_from(hold).unwrap_or(1),
         ));
         frames += hold;
-        if target.is_terminal() {
-            return !target.mechanical_state().dead;
+        if target.state().terminal() {
+            return !target.state().dead;
         }
     }
     frames >= horizon
 }
 
 fn survival(
-    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    target: &mut FamidashTarget,
     root: &FamidashSnapshot,
     vocabulary: Vocabulary,
     horizon: u64,
@@ -268,7 +258,7 @@ fn survival(
 }
 
 fn shifted_survival(
-    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    target: &mut FamidashTarget,
     root: &FamidashSnapshot,
     tail: &[ButtonChord],
     horizon: u64,
@@ -302,7 +292,7 @@ fn shifted_survival(
 }
 
 fn timing(
-    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    target: &mut FamidashTarget,
     input: &FamidashInput,
     stride: u64,
     horizon: u64,
@@ -313,21 +303,21 @@ fn timing(
     let mut frame = 0_u64;
     let mut next_point = 0_u64;
     for (index, action) in input.actions.iter().enumerate() {
-        if frame >= next_point && target.mechanical_state().playing() {
+        if frame >= next_point && target.state().game_state == GAME_STATE_PLAYING {
             let snapshot = target.snapshot().ok_or("could not snapshot a point")?;
             points.push((frame, index, snapshot));
             next_point = frame + stride;
         }
         target.apply(action);
         frame += u64::from(action.bounded_hold_frames());
-        if target.is_terminal() {
+        if target.state().terminal() {
             break;
         }
     }
     println!("frame x mode level search taps frames shift1 shift2 of {samples}");
     for (frame, index, snapshot) in points {
         target.restore(&snapshot)?;
-        let state = target.mechanical_state();
+        let state = *target.state();
         let Some(gameplay) = state.gameplay else {
             continue;
         };
