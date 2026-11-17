@@ -127,13 +127,18 @@ impl<P: SnapshotState> SmbSnapshot<P> {
 pub const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
-        hold_frames: 120,
+        hold_frames: 39,
     },
     ButtonChord {
         buttons: 0x08,
         hold_frames: 1,
     },
 ];
+
+#[must_use]
+pub fn boot_identifier() -> String {
+    format!("boot=start-after-{}-idle-frames", BOOT_WALK[0].hold_frames)
+}
 
 const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
 const OPER_MODE_OFFSET: usize = 0x0770;
@@ -158,6 +163,9 @@ where
     dead: bool,
     failed: bool,
     execution_work: u64,
+    boot_frames: u64,
+    last_frames: u64,
+    last_level_frames: u64,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -176,11 +184,16 @@ where
             hold_frames: 1,
         }];
         let mut reached_play = false;
+        let mut boot_frames = BOOT_WALK
+            .iter()
+            .map(|chord| u64::from(chord.hold_frames))
+            .sum::<u64>();
         for _ in 0..BOOT_PLAY_WAIT_FRAMES {
             if smb_is_playing(&wram_array(&machine)?) {
                 reached_play = true;
                 break;
             }
+            boot_frames += 1;
             let here = machine.snapshot()?;
             machine.branch(here, &nes::reproducer(&idle))?;
             machine.run(StopConditions::default(), None)?;
@@ -212,7 +225,131 @@ where
             dead: false,
             failed: false,
             execution_work: 0,
+            boot_frames,
+            last_frames: 0,
+            last_level_frames: 0,
         })
+    }
+
+    pub fn root_after(&mut self, prefix: &[ButtonChord]) -> Result<(), MachineError> {
+        self.reset();
+        for action in prefix {
+            self.apply(action);
+        }
+        if self.failed || self.dead || self.is_victory() || !self.rerun_to_stop() {
+            return Err(MachineError::Backend(
+                "the root prefix does not end in a live state".to_owned(),
+            ));
+        }
+        let genesis = self.machine.snapshot()?;
+        self.machine.drop_snapshot(self.genesis)?;
+        self.genesis = genesis;
+        self.snapshot_base = None;
+        self.boot_frames = self
+            .boot_frames
+            .saturating_add(self.observation.frame_count);
+        self.observation.frame_count = 0;
+        self.genesis_observation = self.observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.last_frames = 0;
+        self.last_level_frames = 0;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn boot_frames(&self) -> u64 {
+        self.boot_frames
+    }
+
+    #[must_use]
+    pub fn frame_count(&self) -> u64 {
+        self.observation.frame_count
+    }
+
+    #[must_use]
+    pub fn last_action_frames(&self) -> u64 {
+        self.last_frames
+    }
+
+    #[must_use]
+    pub fn last_action_level_frames(&self) -> u64 {
+        self.last_level_frames
+    }
+
+    fn run_chord(&mut self, action: ButtonChord, until_control: bool) -> u64 {
+        if !self.rerun_to_stop() {
+            return 0;
+        }
+        let Ok(start) = self.machine.snapshot() else {
+            self.failed = true;
+            return 0;
+        };
+        if self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(&action)))
+            .is_err()
+        {
+            self.failed = true;
+            let _ = self.machine.drop_snapshot(start);
+            return 0;
+        }
+        if !self.run_staged() {
+            let _ = self.machine.drop_snapshot(start);
+            return 0;
+        }
+        let mut endpoint = self.wram();
+        let mut prior_bucket = smb_scroll_bucket(&endpoint);
+        let mut executed_frames = 0_u64;
+        let mut level_frames = 0_u64;
+        for wram in self
+            .machine
+            .frames()
+            .iter()
+            .take(usize::from(action.bounded_hold_frames()))
+        {
+            executed_frames = executed_frames.saturating_add(1);
+            if smb_is_inside_level(&endpoint) {
+                level_frames = level_frames.saturating_add(1);
+            }
+            endpoint = *wram;
+            let current_bucket = smb_scroll_bucket(wram);
+            self.dead = smb_player_is_dead(wram);
+            let victory = smb_is_victory(wram);
+            if current_bucket != prior_bucket || self.dead || victory {
+                prior_bucket = current_bucket;
+                self.action_observations.push(observation_from(
+                    wram,
+                    self.observation.frame_count.saturating_add(executed_frames),
+                    self.dead,
+                ));
+            }
+            if self.dead || victory || (until_control && smb_player_has_control(wram)) {
+                break;
+            }
+        }
+        if executed_frames < self.machine.frames().len() as u64 {
+            let kept = u8::try_from(executed_frames).unwrap_or(1);
+            self.machine.keep_run_capture(usize::from(kept));
+            self.stopped_at = Some((start, ButtonChord::new(action.buttons, kept)));
+        } else {
+            let _ = self.machine.drop_snapshot(start);
+        }
+        self.execution_work = self.execution_work.saturating_add(executed_frames);
+        self.last_frames = self.last_frames.saturating_add(executed_frames);
+        self.last_level_frames = self.last_level_frames.saturating_add(level_frames);
+        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
+        let endpoint_already_recorded = self
+            .action_observations
+            .last()
+            .is_some_and(|observation| observation.frame_count == endpoint_frame);
+        if !endpoint_already_recorded {
+            self.action_observations
+                .push(observation_from(&endpoint, endpoint_frame, self.dead));
+        }
+        if let Some(observation) = self.action_observations.last() {
+            self.observation = observation.clone();
+        }
+        executed_frames
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
@@ -400,71 +537,27 @@ where
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
+        self.last_frames = 0;
+        self.last_level_frames = 0;
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        let Ok(start) = self.machine.snapshot() else {
-            self.failed = true;
-            return;
-        };
-        if self
-            .machine
-            .branch(start, &nes::reproducer(std::slice::from_ref(action)))
-            .is_err()
-        {
-            self.failed = true;
-            let _ = self.machine.drop_snapshot(start);
+        if action.hold_frames != WAIT_FOR_CONTROL_HOLD {
+            self.run_chord(*action, false);
             return;
         }
-        if !self.run_staged() {
-            let _ = self.machine.drop_snapshot(start);
-            return;
-        }
-        let mut endpoint = self.wram();
-        let mut prior_bucket = smb_scroll_bucket(&endpoint);
-        let mut executed_frames = 0_u64;
-        for wram in self
-            .machine
-            .frames()
-            .iter()
-            .take(usize::from(action.bounded_hold_frames()))
+        while self.last_frames < WAIT_FOR_CONTROL_FRAMES
+            && !self.failed
+            && !self.dead
+            && !self.is_victory()
+            && !smb_player_has_control(&self.wram())
         {
-            executed_frames = executed_frames.saturating_add(1);
-            endpoint = *wram;
-            let current_bucket = smb_scroll_bucket(wram);
-            self.dead = smb_player_is_dead(wram);
-            let victory = smb_is_victory(wram);
-            if current_bucket != prior_bucket || self.dead || victory {
-                prior_bucket = current_bucket;
-                self.action_observations.push(observation_from(
-                    wram,
-                    self.observation.frame_count.saturating_add(executed_frames),
-                    self.dead,
-                ));
-            }
-            if self.dead || victory {
+            if self.run_chord(ButtonChord::new(action.buttons, MAX_HOLD_FRAMES), true) == 0 {
                 break;
             }
         }
-        if executed_frames < self.machine.frames().len() as u64 {
-            let kept = u8::try_from(executed_frames).unwrap_or(1);
-            self.machine.keep_run_capture(usize::from(kept));
-            self.stopped_at = Some((start, ButtonChord::new(action.buttons, kept)));
-        } else {
-            let _ = self.machine.drop_snapshot(start);
-        }
-        self.execution_work = self.execution_work.saturating_add(executed_frames);
-        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
-        let endpoint_already_recorded = self
-            .action_observations
-            .last()
-            .is_some_and(|observation| observation.frame_count == endpoint_frame);
-        if !endpoint_already_recorded {
-            self.action_observations
-                .push(observation_from(&endpoint, endpoint_frame, self.dead));
-        }
-        if let Some(observation) = self.action_observations.last() {
-            self.observation = observation.clone();
+        if self.action_observations.is_empty() {
+            self.action_observations.push(self.observation.clone());
         }
     }
 
@@ -666,6 +759,27 @@ pub fn smb_player_is_doomed(wram: &[u8; WRAM_SIZE]) -> bool {
 const OPERATING_MODE_OFFSET: usize = 0x0770;
 const VICTORY_OPERATING_MODE: u8 = 2;
 const FINAL_WORLD_NUMBER: u8 = 7;
+pub const WAIT_FOR_CONTROL_HOLD: u8 = 0;
+const WAIT_FOR_CONTROL_FRAMES: u64 = 2_400;
+const LEVEL_END_ENGINE_STATES: [u8; 4] = [0x00, 0x04, 0x05, 0x07];
+
+#[must_use]
+pub const fn wait_for_control(buttons: u8) -> ButtonChord {
+    ButtonChord {
+        buttons,
+        hold_frames: WAIT_FOR_CONTROL_HOLD,
+    }
+}
+
+#[must_use]
+pub fn smb_player_has_control(wram: &[u8; WRAM_SIZE]) -> bool {
+    smb_is_playing(wram) && wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_CONTROL_STATE
+}
+
+#[must_use]
+pub fn smb_is_inside_level(wram: &[u8; WRAM_SIZE]) -> bool {
+    smb_is_playing(wram) && !LEVEL_END_ENGINE_STATES.contains(&wram[PLAYER_ENGINE_STATE_OFFSET])
+}
 
 #[must_use]
 pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
@@ -673,11 +787,24 @@ pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
         && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER
 }
 
+const PLAYER_STATE_BYTES: [usize; 34] = [
+    0x000e, 0x001d, 0x0033, 0x0045, 0x0057, 0x006d, 0x0086, 0x009f, 0x00b5, 0x00ce, 0x0416, 0x0433,
+    0x0490, 0x0700, 0x0701, 0x0702, 0x0703, 0x0704, 0x0705, 0x0709, 0x070a, 0x0714, 0x0717, 0x071a,
+    0x071c, 0x074e, 0x074f, 0x0750, 0x0754, 0x0756, 0x075c, 0x075f, 0x0782, 0x0783,
+];
+const SAVED_JOYPAD_OFFSET: usize = 0x06fc;
+const SAVED_JUMP_AND_RUN_BITS: u8 = 0xc0;
+
 fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
-    let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
-    let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 16);
-    let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);
-    (screen_page << 8) | (screen_x_bucket << 4) | player_y_bucket
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let bytes = PLAYER_STATE_BYTES
+        .iter()
+        .map(|&offset| wram[offset])
+        .chain([wram[SAVED_JOYPAD_OFFSET] & SAVED_JUMP_AND_RUN_BITS]);
+    for byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

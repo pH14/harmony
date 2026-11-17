@@ -30,19 +30,22 @@ use crate::{
         InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
         postcard_semantic_result_sha256,
     },
+    search::cost::ShrinkCost,
     search::empirical_steps::EmpiricalStepCheckpoint,
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
-        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER,
-        SmbArchiveKey, SmbArchiveReport, admission_is_viable, archive_key, chord_time,
+        DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
+        SmbArchiveReport, admission_is_viable, archive_key, chord_time, key_policy_identifier,
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
+    smb::plan::SmbRoute,
+    smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
-        smb_mechanical_state_from_wram,
+        smb_mechanical_state_from_wram, smb_player_has_control,
     },
     target::{ExitKind, Target},
 };
@@ -60,7 +63,7 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v4";
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v3";
 
-pub const DURATION_IDENTIFIER: &str = "stratified";
+pub const DURATION_IDENTIFIER: &str = "stratified_with_wait_for_control_v1";
 
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
@@ -93,6 +96,7 @@ where
     identity: String,
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
+    route: SmbRoute,
 }
 
 #[must_use]
@@ -116,9 +120,59 @@ where
     ) -> Self {
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
-            identity,
+            identity: format!("{identity};{}", crate::smb::target::boot_identifier()),
             checkpoint_format,
             targets,
+            route: SmbRoute::AllLevels,
+        }
+    }
+
+    #[must_use]
+    pub fn with_root(self, root: SmbInput) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        if root.actions.is_empty() {
+            return self;
+        }
+        let digest = Sha256::digest(serde_json::to_vec(&root).unwrap_or_default());
+        let targets = self.targets;
+        let actions = root.actions;
+        Self {
+            identity: format!("{};genesis=rooted:prefix-sha256={digest:x}", self.identity),
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target
+                    .root_after(&actions)
+                    .map_err(|error| error.to_string())?;
+                Ok(target)
+            }),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_route(self, route: SmbRoute) -> Self {
+        Self { route, ..self }
+    }
+
+    #[must_use]
+    pub fn route(&self) -> SmbRoute {
+        self.route
+    }
+
+    fn key_policy(&self) -> String {
+        key_policy_identifier(self.route)
+    }
+
+    fn doomed_policy(&self) -> String {
+        match self.route {
+            SmbRoute::AllLevels => DOOMED_POLICY_IDENTIFIER.to_owned(),
+            route => format!(
+                "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen_without_the_vine_and_its_area_pointer",
+                route.identifier()
+            ),
         }
     }
 
@@ -247,6 +301,10 @@ pub enum SmbTerminalPredicate {
         world: u8,
         level: u8,
     },
+    ControlIn {
+        world: u8,
+        level: u8,
+    },
 }
 
 impl SmbTerminalPredicate {
@@ -257,6 +315,7 @@ impl SmbTerminalPredicate {
             Self::LevelTransition { world, level } => {
                 format!("level_transition:{world},{level}")
             }
+            Self::ControlIn { world, level } => format!("control_in:{world},{level}"),
         }
     }
 
@@ -264,18 +323,24 @@ impl SmbTerminalPredicate {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
         }
-        let fields = identifier
-            .strip_prefix("level_transition:")
-            .ok_or("SMB terminal predicate is not recognized")?;
+        let (control, fields) = if let Some(fields) = identifier.strip_prefix("level_transition:") {
+            (false, fields)
+        } else if let Some(fields) = identifier.strip_prefix("control_in:") {
+            (true, fields)
+        } else {
+            return Err("SMB terminal predicate is not recognized".into());
+        };
         let (world, level) = fields
             .split_once(',')
-            .ok_or("level-transition predicate is missing world or level")?;
+            .ok_or("level predicate is missing world or level")?;
         if level.contains(',') {
-            return Err("level-transition predicate has extra fields".into());
+            return Err("level predicate has extra fields".into());
         }
-        Ok(Self::LevelTransition {
-            world: world.parse()?,
-            level: level.parse()?,
+        let (world, level) = (world.parse()?, level.parse()?);
+        Ok(if control {
+            Self::ControlIn { world, level }
+        } else {
+            Self::LevelTransition { world, level }
         })
     }
 
@@ -295,6 +360,11 @@ impl SmbTerminalPredicate {
             Self::LevelTransition { world, level } => {
                 let state = target.mechanical_state();
                 (state.world, state.level) != (world, level)
+            }
+            Self::ControlIn { world, level } => {
+                let state = target.mechanical_state();
+                (state.world, state.level) == (world, level)
+                    && smb_player_has_control(&target.wram())
             }
         })
     }
@@ -458,17 +528,20 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
+    fn simpler_actions(&self, _run: &SmbCampaignRun, action: &ButtonChord) -> Vec<ButtonChord> {
+        simpler_chords(action)
+    }
     fn policies(&self, run: &SmbCampaignRun) -> WorkloadPolicies {
         let mut policies: WorkloadPolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
             ),
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
+            (KEY_POLICY_FIELD, self.key_policy()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
-            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER.to_owned()),
+            (DOOMED_POLICY_FIELD, self.doomed_policy()),
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value))
@@ -486,11 +559,11 @@ where
     ) -> Result<SmbCampaignRun, Box<dyn Error>> {
         let recorded = |field: &str| recorded_policy(policies, field);
         let pinned = [
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
-            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
-            (DOOMED_POLICY_FIELD, DOOMED_POLICY_IDENTIFIER),
+            (KEY_POLICY_FIELD, self.key_policy()),
+            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
+            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
+            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
+            (DOOMED_POLICY_FIELD, self.doomed_policy()),
         ];
         for (field, compiled) in pinned {
             if recorded(field)? != compiled {
@@ -589,6 +662,16 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
+    fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
+        ShrinkCost::new(
+            target.last_action_frames(),
+            target.last_action_level_frames(),
+        )
+    }
+    fn remaining_cost_bound(&self, _run: &SmbCampaignRun, target: &SmbTarget<M, P>) -> ShrinkCost {
+        let frames = remaining_frames_bound(target);
+        ShrinkCost::new(frames, frames)
+    }
     fn merge_milestones(&self, into: &mut SmbMilestones, from: SmbMilestones) {
         merge_milestones(into, from);
     }
@@ -719,15 +802,18 @@ where
     }
 
     fn is_doomed(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_doomed()
+        target.is_doomed() || (!target.is_dead() && self.route.is_doomed(&target.wram()))
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(archive_key(&target.wram()), &target.wram())
+        stamp_arrival_room(
+            archive_key(&target.wram()).on_route(self.route),
+            &target.wram(),
+        )
     }
 
     fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(&target.wram()))
+        Ok(archive_key(&target.wram()).on_route(self.route))
     }
 
     fn complete_candidate_key(

@@ -113,7 +113,8 @@ pub struct ReplaySummary {
         not(miri)
     )
 ))]
-const REPLAY_SETTLE_TICKS: [u16; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096];
+pub(crate) const REPLAY_SETTLE_TICKS: [u16; 13] =
+    [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096];
 
 #[cfg(any(
     test,
@@ -374,9 +375,10 @@ mod live {
         session::WorkerLauncher,
     };
     use searcher::search::{
-        archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
+        archive::{Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{CampaignOrigin, PlacedThread, ThreadPlacement},
         draw::DrawMixture,
+        shrink::{ShrinkConfig, ShrinkEvent, ShrinkOutcome},
     };
     use serde_json::json;
 
@@ -386,13 +388,15 @@ mod live {
     };
     use crate::{
         bundle::FaultVocabulary,
-        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_with_plan},
+        campaign::{
+            FaultCampaignConfig, FaultCampaignRun, FaultWorkload, run_fault_campaign_with_plan,
+        },
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         report::{
             BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
             write_hang_reports,
         },
-        target::{ActionWindows, FaultAction, FaultObservations, FaultOperation},
+        target::{ActionWindows, FaultAction, FaultOperation},
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
@@ -805,104 +809,45 @@ mod live {
         Ok(summary)
     }
 
-    pub struct Replayer {
-        artifacts: Artifacts,
-        config: FaultConfig,
-        cache: Arc<dyn CacheIndex>,
-        identity: String,
-        options: Options,
-        settle: bool,
-        workers: usize,
+    const SHRINK_WINDOW: usize = 1;
+
+    pub struct Shrunk {
+        pub outcome: ShrinkOutcome<FaultAction>,
+        pub workers: usize,
     }
 
-    pub struct ReplayWorker<'a> {
-        replayer: &'a Replayer,
-        target: FaultTarget,
-    }
-
-    impl Replayer {
-        pub fn new(
-            artifacts: &Artifacts,
-            options: &Options,
-            settle: bool,
-            jobs: usize,
-        ) -> Result<Self, Box<dyn Error>> {
-            let config = config(options)?;
-            let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
-            let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
-            segments::raise_descriptor_limit();
-            Ok(Self {
-                artifacts: Artifacts {
-                    kernel: artifacts.kernel.clone(),
-                    initramfs: artifacts.initramfs.clone(),
-                },
-                config,
-                cache: Arc::new(LocalIndex::measured(memory.budget)),
-                identity,
-                options: options.clone(),
-                settle,
-                workers: memory.workers,
-            })
-        }
-
-        #[must_use]
-        pub fn workers(&self) -> usize {
-            self.workers
-        }
-
-        pub fn worker(&self) -> Result<ReplayWorker<'_>, Box<dyn Error>> {
-            let target = FaultTarget::new(
-                &self.artifacts.kernel,
-                &self.artifacts.initramfs,
-                &self.config,
-                Some(Arc::clone(&self.cache)),
-                None,
-            )?;
-            Ok(ReplayWorker {
-                replayer: self,
-                target,
-            })
-        }
-    }
-
-    impl ReplayWorker<'_> {
-        pub fn replay(
-            &mut self,
-            actions: &[FaultAction],
-            mut watch: impl FnMut(&FaultObservations) -> bool,
-        ) -> Result<Option<Report>, Box<dyn Error>> {
-            let replayer = self.replayer;
-            #[allow(clippy::disallowed_methods)]
-            let started = Instant::now();
-            self.target.reset();
-            if self.target.failed() {
-                return Err("the replay guest could not return to its setup snapshot".into());
-            }
-            let Some(summary) = replay_on(
-                &mut self.target,
-                replayer.config.uml().is_some(),
-                actions,
-                replayer.settle,
-                &mut watch,
-                &mut |_, _| Ok(()),
-            )?
-            else {
-                return Ok(None);
-            };
-            replayer.cache.verify_integrity()?;
-            let mut report = Report::new(
-                "replay",
-                &replayer.artifacts,
-                replayer.identity.clone(),
-                &replayer.options,
-                1,
-            );
-            report.execution_ticks = replayed_ticks(actions, &summary);
-            report.bug_found = summary.bug;
-            report.replays.push(summary);
-            report.wall_seconds = started.elapsed().as_secs();
-            Ok(Some(report))
-        }
+    pub fn shrink(
+        artifacts: &Artifacts,
+        options: &Options,
+        run: FaultCampaignRun,
+        incumbent: &[FaultAction],
+        jobs: usize,
+        observe: impl FnMut(ShrinkEvent<'_, FaultAction>) -> Result<(), Box<dyn Error>> + Send,
+    ) -> Result<Shrunk, Box<dyn Error>> {
+        let config = config(options)?;
+        let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
+        segments::raise_descriptor_limit();
+        let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(memory.budget));
+        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+            .with_snapshot_cache(Some(Arc::clone(&cache)));
+        let workers = memory.workers;
+        let mut settings = ShrinkConfig::new(run, options.seed);
+        settings.workers = workers;
+        settings.window = Some(SHRINK_WINDOW);
+        settings.until_shortcuts_exhausted = true;
+        settings.primary_shortcuts = true;
+        settings.ordinary = false;
+        settings.shortcut_snapshots = true;
+        let outcome = searcher::search::shrink::shrink(
+            &workload,
+            &settings,
+            &Input {
+                actions: incumbent.to_vec(),
+            },
+            observe,
+        )?;
+        cache.verify_integrity()?;
+        Ok(Shrunk { outcome, workers })
     }
 
     fn replayed_ticks(actions: &[FaultAction], summary: &ReplaySummary) -> u64 {
@@ -922,15 +867,7 @@ mod live {
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
-        replay_on(
-            &mut target,
-            config.uml().is_some(),
-            actions,
-            settle,
-            &mut |_| true,
-            visit,
-        )?
-        .ok_or_else(|| "the replay stopped before its last action".into())
+        replay_on(&mut target, config.uml().is_some(), actions, settle, visit)
     }
 
     fn replay_on(
@@ -938,12 +875,8 @@ mod live {
         uml: bool,
         actions: &[FaultAction],
         settle: bool,
-        watch: &mut dyn FnMut(&FaultObservations) -> bool,
         visit: &mut Visit<'_>,
-    ) -> Result<Option<ReplaySummary>, Box<dyn Error>> {
-        if !watch(target.observation()) {
-            return Ok(None);
-        }
+    ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
@@ -965,9 +898,6 @@ mod live {
                 break;
             }
             visit(index as u64 + 1, target)?;
-            if !watch(target.observation()) {
-                return Ok(None);
-            }
         }
         let actions_applied = target.actions().len() as u64;
         let mut settle_actions = 0_u64;
@@ -997,9 +927,6 @@ mod live {
             visit(target.actions().len() as u64, target)?;
             settle_actions = settle_actions.saturating_add(1);
             settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
-            if !watch(target.observation()) {
-                return Ok(None);
-            }
         }
         if target.failed() {
             return Err(format!(
@@ -1022,7 +949,7 @@ mod live {
         summary.timeline = timeline;
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
-        Ok(Some(summary))
+        Ok(summary)
     }
 
     fn copy_evidence_file(
@@ -1298,8 +1225,8 @@ mod live {
     not(miri)
 ))]
 pub use live::{
-    ReplayWorker, Replayer, Resources, Visit, execute_actions, execute_visiting, prepare_debug,
-    replay, resources, search,
+    Resources, Shrunk, Visit, execute_actions, execute_visiting, prepare_debug, replay, resources,
+    search, shrink,
 };
 
 #[cfg(test)]

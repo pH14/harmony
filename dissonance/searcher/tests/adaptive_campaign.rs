@@ -428,6 +428,7 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
+        minimize: None,
     }
 }
 

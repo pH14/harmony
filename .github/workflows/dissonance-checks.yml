@@ -166,3 +166,5 @@ jobs:
             --all-features -p searcher --lib -E "$filter"
           cargo nextest run --locked --manifest-path dissonance/Cargo.toml --release \
             --all-features -p searcher --test adaptive_campaign
+          cargo nextest run --locked --manifest-path dissonance/Cargo.toml --release \
+            --all-features -p searcher --test minimize_campaign

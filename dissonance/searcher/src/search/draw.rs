@@ -108,12 +108,20 @@ impl MixtureEnergy {
         )
     }
 
+    pub(crate) fn shares(&self, scale: u64) -> [u64; 3] {
+        [0, 1, 2].map(|index| self.share(index, scale))
+    }
+
     pub(crate) fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool, work: u64) {
         let index = match strategy {
             EnergyStrategy::Table => 0,
             EnergyStrategy::Splice => 1,
             EnergyStrategy::Alphabet => 2,
         };
+        self.record(index, new_slot, work);
+    }
+
+    pub(crate) fn record(&mut self, index: usize, new_slot: bool, work: u64) {
         self.jobs = self.jobs.saturating_add(1);
         self.work = self.work.saturating_add(work);
         if new_slot {

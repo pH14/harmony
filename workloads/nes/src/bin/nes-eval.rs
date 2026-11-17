@@ -23,7 +23,10 @@ use nes_workload::{
     pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
-    smb::campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
+    smb::{
+        campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
+        plan::SmbRoute,
+    },
     stb::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
@@ -84,12 +87,15 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.ai.is_some()
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
+        || request.smb_route.is_some()
+        || request.smb_terminal.is_some()
+        || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
         || !request.mixture.is_empty()
     {
         return Err(
-            "a live view runs the arcade game from genesis with its own mixture, without ai, root, resume or mixture options"
+            "a live view runs the arcade game from genesis with its own mixture, without ai, root, minimize, resume or mixture options"
                 .into(),
         );
     }
@@ -175,6 +181,10 @@ fn main() -> Result<()> {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);
         }
+        if (request.smb_route.is_some() || request.smb_terminal.is_some()) && request.game != "smb"
+        {
+            return Err("only Super Mario Bros. takes smb_route and smb_terminal options".into());
+        }
         match request.game.as_str() {
             "smb" | "metroid"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
@@ -209,10 +219,31 @@ fn main() -> Result<()> {
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
             "smb" => evaluate_watching(
-                SmbGame::new(&rom, p, h, &execution_sha256),
+                SmbGame::new(&rom, p, h, &execution_sha256)
+                    .with_root(
+                        root_actions::<nes_games::smb::target::SmbInput>(
+                            request.root_input.as_deref(),
+                        )?
+                        .unwrap_or_default(),
+                    )
+                    .with_route(
+                        request
+                            .smb_route
+                            .as_deref()
+                            .map(SmbRoute::from_identifier)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ),
                 SmbCampaignRun {
                     vocabulary: Default::default(),
-                    terminal: Some(SmbTerminalPredicate::GameVictory),
+                    terminal: Some(
+                        request
+                            .smb_terminal
+                            .as_deref()
+                            .map(SmbTerminalPredicate::from_identifier)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ),
                 },
                 &rom,
                 &request,

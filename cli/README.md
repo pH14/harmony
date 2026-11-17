@@ -296,37 +296,46 @@ Interactive timing is part of the new experiment. Faults branches with commands
 require the updated supervisor runtime; use `check` to provision matching assets.
 NES exposes typed controller actions and has no guest shell capability.
 
-`shrink` reduces a faults finding to the fault actions it needs. It replays the
-finding's actions up to the first observed violation, then replaces groups of
-fault actions with waits of the same length, halving the groups until no single
-fault can be replaced (delta debugging). A replacement keeps the action's
-recorded `choice`, which seeds guest randomness for that step, so the rest of
-the execution keeps its timing. A candidate counts when its replay reports one
-of the finding's violations.
+`shrink` reduces a faults finding to the fewest faults, and then the fewest
+ticks, that still produce one of its violations. It takes the finding's actions
+up to the first observed violation and runs the searcher's `search::shrink` on
+them (see [Shrink](../dissonance/searcher/README.md#shrink)) with the faults
+workload's declarations: the goal is a bug that reports one of the finding's
+violations, a tape costs its fault count and then its total ticks, and an
+action's simpler actions are a wait of the same length (for a fault) and then
+the same action for half as long. A replacement keeps the action's recorded
+`choice`, which seeds guest randomness for that step, so the rest of the
+execution keeps its timing. A finding that stopped without a violation is
+refused.
 
-Each round accepts its lowest-numbered reproducing candidate. `--jobs N` runs up
-to N replays at once, fewer when free memory cannot hold N guests. The replays
-share one snapshot cache, the same cache a search uses. A candidate matches the
-accepted actions up to its first replaced fault, so its replay restores the
-snapshot an earlier replay recorded at that step and runs only the steps after
-it. A candidate counts as soon as the violation appears: the next round starts
-then, and the candidate's replay continues to the end for its report. Idle
-workers start every candidate of the current round. When a candidate reports
-the violation while lower-numbered candidates still run, idle workers also
-start the round that would follow its acceptance. A replay stops as soon as
-other results make it unnecessary. A candidate checked before is not replayed
-again. The accepted candidates, the
-attempt list and the final replay are the same for every N, because the attempt
-list holds the candidates in the order one job checks them.
+The shrink is a minimize campaign from the recorded tape (`search::shrink` in
+the searcher README). It admits one replay at a time, so each replay starts from
+the tape the last one accepted, and it is seeded with the recording's seed, so
+the reduced actions are the same for every `--jobs N`. A replay starts from the
+snapshot of the current tape at the step it changes and stops at the violation,
+and all replays share one snapshot cache, the same cache a search uses. Its
+windows cover only the faults, the way a delta debugger chunks them: a window
+turns its faults into waits of the same length and leaves the waits between them
+in place. Each candidate ends with the usual settlement waits, so a violation
+that appears while it settles counts. An accepted replay, cut at the violation,
+becomes the new tape, which is replayed once from its first changed step to
+rebuild its snapshots, so the replay count is the jobs plus the acceptances plus
+the recorded tape's replay and the report replay. Ticks fall when a cheaper tape
+reaches the violation sooner. The shrink stops when a pass of one-fault windows
+finds nothing cheaper. A last replay of the reduced actions, with the usual
+settlement waits, writes the report and must show the violation.
 
 The output is a replay of the reduced actions that `show`, `show --timeline` and
-`branch` accept. `shrink.json` lists every attempt with the replaced steps and
-the violations it produced, the number of replays started, and the reduced
-actions in a form `debug run --actions` accepts. NES findings are not supported.
+`branch` accept. `shrink.json` holds its format (`harmony-fault-shrink-v3`), the
+violations, the fault and tick counts before and after, the replays it took,
+each accepted improvement, the shrink's job counts and stop reason, and the
+reduced actions in a form `debug run --actions` accepts. NES findings are not
+supported.
 
 `explain` writes a report a maintainer can start a diagnosis from. It shrinks the
 finding first, unless NAME is already a shrink output and no `--finding` is
-given, or `--no-shrink` is given for a recorded run. A recording of a reduced
+given, or `--no-shrink` is given for a recorded run. A shrink output whose
+`shrink.json` has an older format is refused. A recording of a reduced
 `actions.json` made with `debug run --actions` plus `--no-shrink` skips a
 repeated shrink after a rebuild. It then replays the reduced actions and runs a guest script at the
 boundary before and after each remaining fault and at the violation. The script
@@ -362,7 +371,7 @@ accept. It also holds:
 - `probes/reference/replay.json` and `probes/replay-N/replay.json`: each
   replay's probed steps, the certificate at each recorded boundary and its
   summary;
-- `shrink.json` and `attempts/` when explain ran the shrink.
+- `shrink.json` when explain ran the shrink.
 
 Each section lists the log lines that first appeared in that window. A line
 whose pattern (the text with numbers and generated identifiers replaced) never

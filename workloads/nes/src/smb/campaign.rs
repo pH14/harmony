@@ -67,6 +67,7 @@ impl SmbCampaignConfig {
             },
             retention: self.retention,
             objective_witness_path: self.victory_input_path.clone(),
+            minimize: None,
         }
     }
 }
@@ -359,6 +360,8 @@ mod tests {
             milestones,
             outcome: Outcome::default(),
             candidate: None,
+            cost: searcher::search::cost::ShrinkCost::ZERO,
+            bound: searcher::search::cost::ShrinkCost::ZERO,
         }
     }
 
@@ -615,6 +618,14 @@ mod tests {
         assert!(SmbTerminalPredicate::from_identifier("level_transition:0,0,1").is_err());
         assert!(SmbTerminalPredicate::from_identifier("level_transition:256,0").is_err());
         assert!(SmbTerminalPredicate::from_identifier("coordinates:0,0").is_err());
+        let control = SmbTerminalPredicate::ControlIn { world: 0, level: 1 };
+        assert!(!control.reached(&target).expect("control terminal state"));
+        assert_eq!(
+            SmbTerminalPredicate::from_identifier(&control.identifier())
+                .expect("control predicate round trip"),
+            control
+        );
+        assert!(SmbTerminalPredicate::from_identifier("control_in:0").is_err());
     }
 
     #[test]

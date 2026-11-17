@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     num::NonZeroU64,
@@ -21,6 +21,7 @@ use searcher::{
             ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
             run_campaign_checkpointed_with_options,
         },
+        cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
         duration::{DurationDraw, DurationRequest},
@@ -49,6 +50,7 @@ use crate::{
         FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
         validate_snapshot_prefix_certificates,
     },
+    shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
     },
@@ -62,6 +64,7 @@ pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
+const VIOLATIONS_FIELD: &str = "objective_violations";
 const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
@@ -75,6 +78,26 @@ const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
     pub vocabulary: FaultVocabulary,
+    pub violations: BTreeSet<String>,
+}
+
+impl FaultCampaignRun {
+    #[must_use]
+    pub fn any_bug(vocabulary: FaultVocabulary) -> Self {
+        Self {
+            vocabulary,
+            violations: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn reproduced_by(&self, observation: &FaultObservations) -> bool {
+        self.violations.is_empty()
+            || observation
+                .violations()
+                .iter()
+                .any(|violation| self.violations.contains(violation))
+    }
 }
 
 pub struct FaultWorkload {
@@ -315,12 +338,11 @@ impl FaultCampaignConfig {
             window: default_window(self.workers),
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
-            run: FaultCampaignRun {
-                vocabulary: self.vocabulary.clone(),
-            },
+            run: FaultCampaignRun::any_bug(self.vocabulary.clone()),
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.objective_witness_path.clone(),
+            minimize: None,
         }
     }
 }
@@ -341,17 +363,23 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
     }
 }
 
-fn outcome(target: &FaultTarget) -> Outcome {
+fn outcome(run: &FaultCampaignRun, target: &FaultTarget) -> Outcome {
     Outcome {
         doomed: false,
-        objective_reached: !target.failed() && target.found_bug(),
-        disposition: if target.failed() {
-            ExecutionDisposition::Failed
-        } else if target.observation().stop.is_continuable() {
-            ExecutionDisposition::Runnable
-        } else {
-            ExecutionDisposition::Terminal
-        },
+        objective_reached: !target.failed()
+            && target.found_bug()
+            && run.reproduced_by(target.observation()),
+        disposition: disposition(target),
+    }
+}
+
+fn disposition(target: &FaultTarget) -> ExecutionDisposition {
+    if target.failed() {
+        ExecutionDisposition::Failed
+    } else if target.observation().stop.is_continuable() {
+        ExecutionDisposition::Runnable
+    } else {
+        ExecutionDisposition::Terminal
     }
 }
 
@@ -438,6 +466,7 @@ pub(crate) fn capture_replayed_prefix(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
+    run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
     replay: &[FaultAction],
@@ -455,7 +484,7 @@ pub(crate) fn execute_job(
         return Ok(hung_job(&[]));
     }
     for (action, certificate) in replay.iter().zip(replay_certificates) {
-        if outcome(target).disposition.is_terminal() {
+        if outcome(run, target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         crate::job_observation::tail(false);
@@ -469,7 +498,7 @@ pub(crate) fn execute_job(
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
-    let parent_outcome = outcome(target);
+    let parent_outcome = outcome(run, target);
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
@@ -483,7 +512,7 @@ pub(crate) fn execute_job(
         let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
-        let raw_outcome = outcome(target);
+        let raw_outcome = outcome(run, target);
         let objective_reached = raw_outcome.objective_reached && !objective_seen;
         objective_seen |= raw_outcome.objective_reached;
         let outcome = Outcome {
@@ -507,6 +536,8 @@ pub(crate) fn execute_job(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: fault_cost(action),
+            bound: ShrinkCost::ZERO,
         });
         if outcome.should_stop(&stop) {
             break;
@@ -655,6 +686,12 @@ impl Reporting for FaultWorkload {
 }
 
 impl InputPolicy for FaultWorkload {
+    fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
+        simpler_fault_actions(action)
+    }
+    fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
+        settle_tail(last)
+    }
     fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
@@ -669,6 +706,10 @@ impl InputPolicy for FaultWorkload {
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
+            (
+                VIOLATIONS_FIELD.to_owned(),
+                serde_json::to_string(&run.violations).unwrap_or_default(),
+            ),
         ])
         .collect()
     }
@@ -679,6 +720,7 @@ impl InputPolicy for FaultWorkload {
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
+            violations: serde_json::from_str(recorded(policies, VIOLATIONS_FIELD)?)?,
         };
         let expected = self.policies(&run);
         if policies != &expected {
@@ -1034,7 +1076,7 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job_certified(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &mut FaultTarget,
         origin_snapshot: &FaultSnapshot,
         replay: &[FaultAction],
@@ -1045,6 +1087,7 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
+            run,
             target,
             origin_snapshot,
             replay,
@@ -1057,7 +1100,7 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &mut FaultTarget,
         origin_snapshot: &FaultSnapshot,
         replay: &[FaultAction],
@@ -1067,6 +1110,7 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
+            run,
             target,
             origin_snapshot,
             replay,
@@ -1079,17 +1123,20 @@ impl TargetExecution for FaultWorkload {
 }
 
 impl Evaluation for FaultWorkload {
+    fn shrink_cost(&self, action: &FaultAction, _target: &FaultTarget) -> ShrinkCost {
+        fault_cost(action)
+    }
     fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {
-        outcome(target).disposition
+        disposition(target)
     }
 
     fn objective_reached(
         &self,
-        _run: &FaultCampaignRun,
+        run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
         require_completed_attempt(target, "bootstrap or rollout evaluation")?;
-        Ok(outcome(target).objective_reached)
+        Ok(outcome(run, target).objective_reached)
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<FaultArchiveKey, Box<dyn Error>> {
@@ -1324,6 +1371,11 @@ pub fn run_fault_campaign_with_plan(
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_run() -> FaultCampaignRun {
+    FaultCampaignRun::any_bug(FaultVocabulary::new(1, vec![1]).expect("fixture vocabulary"))
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_workload(
     kernel: &[u8],
     initramfs: &[u8],
@@ -1479,6 +1531,8 @@ mod tests {
                     viable: true,
                     snapshot,
                 }),
+                cost: ShrinkCost::ZERO,
+                bound: ShrinkCost::ZERO,
             }],
         };
         let mut fresh_calls = 0;
@@ -1653,6 +1707,9 @@ mod tests {
                 duration_checkpoint_before: None,
                 duration_checkpoint_after: None,
                 suffix_limit: None,
+                ceiling: None,
+                incumbent: None,
+                shrink: None,
             });
             let line = serde_json::to_string(&record).unwrap();
             assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
@@ -1691,9 +1748,7 @@ mod tests {
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
-        FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
-        }
+        FaultCampaignRun::any_bug(FaultVocabulary::new(nodes, hooks).expect("vocabulary"))
     }
 
     #[test]
@@ -1810,6 +1865,8 @@ mod tests {
                 disposition,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         game.merge_action_evidence(
             &mut evidence,
@@ -1880,6 +1937,8 @@ mod tests {
                 disposition: ExecutionDisposition::Runnable,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         let landed = FaultObservations {
             parks: vec![crate::target::ParkLanding {
@@ -1950,6 +2009,8 @@ mod tests {
                 disposition: ExecutionDisposition::Runnable,
             },
             candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
         };
         for (sequence, observations) in [
             (1, vec![checked(2)]),
@@ -1971,6 +2032,35 @@ mod tests {
                 keys: 5,
             }
         );
+    }
+
+    #[test]
+    fn a_run_with_violations_is_reproduced_only_by_one_of_them() {
+        let violated = |id: &str| {
+            let mut assertions = crate::assertion::Assertions::default();
+            assertions.record(
+                id.to_owned(),
+                crate::assertion::AssertionOutcome {
+                    kind: crate::assertion::AssertionKind::Always,
+                    message: id.to_owned(),
+                    location: String::new(),
+                    passed: false,
+                    failed: true,
+                },
+            );
+            FaultObservations {
+                assertions,
+                ..FaultObservations::default()
+            }
+        };
+        let any = run(3, vec![]);
+        assert!(any.reproduced_by(&violated("lost write")));
+        let finding = FaultCampaignRun {
+            violations: BTreeSet::from(["lost write".to_owned(), "stale read".to_owned()]),
+            ..any
+        };
+        assert!(finding.reproduced_by(&violated("stale read")));
+        assert!(!finding.reproduced_by(&violated("node ended")));
     }
 
     #[test]
@@ -1998,11 +2088,11 @@ mod tests {
     #[test]
     fn wait_contexts_separate_lifecycle_states() {
         let game = game();
-        let run = FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(3, vec![])
+        let run = FaultCampaignRun::any_bug(
+            FaultVocabulary::new(3, vec![])
                 .unwrap()
                 .with_instrumented_events(true),
-        };
+        );
         let parent = FaultArchiveKey {
             alive: 7,
             ..FaultArchiveKey::default()
@@ -2032,11 +2122,11 @@ mod tests {
     #[test]
     fn recorded_duration_choices_reach_waits_and_event_holds() {
         let game = game();
-        let run = FaultCampaignRun {
-            vocabulary: FaultVocabulary::new(3, vec![])
+        let run = FaultCampaignRun::any_bug(
+            FaultVocabulary::new(3, vec![])
                 .unwrap()
                 .with_instrumented_events(true),
-        };
+        );
         let mixture = MixtureDraw {
             mixture: DrawMixture::AlphabetOnly,
             weight: 0,
@@ -2146,6 +2236,22 @@ mod tests {
             "watchdog_incomplete_v1".into(),
         );
         assert!(game.resolve_recorded(&policies).is_err());
+    }
+
+    #[test]
+    fn the_stream_pins_the_objective_violations() {
+        let game = game();
+        let any = run(1, vec![1, 2]);
+        let named = FaultCampaignRun {
+            violations: BTreeSet::from(["lost write".to_owned()]),
+            ..any.clone()
+        };
+        let policies = game.policies(&named);
+        assert_ne!(policies, game.policies(&any));
+        assert_eq!(game.resolve_recorded(&policies).expect("resolve"), named);
+        let mut missing = policies;
+        missing.remove(VIOLATIONS_FIELD);
+        assert!(game.resolve_recorded(&missing).is_err());
     }
 
     #[test]

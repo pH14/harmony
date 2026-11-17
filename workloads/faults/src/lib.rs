@@ -39,6 +39,18 @@ pub mod campaign;
     not(miri)
 ))]
 pub mod consonance;
+#[cfg(all(
+    feature = "consonance",
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
+    not(miri)
+))]
+pub mod shrink;
 
 pub use bundle::FaultVocabulary;
 pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};

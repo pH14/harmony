@@ -294,7 +294,7 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
     finish(&out, &mut manifest, result)
 }
 
-fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
+pub(super) fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
     let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
     let expected = manifest
         .artifacts

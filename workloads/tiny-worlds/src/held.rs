@@ -587,7 +587,8 @@ impl StreamCounts {
                         CampaignAdmissionDecision::Retained { .. } => 0,
                         CampaignAdmissionDecision::Duplicate { .. } => 1,
                         CampaignAdmissionDecision::Rejected
-                        | CampaignAdmissionDecision::ProbeRefused => 2,
+                        | CampaignAdmissionDecision::ProbeRefused
+                        | CampaignAdmissionDecision::Pruned => 2,
                         CampaignAdmissionDecision::Objective => 3,
                     }] += 1;
                 }
@@ -658,6 +659,7 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
         mixture: draw_mixture_from_identifier(&request.mixture)?,
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
+        minimize: None,
     };
     let options = || CampaignExecutionOptions {
         work_budget: Some(request.work_budget),

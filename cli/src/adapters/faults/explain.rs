@@ -1660,8 +1660,8 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
     if request.skip_shrink && selection.finding.is_some() {
         return Err("--no-shrink probes a recorded run; omit --finding".into());
     }
-    let shrunk = request.skip_shrink
-        || (selection.finding.is_none() && saved.path.join("shrink.json").is_file());
+    let shrunk =
+        request.skip_shrink || (selection.finding.is_none() && shrink::shrunk_output(&saved.path)?);
     let source = shrink::source(saved, selection.finding, "explain")?;
     let settings = request
         .explain
@@ -1688,7 +1688,7 @@ pub fn explain_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> 
             manifest.actions = reduced.actions.clone();
             (
                 reduced.report,
-                Some((reduced.faults_before, reduced.replays)),
+                Some((reduced.faults_before, usize::try_from(reduced.replays)?)),
             )
         };
         report.write(&out)?;

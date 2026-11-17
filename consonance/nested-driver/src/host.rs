@@ -633,6 +633,7 @@ pub fn run_prepared(
                 mixture: DrawMixture::default(),
                 retention: RetentionPolicy::Unprobed,
                 objective_witness_path: Some(options.output.join("first-failure-input.json")),
+                minimize: None,
             };
             let mut stream = BufWriter::new(fs::File::create(options.output.join("stream.jsonl"))?);
             let mut progress = fs::File::create(options.output.join("progress.jsonl"))?;
@@ -670,7 +671,10 @@ pub fn run_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use searcher::search::rollout::{Outcome, Rollout, execute_suffix};
+    use searcher::search::{
+        cost::ShrinkCost,
+        rollout::{Outcome, Rollout, execute_suffix},
+    };
 
     struct FailedParent(Observation);
 
@@ -687,6 +691,12 @@ mod tests {
                 objective_reached: self.0.failure.is_some(),
                 disposition: self.0.disposition(),
             })
+        }
+        fn shrink_cost(&self, _: &u64) -> ShrinkCost {
+            panic!("a failed parent must not cost suffix actions")
+        }
+        fn remaining_cost_bound(&self) -> ShrinkCost {
+            panic!("a failed parent must not bound suffix actions")
         }
         fn snapshot(&mut self) -> Result<Snapshot, Box<dyn Error>> {
             panic!("a failed parent must not publish a candidate")

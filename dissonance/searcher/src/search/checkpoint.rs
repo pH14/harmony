@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub mod image;
 pub(crate) mod publisher;
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v14";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v17";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedCheckpoint {
@@ -832,6 +832,8 @@ mod tests {
             "dissonance-search-checkpoint-v10",
             "dissonance-search-checkpoint-v11",
             "dissonance-search-checkpoint-v13",
+            "dissonance-search-checkpoint-v15",
+            "dissonance-search-checkpoint-v16",
         ] {
             let mut old = header(10, "interval");
             old.format = format.into();

@@ -170,6 +170,7 @@ impl StbCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             objective_witness_path: self.victory_input_path.clone(),
+            minimize: None,
         }
     }
 }
@@ -284,6 +285,8 @@ pub(super) fn execute_suffix<M: NesBackend<Vec<u8>>>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: searcher::search::cost::ShrinkCost::ZERO,
+            bound: searcher::search::cost::ShrinkCost::ZERO,
         });
         if outcome.should_stop(&stop) {
             break;
@@ -766,6 +769,8 @@ mod tests {
                         player_b_ko_count: 0,
                     },
                 }),
+                cost: searcher::search::cost::ShrinkCost::ZERO,
+                bound: searcher::search::cost::ShrinkCost::ZERO,
             }],
         }
     }

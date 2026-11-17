@@ -12,6 +12,7 @@ use std::{
 
 use crate::search::{
     continuation::{Continuation, ContinuationBank},
+    cost::ShrinkCost,
     draw::SUFFIX_DOUBLING_LIMIT,
     heap,
     rand::RomuDuoJrRand,
@@ -313,6 +314,7 @@ pub enum SelectorPath {
     Continuation,
     Tiers,
     Recent,
+    Shrink,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -719,6 +721,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
+    origin_cost: Vec<ShrinkCost>,
+    remaining_bound: Vec<ShrinkCost>,
+    rank_by_origin_cost: bool,
     replacement_cost_displaced: u64,
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
@@ -728,7 +733,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     #[serde(skip, default = "unset_action_cost::<A>")]
     action_cost: fn(&A) -> u64,
-    live_progress: Option<(K, u64)>,
+    live_progress: Option<(K, ShrinkCost)>,
     selector_indexed: bool,
     #[serde(skip)]
     selector_weighted: bool,
@@ -791,7 +796,7 @@ struct CellState {
 #[derive(Clone, Copy, Debug)]
 struct HolderRank<K> {
     key: K,
-    cost: u64,
+    cost: ShrinkCost,
     entry: u64,
     index: usize,
     preference: usize,
@@ -1332,6 +1337,9 @@ where
                 ..SelectorAccounting::default()
             },
             cost_in_group: Vec::new(),
+            origin_cost: Vec::new(),
+            remaining_bound: Vec::new(),
+            rank_by_origin_cost: false,
             replacement_cost_displaced: 0,
             portfolio_replacements: vec![0; K::preferences().max(1)],
             portfolio_cross_improvements: 0,
@@ -1835,6 +1843,8 @@ where
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
+        self.origin_cost = retain_marked(std::mem::take(&mut self.origin_cost), &keep);
+        self.remaining_bound = retain_marked(std::mem::take(&mut self.remaining_bound), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
         self.in_place_lengths = retain_marked(std::mem::take(&mut self.in_place_lengths), &keep);
@@ -2147,6 +2157,8 @@ where
             column(&self.opened_slot, entries),
             column(&self.opened_novel_slot, entries),
             column(&self.cost_in_group, entries),
+            column(&self.origin_cost, entries),
+            column(&self.remaining_bound, entries),
             column(&self.replacement_preferences, entries),
             column(&self.in_place_lengths, entries),
             column(&self.lineages, entries),
@@ -2318,7 +2330,7 @@ where
                     .flatten()
                     .copied()
                     .filter(|id| !self.is_liveness_anchor(*id))
-                    .max_by_key(|id| (self.cost_in_group[*id], self.entries[*id].id));
+                    .max_by_key(|id| (self.holder_cost(*id), self.entries[*id].id));
                 let Some(replaced) = replaced else {
                     return false;
                 };
@@ -2408,8 +2420,8 @@ where
             .key
             .preference_cmp(preference, self.entries[right].key)
             .then_with(|| {
-                (self.cost_in_group[right], self.entries[right].id)
-                    .cmp(&(self.cost_in_group[left], self.entries[left].id))
+                (self.holder_cost(right), self.entries[right].id)
+                    .cmp(&(self.holder_cost(left), self.entries[left].id))
             })
     }
 
@@ -2430,7 +2442,7 @@ where
     fn holder_rank(&self, preference: usize, index: usize) -> HolderRank<K> {
         HolderRank {
             key: self.entries[index].key,
-            cost: self.cost_in_group[index],
+            cost: self.holder_cost(index),
             entry: self.entries[index].id,
             index,
             preference,
@@ -2515,6 +2527,47 @@ where
     #[cfg(test)]
     pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
         self.cost_in_group[id]
+    }
+
+    #[must_use]
+    pub fn entry_origin_cost(&self, id: usize) -> Option<ShrinkCost> {
+        self.origin_cost.get(id).copied()
+    }
+
+    #[must_use]
+    pub fn entry_remaining_bound(&self, id: usize) -> Option<ShrinkCost> {
+        self.remaining_bound.get(id).copied()
+    }
+
+    pub(crate) fn set_entry_remaining_bound(&mut self, id: usize, bound: ShrinkCost) {
+        if let Some(held) = self.remaining_bound.get_mut(id) {
+            *held = bound;
+        }
+    }
+
+    pub(crate) fn job_origin_resident(&self, id: usize) -> bool {
+        id < self.entries.len() && self.origin_resident(id)
+    }
+
+    #[must_use]
+    pub const fn ranks_by_origin_cost(&self) -> bool {
+        self.rank_by_origin_cost
+    }
+
+    pub fn set_rank_by_origin_cost(&mut self, enabled: bool) -> Result<(), &'static str> {
+        if !self.entries.is_empty() {
+            return Err("holder ranking can change only before the first entry");
+        }
+        self.rank_by_origin_cost = enabled;
+        Ok(())
+    }
+
+    fn holder_cost(&self, index: usize) -> ShrinkCost {
+        if self.rank_by_origin_cost {
+            self.origin_cost[index]
+        } else {
+            ShrinkCost::new(self.cost_in_group[index], 0)
+        }
     }
 
     #[must_use]
@@ -2632,22 +2685,25 @@ where
     #[must_use]
     pub fn live_progress(&self) -> Option<(K, u64, u64)> {
         self.live_progress
-            .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
+            .map(|(deepest, cheapest)| (deepest, cheapest.primary, self.retained))
     }
 
-    fn slot_members(&self, slot: &[usize]) -> Vec<(K, u64, u64)> {
+    fn slot_members(&self, slot: &[usize]) -> Vec<(K, ShrinkCost, u64)> {
         slot.iter()
             .map(|id| {
                 (
                     self.entries[*id].key,
-                    self.cost_in_group[*id],
+                    self.holder_cost(*id),
                     self.entries[*id].id,
                 )
             })
             .collect()
     }
 
-    fn visit_preference_winners(members: &[(K, u64, u64)], mut winner: impl FnMut(usize, usize)) {
+    fn visit_preference_winners(
+        members: &[(K, ShrinkCost, u64)],
+        mut winner: impl FnMut(usize, usize),
+    ) {
         let capacity = K::capacity().max(1);
         let preferences = K::preferences().max(1);
         let mut order: Vec<usize> = (0..members.len()).collect();
@@ -2667,7 +2723,7 @@ where
         }
     }
 
-    fn preferences_won(members: &[(K, u64, u64)]) -> Vec<Vec<usize>> {
+    fn preferences_won(members: &[(K, ShrinkCost, u64)]) -> Vec<Vec<usize>> {
         let mut won = vec![Vec::new(); members.len()];
         Self::visit_preference_winners(members, |index, preference| {
             won[index].push(preference);
@@ -2679,17 +2735,11 @@ where
         &self,
         slot: &[usize],
         key: K,
-        cost_in_group: u64,
+        cost: ShrinkCost,
     ) -> (Vec<bool>, Vec<usize>) {
-        let mut members = Vec::with_capacity(slot.len() + 1);
-        members.extend(slot.iter().map(|id| {
-            (
-                self.entries[*id].key,
-                self.cost_in_group[*id],
-                self.entries[*id].id,
-            )
-        }));
-        members.push((key, cost_in_group, self.next_entry_id));
+        let mut members = self.slot_members(slot);
+        members.reserve(1);
+        members.push((key, cost, self.next_entry_id));
         let mut retained = vec![false; members.len()];
         let mut candidate = Vec::new();
         Self::visit_preference_winners(&members, |index, preference| {
@@ -2749,6 +2799,15 @@ where
         }
     }
 
+    fn origin_cost_of(&self, parent_id: Option<usize>, suffix: &[A]) -> ShrinkCost {
+        let parent = parent_id
+            .and_then(|id| self.origin_cost.get(id).copied())
+            .unwrap_or(ShrinkCost::ZERO);
+        suffix.iter().fold(parent, |cost, action| {
+            cost + ShrinkCost::new((self.action_cost)(action), 0)
+        })
+    }
+
     pub fn insert<T: AsRef<[A]> + Into<Vec<A>>>(
         &mut self,
         parent_id: Option<usize>,
@@ -2791,8 +2850,31 @@ where
         previous: Option<K>,
         execution: u64,
         candidate: ArchiveCandidate<T, K, M>,
+        snapshot: S,
+        certificates: Option<&[Option<[u8; 32]>]>,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        let origin_cost = self.origin_cost_of(parent_id, candidate.suffix.as_ref());
+        self.insert_after_costed(
+            parent_id,
+            previous,
+            execution,
+            candidate,
+            snapshot,
+            certificates,
+            origin_cost,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_after_costed<T: AsRef<[A]> + Into<Vec<A>>>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<T, K, M>,
         mut snapshot: S,
         certificates: Option<&[Option<[u8; 32]>]>,
+        origin_cost: ShrinkCost,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
             suffix,
@@ -2817,13 +2899,18 @@ where
         }
         let key = self.complete_after(parent_id, previous, key)?;
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
+        let candidate_holder_cost = if self.rank_by_origin_cost {
+            origin_cost
+        } else {
+            ShrinkCost::new(candidate_cost_in_group, 0)
+        };
         let slot = self
             .slots
             .get(&slot_of_key(key))
             .map(Vec::as_slice)
             .unwrap_or_default();
         let (ranked, won_preferences) =
-            self.rank_slot_preferences(slot, key, candidate_cost_in_group);
+            self.rank_slot_preferences(slot, key, candidate_holder_cost);
         let admitted = ranked.last().copied().unwrap_or(true);
         if !admitted {
             self.rejected = self.rejected.saturating_add(1);
@@ -3029,20 +3116,22 @@ where
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
+        self.origin_cost.push(origin_cost);
+        self.remaining_bound.push(ShrinkCost::ZERO);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
         match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
                     *deepest = key;
-                    *cheapest = candidate_cost_in_group;
+                    *cheapest = candidate_holder_cost;
                 }
                 Ordering::Equal => {
-                    *cheapest = (*cheapest).min(candidate_cost_in_group);
+                    *cheapest = (*cheapest).min(candidate_holder_cost);
                 }
                 Ordering::Less => {}
             },
-            None => self.live_progress = Some((key, candidate_cost_in_group)),
+            None => self.live_progress = Some((key, candidate_holder_cost)),
         }
         self.selected.push(0);
         self.productive.push(0);
@@ -3384,7 +3473,7 @@ where
                                     members.ids.weight(&rank.index).is_some()
                                         && rank.preference == preference
                                         && rank.key == self.entries[rank.index].key
-                                        && rank.cost == self.cost_in_group[rank.index]
+                                        && rank.cost == self.holder_cost(rank.index)
                                         && rank.entry == self.entries[rank.index].id
                                 })
                         })
@@ -3456,8 +3545,8 @@ where
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {
-                        (self.cost_in_group[other], self.entries[other].id)
-                            < (self.cost_in_group[id], self.entries[id].id)
+                        (self.holder_cost(other), self.entries[other].id)
+                            < (self.holder_cost(id), self.entries[id].id)
                     }
                 }
             })
@@ -3823,7 +3912,7 @@ where
                     interval.continuation = interval.continuation.saturating_add(1);
                 }
                 SelectorPath::Recent => interval.recent = interval.recent.saturating_add(1),
-                SelectorPath::Tiers => {}
+                SelectorPath::Tiers | SelectorPath::Shrink => {}
             }
             if draw.best_preference.is_some() {
                 interval.best_holder = interval.best_holder.saturating_add(1);
@@ -3842,6 +3931,7 @@ where
             }
         }
         match draw.path {
+            SelectorPath::Shrink => {}
             SelectorPath::Continuation => {
                 let count = self
                     .selector_accounting
@@ -4269,7 +4359,7 @@ where
                     self.entries[*right]
                         .key
                         .preference_cmp(outcome, self.entries[*left].key)
-                        .then_with(|| self.cost_in_group[*left].cmp(&self.cost_in_group[*right]))
+                        .then_with(|| self.holder_cost(*left).cmp(&self.holder_cost(*right)))
                         .then_with(|| self.entries[*left].id.cmp(&self.entries[*right].id))
                 });
                 return Ok((ranked[0], Some(u8::try_from(outcome)?)));
@@ -4298,8 +4388,8 @@ where
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {
-                        (self.cost_in_group[other], self.entries[other].id)
-                            < (self.cost_in_group[id], self.entries[id].id)
+                        (self.holder_cost(other), self.entries[other].id)
+                            < (self.holder_cost(id), self.entries[id].id)
                     }
                 }
             })
@@ -4344,11 +4434,14 @@ mod tests {
         CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
         SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, tier_weight,
+        WeightedSet, slot_of_key, tier_weight,
     };
-    use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
+    use crate::search::{cost::ShrinkCost, draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -4825,6 +4918,7 @@ mod tests {
         key: K,
         cost: u64,
     ) {
+        let cost = ShrinkCost::new(cost, 0);
         let mut members = archive.slot_members(slot);
         members.push((key, cost, archive.next_entry_id));
         let mut expected = vec![false; members.len()];
@@ -9632,6 +9726,176 @@ mod tests {
             probe_key(0, 1, 6, 0),
         );
         assert_eq!(archive.entry_cost_in_group(after.expect("retained")), 50);
+    }
+
+    fn origin_cost_ranking_case(by_origin: bool) -> (TimedArchive, [Option<usize>; 4]) {
+        let mut archive = TimedArchive::new(TestAction::duration);
+        archive
+            .set_rank_by_origin_cost(by_origin)
+            .expect("an empty archive takes a ranking");
+        let genesis = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: probe_key(0, 0, 0, 0),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("genesis insert")
+            .expect("genesis retained");
+        let slot = probe_key(0, 1, 16, 0);
+        let mut arrivals = [None; 4];
+        for (arrival, (code, approach, place, crossing)) in arrivals.iter_mut().zip([
+            (0x01, 100, 4, 5),
+            (0x02, 10, 8, 50),
+            (0x04, 180, 12, 20),
+            (0x08, 1, 20, 40),
+        ]) {
+            let (step, input) = chain_insert(
+                &mut archive,
+                Some(genesis),
+                &Input::default(),
+                code,
+                approach,
+                probe_key(0, 0, place, 0),
+            );
+            assert!(step.is_some(), "every approach opens its own cell");
+            *arrival = chain_insert(&mut archive, step, &input, code, crossing, slot).0;
+        }
+        (archive, arrivals)
+    }
+
+    fn slot_holders(archive: &TimedArchive, key: TestKey) -> BTreeSet<usize> {
+        archive.slots[&slot_of_key(key)].iter().copied().collect()
+    }
+
+    #[test]
+    fn holders_rank_by_cost_in_group_unless_origin_cost_ranking_is_set() {
+        let (archive, [fast_crossing, slow_crossing, mid_crossing, late]) =
+            origin_cost_ranking_case(false);
+        let fast_crossing = fast_crossing.expect("cost five in the tier is retained");
+        let mid_crossing = mid_crossing.expect("cost twenty in the tier displaces fifty");
+        assert!(slow_crossing.is_some());
+        assert!(
+            late.is_none(),
+            "cost forty in the tier loses to five and twenty"
+        );
+        assert!(!archive.ranks_by_origin_cost());
+        assert_eq!(
+            slot_holders(&archive, probe_key(0, 1, 16, 0)),
+            BTreeSet::from([fast_crossing, mid_crossing])
+        );
+        assert_eq!(archive.entry_cost_in_group(fast_crossing), 5);
+        assert_eq!(
+            archive.entry_origin_cost(fast_crossing),
+            Some(ShrinkCost::new(105, 0))
+        );
+        assert_eq!(
+            archive.live_progress().map(|(_, cheapest, _)| cheapest),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn origin_cost_carries_across_a_tier_change_and_ranks_holders() {
+        let (archive, [fast_crossing, slow_crossing, mid_crossing, late]) =
+            origin_cost_ranking_case(true);
+        assert!(archive.ranks_by_origin_cost());
+        assert!(fast_crossing.is_some());
+        let slow_crossing = slow_crossing.expect("origin cost sixty is retained");
+        assert!(
+            mid_crossing.is_none(),
+            "origin cost two hundred loses to sixty and one hundred five"
+        );
+        let late = late.expect("origin cost forty-one displaces one hundred five");
+        assert_eq!(
+            slot_holders(&archive, probe_key(0, 1, 16, 0)),
+            BTreeSet::from([slow_crossing, late])
+        );
+        assert_eq!(archive.entry_cost_in_group(slow_crossing), 50);
+        assert_eq!(
+            archive.entry_origin_cost(slow_crossing),
+            Some(ShrinkCost::new(60, 0))
+        );
+        assert_eq!(archive.entry_cost_in_group(late), 40);
+        assert_eq!(
+            archive.entry_origin_cost(late),
+            Some(ShrinkCost::new(41, 0))
+        );
+        assert_eq!(
+            archive.live_progress().map(|(_, cheapest, _)| cheapest),
+            Some(41)
+        );
+        let mut restored: TimedArchive =
+            postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode archive"))
+                .expect("decode archive");
+        restored
+            .restore_runtime(TestAction::duration, None, Vec::new())
+            .expect("restore archive");
+        assert!(restored.ranks_by_origin_cost());
+        assert_eq!(
+            restored.entry_origin_cost(late),
+            Some(ShrinkCost::new(41, 0))
+        );
+    }
+
+    #[test]
+    fn a_caller_supplied_origin_cost_ranks_a_holder() {
+        let mut archive = TimedArchive::new(TestAction::duration);
+        archive
+            .set_rank_by_origin_cost(true)
+            .expect("an empty archive takes a ranking");
+        let genesis = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: probe_key(0, 0, 0, 0),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("genesis insert")
+            .expect("genesis retained");
+        assert!(archive.set_rank_by_origin_cost(false).is_err());
+        let slot = probe_key(0, 0, 16, 0);
+        let costed = |archive: &mut TimedArchive, code: u8, cost: ShrinkCost| {
+            archive
+                .insert_after_costed(
+                    Some(genesis),
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![TestAction::new(code, 1)],
+                        key: slot,
+                        milestones: (),
+                    },
+                    (),
+                    None,
+                    cost,
+                )
+                .expect("costed insert")
+                .0
+        };
+        let first = costed(&mut archive, 0x01, ShrinkCost::new(9, 9)).expect("first holder");
+        let second = costed(&mut archive, 0x02, ShrinkCost::new(9, 3)).expect("second holder");
+        assert_eq!(
+            archive.entry_origin_cost(first),
+            Some(ShrinkCost::new(9, 9))
+        );
+        assert!(
+            costed(&mut archive, 0x04, ShrinkCost::new(9, 10)).is_none(),
+            "the second part breaks a tie in the first"
+        );
+        let third = costed(&mut archive, 0x08, ShrinkCost::new(8, 50)).expect("cheaper first part");
+        assert_eq!(
+            slot_holders(&archive, slot),
+            BTreeSet::from([second, third])
+        );
     }
 
     #[test]

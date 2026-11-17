@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     archive::RetentionPolicy,
     campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
+    cost::ShrinkCost,
 };
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,10 +113,18 @@ impl Outcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JobCeiling {
+    pub start: ShrinkCost,
+    pub ceiling: ShrinkCost,
+}
+
 #[derive(Clone, Debug)]
 pub struct RolloutStop {
     objective: bool,
     cancel: Option<Arc<AtomicBool>>,
+    ceiling: Option<JobCeiling>,
+    candidates: bool,
 }
 
 impl RolloutStop {
@@ -123,15 +132,29 @@ impl RolloutStop {
         Self {
             objective: stop_on_objective,
             cancel: None,
+            ceiling: None,
+            candidates: true,
         }
     }
 
     #[must_use]
+    pub fn with_candidates(self, candidates: bool) -> Self {
+        Self { candidates, ..self }
+    }
+
+    #[must_use]
     pub fn with_cancel(self, cancel: Option<Arc<AtomicBool>>) -> Self {
-        Self {
-            objective: self.objective,
-            cancel,
-        }
+        Self { cancel, ..self }
+    }
+
+    #[must_use]
+    pub fn with_ceiling(self, ceiling: Option<JobCeiling>) -> Self {
+        Self { ceiling, ..self }
+    }
+
+    #[must_use]
+    pub const fn ceiling(&self) -> Option<JobCeiling> {
+        self.ceiling
     }
 
     #[must_use]
@@ -154,6 +177,8 @@ pub trait Rollout<G: Workload + ?Sized> {
     ) -> Result<(), Box<dyn Error>>;
     fn observations(&self) -> Vec<G::Observations>;
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>>;
+    fn shrink_cost(&self, action: &G::Action) -> ShrinkCost;
+    fn remaining_cost_bound(&self) -> ShrinkCost;
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>>;
     fn key(&self) -> Result<G::Key, Box<dyn Error>>;
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>>;
@@ -193,6 +218,14 @@ impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
 
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
         classify(self.workload, self.run, self.target)
+    }
+
+    fn shrink_cost(&self, action: &G::Action) -> ShrinkCost {
+        self.workload.shrink_cost(action, self.target)
+    }
+
+    fn remaining_cost_bound(&self) -> ShrinkCost {
+        self.workload.remaining_cost_bound(self.run, self.target)
     }
 
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>> {
@@ -270,37 +303,52 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             actions,
         });
     }
+    let mut running = stop.ceiling.map(|ceiling| ceiling.start);
     for action in suffix {
         target.apply(action, &mut milestones)?;
+        let cost = target.shrink_cost(action);
+        let bound = target.remaining_cost_bound();
         let raw_outcome = target.outcome()?;
         let objective_reached = raw_outcome.objective_reached && !objective_seen;
         objective_seen |= raw_outcome.objective_reached;
-        let outcome = Outcome {
+        let mut outcome = Outcome {
             objective_reached,
             ..raw_outcome
         };
+        running = running.map(|running| running + cost);
+        if let (Some(running), Some(ceiling)) = (running, stop.ceiling)
+            && !objective_reached
+            && outcome.disposition == ExecutionDisposition::Runnable
+            && running + bound >= ceiling.ceiling
+        {
+            outcome.disposition = ExecutionDisposition::Terminal;
+            outcome.doomed = true;
+        }
         let observations = target.observations();
-        let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
-            let snapshot = target.snapshot()?;
-            let key = target.key()?;
-            let viable = match retention {
-                RetentionPolicy::ProbeAtAdmission => target.probe(&snapshot)?,
-                RetentionPolicy::Unprobed => true,
+        let candidate =
+            if stop.candidates && matches!(outcome.disposition, ExecutionDisposition::Runnable) {
+                let snapshot = target.snapshot()?;
+                let key = target.key()?;
+                let viable = match retention {
+                    RetentionPolicy::ProbeAtAdmission => target.probe(&snapshot)?,
+                    RetentionPolicy::Unprobed => true,
+                };
+                Some(CampaignCandidate {
+                    key,
+                    viable,
+                    snapshot,
+                })
+            } else {
+                None
             };
-            Some(CampaignCandidate {
-                key,
-                viable,
-                snapshot,
-            })
-        } else {
-            None
-        };
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones,
             outcome,
             candidate,
+            cost,
+            bound,
         });
         if outcome.should_stop(&stop) {
             break;

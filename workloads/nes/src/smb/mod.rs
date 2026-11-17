@@ -2,4 +2,5 @@
 
 pub use nes_games::smb::archive;
 pub mod campaign;
+pub use nes_games::smb::plan;
 pub mod target;

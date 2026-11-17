@@ -298,6 +298,8 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: crate::search::cost::ShrinkCost::ZERO,
+            bound: crate::search::cost::ShrinkCost::ZERO,
         });
         if outcome.should_stop(&stop) {
             break;

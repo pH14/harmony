@@ -428,6 +428,8 @@ pub fn admission_is_viable<M: NesBackend<Vec<u8>> + NesMemory>(
 
 #[allow(clippy::too_many_arguments)]
 fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
+    game: &Mm2Game<M>,
+    run: &Mm2CampaignRun,
     target: &mut Mm2Target<M>,
     genesis_weapons: u8,
     parent_milestones: Mm2Milestones,
@@ -501,6 +503,8 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             milestones: aggregate,
             outcome,
             candidate,
+            cost: game.shrink_cost(action, target),
+            bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
             break;
@@ -818,7 +822,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
 
     fn execute_job(
         &self,
-        _run: &Self::Run,
+        run: &Self::Run,
         target: &mut Self::Target,
         origin_snapshot: &Self::Snapshot,
         replay: &[Self::Action],
@@ -835,6 +839,8 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
             }
         }
         execute_suffix(
+            self,
+            run,
             target,
             target.genesis_weapons(),
             parent_milestones,

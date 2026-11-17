@@ -354,7 +354,9 @@ The paired measurement alternates baseline/candidate/candidate/baseline blocks
 and their inverse to reduce sensitivity to concurrent host load. Without the
 environment variable, this test checks the same fixtures without timing them.
 
-Each contract depends on `CampaignTypes` and can be implemented independently.
+Each contract depends on `CampaignTypes` and can be implemented independently,
+except that `Evaluation` also requires `TargetExecution`, whose
+`action_cost_fn` is the default shrink cost.
 A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
@@ -650,7 +652,8 @@ weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
 of the draws go to the cell's best holder under each preference, split evenly
-across the key's preferences; ties go to the lower cost and then the older
+across the key's preferences; ties go to the lower cost (see Shrink for which
+cost) and then the older
 entry, and a holder best under several preferences takes each of their parts.
 This keeps a cell's best-stocked states drawn often when the cell holds many
 holders, so searches that leave the cell start from them. The other draws weigh each holder
@@ -1206,6 +1209,192 @@ SHA-256 with origin kind `saved_states`. Every header policy and executable
 identity that differs from the run is recorded in `checkpoint_policy_changes`
 instead of being refused. The resumed stream cannot be replayed.
 
+
+## Shrink
+
+`search::shrink(workload, config, tape, observe)` returns a cheaper tape that
+reaches the same objective, for any workload. It is one
+[minimize campaign](#minimizing) from `CampaignOrigin::Tape { input: tape, root:
+config.root }`, run through `run_campaign_watched`, so its job kinds, pruning,
+admission order and determinism are the campaign's. `ShrinkConfig` maps onto
+the `CampaignConfig`:
+
+| Field | Campaign setting |
+|---|---|
+| `seed`, `workers` | `campaign_seed`, `workers` |
+| `window` | admission `window`, the worker count when unset |
+| `job_budget`, `work_budget` | `execution_budget` (unbounded when unset) and the work budget |
+| `root` | the tape root, the first position the shrink may change |
+| `energy_scale`, `ordinary`, `ordinary_length`, `primary_shortcuts`, `shortcut_snapshots`, `until_shortcuts_exhausted` | the `MinimizeConfig` fields of the same names; `ordinary_length` is 64 by default |
+| `mixture`, `archive_entry_limit`, `memory_budget_mib` | the campaign fields of the same names |
+| `stream` | a file that receives the campaign stream, which `replay_campaign_checkpointed` replays; without it the stream is discarded |
+
+The campaign has no wall budget, does not probe at admission and does not
+materialize its final archive. `ShrinkOutcome::input` is the final incumbent,
+or the tape when nothing reached the objective. `ShrinkProgress` carries the
+per-kind job and acceptance counts (jobs that ran before the first incumbent
+count as ordinary), the cost and initial cost (`None` while no objective is
+held, so a tape that does not reach the objective has no initial cost), the
+lower bound (the root's cost plus its bound), the execution work including
+bootstrap and incumbent rebuilds, the pending continuations and the shortcut
+position. `improvements` lists every accepted incumbent with its admission
+sequence, kind, cost, length and the execution work so far. The stop is the
+campaign's `shrink_stop`, or `NoArrival` when the budget ended without an
+objective arrival. `observe` receives `ShrinkEvent::Improved` with the new
+input for every accepted incumbent, in admission order, and
+`ShrinkEvent::Progress` after each admission; an error from it ends the
+campaign and is returned.
+
+A workload supplies the shrink hooks on its campaign traits, which the
+minimize campaign calls, and implements `ShrinkPolicy` for the window search's
+hooks:
+
+| Method | Trait | Default | Meaning |
+|---|---|---|---|
+| `shrink_cost(action, target)` | `Evaluation` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
+| `remaining_cost_bound(run, target)` | `Evaluation` | zero | A lower bound on the cost still to pay from this state. |
+| `simpler_actions(run, action)` | `InputPolicy` | none | Replacements for one action, simplest first. |
+| `goal_tail(run, last)` | `InputPolicy` | none | Actions appended to every shortcut proposal, so a change that delays the goal past the tape's end can still reach it; a job stops at the goal, so an unused tail costs nothing. |
+| `window_actions(run)` | `ShrinkPolicy` | none | The actions the window search tries from every state. |
+| `window_fingerprint(target)` | `ShrinkPolicy` | none | A hash under which the window search merges states. |
+
+Every campaign job records, on each `CampaignActionResult`, the action's
+`shrink_cost` as `cost` and the `remaining_cost_bound` after it as `bound`, and
+the result digests cover both. A workload with its own `execute_job` fills them
+from its hooks, or records zero where its suffix runs without the workload.
+
+Each archive entry keeps its cost from the origin beside its cost since it
+entered its progress tier. Admission adds a job's step costs to its parent's
+origin cost; an entry inserted without step costs, such as an imported one,
+adds `action_cost` as the first part. Holders of a slot rank by the cost within
+the tier unless `Archive::set_rank_by_origin_cost` was set before the first
+entry; then they rank by the cost from the origin. The archive checkpoint
+carries both costs and the setting.
+
+The goal is `Evaluation::objective_reached`. `ShrinkCost` (in `search::cost`) is a pair ordered
+first part first and added part by part, so a workload can rank by one measure
+and break ties by another.
+
+### Window search
+
+`shrink::window::search_window` searches the end of a goal-reaching tape
+exhaustively. It replays the incumbent to `WindowConfig::start` and expands
+states best first by cost plus `remaining_cost_bound`: each expansion restores
+the state and applies every `window_actions` action once. A child that reaches
+the goal more cheaply becomes the incumbent, a terminal child is dropped, a
+child whose fingerprint was reached at no greater cost merges into the earlier
+state, and a child whose cost plus bound reaches the incumbent's is pruned.
+The frontier keeps at most `frontier_limit` states and drops the most costly,
+keeping the cheapest estimate among the dropped states. The search stops
+`Complete` when the cheapest open or dropped estimate reaches the incumbent's
+cost, which proves no cheaper tape exists within the window and the actions;
+`FrontierEmpty` when the frontier is empty and a dropped estimate is still
+below the incumbent's cost; or `ExpansionBudget`. `WindowProgress` reports
+expansions, merged, pruned and dropped children, and the lower bound proved so
+far, which never exceeds a dropped estimate.
+
+## Minimizing
+
+`CampaignConfig::minimize`, a `MinimizeConfig`, turns a campaign into a search
+for a cheaper objective. The archive ranks slot holders by their cost from the
+origin (`Archive::set_rank_by_origin_cost`), and the campaign keeps reserving
+jobs after an objective, as if `stop_campaign_on_objective` were off; a rollout
+still stops at the objective when `stop_rollout_on_objective` is set. The stream
+header and the search checkpoint policies record the options.
+
+The coordinator core keeps an incumbent: the cheapest objective input and its
+`ShrinkCost`. An objective arrival whose cost, its parent's origin cost plus the
+job's step costs up to the objective, is strictly below the incumbent's
+replaces it; an equal or costlier arrival changes nothing. The incumbent is held
+as the chain of per-prefix states that the shrink uses. On acceptance the
+coordinator replays the new input from the first position where it differs from
+the chain, or from the root, on one extra target that a minimize campaign keeps
+beside its workers' targets. Each replayed prefix state is admitted with its
+origin cost and the previous chain state's entry as its parent, and the replayed
+cost must equal the arrival's. The job's stream record carries an `incumbent`
+field with the new cost, length, rebuild start position, execution work and
+admission decisions. Rebuild work counts toward the work counters and the work
+budget, stream replay repeats the rebuild and checks the record, and every
+acceptance rewrites the objective witness file.
+
+Three checks prune against the incumbent. Parent selection redraws, up to 64
+times, an entry whose origin cost plus its recorded `remaining_cost_bound`
+reaches the incumbent, and then falls back to the root's chain entry or another
+entry at or after the root. Every job carries a `JobCeiling`, the
+incumbent cost when the job was selected and its parent's origin cost, in its
+`JobSpec` and stream record. `RolloutStop::with_ceiling` makes
+`rollout::execute_suffix` end, as a doomed terminal endpoint, at the first step
+whose running cost plus `remaining_cost_bound` reaches the ceiling without
+reaching the objective; replay recomputes each ceiling at selection and checks
+it. Admission does not retain a candidate whose origin cost plus bound reaches
+the current incumbent and records a `pruned` decision instead, which also
+covers workloads whose own `execute_job` does not run `execute_suffix`.
+
+A minimize campaign starts from `CampaignOrigin::Genesis`,
+`CampaignOrigin::Tape` or a search checkpoint of a minimize campaign.
+`CampaignOrigin::Tape { input, root }` requires `minimize`: it bootstraps from
+genesis and builds the chain over the tape. A tape that reaches the objective
+becomes the first incumbent up to its first objective. A tape that does not
+admits its states up to its end, or up to the step before a terminal state, and
+the campaign holds no incumbent: every reservation is an ordinary job until the
+first objective arrival, which becomes the incumbent and rebuilds the chain
+from where it leaves the tape. Chain positions before `root` are replayed but
+admit no archive entry, so every entry, job parent and shortcut window lies at
+or after the root, which must be one of the tape's states before its
+objective, terminal state or end. A root after genesis must also hold an
+archive slot; when genesis holds the root state's slot at a lower cost, the
+campaign is rejected, since no job could start at or after the root. The stream header records the tape and the root, so
+replay takes no extra argument. A search checkpoint carries the incumbent cost,
+the chain, the root and the job-kind state, and resumes only with the same
+`minimize` options.
+
+While a minimize campaign holds an incumbent, each reservation draws a job kind
+from a second `MixtureEnergy` with three slots, using a
+generator seeded by the campaign seed and the reservation, and with the
+ordinary share zero when `MinimizeConfig::ordinary` is off:
+
+1. **Shortcut.** The shortcut schedule (`search::shortcut`) over the
+   chain positions at or after the root proposes a window; the job starts from
+   the latest resident chain entry at or before the window and runs the chain
+   actions up to it, the proposal with the incumbent's tail, and
+   `goal_tail`.
+2. **Ordinary.** The campaign's parent draw, splice and suffix expansion. With
+   `MinimizeConfig::ordinary_length`, a drawn suffix runs at least that many
+   actions (1 to 64), also while another job from the same parent is in
+   flight, and the job ceiling still ends it at the incumbent's cost. Without
+   it the length follows the per-parent and reach lengths, which fall to one
+   action in a world where few actions open novel slots; a cheaper path whose
+   intermediate states lose their slots to cheaper holders is then found only
+   by a long job.
+3. **Continuation.** When an ordinary job admits a state whose slot the chain
+   holds at a higher cost, the most saving one queues its entry and chain
+   index, once per pair and chain generation, up to 4096 entries. The job runs
+   the chain actions from that index from the entry.
+
+A kind with nothing to run falls through to the next, continuation to shortcut
+to ordinary. Shortcut and continuation
+jobs admit their steps as candidates only with `shortcut_snapshots`. A job is
+productive when its objective is accepted or, for an ordinary job, when it
+queues a continuation. An acceptance starts a new chain generation, clears the
+queue, and restarts the shortcut pass at the accepted window, or at the rebuild
+position for other kinds. Reservations stop, as the mode report's
+`shrink_stop` records, when the incumbent reaches the root's cost plus its
+bound (`LowerBound`), when no shortcut or continuation is left and ordinary
+jobs are off or `until_shortcuts_exhausted` is set (`ShortcutsExhausted`), or
+at the job or work budget. A stop is final: in-flight jobs finish, but a later
+acceptance does not resume reservations.
+
+Each job and cancel record carries a `shrink` record with the drawn kind, the
+three shares, the chain generation, and the shortcut window or continuation
+queue entry. Shortcut and continuation jobs use the `shrink` selector path,
+record no skip, mutation seed, splice, duration or suffix limit, and their
+suffixes are rebuilt from the replay's own chain rather than stored. Replay
+repeats each kind draw at its selection point and rejects a stream whose record
+differs. Live progress lines and the report carry `MinimizeReport`: per-kind
+jobs and acceptances, shares, generation, pending continuations and the
+shortcut position. Archive, saved-state and snapshot-root origins are rejected:
+their imported entries' origin costs come from `action_cost` rather than from
+replay, or their root cannot be rebuilt on resume.
 
 ## Host hashing
 

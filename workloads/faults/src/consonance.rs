@@ -3740,9 +3740,9 @@ mod tests {
                 boot_cache: None,
             },
         );
-        let run = crate::campaign::FaultCampaignRun {
-            vocabulary: crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
-        };
+        let run = crate::campaign::FaultCampaignRun::any_bug(
+            crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
+        );
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             history: FaultHistory::genesis(fixture_genesis()).unwrap(),
@@ -4640,6 +4640,7 @@ mod tests {
             }));
         });
         let error = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &origin,
             &[action],
@@ -4689,6 +4690,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
                 &vec![action; hashes.len()],
@@ -4737,6 +4739,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let error = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
                 &[action, action],
@@ -4777,6 +4780,7 @@ mod tests {
             .unwrap(),
         );
         let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &origin,
             &[action, action],
@@ -4805,6 +4809,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &origin,
             &[action],
@@ -4846,6 +4851,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
                 &[action],
@@ -4871,6 +4877,7 @@ mod tests {
         let before = capture_hash_calls();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &origin,
             &[],
@@ -5342,6 +5349,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let keyframe = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &keyframe,
             &[first_action],
@@ -5376,6 +5384,7 @@ mod tests {
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
             &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
@@ -5439,6 +5448,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
             &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
@@ -5502,6 +5512,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let error = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
             &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
@@ -5553,6 +5564,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
             &mut target,
             &origin,
             &[],
@@ -6852,6 +6864,7 @@ mod tests {
                 );
             }
             let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
                 &mut target,
                 &keyframe,
                 &[],
@@ -7525,9 +7538,9 @@ mod tests {
             boot_cache: None,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
-        let run = crate::campaign::FaultCampaignRun {
-            vocabulary: crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
-        };
+        let run = crate::campaign::FaultCampaignRun::any_bug(
+            crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
+        );
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             history: FaultHistory::genesis(fixture_genesis()).unwrap(),
@@ -8247,6 +8260,8 @@ mod tests {
                         disposition: ExecutionDisposition::Terminal,
                     },
                     candidate: None,
+                    cost: searcher::search::cost::ShrinkCost::ZERO,
+                    bound: searcher::search::cost::ShrinkCost::ZERO,
                 });
             }
             let certify = |digest, history_hung: bool| {

@@ -336,6 +336,7 @@ fn config<G: BrowserGame>(seed: u64, executions: u64, memory_mib: usize) -> Camp
         mixture: G::mixture(),
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: None,
+        minimize: None,
     }
 }
 
