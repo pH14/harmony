@@ -106,7 +106,13 @@ Frames outside gameplay are not archived.
 
 Game state 3 in a level before the goal has no key. It declares the forced
 level advance: the target presses A every 16 frames until level select, then
-Right and A to start the next level, inside the same action.
+Right and A to start the next level, inside the same action. Game state 3 can come on the same frame as a death bit
+past screen x `$20`; the game then treats it as a death and restarts the level
+40 frames later, without input. The decoder reads that frame as dead and not
+complete, so it is neither a level advance nor the objective. A search job in
+xStep reached such a frame at scroll 13,219 of the level's 13,600, and
+`a_death_bit_on_the_level_complete_frame_is_a_death` decodes that frame's
+bytes.
 
 The strategy keys a state by the level, world x and y, game mode, gravity,
 size, dual mode, the speed `$045E`, the sign of the vertical velocity and the

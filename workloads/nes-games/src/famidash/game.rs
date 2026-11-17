@@ -82,7 +82,7 @@ pub struct FamidashState {
 impl FamidashState {
     #[must_use]
     pub fn complete(self) -> bool {
-        self.game_state == GAME_STATE_COMPLETE
+        self.game_state == GAME_STATE_COMPLETE && !self.dead
     }
 
     #[must_use]
@@ -185,10 +185,10 @@ pub fn decode(stage: Stage, ram: &[u8]) -> FamidashState {
         .side
         .level_length(level)
         .is_some_and(|length| scroll_x > i32::from(length) * LEVEL_LENGTH_UNIT);
-    let dead = playing
-        && (past_end
-            || byte(ram, PLAYER_X + 1) > DEATH_CHECK_SCREEN_X
-                && (byte(ram, CUBE_DATA) & DEATH != 0 || byte(ram, CUBE_DATA + 1) & DEATH != 0));
+    let player_dead = byte(ram, PLAYER_X + 1) > DEATH_CHECK_SCREEN_X
+        && (byte(ram, CUBE_DATA) & DEATH != 0 || byte(ram, CUBE_DATA + 1) & DEATH != 0);
+    let dead =
+        playing && (past_end || player_dead) || game_state == GAME_STATE_COMPLETE && player_dead;
     let gameplay = (playing && !dead && !paused).then(|| {
         let [fine_y, screen_y] = word(ram, SCROLL_Y).to_le_bytes();
         let camera_y = i32::from(screen_y) * SCREEN_HEIGHT + i32::from(fine_y);
@@ -561,7 +561,6 @@ mod tests {
     fn only_the_last_level_complete_state_is_the_goal() {
         let mut wram = playing_wram();
         wram[GAME_STATE] = GAME_STATE_COMPLETE;
-        wram[CUBE_DATA] = DEATH;
         let state = decode(main(), &wram);
         assert!(state.complete() && !state.dead && state.advancing() && !state.terminal());
         assert_eq!((state.percent(), state.cleared()), (100, 1));
@@ -577,6 +576,25 @@ mod tests {
         let state = decode(Stage::single(Side::B, 30).unwrap(), &wram);
         assert!(state.finished());
         assert_eq!(state.side, Side::B);
+    }
+
+    #[test]
+    fn a_death_bit_on_the_level_complete_frame_is_a_death() {
+        let mut wram = playing_wram();
+        wram[LEVEL] = 9;
+        wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&13_219_i32.to_le_bytes());
+        wram[PLAYER_X + 1] = 0x50;
+        wram[GAME_STATE] = GAME_STATE_COMPLETE;
+        wram[CUBE_DATA] = DEATH;
+        let state = decode(main(), &wram);
+        assert!(state.dead && !state.complete() && !state.advancing() && state.terminal());
+        assert!(Famidash::<0>::new(main()).moves(&state).forced.is_none());
+        wram[LEVEL] = 21;
+        let state = decode(main(), &wram);
+        assert!(state.dead && !state.finished());
+        wram[PLAYER_X + 1] = DEATH_CHECK_SCREEN_X;
+        let state = decode(main(), &wram);
+        assert!(!state.dead && state.finished());
     }
 
     #[test]
