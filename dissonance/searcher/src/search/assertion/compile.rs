@@ -1351,7 +1351,7 @@ pub struct Compiled {
     progress: Progress,
     goal: Option<Vec<Op>>,
     goal_reachable: bool,
-    carries: bool,
+    holds_objective: bool,
 }
 
 impl Compiled {
@@ -1406,7 +1406,13 @@ impl Compiled {
             }
         };
         check_scope(strategy, &lines, &progress, catalog)?;
-        let carries = matches!(&progress, Progress::Stages { stages, .. } if stages.iter().any(|stage| stage.carry));
+        let holds_objective = compiler.aggregates.iter().any(|aggregate| {
+            aggregate
+                .value
+                .iter()
+                .chain(aggregate.since.iter().flatten())
+                .any(|op| matches!(op, Op::Local(_)))
+        }) || matches!(&progress, Progress::Stages { stages, .. } if stages.iter().any(|stage| stage.carry));
         let tables = strategy.table.values().cloned().collect();
         let identity = serde_json::to_vec(&(strategy, catalog.signals(), catalog.declarations()))?;
         let digest = Sha256::digest(identity);
@@ -1429,7 +1435,7 @@ impl Compiled {
             progress,
             goal,
             goal_reachable,
-            carries,
+            holds_objective,
         })
     }
 
@@ -1492,7 +1498,12 @@ impl Compiled {
     }
 
     fn accumulator_width(&self) -> usize {
-        2 * self.aggregates.len() + if self.carries { OBJECTIVE_WIDTH } else { 0 }
+        2 * self.aggregates.len()
+            + if self.holds_objective {
+                OBJECTIVE_WIDTH
+            } else {
+                0
+            }
     }
 
     fn held(&self, accumulator: &Accumulator) -> Held {

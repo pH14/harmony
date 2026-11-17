@@ -421,7 +421,7 @@ fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
 }
 
 #[test]
-fn the_accumulator_holds_values_only_for_declared_aggregates_and_carried_objectives() {
+fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
     let width = |text: &str| {
         let compiled = Compiled::parse(text, &catalog()).unwrap();
         let mut accumulator = Accumulator::default();
@@ -446,7 +446,45 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_carried_objecti
         ),
         OBJECTIVE_WIDTH
     );
+    assert_eq!(
+        width(
+            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"ever(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
+        ),
+        2 + OBJECTIVE_WIDTH
+    );
     assert!(std::mem::size_of::<Accumulator>() <= 24);
+}
+
+#[test]
+fn an_aggregate_reads_the_held_objective_of_a_stage_that_does_not_carry() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "reach"
+        objective = "'position.x'"
+        goal = "ever(objective >= 5)"
+        [[stage]]
+        name = "after"
+        goal = "false"
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let stages: Vec<_> = [5, 0]
+        .into_iter()
+        .map(|x| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    x,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            compiled.view(observed.key.unwrap()).stage
+        })
+        .collect();
+    assert_eq!(stages, [Some("reach".to_owned()), Some("after".to_owned())]);
 }
 
 #[test]

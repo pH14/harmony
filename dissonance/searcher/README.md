@@ -666,8 +666,9 @@ stage latch and carry state live in an `Accumulator` that the front end keeps
 beside its state and `Compiled::observe` advances in place; a strategy without
 them `is_pure` and needs only `Compiled::key`. The accumulator holds the stage
 inline and boxes only the values the strategy declares, two per aggregate and
-an objective when a stage carries, so it is 24 bytes and allocates nothing for
-a strategy without aggregates or carried stages. Capacity and preference count come
+the objective when a stage carries or an aggregate reads it, so it is 24
+bytes and allocates nothing for a strategy without aggregates or carried
+stages. Capacity and preference count come
 from the strategy, so `Archive` and the campaign take them as a `KeyShape`
 from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 `ArchiveKey::preferences`.
