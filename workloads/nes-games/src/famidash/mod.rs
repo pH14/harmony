@@ -2,5 +2,6 @@
 
 pub mod game;
 pub mod levels;
+pub mod lucky_draw;
 
 pub use game::*;

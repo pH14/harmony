@@ -4206,6 +4206,8 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default)]
     pub entry_drops: u64,
     #[serde(default)]
+    pub unselected_entry_drops: u64,
+    #[serde(default)]
     pub live_entries: usize,
     #[serde(default)]
     pub history_compactions: u64,
@@ -4313,6 +4315,7 @@ fn progress_record<G: Workload>(
             .saturating_add(draw_state_memory_bytes),
         snapshot_evictions: core.archive.snapshot_evictions(),
         entry_drops: core.archive.entry_drops(),
+        unselected_entry_drops: core.archive.unselected_entry_drops(),
         live_entries: core.archive.live_entry_count(),
         history_compactions: core.archive.history_compactions(),
         historical_entries_dropped: core.archive.historical_entries_dropped(),

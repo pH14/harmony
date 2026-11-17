@@ -141,9 +141,12 @@ written this way. The other games have their own `target`, `archive` and
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
 - `moves` declares a forced move on a state, a transition the game scripts
-  rather than a search decision. `play` gives the move's next chord and what
-  follows it, and `move_frames` bounds its frames. Famidash's level advance is
-  the one forced move. The setup tapes stay before the genesis, because they
+  rather than a search decision, or an `Offer`: a choice site the searcher
+  answers, its default label and the move each label plays. `move_sites`
+  names those sites and their labels. `play` gives the move's next chord and
+  what follows it, and `move_frames` bounds its frames. Famidash's level
+  advance and Lucky Draw's in-level play are the forced moves, and Lucky
+  Draw's `wait` the one offer. The setup tapes stay before the genesis, because they
   run once per machine, `genesis` checks where they arrive, and Famidash's
   level poke is not controller input.
 
@@ -173,7 +176,16 @@ arcade view, motion sample and cleared count, and the draw mixture, and
 memory the live feed reads. `joust/mod.rs` holds Joust's decoder and
 declarations and `joust/joust.toml` its strategy; `zelda/game.rs` and
 `zelda/zelda.toml` do the same for Zelda, and every other such game has a
-`game.rs` and a TOML strategy in its module.
+`game.rs` and a TOML strategy in its module. `famidash/lucky_draw.rs` is C-side
+level 24 (Lucky Draw) from its level select: every attempt's outcome is fixed by
+the game's random register when the level starts, so the game offers a `wait` of
+1 to 64 idle frames before the start, counts the frames waited in `menu_wait`,
+and its strategy keys each level-select state on it. The default answer is one
+idle frame: a start from a level-select state always replays the same attempt,
+so a job that keeps the default moves on to the next phase instead. No in-level
+input reaches the register, so in-level play is a forced move: the start plays
+on, idle, to the attempt's death or win inside one move, and no in-level state
+reaches the archive.
 
 An action also stops at the first frame whose state declares a forced move.
 The target plays the move to its end inside that action and reports the
@@ -185,6 +197,66 @@ action as a doomed terminal and reports the `always` violation
 `forced_move_within_bound` with the job's input, under `violations` in the
 archive report and the diagnostics, so the input and the run's identity
 replay the job.
+
+An action also stops at the first frame whose state makes an offer, and the
+next action from that state is the move, so the target replays the hold cut to
+that frame at once. The workload asks the offer's site
+through `Chooser::choose` and stores the answer as a move chord: the label in
+`buttons` and 255 minus the game's site index in `hold_frames`, a hold no
+pressed chord has (`move_chord`, `move_answer`). The target plays the chosen
+move like a forced move, keeping the record of each state it decodes. A chord
+at an offer that names no offered label, as after shrink, plays the default and
+is stored as the default's move chord (`Offer::played`); a supplied tape keeps
+the chord, and the target costs it as the move it plays (`played_time`, which
+the workload's `shrink_cost` reads for an action played at an offer only). A move chord where no offer stands, as when a
+table or splice copies one, is resolved as a chord. Films decode each frame from the state before it, as the
+search does, so a state that counts frames, such as Lucky Draw's `menu_wait`,
+ends a film where it ends the run. `action_choices` reports a move chord's
+answer, so a job's first ask at that site can hold its parent's last answer.
+A move chord costs the archive the frames its answer plays before any forced
+move it leads to, as the game's `Game::answer_frames` gives them (one unless
+the game says otherwise): Lucky Draw's idle wait costs its frames and its start
+the press and the start wait, the level being a forced move. Two routes that
+wait the same frames cost the same, so the older entry keeps its cell. The
+records header's catalog names the chord sites and the game's move sites
+(`Lowered::records_catalog`), and `nes-rekey` checks records against it.
+
+Chords are choices too (ours). `sample_alphabet` draws an unresolved chord
+(`chord::ask`, hold 0) that carries the chord drawn before it, and
+`execute_job` resolves each one through `ChordVocabulary::resolve` against the
+last chord the job ran or, before the job has run one, the carried chord: a
+job restored from its parent's snapshot edits the chord its parent ended on, as
+`change_one_control` does. A move chord is never carried. The tree has five
+sites:
+`chord_edit` (keep, direction, a, b, tap; default keep, asked with
+`choose_weighted`), then `draw` sites for the value: `chord_direction`,
+`chord_fresh` (a chord when there is no chord before it in the vocabulary),
+`hold_stratum` and `hold_frames`. The edit weights are odds - 1 for
+direction, A and B and 4 for the tap, so under `reproducing_profile` (contrary
+(3 · odds + 1) / (4 · odds), or 3/4 without a tap, and no hold) the tree draws
+each edit and hold with the shares of the `change_one_control` draw the other
+games keep. That profile is the default policy, `with_choice_policy` sets
+another, and the evaluator's `choices` request field passes an arm's policy
+through. The chord draw policy is `chord_tree_v1`. A job without a plan, a
+continuation, replays recorded chords and never meets an unresolved one. An
+unresolved chord matches no archived chord, so the searcher's skip of a
+suffix whose every prefix is archived does not apply to these games.
+
+`examples/chord_equivalence.rs` checks that claim for a game: it draws
+1,000,000 chords through `ChordVocabulary::draw` and 1,000,000 through the
+tree under `reproducing_profile`, from the same starting chords, and compares
+the share of each button bit, chord and hold length (a failure is |z| above 4.5
+or a value drawn on one side only). It also compares the tables of consecutive
+pairs, (previous chord, next chord) and (previous hold, next hold), with a job's
+first draw paired with its parent's last chord. Pairs within a chain are
+dependent, so each table takes one pair per chain, at the chain's index modulo
+the chain length, and both sides take them at the same steps from the same
+starting chords. A chi-square homogeneity test judges each table, with cells
+under 50 pooled, and a table fails above Wilson-Hilferty z 4.5. Run it for one
+game with
+`cargo run --release --example chord_equivalence -- 7 joust`, or with no game
+name for every game in its `GAMES` list; a game joins the check by an arm in
+its `vocabulary` match.
 
 `with_records` hands the run's records to the searcher's `RecordsWriter`: the
 target keeps the record of every frame it decodes while recording, each
