@@ -132,12 +132,12 @@ fn agree(hand: &[PacManArchiveKey], compiled: &[AssertionKey], shape: KeyShape) 
         .collect();
     for (index, &(h1, c1)) in pairs.iter().enumerate() {
         for &(h2, c2) in &pairs[index..] {
-            let hand_cell = (h1.progress(), h1.place()) == (h2.progress(), h2.place());
-            let compiled_cell = (c1.progress(), c1.place()) == (c2.progress(), c2.place());
+            let hand_cell = (h1.progress(), h1.place()).cmp(&(h2.progress(), h2.place()));
+            let compiled_cell = (c1.progress(), c1.place()).cmp(&(c2.progress(), c2.place()));
             assert_eq!(hand_cell, compiled_cell, "cell differs for {h1:?} {h2:?}");
             assert_eq!(
                 hand_cell,
-                compiled_cell && c1.identity() == c2.identity(),
+                compiled_cell.then(c1.identity().cmp(&c2.identity())),
                 "slot differs for {h1:?} {h2:?}"
             );
             assert_eq!(
