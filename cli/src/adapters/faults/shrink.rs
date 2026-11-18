@@ -374,7 +374,7 @@ mod tests {
         saved_run(directory.path(), true, witness(true, &["linearizable"]));
         let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
         let source = source(saved, None, "shrink").unwrap();
-        assert_eq!(source.path, directory.path());
+        assert_eq!(source.path, directory.path().canonicalize().unwrap());
         assert_eq!(source.violations, ["linearizable"]);
         assert_eq!(
             source.actions,
@@ -392,6 +392,10 @@ mod tests {
             "shrink requires a supervised application scenario"
         );
         assert_eq!(
+            source_error(false, witness(false, &[])),
+            "shrink requires a supervised application scenario"
+        );
+        assert_eq!(
             source_error(true, witness(false, &[])),
             "the selected execution has no violation to shrink"
         );
@@ -399,6 +403,19 @@ mod tests {
             source_error(true, witness(true, &[])),
             "the selected execution stopped with Crash and names no violation to shrink"
         );
+    }
+
+    #[test]
+    fn a_source_whose_recorded_report_changed_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), true, witness(true, &["linearizable"]));
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        fs::write(directory.path().join("report.json"), b"{}").unwrap();
+        let error = match source(saved, None, "shrink") {
+            Ok(_) => panic!("the changed report was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("report.json"), "{error}");
     }
 
     #[test]
