@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     nes_backend::NesBackend,
+    pac_man::archive::PacManArchiveKey,
     target::{ExitKind, Target},
+    workload::ShadowHook,
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -214,6 +216,7 @@ pub struct PacManTarget<M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
+    shadow: Option<ShadowHook<PacManArchiveKey>>,
 }
 
 impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
@@ -239,6 +242,7 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
+            shadow: None,
         })
     }
 
@@ -253,6 +257,16 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
         }
         machine.drop_snapshot(power_on)?;
         Self::from_machine(machine)
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<PacManArchiveKey>) {
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<PacManArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand, &self.current_wram);
+        }
     }
 
     #[must_use]
