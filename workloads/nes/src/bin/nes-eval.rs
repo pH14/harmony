@@ -40,10 +40,7 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
-    twin_dragons::{
-        TwinDragons, TwinDragonsWorkload,
-        campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
-    },
+    twin_dragons::{TwinDragons, TwinDragonsWorkload},
     zelda::{Zelda, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
@@ -230,7 +227,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "twin-dragons-hand" | "castlevania" | "punchout" | "zelda"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda"
             | "donkey-kong" | "donkey-kong-hand" | "ice-climbers" | "ice-climbers-hand"
             | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
@@ -377,28 +374,6 @@ fn main() -> Result<()> {
                 "twin-dragons",
                 <TwinDragonsWorkload>::memory_view,
             ),
-            "twin-dragons-hand" => {
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(TwinDragons))
-                    .transpose()?;
-                let game = TwinDragonsGame::new(&rom, p, h, &execution_sha256);
-                evaluate_watching(
-                    match &shadow {
-                        Some(shadow) => game.with_shadow(shadow.hook()),
-                        None => game,
-                    },
-                    TwinDragonsCampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "twin-dragons",
-                    <TwinDragonsGame>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "castlevania" => evaluate_watching(
                 CastlevaniaGame::new(&rom, p, h, &execution_sha256)
                     .with_milestone_input_dir(out.join("milestone-inputs")),

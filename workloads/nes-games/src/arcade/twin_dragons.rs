@@ -9,7 +9,7 @@ use crate::{
     workload::Arcade,
 };
 
-fn pose(state: TwinDragonsState) -> u16 {
+pub fn pose(state: TwinDragonsState) -> u16 {
     let pose = match (state.animation, state.animation_frame) {
         (1, frame) => 1 + u16::from(frame.min(3)),
         (2, _) => 5,

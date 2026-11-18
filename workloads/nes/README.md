@@ -101,7 +101,8 @@ Tilt Bro campaign's own witness is checked.
 
 ## Recorded runs
 
-Games declared through assertions (Joust, Zelda and Famidash) take two request fields.
+Games declared through assertions (Joust, Zelda, Famidash, Twin Dragons,
+Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man) take two request fields.
 `"strategy": PATH` runs the campaign under that strategy instead of the
 built-in one, with no rebuild; the text is copied to `strategy.toml` in the run
 directory and its SHA-256 goes into `identity.json` and `result.json`.
@@ -209,7 +210,7 @@ and platform evidence is not uniform:
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
-| Twin Dragons/native | Unit tests are checked in and `twin-dragons-campaign` passes local replay qualification; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
+| Twin Dragons/native | Unit tests are checked in, and `demos/twin-dragons/tests/campaign-oracle.mjs` compares a `nes-eval` campaign with the browser campaign; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
 | Zelda/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first overworld screen; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed The Legend of Zelda (USA) (Rev 1) ROM. |
 | Donkey Kong/native | Unit tests are checked in and `nes-eval` clears eight rounds from power-on on seeds 1 to 3 and ten rounds on seed 3, each with a replayed witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Donkey Kong (World, Rev 1) ROM. |
 | Castlevania/native | Unit tests are checked in and a short cold `nes-eval` probe replays its witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Castlevania (USA) (Rev 1) ROM. |

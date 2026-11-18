@@ -20,7 +20,6 @@ use crate::{
     },
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
-    twin_dragons::target::TwinDragonsSnapshot,
 };
 use nes_games::donkey_kong::target::DonkeyKongSnapshot;
 
@@ -43,8 +42,6 @@ impl EndpointIdentity for Mm2Snapshot {}
 impl EndpointIdentity for PacManSnapshot {}
 
 impl EndpointIdentity for StbSnapshot {}
-
-impl EndpointIdentity for TwinDragonsSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {

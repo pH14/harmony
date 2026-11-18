@@ -34,8 +34,8 @@ struct Game {
 fn game(name: &str) -> Result<Game, Box<dyn Error>> {
     Ok(match name {
         "twin-dragons" => Game {
-            setup: twin_dragons::target::setup_tape(),
-            chords: twin_dragons::archive::CHORDS,
+            setup: twin_dragons::TwinDragons.setup(),
+            chords: twin_dragons::TwinDragons::CHORDS,
             cartridge_ram: false,
         },
         "famidash" => Game {

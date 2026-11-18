@@ -17,7 +17,7 @@ const roms = `${homedir()}/workspace/roms`;
 const seedFor = () => Number(process.env.ORACLE_SEED || 1);
 const memoryMiB = 1024;
 const CASES = [
-  { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), executions: 600 },
+  { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), eval: { game: "twin-dragons" }, executions: 600 },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
@@ -45,12 +45,6 @@ const cargo = (bin, args) =>
 
 function nativeStream(game, seed, executions, out) {
   const core = nativeCore();
-  if (!game.eval) {
-    cargo("twin-dragons-campaign", [
-      "--core", core, "--rom", game.rom, "--output", out, "--executions", String(executions), "--workers", "16", "--seed", String(seed),
-    ]);
-    return readFileSync(join(out, "stream.jsonl"), "utf8");
-  }
   const request = join(out, "request.json"), result = join(out, "result");
   writeFileSync(request, JSON.stringify({
     ...game.eval, rom: game.rom, core, rom_sha256: sha256(game.rom), core_sha256: sha256(core), seed, workers: 16, executions,
@@ -79,7 +73,7 @@ for (const game of CASES) {
       wasmBinary: readFileSync(new URL("engine/quicknes.wasm", base)),
     });
     const identity = coreIdentity("browser");
-    const search = campaignSearch(engine, identity, { seed, executions, memoryMiB: game.eval ? memoryMiB : 0, record: true });
+    const search = campaignSearch(engine, identity, { seed, executions, memoryMiB, record: true });
     runCampaign(search, campaignWorker(engine, identity));
     const browser = records(search.take_stream());
     assert.equal(end.executions_completed, JSON.parse(search.take_batch()).executions, `both ${game.id} campaigns completed the same executions`);

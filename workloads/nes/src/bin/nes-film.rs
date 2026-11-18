@@ -24,7 +24,7 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
-    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    twin_dragons::{TwinDragons, TwinDragonsWorkload},
     witness::replay_witness,
     zelda::{Zelda, ZeldaGame},
 };
@@ -273,8 +273,14 @@ fn main() -> Result<()> {
                 return Err("Twin Dragons takes no ai option".into());
             }
             produce(
-                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                TwinDragonsCampaignRun,
+                TwinDragonsWorkload::new(
+                    TwinDragons,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )
