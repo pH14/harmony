@@ -20,10 +20,7 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
-    pac_man::{
-        PacMan, PacManWorkload,
-        campaign::{PacManCampaignRun, PacManGame},
-    },
+    pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
     smb::{
@@ -224,7 +221,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "ice-climbers" | "pac-man" | "pac-man-hand" | "joust"
+            | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -242,9 +239,6 @@ fn main() -> Result<()> {
                 );
             }
             _ => {}
-        }
-        if request.shadow && !request.game.ends_with("-hand") {
-            return Err("only the hand-keyed workloads take a shadow key".into());
         }
         let p = &request.core;
         let h = &request.core_sha256;
@@ -463,28 +457,6 @@ fn main() -> Result<()> {
                 "pac-man",
                 <PacManWorkload>::memory_view,
             ),
-            "pac-man-hand" => {
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(PacMan))
-                    .transpose()?;
-                let game = PacManGame::new(&rom, p, h, &execution_sha256);
-                evaluate_watching(
-                    match &shadow {
-                        Some(shadow) => game.with_shadow(shadow.hook()),
-                        None => game,
-                    },
-                    PacManCampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "pac-man",
-                    <PacManGame>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(
                     JoustGame::new(Joust, &rom, p, h, &execution_sha256)?,

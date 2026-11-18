@@ -17,7 +17,7 @@ use nes_workload::{
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
-    pac_man::campaign::{PacManCampaignRun, PacManGame},
+    pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
     stb::{
@@ -383,8 +383,14 @@ fn main() -> Result<()> {
                 return Err("Pac-Man takes no ai option".into());
             }
             produce(
-                PacManGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                PacManCampaignRun,
+                PacManWorkload::new(
+                    PacMan,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

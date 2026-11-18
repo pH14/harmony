@@ -16,7 +16,6 @@ pub const START_LIVES: u8 = 3;
 pub const MAZES_PER_LEVEL: u8 = 4;
 pub const FINAL_LEVEL: u8 = 22;
 pub const LEVELS: u8 = 6;
-pub const GRID_SHIFT: u8 = 3;
 
 pub const MODE_READY: u8 = 0x02;
 pub const MODE_PLAY: u8 = 0x04;
@@ -334,81 +333,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        pac_man::{
-            archive::{self, PacManArchiveKey, archive_key},
-            target::{PacManMechanicalState, decode_state, setup_tape},
-        },
         search::{
             archive::ArchiveKey,
             assertion::{Accumulator, AssertionKey},
             rand::RomuDuoJrRand,
         },
-        workload::{Lowered, NesObservation, Satisfied, Shadow, shadow::Disagreements},
+        workload::{Lowered, NesObservation, Satisfied},
     };
     use machine::nes::WRAM_SIZE;
-
-    fn from_hand(s: PacManMechanicalState) -> PacManState {
-        PacManState {
-            mode: s.mode,
-            demo: s.demo,
-            lives: s.lives,
-            level: s.level,
-            dots: s.dots,
-            score: s.score,
-            x: s.x,
-            y: s.y,
-            direction: s.direction,
-            repeat_clears: s.repeat_clears,
-            power: s.power,
-            power_frames: s.power_frames,
-            paused: s.paused,
-        }
-    }
-
-    fn drawn_wram(rand: &mut RomuDuoJrRand) -> Vec<u8> {
-        const MODES: [u8; 8] = [
-            MODE_READY,
-            MODE_PLAY,
-            MODE_PLAY,
-            MODE_PLAY,
-            MODE_GHOST_EATEN,
-            MODE_DEATH,
-            MODE_GAME_OVER,
-            MODE_MAZE_CLEAR,
-        ];
-        let mut draw = |bound: u16| -> u8 {
-            u8::try_from(rand.next_u64() % u64::from(bound)).unwrap_or(u8::MAX)
-        };
-        let mut wram = playing_wram();
-        let wide = draw(2) == 0;
-        wram[MODE] = MODES[usize::from(draw(8))];
-        wram[DEMO] = u8::from(draw(64) == 0);
-        wram[PAUSED] = u8::from(draw(32) == 0);
-        wram[LIVES] = draw(if wide { 256 } else { 4 });
-        if wide {
-            wram[LEVEL] = if draw(16) == 0 {
-                LEVEL_UNSET
-            } else {
-                draw(u16::from(FINAL_LEVEL) + 1)
-            };
-            wram[DOTS_LEFT] = draw(256);
-            wram[PAC_X] = draw(256);
-            wram[PAC_Y] = draw(256);
-        } else {
-            wram[LEVEL] = draw(3);
-            wram[DOTS_LEFT] = DOTS - draw(4);
-            wram[PAC_X] = 0x70 + draw(0x20);
-            wram[PAC_Y] = 0x80 + draw(0x20);
-        }
-        wram[DIRECTION] = draw(256);
-        wram[POWER] = draw(2);
-        wram[POWER_SECONDS] = draw(256);
-        wram[POWER_FRAMES] = draw(256);
-        for digit in 0..SCORE_DIGITS {
-            wram[SCORE + digit] = if wide || digit < 2 { draw(16) } else { 0 };
-        }
-        wram
-    }
 
     fn playing_wram() -> Vec<u8> {
         let mut wram = vec![0; WRAM_SIZE];
@@ -714,38 +646,5 @@ mod tests {
             tape.iter().filter(|chord| chord.buttons == START).count(),
             2
         );
-    }
-
-    #[test]
-    fn the_setup_tape_and_vocabulary_are_the_hand_workload_s() {
-        assert_eq!(PacMan.setup(), setup_tape());
-        assert_eq!(PacMan::CHORDS, archive::CHORDS);
-    }
-
-    #[test]
-    fn the_compiled_key_orders_drawn_memory_as_the_hand_key_does() {
-        let lowered = lowered();
-        let shadow = Shadow::<PacMan, PacManArchiveKey>::new(PacMan).unwrap();
-        let hook = shadow.hook();
-        let mut rand = RomuDuoJrRand::with_seed(0x7061_636d_616e);
-        for _ in 0..40_000 {
-            let wram = drawn_wram(&mut rand);
-            let hand = decode_state(&wram).unwrap();
-            let state = decode(&wram);
-            assert_eq!(from_hand(hand), state);
-            lowered.checked_record(&state).unwrap();
-            let observed = lowered.observe(0, state, &mut Accumulator::default());
-            assert_eq!(observed.stops(), hand.terminal(), "{hand:?}");
-            assert_eq!(observed.key.is_none(), archive_key(hand).is_none());
-            hook.observe(archive_key(hand), &wram);
-        }
-        let report = shadow.report().unwrap();
-        assert_eq!(
-            report.disagreements,
-            Disagreements::default(),
-            "{:?}",
-            report.examples
-        );
-        assert!(report.keyed_states > 5_000 && report.distinct_pairs > 1_000);
     }
 }

@@ -11,7 +11,6 @@ use crate::{
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
-    pac_man::target::PacManSnapshot,
     search::{
         archive::{Input, RetentionPolicy},
         campaign::Workload,
@@ -32,8 +31,6 @@ impl EndpointIdentity for CastlevaniaSnapshot {}
 impl EndpointIdentity for MetroidSnapshot {}
 
 impl EndpointIdentity for Mm2Snapshot {}
-
-impl EndpointIdentity for PacManSnapshot {}
 
 impl EndpointIdentity for StbSnapshot {}
 

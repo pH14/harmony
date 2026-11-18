@@ -26,10 +26,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Super Mario Bros., Mega Man 2, Metroid, Castlevania and Pac-Man
+Super Mario Bros., Mega Man 2, Metroid and Castlevania
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
+`MetroidGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -88,7 +88,7 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
 The games declared through assertions share `nes-workload-snapshot-checkpoint-v1`.
 These plain snapshots use the postcard payload codec inside the framed envelope.
@@ -110,9 +110,8 @@ a native coordinator facility.
 `workload` lowers a game to the searcher's assertion representation
 (`search::assertion`, described in the searcher README). Joust, Zelda,
 Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
-written this way. Pac-Man also keeps its hand-written `target`, `archive`
-and `campaign` modules until its comparison ends. The other games have only
-such modules. A game implements `Game`:
+written this way. The other games have their own `target`, `archive` and
+`campaign` modules. A game implements `Game`:
 
 - `decode` turns work RAM, and the previous state, into the game's `State`.
 - `declare` passes the state's assertions, named values and `sometimes`

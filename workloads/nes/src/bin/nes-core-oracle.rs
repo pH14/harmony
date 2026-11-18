@@ -87,8 +87,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "pac-man" => Game {
-            setup: pac_man::target::setup_tape(),
-            chords: pac_man::archive::CHORDS,
+            setup: pac_man::PacMan.setup(),
+            chords: pac_man::PacMan::CHORDS,
             cartridge_ram: false,
         },
         "joust" => Game {
