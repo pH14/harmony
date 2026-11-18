@@ -2,12 +2,13 @@
 
 # Ice Climber workload adapter
 
-This module adapts Ice Climber (NES, NROM) to Dissonance's search interfaces. The
-game logic lives in [`nes-games/src/ice_climbers`](../../../nes-games/src/ice_climbers);
-this module re-exports it and adds the native film and endpoint replay. The layout
-follows the other campaign adapters: `target` holds the RAM decoder, setup tape and
-`Target` implementation, `archive` the key, milestones and controller vocabulary, and
-`campaign` the `Workload` implementation.
+This module adapts Ice Climber (NES, NROM) to Dissonance's search interfaces. Ice
+Climber is a game declared through the searcher's assertion catalog:
+`nes-games/src/ice_climbers/game.rs` holds the RAM decoder, power-on setup, genesis
+check and declarations, and `nes-games/src/ice_climbers/ice_climbers.toml` is the
+strategy that keys the archive. `IceClimbersWorkload` is
+`NesWorkload<IceClimbers, QuickNesMachine>`, the shared workload described in the
+[`nes-games` README](../../../nes-games/README.md).
 
 The game has 32 mountains. Each mountain is eight floors of ice, a bonus stage, and a
 results screen, after which the next mountain starts without input. The adapter plays one climber from power-on.
@@ -54,9 +55,10 @@ Start press pauses the game, so the search tape holds Start only in the setup. P
   altitude minus 4 pixels. Only a landing raises the tier.
 - Place is the tier level, the floor counter, an altitude band of 16 pixels, an 8-pixel
   column and whether the climber is airborne.
-- Within a place, the entry with the greater altitude is preferred.
-- A state is dead once lives drop below 3. A dead state is terminal, so every search
-  branch is a one-life climb.
+- The identity is the number of broken blocks, each cell keeps one state, and the state with the
+  greater altitude is preferred.
+- A state is dead once lives drop below 3. The strategy rejects a dead state, so every
+  search branch is a one-life climb.
 - Victory is clearing mountain 32.
 - Chords are the pressable NES button masks with the shared short and long holds.
 

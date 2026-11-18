@@ -15,7 +15,7 @@ use nes_workload::{
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
-    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
     pac_man::campaign::{PacManCampaignRun, PacManGame},
     punchout::{PunchOut, PunchOutWorkload},
@@ -360,8 +360,14 @@ fn main() -> Result<()> {
                 return Err("Ice Climbers takes no ai option".into());
             }
             produce(
-                IceClimbersGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                IceClimbersCampaignRun,
+                IceClimbersWorkload::new(
+                    IceClimbers::default(),
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

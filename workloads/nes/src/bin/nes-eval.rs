@@ -12,10 +12,7 @@ use nes_workload::{
         Famidash, FamidashGame,
         levels::{GROUPS, Side, Stage},
     },
-    ice_climbers::{
-        IceClimbers, IceClimbersWorkload,
-        campaign::{IceClimbersCampaignRun, IceClimbersGame},
-    },
+    ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
@@ -89,7 +86,9 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
 }
 
 fn ice_climbers_root(root_input: Option<&Path>) -> Result<Option<Vec<machine::nes::ButtonChord>>> {
-    match root_actions::<nes_games::ice_climbers::target::IceClimbersInput>(root_input)? {
+    match root_actions::<nes_workload::search::archive::Input<machine::nes::ButtonChord>>(
+        root_input,
+    )? {
         Some(input) if input.actions.is_empty() => Err("root input carries no actions".into()),
         Some(input) => Ok(Some(input.actions)),
         None => Ok(None),
@@ -227,9 +226,8 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda"
-            | "donkey-kong" | "donkey-kong-hand" | "ice-climbers" | "ice-climbers-hand"
-            | "pac-man" | "pac-man-hand" | "joust"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
+            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -475,33 +473,6 @@ fn main() -> Result<()> {
                 "ice-climbers",
                 <IceClimbersWorkload>::memory_view,
             ),
-            "ice-climbers-hand" => {
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(IceClimbers::default()))
-                    .transpose()?;
-                let game = match ice_climbers_root(request.root_input.as_deref())? {
-                    Some(prefix) => {
-                        IceClimbersGame::new_rooted(&rom, p, h, &execution_sha256, prefix)
-                    }
-                    None => IceClimbersGame::new(&rom, p, h, &execution_sha256),
-                };
-                evaluate_watching(
-                    match &shadow {
-                        Some(shadow) => game.with_shadow(shadow.hook()),
-                        None => game,
-                    },
-                    IceClimbersCampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "ice-climbers",
-                    <IceClimbersGame>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "pac-man" => evaluate_watching(
                 nes_workload::workload::configured(
                     PacManWorkload::new(PacMan, &rom, p, h, &execution_sha256)?,

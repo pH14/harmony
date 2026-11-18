@@ -82,8 +82,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "ice-climbers" => Game {
-            setup: ice_climbers::target::setup_tape(),
-            chords: ice_climbers::archive::CHORDS,
+            setup: ice_climbers::IceClimbers::default().setup(),
+            chords: ice_climbers::IceClimbers::CHORDS,
             cartridge_ram: false,
         },
         "pac-man" => Game {

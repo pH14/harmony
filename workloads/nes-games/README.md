@@ -26,10 +26,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and Pac-Man
+Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong and Pac-Man
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
+`MetroidGame<M>`, `DonkeyKongGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -110,8 +110,8 @@ a native coordinator facility.
 `workload` lowers a game to the searcher's assertion representation
 (`search::assertion`, described in the searcher README). Joust, Zelda,
 Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
-written this way. Donkey Kong, Ice Climber and Pac-Man also keep
-their hand-written `target`, `archive` and `campaign` modules until their
+written this way. Donkey Kong and Pac-Man also keep their
+hand-written `target`, `archive` and `campaign` modules until their
 comparisons end. The other games have only such modules. A game implements
 `Game`:
 

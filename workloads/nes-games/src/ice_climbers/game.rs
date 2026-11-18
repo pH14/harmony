@@ -652,27 +652,6 @@ mod tests {
     }
 
     #[test]
-    fn the_setup_tape_and_the_vocabulary_match_the_hand_workload() {
-        assert_eq!(
-            IceClimbers::default().setup(),
-            crate::ice_climbers::target::setup_tape()
-        );
-        let mut ours = RomuDuoJrRand::with_seed(11);
-        let mut hand = RomuDuoJrRand::with_seed(11);
-        let mut previous = None;
-        for _ in 0..1_000 {
-            let chord = IceClimbers::CHORDS
-                .draw(&mut ours, previous.as_ref())
-                .unwrap();
-            let theirs = crate::ice_climbers::archive::CHORDS
-                .draw(&mut hand, previous.as_ref())
-                .unwrap();
-            assert_eq!(chord, theirs);
-            previous = Some(chord);
-        }
-    }
-
-    #[test]
     fn setup_tape_presses_only_start() {
         let tape = IceClimbers::default().setup();
         assert_eq!(
