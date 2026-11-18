@@ -663,8 +663,12 @@ padding), `identity` (32 bits), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
 its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
 stage latch and carry state live in an `Accumulator` that the front end keeps
-beside its state and passes to `Compiled::observe`; a strategy without them
-`is_pure` and needs only `Compiled::key`. Capacity and preference count come
+beside its state and `Compiled::observe` advances in place; a strategy without
+them `is_pure` and needs only `Compiled::key`. The accumulator holds the stage
+inline and boxes only the values the strategy declares, two per aggregate and
+the objective when a stage carries or an aggregate reads it, so it is 24
+bytes and allocates nothing for a strategy without aggregates or carried
+stages. Capacity and preference count come
 from the strategy, so `Archive` and the campaign take them as a `KeyShape`
 from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 `ArchiveKey::preferences`.
@@ -711,8 +715,9 @@ so the compiler carries each goal's range check (`goal_reachable`,
 over the expression ranges it already computes. Re-keying feeds the checker
 the last frame of every action.
 
-**Front ends.** `Compiled::observe` returns the key, the index of the first
-`reject` line that holds, whether the `goal` holds, and the next accumulator.
+**Front ends.** `Compiled::observe` advances the accumulator and returns the
+key, the index of the first `reject` line that holds, and whether the `goal`
+holds.
 `workloads/tiny-worlds` keys every world from a strategy file. An emulated
 program's workload lowers each target to a decoder and a declaration list and
 runs every such target through one `Workload` implementation.

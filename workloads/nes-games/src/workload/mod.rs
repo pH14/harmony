@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
-pub use target::{NesObservation, NesSnapshot, NesTarget};
+pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
     arcade::Machines,
@@ -31,8 +31,9 @@ use crate::{
             SelectorAccounting, entries_by_suffix,
         },
         assertion::{
-            Accumulator, Assertion, AssertionKey, Catalog, Compiled, RECORDS_FORMAT, Record,
-            RecordedAction, RecordsHeader, RecordsSize, RecordsWriter, StreamIdentity,
+            Accumulator, Assertion, AssertionKey, Catalog, Compiled, Declarations, RECORDS_FORMAT,
+            Record, RecordWriter, RecordedAction, RecordsHeader, RecordsSize, RecordsWriter,
+            StreamIdentity,
         },
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
@@ -111,7 +112,7 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
         format!("{}-setup-v1", Self::NAME)
     }
     fn decode(&self, previous: Option<&Self::State>, ram: &[u8]) -> Self::State;
-    fn declare(&self, state: &Self::State, out: &mut impl FnMut(Assertion));
+    fn declare(&self, state: &Self::State, out: &mut impl Declarations);
     fn moves(&self, state: &Self::State) -> Moves<Self::Move>;
     fn play(&self, mv: Self::Move, state: &Self::State) -> Option<Step<Self::Move>>;
     fn move_frames(&self, mv: Self::Move) -> u64;
@@ -131,8 +132,27 @@ impl Satisfied {
 
 fn declared<G: Game>(game: &G, state: &G::State) -> Vec<Assertion> {
     let mut declared = Vec::new();
-    game.declare(state, &mut |assertion| declared.push(assertion));
+    game.declare(state, &mut declared);
     declared
+}
+
+struct Frame<'a> {
+    record: RecordWriter<'a>,
+    satisfied: u128,
+    sometimes: usize,
+}
+
+impl Declarations for Frame<'_> {
+    #[inline(always)]
+    fn declare(&mut self, assertion: Assertion) {
+        if assertion.is_sometimes() {
+            if assertion.holds() && self.sometimes < MAX_SOMETIMES {
+                self.satisfied |= 1 << self.sometimes;
+            }
+            self.sometimes += 1;
+        }
+        self.record.push(&assertion);
+    }
 }
 
 #[derive(Debug)]
@@ -186,19 +206,21 @@ impl<G: Game> Lowered<G> {
 
     #[must_use]
     pub fn record(&self, state: &G::State) -> (Record, Satisfied) {
-        let mut satisfied = 0_u128;
-        let mut index = 0;
         let mut record = Record::default();
-        self.game.declare(state, &mut |assertion| {
-            if assertion.is_sometimes() {
-                if assertion.holds() && index < MAX_SOMETIMES {
-                    satisfied |= 1 << index;
-                }
-                index += 1;
-            }
-            record.push(&assertion);
-        });
-        (record, Satisfied(satisfied))
+        let satisfied = self.write_record(state, &mut record);
+        (record, satisfied)
+    }
+
+    fn write_record(&self, state: &G::State, record: &mut Record) -> Satisfied {
+        let mut frame = Frame {
+            record: record.writer(),
+            satisfied: 0,
+            sometimes: 0,
+        };
+        self.game.declare(state, &mut frame);
+        let satisfied = Satisfied(frame.satisfied);
+        frame.record.finish();
+        satisfied
     }
 
     pub fn checked_record(&self, state: &G::State) -> Result<Record, Box<dyn Error>> {
@@ -210,24 +232,20 @@ impl<G: Game> Lowered<G> {
         &self,
         frame_count: u64,
         state: G::State,
-        parent: &Accumulator,
-    ) -> (NesObservation<G::State>, Accumulator) {
-        let (record, satisfied) = self.record(&state);
-        let observed = self.compiled.observe(&record, parent);
-        (
-            NesObservation {
-                frame_count,
-                state,
-                key: observed.key,
-                rejected: observed.rejected,
-                goal: observed.goal,
-                satisfied,
-                overran: false,
-                cost: 0,
-                records: Vec::new(),
-            },
-            observed.accumulator,
-        )
+        accumulator: &mut Accumulator,
+    ) -> NesObservation<G::State> {
+        let mut record = Record::default();
+        let satisfied = self.write_record(&state, &mut record);
+        let observed = self.compiled.observe(&record, accumulator);
+        NesObservation {
+            frame_count,
+            state,
+            key: observed.key,
+            rejected: observed.rejected,
+            goal: observed.goal,
+            satisfied,
+            overran: false,
+        }
     }
 }
 
@@ -446,7 +464,7 @@ fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>>>(
         return;
     }
     for observation in target.last_action_observations() {
-        aggregate.0 |= observation.satisfied.0;
+        aggregate.0 |= observation.observation.satisfied.0;
     }
 }
 
@@ -553,10 +571,10 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     })
 }
 
-fn watermark<S>(observations: &[NesObservation<S>]) -> Option<u32> {
+fn watermark<S>(observations: &[ActionObservation<S>]) -> Option<u32> {
     observations
         .iter()
-        .filter_map(|observation| observation.key.map(|key| key.progress))
+        .filter_map(|action| action.observation.key.map(|key| key.progress))
         .max()
 }
 
@@ -568,7 +586,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> CampaignTypes for NesWorkload<G, M> {
     type Milestones = Satisfied;
     type Progress = u32;
     type Snapshot = NesSnapshot<G::State>;
-    type Observations = NesObservation<G::State>;
+    type Observations = ActionObservation<G::State>;
     type Evidence = NesEvidence;
     type ArchiveReport = NesArchiveReport;
     type Run = NesRun;
@@ -941,7 +959,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                     || action
                         .observations
                         .iter()
-                        .any(|observation| observation.overran),
+                        .any(|observation| observation.observation.overran),
                 cost: action
                     .observations
                     .iter()
@@ -962,13 +980,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
         let champion = action
             .observations
             .last()
-            .and_then(|observation| observation.key)
+            .and_then(|observation| observation.observation.key)
             .map(|key| key.progress)
             .filter(|progress| evidence.champion.is_none_or(|current| *progress > current));
         let overran = action
             .observations
             .iter()
-            .any(|observation| observation.overran);
+            .any(|observation| observation.observation.overran);
         if overran
             && let Some(violation) = evidence
                 .violations

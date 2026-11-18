@@ -202,9 +202,15 @@ fn a_tier_spread_and_preference_pack_in_order() {
             }))
             .is_none()
     );
-    let observed = compiled.observe(&record(Walk { lives: 0, ..base }), &Accumulator::default());
+    let observed = compiled.observe(
+        &record(Walk { lives: 0, ..base }),
+        &mut Accumulator::default(),
+    );
     assert_eq!(observed.rejected, Some(0));
-    let observed = compiled.observe(&record(Walk { room: 9, ..base }), &Accumulator::default());
+    let observed = compiled.observe(
+        &record(Walk { room: 9, ..base }),
+        &mut Accumulator::default(),
+    );
     assert_eq!(observed.rejected, Some(1));
     assert_eq!(compiled.reject_names(None)[1], "'position.room' == 9");
     let view = compiled.view(key(base));
@@ -277,65 +283,48 @@ fn stages_climb_their_gap_latch_and_carry() {
     .unwrap();
     assert_eq!(compiled.stage_names(), ["far room", "sword", "items"]);
     assert!(!compiled.is_pure());
-    let observe = |state: Walk, parent: &Accumulator| compiled.observe(&record(state), parent);
-    let start = observe(
-        Walk {
-            room: 2,
-            ..Walk::default()
-        },
-        &Accumulator::default(),
-    );
-    let further = observe(
-        Walk {
-            room: 3,
-            ..Walk::default()
-        },
-        &start.accumulator,
-    );
+    let mut accumulator = Accumulator::default();
+    let mut observe = |state: Walk| compiled.observe(&record(state), &mut accumulator);
+    let start = observe(Walk {
+        room: 2,
+        ..Walk::default()
+    });
+    let further = observe(Walk {
+        room: 3,
+        ..Walk::default()
+    });
     assert!(start.key.unwrap().progress() < further.key.unwrap().progress());
-    let transition = observe(
-        Walk {
-            room: 0,
-            transition: true,
-            ..Walk::default()
-        },
-        &further.accumulator,
-    );
+    let transition = observe(Walk {
+        room: 0,
+        transition: true,
+        ..Walk::default()
+    });
     assert_eq!(
         transition.key.unwrap().progress(),
         further.key.unwrap().progress()
     );
-    let far = observe(
-        Walk {
-            room: 6,
-            ..Walk::default()
-        },
-        &transition.accumulator,
-    );
+    let far = observe(Walk {
+        room: 6,
+        ..Walk::default()
+    });
     assert_eq!(
         compiled.view(far.key.unwrap()).stage.as_deref(),
         Some("sword")
     );
-    let sword = observe(
-        Walk {
-            room: 6,
-            items: 0b001,
-            lives: 4,
-            ..Walk::default()
-        },
-        &far.accumulator,
-    );
+    let sword = observe(Walk {
+        room: 6,
+        items: 0b001,
+        lives: 4,
+        ..Walk::default()
+    });
     let view = compiled.view(sword.key.unwrap());
     assert_eq!(view.stage.as_deref(), Some("items"));
     assert_eq!(view.place, [4]);
-    let back = observe(
-        Walk {
-            room: 1,
-            lives: 4,
-            ..Walk::default()
-        },
-        &sword.accumulator,
-    );
+    let back = observe(Walk {
+        room: 1,
+        lives: 4,
+        ..Walk::default()
+    });
     assert_eq!(
         compiled.view(back.key.unwrap()).stage.as_deref(),
         Some("far room")
@@ -351,19 +340,20 @@ fn stages_climb_their_gap_latch_and_carry() {
         &catalog,
     )
     .unwrap();
+    let mut accumulator = Accumulator::default();
     let bow = latched.observe(
         &record(Walk {
             items: 0b010,
             ..Walk::default()
         }),
-        &Accumulator::default(),
+        &mut accumulator,
     );
-    let dropped = latched.observe(&record(Walk::default()), &bow.accumulator);
+    let dropped = latched.observe(&record(Walk::default()), &mut accumulator);
     assert_eq!(
         latched.view(dropped.key.unwrap()).stage,
         latched.view(bow.key.unwrap()).stage
     );
-    let unlatched = latched.observe(&record(Walk::default()), &Accumulator::default());
+    let unlatched = latched.observe(&record(Walk::default()), &mut Accumulator::default());
     assert_ne!(
         latched.view(unlatched.key.unwrap()).stage,
         latched.view(bow.key.unwrap()).stage
@@ -416,8 +406,7 @@ fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
             ..Walk::default()
         },
     ] {
-        let observed = compiled.observe(&record(state), &accumulator);
-        accumulator = observed.accumulator;
+        let observed = compiled.observe(&record(state), &mut accumulator);
         views.push(compiled.view(observed.key.unwrap()).place);
     }
     assert_eq!(
@@ -429,6 +418,73 @@ fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
             vec![5, 1, 2, 40, 7, 2],
         ]
     );
+}
+
+#[test]
+fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
+    let width = |text: &str| {
+        let compiled = Compiled::parse(text, &catalog()).unwrap();
+        let mut accumulator = Accumulator::default();
+        let _ = compiled.observe(&record(Walk::default()), &mut accumulator);
+        serde_json::to_value(&accumulator).unwrap()["values"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(width("spread = \"position\""), 0);
+    assert_eq!(
+        width("[[stage]]\ngoal = \"'items.bow'\"\nlatch = true\n[[stage]]\ngoal = \"items\""),
+        0
+    );
+    assert_eq!(
+        width("spread = [\"ever('items.key')\", \"first(time)\"]"),
+        4
+    );
+    assert_eq!(
+        width(
+            "[[stage]]\ngoal = \"far room\"\ncarry = true\nobjective = \"'far room.gap'\"\n[[stage]]\ngoal = \"items\""
+        ),
+        OBJECTIVE_WIDTH
+    );
+    assert_eq!(
+        width(
+            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"ever(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
+        ),
+        2 + OBJECTIVE_WIDTH
+    );
+    assert!(std::mem::size_of::<Accumulator>() <= 24);
+}
+
+#[test]
+fn an_aggregate_reads_the_held_objective_of_a_stage_that_does_not_carry() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "reach"
+        objective = "'position.x'"
+        goal = "ever(objective >= 5)"
+        [[stage]]
+        name = "after"
+        goal = "false"
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let stages: Vec<_> = [5, 0]
+        .into_iter()
+        .map(|x| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    x,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            compiled.view(observed.key.unwrap()).stage
+        })
+        .collect();
+    assert_eq!(stages, [Some("reach".to_owned()), Some("after".to_owned())]);
 }
 
 #[test]
@@ -666,7 +722,7 @@ fn the_goal_names_a_declaration_or_an_expression() {
     let observe = |text: &str, state: Walk| {
         Compiled::parse(text, &catalog())
             .unwrap()
-            .observe(&record(state), &Accumulator::default())
+            .observe(&record(state), &mut Accumulator::default())
             .goal
     };
     let far = Walk {

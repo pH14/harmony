@@ -10,7 +10,8 @@ mod rekey;
 mod strategy;
 
 pub use catalog::{
-    Assertion, Catalog, Declared, EACH_FIELDS, NONE, Number, RECORD_SLOTS, Record, Signal,
+    Assertion, Catalog, Declarations, Declared, EACH_FIELDS, NONE, Number, RECORD_SLOTS, Record,
+    RecordWriter, Signal,
 };
 pub use checks::{Checker, Finding, THIN_TIER_STATES};
 pub use compile::{Accumulator, Compiled, KeyView, MAX_AGGREGATES, OBJECTIVE_WIDTH, Observed};

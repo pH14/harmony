@@ -72,26 +72,25 @@ enum Step {
 fn fold(
     strategy: &Compiled,
     frames: &[Record],
-    from: Accumulator,
+    accumulator: &mut Accumulator,
     mut checker: Option<&mut Checker<'_>>,
-) -> (Accumulator, Step) {
-    let mut accumulator = from;
+) -> Step {
     let mut key = None;
     for (index, frame) in frames.iter().enumerate() {
-        let observed = strategy.observe(frame, &accumulator);
+        let parent = checker.is_some().then(|| accumulator.clone());
+        let observed = strategy.observe(frame, accumulator);
         let stopped = observed.goal || observed.rejected.is_some();
         if (stopped || index + 1 == frames.len())
-            && let Some(checker) = checker.as_deref_mut()
+            && let (Some(checker), Some(parent)) = (checker.as_deref_mut(), &parent)
         {
-            checker.observe(frame, &accumulator);
+            checker.observe(frame, parent);
         }
-        accumulator = observed.accumulator;
         if stopped {
-            return (accumulator, Step::Stopped);
+            return Step::Stopped;
         }
         key = observed.key;
     }
-    (accumulator, key.map_or(Step::Continue, Step::Candidate))
+    key.map_or(Step::Continue, Step::Candidate)
 }
 
 pub struct Rekeying<'a> {
@@ -114,8 +113,10 @@ impl Rekeying<'_> {
         let mut archive: Archive<A, AssertionKey, (), ()> =
             Archive::with_shape(action_cost, self.strategy.shape());
         archive.max_entries = self.entry_limit;
-        let recorded_genesis = self.recorded.observe(genesis, &Accumulator::default());
-        let keyed_genesis = self.strategy.observe(genesis, &Accumulator::default());
+        let mut recorded = Accumulator::default();
+        let _ = self.recorded.observe(genesis, &mut recorded);
+        let mut keyed = Accumulator::default();
+        let keyed_genesis = self.strategy.observe(genesis, &mut keyed);
         let genesis_key = keyed_genesis
             .key
             .ok_or("the genesis record has no key under the strategy")?;
@@ -137,8 +138,8 @@ impl Rekeying<'_> {
             Node {
                 anchor: root,
                 suffix: Vec::new(),
-                recorded: recorded_genesis.accumulator,
-                keyed: keyed_genesis.accumulator,
+                recorded,
+                keyed,
                 stopped: false,
             },
         );
@@ -171,23 +172,21 @@ impl Rekeying<'_> {
             {
                 let action = &actions[index];
                 pending.push(index);
-                let (recorded_next, recorded_step) = if action.failed {
-                    (place.recorded, Step::Stopped)
+                let recorded_step = if action.failed {
+                    Step::Stopped
                 } else {
-                    fold(self.recorded, &action.frames, place.recorded, None)
+                    fold(self.recorded, &action.frames, &mut place.recorded, None)
                 };
-                place.recorded = recorded_next;
-                let (keyed_next, keyed_step) = if action.failed || keyed_stopped {
-                    (place.keyed, Step::Stopped)
+                let keyed_step = if action.failed || keyed_stopped {
+                    Step::Stopped
                 } else {
                     fold(
                         self.strategy,
                         &action.frames,
-                        place.keyed,
+                        &mut place.keyed,
                         Some(&mut checker),
                     )
                 };
-                place.keyed = keyed_next;
                 if let Step::Candidate(key) = keyed_step {
                     candidates += 1;
                     let suffix: Vec<A> = pending
@@ -238,8 +237,8 @@ impl Rekeying<'_> {
                             nodes.entry(*id).or_insert_with(|| Node {
                                 anchor: place.anchor,
                                 suffix: pending.clone(),
-                                recorded: place.recorded,
-                                keyed: place.keyed,
+                                recorded: place.recorded.clone(),
+                                keyed: place.keyed.clone(),
                                 stopped: keyed_stopped,
                             });
                         }

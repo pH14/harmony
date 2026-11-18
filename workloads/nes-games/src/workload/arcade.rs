@@ -5,7 +5,7 @@ use std::error::Error;
 use machine::nes::WRAM_SIZE;
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::{Game, NesObservation, NesRun, NesSnapshot, NesWorkload};
+use super::{ActionObservation, Game, NesRun, NesSnapshot, NesWorkload};
 use crate::{
     arcade::{ArcadeGame, Machines},
     nes_backend::{NesBackend, NesMemory},
@@ -93,16 +93,16 @@ impl<G: Arcade, M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Nes
         Ok(G::view(&decode::<G>(memory)?))
     }
 
-    fn view(observation: &NesObservation<G::State>) -> G::View {
-        G::view(&observation.state)
+    fn view(observation: &ActionObservation<G::State>) -> G::View {
+        G::view(&observation.observation.state)
     }
 
-    fn frame_count(observation: &NesObservation<G::State>) -> u64 {
-        observation.frame_count
+    fn frame_count(observation: &ActionObservation<G::State>) -> u64 {
+        observation.observation.frame_count
     }
 
-    fn cleared(observation: &NesObservation<G::State>) -> u8 {
-        G::cleared(&observation.state)
+    fn cleared(observation: &ActionObservation<G::State>) -> u8 {
+        G::cleared(&observation.observation.state)
     }
 
     fn emulator_state(snapshot: &NesSnapshot<G::State>) -> &[u8] {

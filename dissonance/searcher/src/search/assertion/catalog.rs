@@ -192,7 +192,7 @@ impl Assertion {
     }
 
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn is_sometimes(&self) -> bool {
         matches!(
             self,
@@ -207,7 +207,7 @@ impl Assertion {
     }
 
     #[must_use]
-    #[inline]
+    #[inline(always)]
     pub fn holds(&self) -> bool {
         match *self {
             Self::Always { condition, .. }
@@ -231,7 +231,7 @@ impl Assertion {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn numbers(&self) -> Option<(Number, Number)> {
         match *self {
             Self::AlwaysGreaterThan { left, right, .. }
@@ -287,7 +287,7 @@ impl Assertion {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn write(&self, out: &mut [i64]) -> usize {
         if let Some((left, right)) = self.numbers() {
             out[0] = i64::from(self.holds());
@@ -536,6 +536,40 @@ impl Catalog {
     }
 }
 
+pub trait Declarations {
+    fn declare(&mut self, assertion: Assertion);
+}
+
+impl Declarations for Vec<Assertion> {
+    fn declare(&mut self, assertion: Assertion) {
+        self.push(assertion);
+    }
+}
+
+impl Declarations for Record {
+    #[inline(always)]
+    fn declare(&mut self, assertion: Assertion) {
+        self.push(&assertion);
+    }
+}
+
+pub struct RecordWriter<'a> {
+    values: &'a mut [i64; RECORD_SLOTS],
+    len: &'a mut u8,
+    written: usize,
+}
+
+impl RecordWriter<'_> {
+    #[inline(always)]
+    pub fn push(&mut self, assertion: &Assertion) {
+        self.written += assertion.write(&mut self.values[self.written..]);
+    }
+
+    pub fn finish(self) {
+        *self.len = u8::try_from(self.written).unwrap_or(u8::MAX);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record {
     len: u8,
@@ -561,11 +595,19 @@ impl Record {
         record
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, assertion: &Assertion) {
         let slot = usize::from(self.len);
         let written = assertion.write(&mut self.values[slot..]);
         self.len = u8::try_from(slot + written).unwrap_or(u8::MAX);
+    }
+
+    pub fn writer(&mut self) -> RecordWriter<'_> {
+        RecordWriter {
+            values: &mut self.values,
+            len: &mut self.len,
+            written: 0,
+        }
     }
 
     #[must_use]

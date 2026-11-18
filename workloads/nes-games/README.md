@@ -108,8 +108,12 @@ Famidash are written this way; the other games keep their own `target`,
 
 - `decode` turns work RAM, and the previous state, into the game's `State`.
 - `declare` passes the state's assertions, named values and `sometimes`
-  events, one at a time to a sink. `Lowered` writes each into the frame's
-  `Record` with `Record::push`, so a frame builds no list of assertions.
+  events, one at a time, to a `Declarations` sink. The workload collects
+  them in a `Vec<Assertion>` to form the catalog. On each frame `Lowered`
+  passes a sink that writes each into the frame's `Record` through a
+  `RecordWriter` and sets the satisfied `sometimes` bits, so a frame builds no
+  list of assertions and the slot count stays in a register until the frame
+  ends.
 - `setup` is the power-on tape, `setup_pokes` the RAM writes after it and
   `start` the tape after those (Famidash pokes its level and starts it);
   `genesis` checks the state they reach. `genesis_id` names that state in
@@ -135,7 +139,10 @@ goal, and a game has at most 128 `sometimes` declarations.
 strategy rejects or that meets the goal, and the target replays the hold cut
 to that frame, so the endpoint is the stopping frame. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
-the end of each action. A goal frame is a terminal objective, and a rejected
+the end of each action. Each is an `ActionObservation`: the `NesObservation`,
+the action's cost in frames on the last one, and the records of the frames it
+covers when the workload keeps records. A snapshot holds the `NesObservation`
+and the accumulator alone. A goal frame is a terminal objective, and a rejected
 frame is a doomed terminal. Named progress reports each `sometimes`
 declaration by name with its first execution. The strategy's policy identifier
 is part of the recorded workload policies, and `with_strategy` builds the same
