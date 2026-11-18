@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     search::{
-        archive::{ArchiveKey, KeyShape},
+        archive::{ArchiveKey, Input, KeyShape},
         assertion::{Accumulator, AssertionKey},
         campaign::{Evaluation, TargetExecution},
         rand::RomuDuoJrRand,
@@ -347,4 +347,59 @@ fn a_rooted_start_plays_like_the_hand_rooted_start() {
             break;
         }
     }
+}
+
+#[test]
+#[ignore = "needs HARMONY_ICE_CLIMBERS_ROM, HARMONY_QUICKNES_CORE and HARMONY_ICE_CLIMBERS_TAPES"]
+fn compiled_keys_match_hand_keys_on_replayed_tapes() {
+    let inputs = inputs();
+    let lowered = Lowered::new(IceClimbers::default(), IceClimbers::STRATEGY).expect("strategy");
+    let mut machine = machine(&inputs);
+    let power_on = machine.snapshot().expect("power on");
+    run(&mut machine, power_on, &IceClimbers::default().setup());
+    let genesis = machine.snapshot().expect("genesis");
+    let tapes = std::env::var("HARMONY_ICE_CLIMBERS_TAPES").expect("HARMONY_ICE_CLIMBERS_TAPES");
+    let (mut hand, mut compiled) = (Vec::new(), Vec::new());
+    let mut progress = BTreeSet::new();
+    for path in tapes.split(':').filter(|path| !path.is_empty()) {
+        let tape: Input<ButtonChord> =
+            serde_json::from_slice(&std::fs::read(path).expect("tape")).expect("tape json");
+        let (mut frames, mut absent, mut stop) = (0usize, 0usize, None);
+        for wram in run(&mut machine, genesis, &tape.actions) {
+            frames += 1;
+            let frame = frame(&lowered, &wram);
+            assert_eq!(
+                frame.hand.is_none(),
+                frame.compiled.is_none(),
+                "absent differs in {path} at frame {frames}"
+            );
+            assert_eq!(
+                frame.hand_terminal, frame.stops,
+                "terminal differs in {path} at frame {frames}"
+            );
+            if frame.stops {
+                stop = Some(frames);
+                break;
+            }
+            match (frame.hand, frame.compiled) {
+                (Some(h), Some(c)) => {
+                    progress.insert(format!("{:?}", h.progress()));
+                    hand.push(h);
+                    compiled.push(c);
+                }
+                _ => absent += 1,
+            }
+        }
+        let last = hand.last().map(|h| format!("{:?}", h.progress()));
+        eprintln!(
+            "ice climbers tape {path}: {} actions, {frames} frames, {absent} absent, stop at {stop:?}, last progress {last:?}",
+            tape.actions.len()
+        );
+    }
+    let distinct = agree(&hand, &compiled, lowered.compiled.shape());
+    eprintln!(
+        "ice climbers tape equivalence: {} keyed states ({distinct} distinct key pairs); {} progress values {progress:?}",
+        hand.len(),
+        progress.len()
+    );
 }
