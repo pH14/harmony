@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ArcadeAction, ArcadeGame, snapshot_digest, trail};
 use crate::{
-    nes_backend::unpack_state_into,
+    nes_backend::{packed_state_len, unpack_state_into},
     search::{
         campaign::{
             CampaignAdmission, CampaignAdmissionDecision, CampaignCoordinator, CampaignJobResult,
@@ -117,13 +117,8 @@ pub fn chord_frames(chords: &[ButtonChord]) -> u64 {
 }
 
 pub fn raw_state(packed: &[u8]) -> Result<Vec<u8>, MachineError> {
-    let declared = packed
-        .get(..4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .map(u32::from_le_bytes)
-        .ok_or_else(|| MachineError::Backend("snapshot has no size prefix".to_owned()))?;
     let mut state = Vec::new();
-    unpack_state_into(packed, declared as usize, &mut state)?;
+    unpack_state_into(packed, packed_state_len(packed)?, &mut state)?;
     Ok(state)
 }
 
