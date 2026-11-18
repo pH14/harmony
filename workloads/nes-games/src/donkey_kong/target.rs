@@ -10,10 +10,10 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    donkey_kong::archive::DonkeyKongArchiveKey,
     nes_backend::NesBackend,
     target::{ExitKind, Target},
     workload::ShadowHook,
-    donkey_kong::archive::DonkeyKongArchiveKey,
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};

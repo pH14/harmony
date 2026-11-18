@@ -37,8 +37,10 @@ struct Inputs {
 }
 
 fn inputs() -> Inputs {
-    let rom = std::fs::read(std::env::var_os("HARMONY_DONKEY_KONG_ROM").expect("HARMONY_DONKEY_KONG_ROM"))
-        .expect("Donkey Kong ROM");
+    let rom = std::fs::read(
+        std::env::var_os("HARMONY_DONKEY_KONG_ROM").expect("HARMONY_DONKEY_KONG_ROM"),
+    )
+    .expect("Donkey Kong ROM");
     let core = PathBuf::from(std::env::var_os("HARMONY_QUICKNES_CORE").expect("core"));
     let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core).expect("core")));
     let execution_sha256 =
@@ -61,8 +63,14 @@ fn machine(inputs: &Inputs) -> QuickNesMachine {
     .expect("machine")
 }
 
-fn run(machine: &mut QuickNesMachine, from: SnapId, chords: &[ButtonChord]) -> Vec<[u8; WRAM_SIZE]> {
-    machine.branch(from, &nes::reproducer(chords)).expect("branch");
+fn run(
+    machine: &mut QuickNesMachine,
+    from: SnapId,
+    chords: &[ButtonChord],
+) -> Vec<[u8; WRAM_SIZE]> {
+    machine
+        .branch(from, &nes::reproducer(chords))
+        .expect("branch");
     machine.run(StopConditions::default(), None).expect("run");
     machine.frames().to_vec()
 }
@@ -88,7 +96,11 @@ fn frame(lowered: &Lowered<DonkeyKong>, wram: &[u8; WRAM_SIZE]) -> Frame {
 }
 
 fn agree(hand: &[DonkeyKongArchiveKey], compiled: &[AssertionKey], shape: KeyShape) -> usize {
-    assert_eq!(KeyShape::of::<DonkeyKongArchiveKey>(), shape, "key shapes differ");
+    assert_eq!(
+        KeyShape::of::<DonkeyKongArchiveKey>(),
+        shape,
+        "key shapes differ"
+    );
     let pairs: Vec<(DonkeyKongArchiveKey, AssertionKey)> = hand
         .iter()
         .copied()
@@ -151,7 +163,9 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         let mut previous = None;
         let chords: Vec<ButtonChord> = (0..8)
             .map(|_| {
-                let chord = DonkeyKong::CHORDS.draw(&mut rand, previous.as_ref()).unwrap();
+                let chord = DonkeyKong::CHORDS
+                    .draw(&mut rand, previous.as_ref())
+                    .unwrap();
                 previous = Some(chord);
                 chord
             })
@@ -162,7 +176,11 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         for wram in run(&mut machine, start, &chords) {
             frames += 1;
             let frame = frame(&lowered, &wram);
-            assert_eq!(frame.hand.is_none(), frame.compiled.is_none(), "absent differs");
+            assert_eq!(
+                frame.hand.is_none(),
+                frame.compiled.is_none(),
+                "absent differs"
+            );
             assert_eq!(frame.hand_terminal, frame.stops, "terminal differs");
             if frame.stops {
                 stops += 1;
@@ -222,14 +240,23 @@ fn interior_observations_of_one_replayed_run() {
     let mut previous = None;
     let (mut hand_frames, mut strategy_frames) = (BTreeSet::new(), BTreeSet::new());
     let (mut hand_key_frames, mut compiled_key_frames) = (BTreeSet::new(), BTreeSet::new());
-    let mut prior = (archive_key(hand.mechanical_state()), strategic.observation().key);
+    let mut prior = (
+        archive_key(hand.mechanical_state()),
+        strategic.observation().key,
+    );
     let mut frame_count = 0u64;
     for _ in 0..2_000 {
-        let chord = DonkeyKong::CHORDS.draw(&mut rand, previous.as_ref()).unwrap();
+        let chord = DonkeyKong::CHORDS
+            .draw(&mut rand, previous.as_ref())
+            .unwrap();
         previous = Some(chord);
         hand.apply(&chord);
         strategic.apply(&chord);
-        hand_frames.extend(hand.last_action_observations().iter().map(|o| o.frame_count));
+        hand_frames.extend(
+            hand.last_action_observations()
+                .iter()
+                .map(|o| o.frame_count),
+        );
         strategy_frames.extend(
             strategic
                 .last_action_observations()
@@ -253,12 +280,18 @@ fn interior_observations_of_one_replayed_run() {
         let next = every.snapshot().expect("snapshot");
         every.drop_snapshot(at).expect("drop");
         at = next;
-        assert_eq!(hand.observe().frame_count, strategic.observation().frame_count);
+        assert_eq!(
+            hand.observe().frame_count,
+            strategic.observation().frame_count
+        );
         if hand.is_terminal() {
             break;
         }
     }
-    assert_eq!(hand_key_frames, compiled_key_frames, "key-change frames differ");
+    assert_eq!(
+        hand_key_frames, compiled_key_frames,
+        "key-change frames differ"
+    );
     assert!(compiled_key_frames.is_subset(&strategy_frames));
     eprintln!(
         "donkey kong interior observations: hand {} frames, strategy {} frames, both {}, hand only {}, strategy only {}; key-change frames {} under both keys",

@@ -253,7 +253,12 @@ impl Game for DonkeyKong {
         out.declare(byte_value("x", state.x));
         out.declare(byte_value("y", state.y));
         out.declare(byte_value("height", state.height()));
-        out.declare(value("rivets", i64::from(state.rivets), 0, i64::from(RIVETS)));
+        out.declare(value(
+            "rivets",
+            i64::from(state.rivets),
+            0,
+            i64::from(RIVETS),
+        ));
         out.declare(flag("in_play", state.in_play()));
         out.declare(flag("dead", state.dead()));
         out.declare(Assertion::Sometimes {
@@ -446,7 +451,10 @@ mod tests {
         let mut tall = rivet;
         tall.y = START_Y - 0x60;
         assert!(key(one).unwrap().progress() > key(tall).unwrap().progress());
-        assert_eq!(key(tall).unwrap().progress(), key(rivet).unwrap().progress());
+        assert_eq!(
+            key(tall).unwrap().progress(),
+            key(rivet).unwrap().progress()
+        );
     }
 
     #[test]
@@ -462,7 +470,10 @@ mod tests {
         spare.score = 0;
         let mut rich = slow;
         rich.score = 800;
-        assert_eq!(key(rich).unwrap().preference_cmp(0, slow_key), Ordering::Greater);
+        assert_eq!(
+            key(rich).unwrap().preference_cmp(0, slow_key),
+            Ordering::Greater
+        );
         assert_eq!(
             key(spare).unwrap().preference_cmp(0, key(rich).unwrap()),
             Ordering::Greater

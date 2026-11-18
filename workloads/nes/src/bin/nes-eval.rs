@@ -136,9 +136,15 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "zelda" => evaluate_live::<nes_games::workload::NesWorkload<Zelda, NativeMachine>>(
             rom, request, out, started, "zelda",
         ),
-        "donkey-kong" => evaluate_live::<
-            nes_games::workload::NesWorkload<DonkeyKong, NativeMachine>,
-        >(rom, request, out, started, "donkey-kong"),
+        "donkey-kong" => {
+            evaluate_live::<nes_games::workload::NesWorkload<DonkeyKong, NativeMachine>>(
+                rom,
+                request,
+                out,
+                started,
+                "donkey-kong",
+            )
+        }
         "ice-climbers" => evaluate_live::<
             nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
         >(rom, request, out, started, "ice-climbers"),
@@ -207,8 +213,8 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong" | "donkey-kong-hand"
-            | "ice-climbers" | "pac-man" | "joust"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
+            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
