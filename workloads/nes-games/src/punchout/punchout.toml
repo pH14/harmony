@@ -1,0 +1,16 @@
+goal = "victory"
+absent = "dead or victory"
+reject = "dead"
+capacity = 1
+tier = ["defeated"]
+spread = [
+    "opponent",
+    "phase",
+    "if fighting then round else screen",
+    "if fighting then round_knockdowns else round",
+    "if fighting then opponent_health / 8 else scene",
+    "if fighting then opponent_action else prompt",
+    "if fighting then (if opponent_action == 26 then opponent_step % 4 else 0) else scene_timer / 16",
+]
+identity = ["if fighting then opponent_health else 0", "mac_health", "hearts"]
+prefer = [["mac_health: more", "hearts: more", "stars: more"]]
