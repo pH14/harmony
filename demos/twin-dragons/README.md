@@ -968,8 +968,8 @@ sprite, found by drawing the frame with and without him.
 | `$96` | posture: 1 standing, 2 on a ladder, 4 in the air, `$FF` dead |
 | `$200`–`$203` | Mario's first sprite entry; attribute bit 6 means facing left |
 
-The search is the `DonkeyKongGame` workload from `nes-games`, as `nes-eval`
-runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
+The search is the `DonkeyKong` game from `nes-games` in a `NesWorkload`, as
+`nes-eval` runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
 archive key and the terminal policy. `rust/src/donkey_kong.rs` roots a search at
 any in-play state. `tests/donkey-kong.mjs` boots the three stages, builds the
 maps and sprite sheet, and replays the highest state of a short search exactly.
@@ -1025,8 +1025,8 @@ headings.
 | `$6A` | dots left of 192 |
 | `$70`–`$75` | score digits |
 
-The search is the `PacManGame` workload from `nes-games`, as `nes-eval` runs
-it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
+The search is the `PacMan` game from `nes-games` in a `NesWorkload`, as
+`nes-eval` runs it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
 policy. `rust/src/pac_man.rs` places Pac-Man on the maze map. A history may not
 press Start, which pauses the game. `tests/pac-man.mjs` boots every level,
 searches from the first maze, replays the furthest state exactly and starts a

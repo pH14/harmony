@@ -66,7 +66,9 @@ pipeline: it rejects an empty or wrong-geometry render and a PCM track too short
 to cover the video, muxes the track back in, and hashes both the track and the
 MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.json` a campaign already
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
-own input rather than a second search.
+own input rather than a second search. A run that `nes-eval` gave a `strategy` file, which it copies
+to `strategy.toml` in the run directory, is filmed with `--strategy` naming that file, and `film.json`
+records its hash as `identity.strategy_sha256`.
 
 A witness's `snapshot_sha256` hashes snapshots after `SnapshotState::logical_identity`. The Super Tilt Bro
 campaign result digest covers the complete job result, including preparation
