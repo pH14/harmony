@@ -13,7 +13,7 @@ use crate::{
     nes_backend::NesBackend,
     pac_man::archive::PacManArchiveKey,
     target::{ExitKind, Target},
-    workload::ShadowHook,
+    workload::{ShadowHook, snapshot_tag},
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -260,12 +260,13 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
     }
 
     pub fn set_shadow(&mut self, shadow: ShadowHook<PacManArchiveKey>) {
+        shadow.start(&self.current_wram);
         self.shadow = Some(shadow);
     }
 
     pub fn shadow(&self, hand: Option<PacManArchiveKey>) {
         if let Some(shadow) = &self.shadow {
-            shadow.observe(hand, &self.current_wram);
+            shadow.observe_threaded(hand);
         }
     }
 
@@ -411,6 +412,9 @@ impl<M: NesBackend<Vec<u8>>> PacManTarget<M> {
             .is_none_or(|observation| observation.frame_count != endpoint_frame)
         {
             emitted.push(Self::make_observation(endpoint_frame, endpoint_state));
+        }
+        if let Some(shadow) = &self.shadow {
+            shadow.advance(&self.machine.frames()[..logical_frames]);
         }
         self.action_observations = emitted;
         if let Some(observation) = self.action_observations.last() {
@@ -641,6 +645,9 @@ impl<M: NesBackend<Vec<u8>>> Target for PacManTarget<M> {
         self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&self.genesis_wram);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -684,6 +691,9 @@ impl<M: NesBackend<Vec<u8>>> Target for PacManTarget<M> {
             return None;
         };
         self.snapshot_base = Some(emulator_state.clone());
+        if let Some(shadow) = &self.shadow {
+            shadow.saved(snapshot_tag(&emulator_state, self.observation.frame_count));
+        }
         Some(PacManSnapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -721,6 +731,12 @@ impl<M: NesBackend<Vec<u8>>> Target for PacManTarget<M> {
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
+        if let Some(shadow) = &self.shadow {
+            shadow.restored(
+                snapshot_tag(&snapshot.emulator_state, snapshot.observation.frame_count),
+                &restored_wram,
+            );
+        }
         Ok(())
     }
 }

@@ -5,9 +5,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt::Debug,
+    hash::{DefaultHasher, Hash, Hasher},
     sync::{Arc, Mutex},
 };
 
+use machine::nes::WRAM_SIZE;
 use serde::Serialize;
 
 use super::{Game, Lowered};
@@ -16,15 +18,23 @@ use crate::search::{
     assertion::{AssertionKey, KeyView},
 };
 
-type Observe<H> = dyn Fn(Option<H>, &[u8]) + Send + Sync;
-
 type Pairs<H> = BTreeMap<(Option<H>, Option<AssertionKey>), u64>;
 
-pub struct ShadowHook<H>(Arc<Observe<H>>);
+trait Lane<H>: Send + Sync {
+    fn fork(&self) -> Box<dyn Lane<H>>;
+    fn observe(&self, hand: Option<H>, ram: &[u8]);
+    fn start(&self, ram: &[u8]);
+    fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
+    fn saved(&self, tag: u64);
+    fn restored(&self, tag: u64, ram: &[u8]);
+    fn observe_threaded(&self, hand: Option<H>);
+}
+
+pub struct ShadowHook<H>(Box<dyn Lane<H>>);
 
 impl<H> Clone for ShadowHook<H> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(self.0.fork())
     }
 }
 
@@ -36,13 +46,116 @@ impl<H> Debug for ShadowHook<H> {
 
 impl<H> ShadowHook<H> {
     pub fn observe(&self, hand: Option<H>, ram: &[u8]) {
-        (self.0)(hand, ram);
+        self.0.observe(hand, ram);
+    }
+
+    pub fn start(&self, ram: &[u8]) {
+        self.0.start(ram);
+    }
+
+    pub fn advance(&self, frames: &[[u8; WRAM_SIZE]]) {
+        self.0.advance(frames);
+    }
+
+    pub fn saved(&self, tag: u64) {
+        self.0.saved(tag);
+    }
+
+    pub fn restored(&self, tag: u64, ram: &[u8]) {
+        self.0.restored(tag, ram);
+    }
+
+    pub fn observe_threaded(&self, hand: Option<H>) {
+        self.0.observe_threaded(hand);
+    }
+}
+
+#[must_use]
+pub fn snapshot_tag(emulator_state: &[u8], frame_count: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    emulator_state.hash(&mut hasher);
+    frame_count.hash(&mut hasher);
+    hasher.finish()
+}
+
+struct Threaded<G: Game, H: ArchiveKey> {
+    shadow: Arc<Shadow<G, H>>,
+    current: Mutex<Option<G::State>>,
+}
+
+impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Lane<H> for Threaded<G, H> {
+    fn fork(&self) -> Box<dyn Lane<H>> {
+        Box::new(Self {
+            shadow: Arc::clone(&self.shadow),
+            current: Mutex::new(None),
+        })
+    }
+
+    fn observe(&self, hand: Option<H>, ram: &[u8]) {
+        let state = self.shadow.lowered.game.decode(None, ram);
+        self.shadow.count(hand, &state);
+    }
+
+    fn start(&self, ram: &[u8]) {
+        if let Ok(mut current) = self.current.lock() {
+            *current = Some(self.shadow.lowered.game.decode(None, ram));
+        }
+    }
+
+    fn advance(&self, frames: &[[u8; WRAM_SIZE]]) {
+        let game = &self.shadow.lowered.game;
+        if let Ok(mut current) = self.current.lock() {
+            for wram in frames {
+                *current = Some(game.decode(current.as_ref(), wram));
+            }
+        }
+    }
+
+    fn saved(&self, tag: u64) {
+        let Ok(current) = self.current.lock() else {
+            return;
+        };
+        if let (Some(state), Ok(mut saved)) = (current.as_ref(), self.shadow.saved.lock()) {
+            saved.insert(tag, state.clone());
+        }
+    }
+
+    fn restored(&self, tag: u64, ram: &[u8]) {
+        let found = self
+            .shadow
+            .saved
+            .lock()
+            .ok()
+            .and_then(|saved| saved.get(&tag).cloned());
+        let state = found.unwrap_or_else(|| {
+            if let Ok(mut unknown) = self.shadow.unknown_restores.lock() {
+                *unknown += 1;
+            }
+            self.shadow.lowered.game.decode(None, ram)
+        });
+        if let Ok(mut current) = self.current.lock() {
+            *current = Some(state);
+        }
+    }
+
+    fn observe_threaded(&self, hand: Option<H>) {
+        let state = self.current.lock().ok().and_then(|current| current.clone());
+        match state {
+            Some(state) => self.shadow.count(hand, &state),
+            None => {
+                if let Ok(mut unknown) = self.shadow.unknown_restores.lock() {
+                    *unknown += 1;
+                }
+            }
+        }
     }
 }
 
 pub struct Shadow<G: Game, H: ArchiveKey> {
     lowered: Lowered<G>,
     pairs: Mutex<Pairs<H>>,
+    saved: Mutex<BTreeMap<u64, G::State>>,
+    unknown_restores: Mutex<u64>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -82,6 +195,7 @@ pub struct ShadowReport {
     pub keyed_states: u64,
     pub distinct_pairs: usize,
     pub disagreements: Disagreements,
+    pub unknown_restores: u64,
     pub examples: Vec<String>,
     pub tiers: Vec<ShadowTier>,
     pub cells: Vec<KeyView>,
@@ -127,18 +241,21 @@ impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Shadow<G, H> {
         Ok(Arc::new(Self {
             lowered,
             pairs: Mutex::default(),
+            saved: Mutex::default(),
+            unknown_restores: Mutex::default(),
         }))
     }
 
     #[must_use]
     pub fn hook(self: &Arc<Self>) -> ShadowHook<H> {
-        let shadow = Arc::clone(self);
-        ShadowHook(Arc::new(move |hand, ram| shadow.observe(hand, ram)))
+        ShadowHook(Box::new(Threaded {
+            shadow: Arc::clone(self),
+            current: Mutex::new(None),
+        }))
     }
 
-    fn observe(&self, hand: Option<H>, ram: &[u8]) {
-        let state = self.lowered.game.decode(None, ram);
-        let (record, _) = self.lowered.record(&state);
+    fn count(&self, hand: Option<H>, state: &G::State) {
+        let (record, _) = self.lowered.record(state);
         let key = self.lowered.compiled.key(&record);
         if let Ok(mut pairs) = self.pairs.lock() {
             *pairs.entry((hand, key)).or_default() += 1;
@@ -273,6 +390,11 @@ impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Shadow<G, H> {
             keyed_states,
             distinct_pairs: pairs.len(),
             disagreements,
+            unknown_restores: self
+                .unknown_restores
+                .lock()
+                .map_err(|_| "the shadow restore count is poisoned")?
+                .to_owned(),
             examples,
             tiers: tiers
                 .into_iter()

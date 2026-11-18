@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     archive::{PacManArchiveKey, archive_key},
-    game::{FINAL_LEVEL, MODE_MAZE_CLEAR, PacMan, PacManState},
+    game::{FINAL_LEVEL, MODE_MAZE_CLEAR, MODE_PLAY, PacMan, PacManState},
     target::{PacManMechanicalState, PacManTarget, decode_state},
 };
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
         rand::RomuDuoJrRand,
     },
     target::Target,
-    workload::{Game, Lowered, NesWorkload},
+    workload::{Game, Lowered, NesWorkload, Shadow},
 };
 
 struct Inputs {
@@ -407,4 +407,68 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
         hand.len(),
         progress.len()
     );
+}
+
+fn maze(level: u8, cleared: bool) -> [u8; WRAM_SIZE] {
+    let mut wram = [0; WRAM_SIZE];
+    wram[0x3f] = if cleared { MODE_MAZE_CLEAR } else { MODE_PLAY };
+    wram[0x67] = 3;
+    wram[0x68] = level;
+    wram[0x6a] = if cleared { 0 } else { 192 };
+    wram[0x1a] = 95;
+    wram[0x1c] = 168;
+    wram[0x51] = 1;
+    wram
+}
+
+fn hand_key(wram: &[u8; WRAM_SIZE], repeat_clears: u8) -> Option<PacManArchiveKey> {
+    let mut state = decode_state(wram).expect("hand decode");
+    state.repeat_clears = repeat_clears;
+    archive_key(state)
+}
+
+#[test]
+fn the_shadow_threads_repeat_clears_past_the_final_level_and_across_a_restore() {
+    let play = maze(FINAL_LEVEL, false);
+    let clear = maze(FINAL_LEVEL, true);
+    let path = [
+        (clear, 1),
+        (play, 1),
+        (clear, 2),
+        (play, 2),
+        (clear, 3),
+        (play, 3),
+    ];
+
+    let endpoint = Shadow::<PacMan, PacManArchiveKey>::new(PacMan).expect("pure strategy");
+    let hook = endpoint.hook();
+    hook.observe(hand_key(&play, 0), &play);
+    for (wram, repeats) in &path {
+        hook.observe(hand_key(wram, *repeats), wram);
+    }
+    let report = endpoint.report().expect("report");
+    assert!(report.disagreements.total() > 0, "{report:?}");
+
+    let threaded = Shadow::<PacMan, PacManArchiveKey>::new(PacMan).expect("pure strategy");
+    let hook = threaded.hook();
+    hook.start(&play);
+    hook.observe_threaded(hand_key(&play, 0));
+    for (index, (wram, repeats)) in path.iter().enumerate() {
+        hook.advance(std::slice::from_ref(wram));
+        hook.observe_threaded(hand_key(wram, *repeats));
+        if index == 1 {
+            hook.saved(7);
+        }
+    }
+    let other = hook.clone();
+    other.restored(7, &play);
+    other.advance(&[clear, play]);
+    other.observe_threaded(hand_key(&play, 2));
+    let report = threaded.report().expect("report");
+    assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+    assert_eq!(report.unknown_restores, 0);
+    assert!(report.tiers.len() >= 4, "{:?}", report.tiers);
+
+    other.restored(8, &play);
+    assert_eq!(threaded.report().expect("report").unknown_restores, 1);
 }

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
-pub use shadow::{Shadow, ShadowHook, ShadowReport};
+pub use shadow::{Shadow, ShadowHook, ShadowReport, snapshot_tag};
 pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
