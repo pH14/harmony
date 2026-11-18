@@ -291,17 +291,10 @@ impl Game for PunchOut {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        cmp::Ordering,
-        collections::{BTreeMap, BTreeSet},
-    };
+    use std::cmp::Ordering;
 
     use super::*;
     use crate::{
-        punchout::{
-            archive::{self, PunchOutArchiveKey, archive_key},
-            target::{self, decode_state},
-        },
         search::{
             archive::ArchiveKey,
             assertion::{Accumulator, AssertionKey},
@@ -574,9 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn vocabulary_and_setup_match_the_hand_workload() {
-        assert_eq!(PunchOut::CHORDS, archive::CHORDS);
-        assert_eq!(PunchOut.setup(), target::setup_tape());
+    fn vocabulary_taps_start_and_excludes_select() {
         let mut rand = RomuDuoJrRand::with_seed(7);
         let mut previous = None;
         let mut starts = 0;
@@ -598,137 +589,5 @@ mod tests {
         let tape = PunchOut.setup();
         assert_eq!(tape.iter().filter(|chord| chord.buttons != 0).count(), 2);
         assert!(tape.iter().all(|chord| chord.buttons & !START == 0));
-    }
-
-    fn pick(rand: &mut RomuDuoJrRand, pool: &[u8]) -> u8 {
-        let index = usize::try_from(rand.next_u64() % (pool.len() as u64 + 1)).unwrap();
-        pool.get(index)
-            .copied()
-            .unwrap_or_else(|| rand.next_u64().to_le_bytes()[0])
-    }
-
-    fn random_wram(rand: &mut RomuDuoJrRand) -> Vec<u8> {
-        let mut wram = vec![0; WRAM_SIZE];
-        let modes = [
-            MODE_FIGHT,
-            MODE_FIGHT,
-            MODE_FIGHT,
-            MODE_ROUND_BREAK,
-            MODE_WON,
-            MODE_TKO,
-            MODE_WON_FA,
-            MODE_LOST,
-            MODE_TKO_LOST,
-            0,
-        ];
-        let fields: [(usize, &[u8]); 15] = [
-            (MODE, &modes),
-            (OPPONENT, &[0, 1, 13, 14, 0x13]),
-            (SCREEN, &[0, 2]),
-            (STOP, &[0, 1, 2]),
-            (ROUND, &[1, 2, 3]),
-            (SCENE, &[0, 0x0c]),
-            (PROMPT, &[0, 1]),
-            (SCENE_TIMER, &[0, 0x40, 0x4f, 0xfe]),
-            (OPPONENT_ACTION, &[1, 0x81, 26, 0x9a, 0x7f]),
-            (OPPONENT_STEP, &[0, 2, 6, 0xff]),
-            (HEARTS_TENS, &[0, 2, 0xff]),
-            (HEARTS_ONES, &[0, 5]),
-            (STARS, &[0, 3]),
-            (MAC_HEALTH, &[0, 0x08, 0x60]),
-            (OPPONENT_HEALTH, &[0, 0x58, 0x5f, 0x60]),
-        ];
-        for (address, pool) in fields {
-            wram[address] = pick(rand, pool);
-        }
-        wram[ROUND_KNOCKDOWNS] = pick(rand, &[0, 1, 2]);
-        wram
-    }
-
-    #[test]
-    fn compiled_keys_are_order_isomorphic_to_hand_keys_on_random_memory() {
-        let lowered = lowered();
-        let mut rand = RomuDuoJrRand::with_seed(0x0070_756e_6368);
-        let mut pairs = BTreeSet::<(PunchOutArchiveKey, AssertionKey)>::new();
-        for _ in 0..200_000 {
-            let wram = random_wram(&mut rand);
-            let hand = decode_state(&wram).unwrap();
-            let state = lowered.game.decode(None, &wram);
-            lowered.checked_record(&state).unwrap();
-            let observed = lowered.observe(0, state, &mut Accumulator::default());
-            assert_eq!(hand.terminal(), observed.stops(), "{hand:?}");
-            assert_eq!(hand.victory(), observed.goal, "{hand:?}");
-            assert_eq!(hand.dead(), observed.rejected.is_some(), "{hand:?}");
-            match (archive_key(hand), observed.key) {
-                (Some(hand), Some(compiled)) => {
-                    pairs.insert((hand, compiled));
-                }
-                (None, None) => {}
-                (hand, compiled) => panic!("absent differs: {hand:?} {compiled:?}"),
-            }
-        }
-        let mut pairs: Vec<_> = pairs.into_iter().collect();
-        assert!(pairs.len() > 10_000, "{} distinct pairs", pairs.len());
-        agrees(
-            &mut pairs,
-            |(_, a), (_, b)| a.progress().cmp(&b.progress()),
-            |(a, _), (b, _)| a.progress().cmp(&b.progress()),
-        );
-        agrees(
-            &mut pairs,
-            |(_, a), (_, b)| (a.progress(), a.place()).cmp(&(b.progress(), b.place())),
-            |(a, _), (b, _)| (a.progress(), a.place()).cmp(&(b.progress(), b.place())),
-        );
-        agrees(
-            &mut pairs,
-            |(_, a), (_, b)| {
-                (a.progress(), a.place(), a.identity()).cmp(&(
-                    b.progress(),
-                    b.place(),
-                    b.identity(),
-                ))
-            },
-            |(a, _), (b, _)| {
-                (a.progress(), a.place(), a.identity()).cmp(&(
-                    b.progress(),
-                    b.place(),
-                    b.identity(),
-                ))
-            },
-        );
-        let mut slots = BTreeMap::<(u32, u64, u32), Vec<(PunchOutArchiveKey, AssertionKey)>>::new();
-        for &(hand, compiled) in &pairs {
-            slots
-                .entry((compiled.progress, compiled.place.get(), compiled.identity))
-                .or_default()
-                .push((hand, compiled));
-        }
-        let mut shared = 0;
-        for held in slots.values_mut() {
-            shared += usize::from(held.len() > 1);
-            agrees(
-                held,
-                |(_, a), (_, b)| a.preference_cmp(0, *b),
-                |(a, _), (b, _)| a.preference_cmp(0, *b),
-            );
-        }
-        assert!(shared > 500, "{shared} slots hold more than one key");
-    }
-
-    fn agrees<T: Copy + std::fmt::Debug>(
-        items: &mut [T],
-        compiled: impl Fn(&T, &T) -> Ordering,
-        hand: impl Fn(&T, &T) -> Ordering,
-    ) {
-        items.sort_by(|a, b| compiled(a, b).then_with(|| hand(a, b)));
-        for pair in items.windows(2) {
-            assert_eq!(
-                compiled(&pair[0], &pair[1]),
-                hand(&pair[0], &pair[1]),
-                "{:?} {:?}",
-                pair[0],
-                pair[1]
-            );
-        }
     }
 }

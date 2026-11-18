@@ -18,7 +18,7 @@ use nes_workload::{
     ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
     joust::{Joust, JoustGame},
     pac_man::campaign::{PacManCampaignRun, PacManGame},
-    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
+    punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
@@ -295,8 +295,14 @@ fn main() -> Result<()> {
                 return Err("Punch-Out!! takes no ai option".into());
             }
             produce(
-                PunchOutGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                PunchOutCampaignRun,
+                PunchOutWorkload::new(
+                    PunchOut,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

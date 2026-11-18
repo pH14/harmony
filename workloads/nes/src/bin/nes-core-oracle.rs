@@ -67,8 +67,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "punchout" => Game {
-            setup: punchout::target::setup_tape(),
-            chords: punchout::archive::CHORDS,
+            setup: punchout::PunchOut.setup(),
+            chords: punchout::PunchOut::CHORDS,
             cartridge_ram: false,
         },
         "zelda" => Game {

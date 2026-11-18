@@ -26,10 +26,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Twin Dragons, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man
+Twin Dragons, Super Mario Bros., Mega Man 2, Metroid, Castlevania, Donkey Kong, Ice Climber and Pac-Man
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `TwinDragonsGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>`,
-`MetroidGame<M>`, `PunchOutGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
+`MetroidGame<M>`, `DonkeyKongGame<M>`, `IceClimbersGame<M>`, `PacManGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -88,7 +88,7 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Twin Dragons v2, Punch-Out!! v2, Donkey Kong v2, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Twin Dragons v2, Donkey Kong v2, Pac-Man v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
 The games declared through assertions share `nes-workload-snapshot-checkpoint-v1`.
 These plain snapshots use the postcard payload codec inside the framed envelope.
@@ -108,9 +108,12 @@ a native coordinator facility.
 ## Games declared through assertions
 
 `workload` lowers a game to the searcher's assertion representation
-(`search::assertion`, described in the searcher README). Joust, Zelda and
-Famidash are written this way; the other games keep their own `target`,
-`archive` and `campaign` modules. A game implements `Game`:
+(`search::assertion`, described in the searcher README). Joust, Zelda,
+Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
+written this way. Twin Dragons, Donkey Kong, Ice Climber and Pac-Man also keep
+their hand-written `target`, `archive` and `campaign` modules until their
+comparisons end. The other games have only such modules. A game implements
+`Game`:
 
 - `decode` turns work RAM, and the previous state, into the game's `State`.
 - `declare` passes the state's assertions, named values and `sometimes`

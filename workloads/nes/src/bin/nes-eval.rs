@@ -30,10 +30,7 @@ use nes_workload::{
         PacMan, PacManWorkload,
         campaign::{PacManCampaignRun, PacManGame},
     },
-    punchout::{
-        PunchOut, PunchOutWorkload,
-        campaign::{PunchOutCampaignRun, PunchOutGame},
-    },
+    punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
     smb::{
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -233,9 +230,9 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "twin-dragons-hand" | "castlevania" | "punchout" | "punchout-hand"
-            | "zelda" | "donkey-kong" | "donkey-kong-hand" | "ice-climbers"
-            | "ice-climbers-hand" | "pac-man" | "pac-man-hand" | "joust"
+            "twin-dragons" | "twin-dragons-hand" | "castlevania" | "punchout" | "zelda"
+            | "donkey-kong" | "donkey-kong-hand" | "ice-climbers" | "ice-climbers-hand"
+            | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -429,28 +426,6 @@ fn main() -> Result<()> {
                 "punch-out",
                 <PunchOutWorkload>::memory_view,
             ),
-            "punchout-hand" => {
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(PunchOut))
-                    .transpose()?;
-                let game = PunchOutGame::new(&rom, p, h, &execution_sha256);
-                evaluate_watching(
-                    match &shadow {
-                        Some(shadow) => game.with_shadow(shadow.hook()),
-                        None => game,
-                    },
-                    PunchOutCampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "punch-out",
-                    <PunchOutGame>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "zelda" => evaluate_watching(
                 nes_workload::workload::configured(
                     ZeldaGame::new(Zelda, &rom, p, h, &execution_sha256)?,
