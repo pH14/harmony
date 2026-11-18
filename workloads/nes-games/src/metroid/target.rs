@@ -1201,7 +1201,7 @@ fn follow_frames(
     Ok(prior)
 }
 
-fn follow_frame(
+pub(crate) fn follow_frame(
     state: MetroidMechanicalState,
     prior: MetroidMechanicalState,
 ) -> MetroidMechanicalState {

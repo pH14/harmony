@@ -311,11 +311,12 @@ pub struct MetroidProgressWatermark {
 }
 
 pub type MetroidArchiveProgressPoint = ProgressPoint<MetroidMilestones, MetroidProgressWatermark>;
-pub type MetroidArchiveEntryReport =
-    ArchiveEntryReport<MetroidAction, MetroidArchiveKey, MetroidMilestones>;
+pub type MetroidArchiveEntryReport<K = MetroidArchiveKey> =
+    ArchiveEntryReport<MetroidAction, K, MetroidMilestones>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct MetroidArchiveReport {
+#[serde(bound(deserialize = "K: ArchiveKey", serialize = "K: ArchiveKey"))]
+pub struct MetroidArchiveReport<K = MetroidArchiveKey> {
     pub seed: u64,
     pub executions: u64,
     pub milestones: MetroidMilestones,
@@ -324,7 +325,7 @@ pub struct MetroidArchiveReport {
     pub first_inputs: MetroidMilestoneInputs,
     pub champion_input: MetroidInput,
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<MetroidArchiveEntryReport>,
+    pub entries: Vec<MetroidArchiveEntryReport<K>>,
     pub progress_curve: Vec<MetroidArchiveProgressPoint>,
     pub retained: u64,
     pub rejected: u64,

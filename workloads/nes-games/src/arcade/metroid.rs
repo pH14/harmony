@@ -6,6 +6,7 @@ use crate::{
     metroid::{
         action::MetroidAction,
         campaign::{MetroidCampaignRun, MetroidGame},
+        keying::MetroidKeying,
         target::{
             BCD_BORROW_HEALTH, GenesisDepth, MetroidMechanicalState, MetroidObservations,
             MetroidSnapshot, decode_state, faces_left, power_on_walk,
@@ -116,7 +117,9 @@ impl ArcadeAction for MetroidAction {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, K: MetroidKeying + Default> ArcadeGame
+    for MetroidGame<M, K>
+{
     type Machine = M;
     type View = View;
 
