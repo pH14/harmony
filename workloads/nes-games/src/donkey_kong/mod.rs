@@ -5,6 +5,7 @@ pub mod campaign;
 #[cfg(all(test, unix))]
 mod equivalence_tests;
 pub mod game;
+pub mod hand_arcade;
 pub mod target;
 
 pub use game::{DonkeyKong, DonkeyKongState};

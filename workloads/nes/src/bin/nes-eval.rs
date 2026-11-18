@@ -3,7 +3,10 @@
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
-    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
+    donkey_kong::{
+        DonkeyKong, DonkeyKongWorkload,
+        campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
+    },
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         Famidash, FamidashGame,
@@ -134,7 +137,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
             rom, request, out, started, "zelda",
         ),
         "donkey-kong" => evaluate_live::<
-            nes_games::donkey_kong::campaign::DonkeyKongGame<NativeMachine>,
+            nes_games::workload::NesWorkload<DonkeyKong, NativeMachine>,
         >(rom, request, out, started, "donkey-kong"),
         "ice-climbers" => evaluate_live::<
             nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
@@ -204,7 +207,7 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
+            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong" | "donkey-kong-hand"
             | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
@@ -215,13 +218,16 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" | "zelda" | "famidash" => {}
+            "joust" | "zelda" | "famidash" | "donkey-kong" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
                 );
             }
             _ => {}
+        }
+        if request.shadow && !request.game.ends_with("-hand") {
+            return Err("only the hand-keyed workloads take a shadow key".into());
         }
         let p = &request.core;
         let h = &request.core_sha256;
@@ -381,16 +387,42 @@ fn main() -> Result<()> {
                 <ZeldaGame>::memory_view,
             ),
             "donkey-kong" => evaluate_watching(
-                DonkeyKongGame::new(&rom, p, h, &execution_sha256),
-                DonkeyKongCampaignRun,
+                nes_workload::workload::configured(
+                    DonkeyKongWorkload::new(DonkeyKong, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "donkey-kong",
-                <DonkeyKongGame>::memory_view,
+                <DonkeyKongWorkload>::memory_view,
             ),
+            "donkey-kong-hand" => {
+                let shadow = request
+                    .shadow
+                    .then(|| nes_games::workload::Shadow::new(DonkeyKong))
+                    .transpose()?;
+                let game = DonkeyKongGame::new(&rom, p, h, &execution_sha256);
+                evaluate_watching(
+                    match &shadow {
+                        Some(shadow) => game.with_shadow(shadow.hook()),
+                        None => game,
+                    },
+                    DonkeyKongCampaignRun,
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    "donkey-kong",
+                    <DonkeyKongGame>::memory_view,
+                )?;
+                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+            }
             "ice-climbers" => evaluate_watching(
                 match root_actions::<nes_games::ice_climbers::target::IceClimbersInput>(
                     request.root_input.as_deref(),
