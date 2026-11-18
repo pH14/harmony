@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     nes_backend::NesBackend,
     target::{ExitKind, Target},
+    workload::ShadowHook,
+    donkey_kong::archive::DonkeyKongArchiveKey,
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -165,6 +167,7 @@ pub struct DonkeyKongTarget<M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
+    shadow: Option<ShadowHook<DonkeyKongArchiveKey>>,
 }
 
 impl<M: NesBackend<Vec<u8>>> DonkeyKongTarget<M> {
@@ -190,6 +193,7 @@ impl<M: NesBackend<Vec<u8>>> DonkeyKongTarget<M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
+            shadow: None,
         })
     }
 
@@ -204,6 +208,16 @@ impl<M: NesBackend<Vec<u8>>> DonkeyKongTarget<M> {
         }
         machine.drop_snapshot(power_on)?;
         Self::from_machine(machine)
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<DonkeyKongArchiveKey>) {
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<DonkeyKongArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand, &self.current_wram);
+        }
     }
 
     #[must_use]

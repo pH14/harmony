@@ -1,0 +1,7 @@
+goal = "victory"
+absent = "not in_play or victory"
+reject = "dead"
+capacity = 1
+tier = ["stages_cleared", "rivets", "if stage == 4 then 0 else height / 8"]
+spread = ["stage", "stages_cleared", "x / 16", "y / 16", "status"]
+prefer = [["bonus: more", "min(lives, 31): more", "score: more"]]
