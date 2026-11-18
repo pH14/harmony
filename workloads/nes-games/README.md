@@ -34,7 +34,13 @@ generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
 passes one over the browser core. LZ4 snapshot packing is available on every
-target for that reason. Job results are digested with
+target for that reason. `pack_quicknes_state` writes the marker `QNP2`, the
+state length, the length of the machine's `HQNESST3` header, that header
+verbatim and an LZ4 block of the core state; a browser state has no header and
+packs whole. The header holds the prepared execution hash, which differs
+between binaries and hosts, so keeping it out of the LZ4 block makes a
+snapshot's memory charge depend only on the emulated state. Unpacking refuses
+any other marker. Job results are digested with
 `postcard_semantic_result_sha256` from the searcher, which leaves out emulator
 state, so a browser campaign and a native one produce the same decision
 stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`,
