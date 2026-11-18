@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-pub use nes_games::donkey_kong::{archive, target};
-pub mod campaign;
+use machine::quicknes::QuickNesMachine;
+pub use nes_games::donkey_kong::{DonkeyKong, DonkeyKongState, game};
+use nes_games::workload::NesWorkload;
+
+pub type DonkeyKongWorkload = NesWorkload<DonkeyKong, QuickNesMachine>;

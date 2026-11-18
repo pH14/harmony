@@ -3,12 +3,12 @@
 # Pac-Man workload adapter
 
 This module adapts Namco's NES Pac-Man (NROM, 24,592 bytes) to Dissonance's
-search interfaces. The game logic lives in
-[`nes-games/src/pac_man`](../../../nes-games/src/pac_man); this module
-re-exports it and adds the native film and endpoint replay. It follows the
-other campaign adapters: a `target` with the RAM decoder, setup tape and
-`Target` implementation, an `archive` with the key, milestones and controller
-vocabulary, and a `campaign` with the `Workload` implementation.
+search interfaces. Pac-Man is a game declared through the searcher's
+assertion catalog: `nes-games/src/pac_man/game.rs` holds the RAM decoder,
+power-on setup, genesis check and declarations, and
+`nes-games/src/pac_man/pac_man.toml` is the strategy that keys the archive.
+`PacManWorkload` is `NesWorkload<PacMan, QuickNesMachine>`, the shared
+workload described in the [`nes-games` README](../../../nes-games/README.md).
 
 ## ROM
 
@@ -51,8 +51,10 @@ The controller vocabulary is the four directions and neutral, with holds of 2
 to 16 frames or 24 to 64 frames. Start would pause the game, so it is not in
 the vocabulary.
 
-Mode `$0A` is the terminal state: a job ends when the last life is lost.
-No state is a victory, because the game has no ending.
+The strategy rejects mode `$0A`, so a job ends when the last life is lost, and
+it rejects the attract demo. The game has no ending. The goal is 200 mazes
+cleared, the `maze_200` mark, which mirrors the hand workload's maze limit
+(`MAZE_LIMIT` in `game.rs`).
 
 Key choices:
 
@@ -66,13 +68,14 @@ Key choices:
 - The one preference is lives, then score.
 
 The game's maze index (`$68`) stops at 22: clearing the maze at index 22 leaves
-the index at 22. From there the target counts maze clears itself, one for each
-entry into the maze-clear mode, and carries the count in the snapshot's
-observation as `repeat_clears`. `mazes_cleared` is the index plus that count.
+the index at 22. From there the decoder counts maze clears from the previous
+state, one for each entry into the maze-clear mode, and carries the count in the
+state as `repeat_clears`. `mazes_cleared` is the index plus that count.
 
 Milestones are reported only and never enter the key: the first execution to
 clear each of the first 32 mazes (`maze_1` to `maze_32` in
-`named_progress.first_seen`) and the first game over. The arcade page groups
+`named_progress.first_seen`), the first to reach the goal (`maze_200`) and the
+first game over. The arcade page groups
 four mazes into each of its first five levels and the rest into the sixth.
 
 ## Running

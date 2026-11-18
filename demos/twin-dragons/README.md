@@ -968,8 +968,8 @@ sprite, found by drawing the frame with and without him.
 | `$96` | posture: 1 standing, 2 on a ladder, 4 in the air, `$FF` dead |
 | `$200`–`$203` | Mario's first sprite entry; attribute bit 6 means facing left |
 
-The search is the `DonkeyKongGame` workload from `nes-games`, as `nes-eval`
-runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
+The search is the `DonkeyKong` game from `nes-games` in a `NesWorkload`, as
+`nes-eval` runs it. `workloads/nes/src/donkey_kong/README.md` lists the full memory map, the
 archive key and the terminal policy. `rust/src/donkey_kong.rs` roots a search at
 any in-play state. `tests/donkey-kong.mjs` boots the three stages, builds the
 maps and sprite sheet, and replays the highest state of a short search exactly.
@@ -1025,8 +1025,8 @@ headings.
 | `$6A` | dots left of 192 |
 | `$70`–`$75` | score digits |
 
-The search is the `PacManGame` workload from `nes-games`, as `nes-eval` runs
-it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
+The search is the `PacMan` game from `nes-games` in a `NesWorkload`, as
+`nes-eval` runs it. `workloads/nes/src/pac_man/README.md` describes its key, chords and terminal
 policy. `rust/src/pac_man.rs` places Pac-Man on the maze map. A history may not
 press Start, which pauses the game. `tests/pac-man.mjs` boots every level,
 searches from the first maze, replays the furthest state exactly and starts a
@@ -1209,8 +1209,9 @@ digests to match.
 workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
 equal. The native stream's closing end record must report the browser's
-execution count. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Famidash
-runs `nes-eval` with `alphabet_only` for 10,000 executions. Super
+execution count. Each game runs `nes-eval`. Twin Dragons runs it with
+`energy_splice:6` and a 1,024 MiB memory budget for 600 executions. Famidash
+runs it with `alphabet_only` for 10,000 executions. Super
 Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
 1,024 MiB memory budget for 400 executions, Mega Man 2 runs it with
 `whole_game` for 400, and Metroid for 160. `ORACLE_GAMES` (comma-separated

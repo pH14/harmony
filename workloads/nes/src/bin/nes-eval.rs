@@ -3,13 +3,13 @@
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
-    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
+    donkey_kong::{DonkeyKong, DonkeyKongWorkload},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         Famidash, FamidashGame,
         levels::{GROUPS, Side, Stage},
     },
-    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
@@ -20,8 +20,8 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
-    pac_man::campaign::{PacManCampaignRun, PacManGame},
-    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
+    pac_man::{PacMan, PacManWorkload},
+    punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
     smb::{
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -31,7 +31,7 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
-    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    twin_dragons::{TwinDragons, TwinDragonsWorkload},
     zelda::{Zelda, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
@@ -79,6 +79,16 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
         .transpose()
 }
 
+fn ice_climbers_root(root_input: Option<&Path>) -> Result<Option<Vec<machine::nes::ButtonChord>>> {
+    match root_actions::<nes_workload::search::archive::Input<machine::nes::ButtonChord>>(
+        root_input,
+    )? {
+        Some(input) if input.actions.is_empty() => Err("root input carries no actions".into()),
+        Some(input) => Ok(Some(input.actions)),
+        None => Ok(None),
+    }
+}
+
 type LiveFamidash<const GROUP: usize> =
     nes_games::workload::NesWorkload<Famidash<GROUP>, NativeMachine>;
 
@@ -120,7 +130,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "castlevania" => evaluate_live::<
             nes_games::castlevania::campaign::CastlevaniaGame<NativeMachine>,
         >(rom, request, out, started, "castlevania"),
-        "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
+        "punchout" => evaluate_live::<nes_games::workload::NesWorkload<PunchOut, NativeMachine>>(
             rom,
             request,
             out,
@@ -128,18 +138,24 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
             "punch-out",
         ),
         "twin-dragons" => evaluate_live::<
-            nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
+            nes_games::workload::NesWorkload<TwinDragons, NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
         "zelda" => evaluate_live::<nes_games::workload::NesWorkload<Zelda, NativeMachine>>(
             rom, request, out, started, "zelda",
         ),
-        "donkey-kong" => evaluate_live::<
-            nes_games::donkey_kong::campaign::DonkeyKongGame<NativeMachine>,
-        >(rom, request, out, started, "donkey-kong"),
+        "donkey-kong" => {
+            evaluate_live::<nes_games::workload::NesWorkload<DonkeyKong, NativeMachine>>(
+                rom,
+                request,
+                out,
+                started,
+                "donkey-kong",
+            )
+        }
         "ice-climbers" => evaluate_live::<
-            nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
+            nes_games::workload::NesWorkload<IceClimbers, NativeMachine>,
         >(rom, request, out, started, "ice-climbers"),
-        "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
+        "pac-man" => evaluate_live::<nes_games::workload::NesWorkload<PacMan, NativeMachine>>(
             rom, request, out, started, "pac-man",
         ),
         "joust" => evaluate_live::<nes_games::workload::NesWorkload<Joust, NativeMachine>>(
@@ -215,7 +231,8 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" | "zelda" | "famidash" => {}
+            "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
+            | "ice-climbers" | "twin-dragons" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -332,15 +349,19 @@ fn main() -> Result<()> {
                 )
             }
             "twin-dragons" => evaluate_watching(
-                TwinDragonsGame::new(&rom, p, h, &execution_sha256),
-                TwinDragonsCampaignRun,
+                nes_workload::workload::configured(
+                    TwinDragonsWorkload::new(TwinDragons, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "twin-dragons",
-                <TwinDragonsGame>::memory_view,
+                <TwinDragonsWorkload>::memory_view,
             ),
             "castlevania" => evaluate_watching(
                 CastlevaniaGame::new(&rom, p, h, &execution_sha256)
@@ -355,15 +376,19 @@ fn main() -> Result<()> {
                 <CastlevaniaGame>::memory_view,
             ),
             "punchout" => evaluate_watching(
-                PunchOutGame::new(&rom, p, h, &execution_sha256),
-                PunchOutCampaignRun,
+                nes_workload::workload::configured(
+                    PunchOutWorkload::new(PunchOut, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "punch-out",
-                <PunchOutGame>::memory_view,
+                <PunchOutWorkload>::memory_view,
             ),
             "zelda" => evaluate_watching(
                 nes_workload::workload::configured(
@@ -381,47 +406,56 @@ fn main() -> Result<()> {
                 <ZeldaGame>::memory_view,
             ),
             "donkey-kong" => evaluate_watching(
-                DonkeyKongGame::new(&rom, p, h, &execution_sha256),
-                DonkeyKongCampaignRun,
+                nes_workload::workload::configured(
+                    DonkeyKongWorkload::new(DonkeyKong, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "donkey-kong",
-                <DonkeyKongGame>::memory_view,
+                <DonkeyKongWorkload>::memory_view,
             ),
             "ice-climbers" => evaluate_watching(
-                match root_actions::<nes_games::ice_climbers::target::IceClimbersInput>(
-                    request.root_input.as_deref(),
-                )? {
-                    Some(input) if input.actions.is_empty() => {
-                        return Err("root input carries no actions".into());
-                    }
-                    Some(input) => {
-                        IceClimbersGame::new_rooted(&rom, p, h, &execution_sha256, input.actions)
-                    }
-                    None => IceClimbersGame::new(&rom, p, h, &execution_sha256),
-                },
-                IceClimbersCampaignRun,
+                nes_workload::workload::configured(
+                    IceClimbersWorkload::new(
+                        ice_climbers_root(request.root_input.as_deref())?
+                            .map_or_else(IceClimbers::default, IceClimbers::rooted),
+                        &rom,
+                        p,
+                        h,
+                        &execution_sha256,
+                    )?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "ice-climbers",
-                <IceClimbersGame>::memory_view,
+                <IceClimbersWorkload>::memory_view,
             ),
             "pac-man" => evaluate_watching(
-                PacManGame::new(&rom, p, h, &execution_sha256),
-                PacManCampaignRun,
+                nes_workload::workload::configured(
+                    PacManWorkload::new(PacMan, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "pac-man",
-                <PacManGame>::memory_view,
+                <PacManWorkload>::memory_view,
             ),
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(

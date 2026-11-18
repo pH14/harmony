@@ -2,12 +2,13 @@
 
 # Ice Climber workload adapter
 
-This module adapts Ice Climber (NES, NROM) to Dissonance's search interfaces. The
-game logic lives in [`nes-games/src/ice_climbers`](../../../nes-games/src/ice_climbers);
-this module re-exports it and adds the native film and endpoint replay. The layout
-follows the other campaign adapters: `target` holds the RAM decoder, setup tape and
-`Target` implementation, `archive` the key, milestones and controller vocabulary, and
-`campaign` the `Workload` implementation.
+This module adapts Ice Climber (NES, NROM) to Dissonance's search interfaces. Ice
+Climber is a game declared through the searcher's assertion catalog:
+`nes-games/src/ice_climbers/game.rs` holds the RAM decoder, power-on setup, genesis
+check and declarations, and `nes-games/src/ice_climbers/ice_climbers.toml` is the
+strategy that keys the archive. `IceClimbersWorkload` is
+`NesWorkload<IceClimbers, QuickNesMachine>`, the shared workload described in the
+[`nes-games` README](../../../nes-games/README.md).
 
 The game has 32 mountains. Each mountain is eight floors of ice, a bonus stage, and a
 results screen, after which the next mountain starts without input. The adapter plays one climber from power-on.
@@ -54,9 +55,10 @@ Start press pauses the game, so the search tape holds Start only in the setup. P
   altitude minus 4 pixels. Only a landing raises the tier.
 - Place is the tier level, the floor counter, an altitude band of 16 pixels, an 8-pixel
   column and whether the climber is airborne.
-- Within a place, the entry with the greater altitude is preferred.
-- A state is dead once lives drop below 3. A dead state is terminal, so every search
-  branch is a one-life climb.
+- The identity is the number of broken blocks, each cell keeps one state, and the state with the
+  greater altitude is preferred.
+- A state is dead once lives drop below 3. The strategy rejects a dead state, so every
+  search branch is a one-life climb.
 - Victory is clearing mountain 32.
 - Chords are the pressable NES button masks with the shared short and long holds.
 
@@ -74,18 +76,11 @@ position per cloud ride; an 8-pixel column keeps the positions that line up with
 setup tape, and the search starts from the state they reach with an empty archive. The root
 must end alive, with three lives, in play. The identity records a digest of the root actions.
 
-## Power-on results
-
-Three searches from power-on with the landed-floor tier, the 8 pixel column, the airborne place bit
-and the broken-block identity (seeds 21 to 23, 5 workers each) all clear mountain 32 and report
-victory after two witness replays: 6.9M, 10.1M and 11.3M executions, 29 to 50 minutes. A tape is
-the setup tape followed by the witness actions. Each tape replays from power-on in a fresh
-`castlevania-probe` process and ends with `$59` = 32 and `$20` = 3.
-
 ## Replay check
 
-`nes-eval` verifies each witness twice in its own process. `nes-film` replays the same input in a
-fresh process and reaches the same mountain and floor, but its endpoint snapshot hash differs from
-the one `nes-eval` recorded, so `nes-film` stops at its endpoint comparison. The Zelda adapter shows
-the same difference. `castlevania-probe` replays a tape from power-on in a fresh process and prints
-`$59` and `$20`; it shows the mountain byte rising at the end of the champion tape.
+A tape is the setup tape followed by the witness actions. `nes-eval` verifies each witness twice
+in its own process. `castlevania-probe` replays a tape from power-on in a fresh process and prints
+`$59` and `$20`, so a victory tape ends with `$59` = 32 and `$20` = 3. `nes-film` replays the same
+input in a fresh process and reaches the same mountain and floor, but its endpoint snapshot hash
+differs from the one `nes-eval` recorded, so `nes-film` stops at its endpoint comparison. The Zelda
+adapter shows the same difference.

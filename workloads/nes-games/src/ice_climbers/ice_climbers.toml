@@ -1,0 +1,8 @@
+goal = "last_mountain"
+absent = "phase == 0 or dead or last_mountain"
+reject = "dead"
+capacity = 1
+tier = ["level", "floor"]
+spread = ["level", "phase", "altitude / 16", "x / 8", "airborne"]
+identity = ["holes"]
+prefer = [["altitude: more"]]

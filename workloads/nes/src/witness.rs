@@ -8,12 +8,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     castlevania::target::CastlevaniaSnapshot,
-    ice_climbers::target::IceClimbersSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
-    pac_man::target::PacManSnapshot,
-    punchout::target::PunchOutSnapshot,
     search::{
         archive::{Input, RetentionPolicy},
         campaign::Workload,
@@ -21,9 +18,7 @@ use crate::{
     },
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
-    twin_dragons::target::TwinDragonsSnapshot,
 };
-use nes_games::donkey_kong::target::DonkeyKongSnapshot;
 
 pub trait EndpointIdentity: Serialize {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
@@ -33,21 +28,11 @@ pub trait EndpointIdentity: Serialize {
 
 impl EndpointIdentity for CastlevaniaSnapshot {}
 
-impl EndpointIdentity for DonkeyKongSnapshot {}
-
-impl EndpointIdentity for IceClimbersSnapshot {}
-
 impl EndpointIdentity for MetroidSnapshot {}
 
 impl EndpointIdentity for Mm2Snapshot {}
 
-impl EndpointIdentity for PacManSnapshot {}
-
-impl EndpointIdentity for PunchOutSnapshot {}
-
 impl EndpointIdentity for StbSnapshot {}
-
-impl EndpointIdentity for TwinDragonsSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
