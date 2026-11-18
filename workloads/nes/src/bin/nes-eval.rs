@@ -14,6 +14,7 @@ use nes_workload::{
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
+        keying::StrategyKeying,
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
     mm2::{
@@ -233,6 +234,12 @@ fn main() -> Result<()> {
             }
             "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
             | "ice-climbers" | "twin-dragons" => {}
+            "metroid" if request.records => {
+                return Err(
+                    "Metroid keys a strategy inside its own campaign and keeps no records".into(),
+                );
+            }
+            "metroid" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -316,22 +323,39 @@ fn main() -> Result<()> {
                 "mega-man-2",
                 <Mm2Game>::memory_view,
             ),
-            "metroid" => evaluate_watching(
-                metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
-                    .with_milestone_input_dir(out.join("milestone-inputs"))
-                    .with_terminal_policy(match request.metroid_terminal.as_deref() {
-                        Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
-                        None => MetroidTerminalPolicy::default(),
-                    }),
-                MetroidCampaignRun,
-                &rom,
-                &request,
-                &execution_sha256,
-                &out,
-                started,
-                "metroid",
-                <MetroidGame>::memory_view,
-            ),
+            "metroid" => {
+                let game =
+                    metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
+                        .with_milestone_input_dir(out.join("milestone-inputs"))
+                        .with_terminal_policy(match request.metroid_terminal.as_deref() {
+                            Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
+                            None => MetroidTerminalPolicy::default(),
+                        });
+                match request.strategy.as_deref() {
+                    Some(path) => evaluate_watching(
+                        game.with_keying(StrategyKeying::new(&fs::read_to_string(path)?)?),
+                        MetroidCampaignRun,
+                        &rom,
+                        &request,
+                        &execution_sha256,
+                        &out,
+                        started,
+                        "metroid",
+                        <MetroidGame>::memory_view,
+                    ),
+                    None => evaluate_watching(
+                        game,
+                        MetroidCampaignRun,
+                        &rom,
+                        &request,
+                        &execution_sha256,
+                        &out,
+                        started,
+                        "metroid",
+                        <MetroidGame>::memory_view,
+                    ),
+                }
+            }
             "stb" => {
                 let ai = match request.ai.as_deref().unwrap_or("hard") {
                     "easy" => StbAi::Easy,
