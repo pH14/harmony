@@ -79,6 +79,7 @@ struct Frame {
     hand_terminal: bool,
     compiled: Option<AssertionKey>,
     stops: bool,
+    goal: bool,
 }
 
 fn frame(lowered: &Lowered<PunchOut>, wram: &[u8; WRAM_SIZE]) -> Frame {
@@ -91,6 +92,7 @@ fn frame(lowered: &Lowered<PunchOut>, wram: &[u8; WRAM_SIZE]) -> Frame {
         hand_terminal: hand.terminal(),
         compiled: observation.key,
         stops: observation.stops(),
+        goal: observation.goal,
     }
 }
 
@@ -329,7 +331,7 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
                 "terminal differs in {path} at frame {frames}"
             );
             if frame.stops {
-                stop = Some(frames);
+                stop = Some((frames, if frame.goal { "goal" } else { "reject" }));
                 break;
             }
             match (frame.hand, frame.compiled) {
