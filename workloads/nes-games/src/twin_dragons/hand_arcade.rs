@@ -22,7 +22,7 @@ const ANIMATION: usize = 0x71;
 const ANIMATION_FRAME: usize = 0x72;
 const FACING: usize = 0x74;
 
-fn pose(wram: &[u8]) -> u16 {
+pub fn pose(wram: &[u8]) -> u16 {
     let pose = match (wram[ANIMATION], wram[ANIMATION_FRAME]) {
         (1, frame) => 1 + u16::from(frame.min(3)),
         (2, _) => 5,

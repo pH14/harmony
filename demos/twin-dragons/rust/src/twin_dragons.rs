@@ -4,10 +4,11 @@ use std::error::Error;
 
 use machine::nes::WRAM_SIZE;
 use nes_games::{
-    arcade::{ArcadeGame, trail::Traced, twin_dragons::pose},
+    arcade::{ArcadeGame, trail::Traced},
     nes_backend::pack_quicknes_state,
     twin_dragons::{
         campaign::TwinDragonsGame,
+        hand_arcade::pose,
         target::{TwinDragonsObservations, TwinDragonsSnapshot, TwinDragonsTarget, decode_state},
     },
 };
