@@ -139,6 +139,25 @@ A profile sets only speed: frames match the interpreter for any input. Compile
 time grows faster than the number of sets. One set compiles in about a minute
 with GCC 11, and three sets take about 15 minutes.
 
+`HARMONY_QUICKNES_COVERAGE=1` builds a shared core that records which parts of
+the ROM's program ran, as 64-bit ids whose top two bits name the kind: a
+conditional branch with its outcome (kind 0), an indirect `JMP` with its target
+(kind 1), and a PRG ROM address read as data rather than fetched as an opcode
+(kind 2). A comma-separated list of `branch`, `jump` and `data` in place of `1`
+records only those kinds. A code site is its PRG ROM offset, so the same instruction in two
+mapped banks gives two ids, and code outside PRG ROM is named by its CPU
+address with bit 20 set. The core exports `retro_harmony_coverage`, which
+copies the ids hit since its previous call and clears them.
+`QuickNesMachine::has_coverage` reports whether the loaded core has the export,
+and `QuickNesMachine::take_coverage` drains it, so a caller that drains after
+every `run` gets one hit set per action. Coverage changes neither emulated
+state nor timing, and without the option the hooks expand to nothing and the
+core's bytes match a build without the patch. Translated blocks would run
+without the hooks, so the option refuses `HARMONY_QUICKNES_ROMS`, and the
+static archive never carries coverage. The coverage core runs about 5% slower
+than the default core on Super Mario Bros. on an M1 Max, and about 8% slower on
+Metroid on a Cortex-A720.
+
 Snapshots contain a format marker, the QuickNES revision, core hash, prepared
 execution hash, fixed serialized-state length, and canonicalized core state.
 The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects

@@ -195,6 +195,9 @@ type AudioCallback = extern "C" fn(i16, i16);
 type AudioBatchCallback = extern "C" fn(*const i16, usize) -> usize;
 type InputPollCallback = extern "C" fn();
 type InputStateCallback = extern "C" fn(u32, u32, u32, u32) -> i16;
+type CoverageTake = unsafe extern "C" fn(*mut u64, std::ffi::c_ulong) -> std::ffi::c_long;
+
+pub const COVERAGE_CAPACITY: usize = (1 << 18) + (1 << 12);
 
 #[derive(Clone, Copy)]
 struct CoreApi {
@@ -215,6 +218,7 @@ struct CoreApi {
     unserialize: unsafe extern "C" fn(*const c_void, usize) -> bool,
     get_memory_data: unsafe extern "C" fn(u32) -> *mut c_void,
     get_memory_size: unsafe extern "C" fn(u32) -> usize,
+    coverage: Option<CoverageTake>,
     #[cfg(any(test, feature = "test-loopback"))]
     loopback_id: Option<u64>,
 }
@@ -392,7 +396,7 @@ impl Library {
     }
 
     fn execution_sha256(&self, core_sha256: &str, api: CoreApi) -> Result<String, MachineError> {
-        let bindings = [
+        let mut bindings = vec![
             ("retro_set_environment", api.set_environment as usize),
             ("retro_set_video_refresh", api.set_video_refresh as usize),
             ("retro_set_audio_sample", api.set_audio_sample as usize),
@@ -414,12 +418,15 @@ impl Library {
             ("retro_get_memory_data", api.get_memory_data as usize),
             ("retro_get_memory_size", api.get_memory_size as usize),
         ];
+        if let Some(coverage) = api.coverage {
+            bindings.push(("retro_harmony_coverage", coverage as usize));
+        }
         identity::fingerprint(core_sha256, self.base, &bindings)
     }
 
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
         debug_assert_eq!(name.last(), Some(&0));
-        // SAFETY: the handle remains live in `self`, and `name` is a static
+        // SAFETY: the handle remains live in `self`, and `name` is NUL-terminated.
         let symbol =
             unsafe { libc::dlsym(self.handle as *mut c_void, name.as_ptr().cast::<c_char>()) };
         if symbol.is_null() {
@@ -430,6 +437,19 @@ impl Library {
             )))
         } else {
             Ok(symbol)
+        }
+    }
+
+    fn optional_symbol(&self, name: &'static [u8]) -> Option<*mut c_void> {
+        debug_assert_eq!(name.last(), Some(&0));
+        // SAFETY: the handle remains live in `self`, and `name` is NUL-terminated.
+        let symbol =
+            unsafe { libc::dlsym(self.handle as *mut c_void, name.as_ptr().cast::<c_char>()) };
+        if symbol.is_null() {
+            let _ = dl_error();
+            None
+        } else {
+            Some(symbol)
         }
     }
 
@@ -718,6 +738,13 @@ fn load_api(library: &Library) -> Result<CoreApi, MachineError> {
             unsafe extern "C" fn(u32) -> *mut c_void
         ),
         get_memory_size: symbol!("retro_get_memory_size", unsafe extern "C" fn(u32) -> usize),
+        coverage: library
+            .optional_symbol(b"retro_harmony_coverage\0")
+            .map(|raw| {
+                // SAFETY: a coverage core defines `retro_harmony_coverage` with
+                // the `CoverageTake` signature, resolved from the loaded image.
+                unsafe { std::mem::transmute::<*mut c_void, CoverageTake>(raw) }
+            }),
         #[cfg(any(test, feature = "test-loopback"))]
         loopback_id: None,
     })
@@ -980,6 +1007,41 @@ impl QuickNesMachine {
     #[must_use]
     pub fn save_ram_frames(&self) -> &[u8] {
         &self.save_ram_frames
+    }
+
+    #[must_use]
+    pub fn has_coverage(&self) -> bool {
+        self.api.coverage.is_some()
+    }
+
+    pub fn take_coverage(&mut self, ids: &mut Vec<u64>) -> Result<(), MachineError> {
+        let Some(take) = self.api.coverage else {
+            return Err(MachineError::Backend(
+                "QuickNES core was built without coverage".to_owned(),
+            ));
+        };
+        self.api.activate();
+        ids.clear();
+        ids.reserve(COVERAGE_CAPACITY);
+        let capacity = std::ffi::c_ulong::try_from(ids.capacity())
+            .map_err(|_| MachineError::Backend("coverage buffer is too large".to_owned()))?;
+        let written = guarded_native(self.api, || {
+            // SAFETY: `ids` owns `capacity` writable u64 slots, and the core
+            // writes at most `capacity` ids before returning.
+            Ok(unsafe { take(ids.as_mut_ptr(), capacity) })
+        })?;
+        let written = usize::try_from(written).map_err(|_| {
+            MachineError::Backend("QuickNES coverage ids overflowed their buffer".to_owned())
+        })?;
+        if written > ids.capacity() {
+            return Err(MachineError::Backend(
+                "QuickNES coverage reported more ids than its buffer holds".to_owned(),
+            ));
+        }
+        // SAFETY: the core initialized the first `written` slots, and
+        // `written` is within the reserved capacity.
+        unsafe { ids.set_len(written) };
+        Ok(())
     }
 
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
@@ -2087,6 +2149,7 @@ mod loopback {
             unserialize,
             get_memory_data: memory_data,
             get_memory_size: memory_size,
+            coverage: None,
             loopback_id: Some(id),
         }
     }
