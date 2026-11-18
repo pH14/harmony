@@ -37,6 +37,7 @@ use crate::{
             TwinDragonsSnapshot, TwinDragonsTarget,
         },
     },
+    workload::ShadowHook,
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "twin-dragons-quicknes-campaign-stream-v1";
@@ -75,6 +76,23 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsGame<M> {
                 "{core};state=ppu-unused2-zero-v1;source=Garydos/twin-dragons-nes@{SOURCE_COMMIT};rom=silent-effects;genesis=twin-dragons-level-1-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
             ),
             targets,
+        }
+    }
+
+    #[must_use]
+    pub fn with_shadow(self, shadow: ShadowHook<TwinDragonsArchiveKey>) -> Self
+    where
+        M: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            targets: Box::new(move || {
+                targets().map(|mut target| {
+                    target.set_shadow(shadow.clone());
+                    target
+                })
+            }),
+            ..self
         }
     }
 
@@ -216,6 +234,9 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             objective_reached,
             disposition,
         };
+        if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
+            target.shadow(archive_key(target.mechanical_state()));
+        }
         let archivable = archive_key(target.mechanical_state()).is_some();
         let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
             let elapsed = target

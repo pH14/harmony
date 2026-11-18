@@ -43,7 +43,10 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
-    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    twin_dragons::{
+        TwinDragons, TwinDragonsWorkload,
+        campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    },
     zelda::{Zelda, ZeldaGame},
 };
 use std::{fs, io::BufReader, path::Path, time::Instant};
@@ -148,7 +151,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
             "punch-out",
         ),
         "twin-dragons" => evaluate_live::<
-            nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
+            nes_games::workload::NesWorkload<TwinDragons, NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),
         "zelda" => evaluate_live::<nes_games::workload::NesWorkload<Zelda, NativeMachine>>(
             rom, request, out, started, "zelda",
@@ -230,9 +233,9 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "punchout-hand" | "zelda"
-            | "donkey-kong" | "donkey-kong-hand" | "ice-climbers" | "ice-climbers-hand"
-            | "pac-man" | "pac-man-hand" | "joust"
+            "twin-dragons" | "twin-dragons-hand" | "castlevania" | "punchout" | "punchout-hand"
+            | "zelda" | "donkey-kong" | "donkey-kong-hand" | "ice-climbers"
+            | "ice-climbers-hand" | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -243,7 +246,7 @@ fn main() -> Result<()> {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
             "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
-            | "ice-climbers" => {}
+            | "ice-climbers" | "twin-dragons" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -363,16 +366,42 @@ fn main() -> Result<()> {
                 )
             }
             "twin-dragons" => evaluate_watching(
-                TwinDragonsGame::new(&rom, p, h, &execution_sha256),
-                TwinDragonsCampaignRun,
+                nes_workload::workload::configured(
+                    TwinDragonsWorkload::new(TwinDragons, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "twin-dragons",
-                <TwinDragonsGame>::memory_view,
+                <TwinDragonsWorkload>::memory_view,
             ),
+            "twin-dragons-hand" => {
+                let shadow = request
+                    .shadow
+                    .then(|| nes_games::workload::Shadow::new(TwinDragons))
+                    .transpose()?;
+                let game = TwinDragonsGame::new(&rom, p, h, &execution_sha256);
+                evaluate_watching(
+                    match &shadow {
+                        Some(shadow) => game.with_shadow(shadow.hook()),
+                        None => game,
+                    },
+                    TwinDragonsCampaignRun,
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    "twin-dragons",
+                    <TwinDragonsGame>::memory_view,
+                )?;
+                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+            }
             "castlevania" => evaluate_watching(
                 CastlevaniaGame::new(&rom, p, h, &execution_sha256)
                     .with_milestone_input_dir(out.join("milestone-inputs")),

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     nes_backend::NesBackend,
     target::{ExitKind, Target},
+    twin_dragons::archive::TwinDragonsArchiveKey,
+    workload::ShadowHook,
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -144,6 +146,7 @@ pub struct TwinDragonsTarget<M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
+    shadow: Option<ShadowHook<TwinDragonsArchiveKey>>,
 }
 
 impl<M: NesBackend<Vec<u8>>> TwinDragonsTarget<M> {
@@ -169,6 +172,7 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsTarget<M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
+            shadow: None,
         })
     }
 
@@ -183,6 +187,16 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsTarget<M> {
         }
         machine.drop_snapshot(power_on)?;
         Self::from_machine(machine)
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<TwinDragonsArchiveKey>) {
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<TwinDragonsArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand, &self.current_wram);
+        }
     }
 
     #[must_use]
