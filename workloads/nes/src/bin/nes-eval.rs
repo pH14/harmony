@@ -24,7 +24,10 @@ use nes_workload::{
         target::{Mm2Input, Mm2Stage},
     },
     pac_man::campaign::{PacManCampaignRun, PacManGame},
-    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
+    punchout::{
+        PunchOut, PunchOutWorkload,
+        campaign::{PunchOutCampaignRun, PunchOutGame},
+    },
     search::campaign::TargetExecution,
     smb::{
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
@@ -123,7 +126,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "castlevania" => evaluate_live::<
             nes_games::castlevania::campaign::CastlevaniaGame<NativeMachine>,
         >(rom, request, out, started, "castlevania"),
-        "punchout" => evaluate_live::<nes_games::punchout::campaign::PunchOutGame<NativeMachine>>(
+        "punchout" => evaluate_live::<nes_games::workload::NesWorkload<PunchOut, NativeMachine>>(
             rom,
             request,
             out,
@@ -213,8 +216,8 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "joust"
+            "twin-dragons" | "castlevania" | "punchout" | "punchout-hand" | "zelda"
+            | "donkey-kong" | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -224,7 +227,7 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" | "zelda" | "famidash" | "donkey-kong" => {}
+            "joust" | "zelda" | "famidash" | "donkey-kong" | "punchout" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -367,16 +370,42 @@ fn main() -> Result<()> {
                 <CastlevaniaGame>::memory_view,
             ),
             "punchout" => evaluate_watching(
-                PunchOutGame::new(&rom, p, h, &execution_sha256),
-                PunchOutCampaignRun,
+                nes_workload::workload::configured(
+                    PunchOutWorkload::new(PunchOut, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "punch-out",
-                <PunchOutGame>::memory_view,
+                <PunchOutWorkload>::memory_view,
             ),
+            "punchout-hand" => {
+                let shadow = request
+                    .shadow
+                    .then(|| nes_games::workload::Shadow::new(PunchOut))
+                    .transpose()?;
+                let game = PunchOutGame::new(&rom, p, h, &execution_sha256);
+                evaluate_watching(
+                    match &shadow {
+                        Some(shadow) => game.with_shadow(shadow.hook()),
+                        None => game,
+                    },
+                    PunchOutCampaignRun,
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    "punch-out",
+                    <PunchOutGame>::memory_view,
+                )?;
+                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+            }
             "zelda" => evaluate_watching(
                 nes_workload::workload::configured(
                     ZeldaGame::new(Zelda, &rom, p, h, &execution_sha256)?,
