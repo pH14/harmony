@@ -83,9 +83,9 @@ posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play and the boss intro's 64-frame step. The holder identity is
 the 16-pixel position bucket, the weapon and the menu state. The key declares two
 preferences, and each place keeps the best arrival under each. The first ranks
-health, then summed weapon energy. The second ranks the weapon energies sorted
-lowest first, then health, so it keeps the arrival whose most-drained weapon
-holds the most. Random input fires whatever weapon is equipped, and a summed
+health, then summed weapon energy. The second ranks the three lowest weapon
+energies, lowest first, then health, so it keeps the arrival whose most-drained
+weapons hold the most. Random input fires whatever weapon is equipped, and a summed
 total hides one weapon spent down while the others stay full, which matters
 where a boss takes damage from one weapon only.
 

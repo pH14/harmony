@@ -9,7 +9,7 @@ use crate::{
     mm2::action::Mm2Action,
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        MM2_WEAPONS, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Tier, preference_tuple,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Tier, preference_tuple,
     },
     search::archive::{
         ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
@@ -17,8 +17,9 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_boss_intro_weapon_balance_v22";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_route_tiers_location_boss_damage_enemy_encounter_spatial_32_posture_platforms_menu_place_weapon_identity_preference_castle_kill_boss_intro_weapon_balance_lowest_three_v23";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
+pub const BALANCE_ENERGIES: usize = 3;
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -37,7 +38,7 @@ pub struct Mm2ArchiveKey {
     pub menu: u8,
     pub health: u8,
     pub energy: u16,
-    pub weapons_lowest_first: [u8; MM2_WEAPONS],
+    pub lowest_energies: [u8; BALANCE_ENERGIES],
     pub refights: u8,
     pub refight_boss: u8,
     pub boss_intro: u8,
@@ -101,8 +102,8 @@ impl Mm2ArchiveKey {
         (self.tier, self.health, self.energy)
     }
 
-    fn balance(self) -> (Mm2Tier, [u8; MM2_WEAPONS], u8) {
-        (self.tier, self.weapons_lowest_first, self.health)
+    fn balance(self) -> (Mm2Tier, [u8; BALANCE_ENERGIES], u8) {
+        (self.tier, self.lowest_energies, self.health)
     }
 }
 
@@ -113,10 +114,12 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         tier,
         health,
         energy,
-        weapons_lowest_first: {
+        lowest_energies: {
             let mut energies = state.weapon_energies;
             energies.sort_unstable();
-            energies
+            let mut lowest = [0; BALANCE_ENERGIES];
+            lowest.copy_from_slice(&energies[..BALANCE_ENERGIES]);
+            lowest
         },
         refights: state.refights,
         refight_boss: state.refight_boss(),
@@ -248,7 +251,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mm2::target::BOSS_INTRO_STEP_FRAMES;
+    use crate::mm2::target::{BOSS_INTRO_STEP_FRAMES, MM2_WEAPONS};
     use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: u8, health: u8, weapons: u8) -> Mm2MechanicalState {
@@ -304,6 +307,19 @@ mod tests {
         assert_eq!(healthy.preference_cmp(0, armed), Ordering::Greater);
         assert_eq!(armed.preference_cmp(1, healthy), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::preferences(), 2);
+    }
+
+    #[test]
+    fn the_second_preference_reads_only_the_three_lowest_energies_then_health() {
+        let mut drained = state(100, 20, 0xff);
+        drained.weapon_energies = [28; MM2_WEAPONS];
+        drained.weapon_energies[..4].copy_from_slice(&[2, 4, 6, 8]);
+        let mut healthy = drained;
+        healthy.health = 24;
+        healthy.weapon_energies[3] = 7;
+        let (drained, healthy) = (archive_key(drained), archive_key(healthy));
+        assert_eq!(healthy.preference_cmp(1, drained), Ordering::Greater);
+        assert_eq!(drained.lowest_energies, [2, 4, 6]);
     }
 
     #[test]
