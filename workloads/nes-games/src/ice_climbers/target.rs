@@ -10,8 +10,10 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ice_climbers::archive::IceClimbersArchiveKey,
     nes_backend::NesBackend,
     target::{ExitKind, Target},
+    workload::ShadowHook,
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -175,6 +177,7 @@ pub struct IceClimbersTarget<M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
+    shadow: Option<ShadowHook<IceClimbersArchiveKey>>,
 }
 
 impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
@@ -207,6 +210,7 @@ impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
+            shadow: None,
         })
     }
 
@@ -235,6 +239,16 @@ impl<M: NesBackend<Vec<u8>>> IceClimbersTarget<M> {
         }
         machine.drop_snapshot(power_on)?;
         Self::with_genesis(machine, validate)
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<IceClimbersArchiveKey>) {
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<IceClimbersArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand, &self.current_wram);
+        }
     }
 
     #[must_use]
