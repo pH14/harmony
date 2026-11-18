@@ -23,7 +23,10 @@ use nes_workload::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
     },
-    pac_man::campaign::{PacManCampaignRun, PacManGame},
+    pac_man::{
+        PacMan, PacManWorkload,
+        campaign::{PacManCampaignRun, PacManGame},
+    },
     punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
     search::campaign::TargetExecution,
     smb::{
@@ -148,7 +151,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "ice-climbers" => evaluate_live::<
             nes_games::ice_climbers::campaign::IceClimbersGame<NativeMachine>,
         >(rom, request, out, started, "ice-climbers"),
-        "pac-man" => evaluate_live::<nes_games::pac_man::campaign::PacManGame<NativeMachine>>(
+        "pac-man" => evaluate_live::<nes_games::workload::NesWorkload<PacMan, NativeMachine>>(
             rom, request, out, started, "pac-man",
         ),
         "joust" => evaluate_live::<nes_games::workload::NesWorkload<Joust, NativeMachine>>(
@@ -214,7 +217,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "joust"
+            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -224,7 +227,7 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" | "zelda" | "famidash" | "donkey-kong" => {}
+            "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -451,16 +454,42 @@ fn main() -> Result<()> {
                 <IceClimbersGame>::memory_view,
             ),
             "pac-man" => evaluate_watching(
-                PacManGame::new(&rom, p, h, &execution_sha256),
-                PacManCampaignRun,
+                nes_workload::workload::configured(
+                    PacManWorkload::new(PacMan, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
                 &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
                 "pac-man",
-                <PacManGame>::memory_view,
+                <PacManWorkload>::memory_view,
             ),
+            "pac-man-hand" => {
+                let shadow = request
+                    .shadow
+                    .then(|| nes_games::workload::Shadow::new(PacMan))
+                    .transpose()?;
+                let game = PacManGame::new(&rom, p, h, &execution_sha256);
+                evaluate_watching(
+                    match &shadow {
+                        Some(shadow) => game.with_shadow(shadow.hook()),
+                        None => game,
+                    },
+                    PacManCampaignRun,
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    "pac-man",
+                    <PacManGame>::memory_view,
+                )?;
+                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+            }
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(
                     JoustGame::new(Joust, &rom, p, h, &execution_sha256)?,

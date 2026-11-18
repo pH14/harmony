@@ -35,6 +35,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
+    workload::ShadowHook,
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "pac-man-quicknes-campaign-stream-v1";
@@ -72,6 +73,23 @@ impl<M: NesBackend<Vec<u8>>> PacManGame<M> {
                 "{core};state=ppu-unused2-zero-v1;genesis=pac-man-first-maze-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
             ),
             targets,
+        }
+    }
+
+    #[must_use]
+    pub fn with_shadow(self, shadow: ShadowHook<PacManArchiveKey>) -> Self
+    where
+        M: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            targets: Box::new(move || {
+                targets().map(|mut target| {
+                    target.set_shadow(shadow.clone());
+                    target
+                })
+            }),
+            ..self
         }
     }
 
@@ -209,6 +227,9 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             objective_reached,
             disposition,
         };
+        if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
+            target.shadow(archive_key(target.mechanical_state()));
+        }
         let archivable = archive_key(target.mechanical_state()).is_some();
         let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
             let elapsed = target
