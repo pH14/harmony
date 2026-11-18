@@ -20,7 +20,6 @@ use crate::{
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
 };
-use nes_games::donkey_kong::target::DonkeyKongSnapshot;
 
 pub trait EndpointIdentity: Serialize {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
@@ -29,8 +28,6 @@ pub trait EndpointIdentity: Serialize {
 }
 
 impl EndpointIdentity for CastlevaniaSnapshot {}
-
-impl EndpointIdentity for DonkeyKongSnapshot {}
 
 impl EndpointIdentity for MetroidSnapshot {}
 

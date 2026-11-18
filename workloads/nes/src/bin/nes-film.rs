@@ -9,7 +9,7 @@ use std::{
 
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
-    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
+    donkey_kong::{DonkeyKong, DonkeyKongWorkload},
     famidash::{
         Famidash, FamidashGame,
         levels::{Side, Stage},
@@ -349,8 +349,14 @@ fn main() -> Result<()> {
                 return Err("Donkey Kong takes no ai option".into());
             }
             produce(
-                DonkeyKongGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                DonkeyKongCampaignRun,
+                DonkeyKongWorkload::new(
+                    DonkeyKong,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )?,
+                nes_games::workload::NesRun,
                 &args,
                 identity,
             )

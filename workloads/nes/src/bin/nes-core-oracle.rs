@@ -77,8 +77,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "donkey-kong" => Game {
-            setup: donkey_kong::target::setup_tape(),
-            chords: donkey_kong::archive::CHORDS,
+            setup: donkey_kong::DonkeyKong.setup(),
+            chords: donkey_kong::DonkeyKong::CHORDS,
             cartridge_ram: false,
         },
         "ice-climbers" => Game {

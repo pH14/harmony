@@ -3,10 +3,7 @@
 use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
-    donkey_kong::{
-        DonkeyKong, DonkeyKongWorkload,
-        campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
-    },
+    donkey_kong::{DonkeyKong, DonkeyKongWorkload},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         Famidash, FamidashGame,
@@ -227,7 +224,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "donkey-kong-hand" | "ice-climbers" | "pac-man" | "pac-man-hand" | "joust"
+            | "ice-climbers" | "pac-man" | "pac-man-hand" | "joust"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -429,28 +426,6 @@ fn main() -> Result<()> {
                 "donkey-kong",
                 <DonkeyKongWorkload>::memory_view,
             ),
-            "donkey-kong-hand" => {
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(DonkeyKong))
-                    .transpose()?;
-                let game = DonkeyKongGame::new(&rom, p, h, &execution_sha256);
-                evaluate_watching(
-                    match &shadow {
-                        Some(shadow) => game.with_shadow(shadow.hook()),
-                        None => game,
-                    },
-                    DonkeyKongCampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "donkey-kong",
-                    <DonkeyKongGame>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "ice-climbers" => evaluate_watching(
                 nes_workload::workload::configured(
                     IceClimbersWorkload::new(

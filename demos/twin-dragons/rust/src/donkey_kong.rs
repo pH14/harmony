@@ -4,27 +4,25 @@ use std::error::Error;
 
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced},
-    donkey_kong::{
-        campaign::DonkeyKongGame,
-        target::{DonkeyKongSnapshot, DonkeyKongTarget},
-    },
+    donkey_kong::{self as game, DonkeyKongState},
     nes_backend::pack_quicknes_state,
+    workload::{NesSnapshot, NesTarget, NesWorkload},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type DonkeyKong = DonkeyKongGame<Traced<JsMachine>>;
+pub type DonkeyKong = NesWorkload<game::DonkeyKong, Traced<JsMachine>>;
 
 impl BrowserGame for DonkeyKong {
     fn root_snapshot(
-        target: &mut DonkeyKongTarget<Traced<JsMachine>>,
+        target: &mut NesTarget<game::DonkeyKong, Traced<JsMachine>>,
         _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<DonkeyKongSnapshot, Box<dyn Error>> {
+    ) -> Result<NesSnapshot<DonkeyKongState>, Box<dyn Error>> {
         let snapshot = target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)?;
-        if !snapshot.state().in_play() {
+        if !snapshot.observation.state.in_play() {
             return Err("Donkey Kong is not in play at this state".into());
         }
         Ok(snapshot)
