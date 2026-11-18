@@ -1037,7 +1037,7 @@ mod tests {
             "fewest_frames_in_level",
             "whole_tree",
             "nes_pressable_36",
-            "frozen_area_span",
+            "area_arrival_room_reset_on_warp",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");

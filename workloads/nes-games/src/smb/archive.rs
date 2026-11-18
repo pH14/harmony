@@ -30,7 +30,7 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const KEY_POLICY_BASE: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
+const KEY_POLICY_BASE: &str = "area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 #[must_use]
 pub fn key_policy_identifier(route: SmbRoute) -> String {
@@ -129,7 +129,7 @@ impl ArchiveKey for SmbArchiveKey {
         self.clock.cmp(&other.clock)
     }
 
-    type Lineage = Vec<SmbRoomIdentity>;
+    type Lineage = ();
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
         let this = match parent {
@@ -142,24 +142,17 @@ impl ArchiveKey for SmbArchiveKey {
         };
         let arrived_here = this.room;
         let (room, lineage_band) = match parent {
-            Some((parent_key, rooms))
+            Some((parent_key, _))
                 if (parent_key.world, parent_key.level) == (this.world, this.level) =>
             {
-                let parent_room = parent_key.room;
-                let same_area = parent_room[..2] == arrived_here[..2];
+                let same_area = parent_key.room[..2] == arrived_here[..2];
                 let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 if !same_area {
                     (arrived_here, parent_key.band())
                 } else if warped {
-                    let room = rooms
-                        .iter()
-                        .copied()
-                        .filter(|room| room[..2] == arrived_here[..2] && room[2] <= arrived_here[2])
-                        .max_by_key(|room| room[2])
-                        .unwrap_or(arrived_here);
-                    (room, 0)
+                    (arrived_here, 0)
                 } else {
-                    (parent_room, parent_key.band())
+                    (parent_key.room, parent_key.band())
                 }
             }
             _ => (arrived_here, 0),
@@ -171,11 +164,7 @@ impl ArchiveKey for SmbArchiveKey {
         }
     }
 
-    fn record(lineage: &mut Self::Lineage, key: Self) {
-        if let Err(slot) = lineage.binary_search(&key.room) {
-            lineage.insert(slot, key.room);
-        }
-    }
+    fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
 pub type SmbArchiveProgressPoint =
@@ -448,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_area_span_lands_same_area_warps_in_the_room_that_covers_the_page() {
+    fn a_same_area_warp_lands_in_the_room_of_the_page_it_reaches() {
         let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
         let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
                       parent: Option<usize>,
@@ -482,10 +471,8 @@ mod tests {
         let restart = insert(&mut archive, Some(looped), 7, key(20, [3, 5])).expect("restart");
         assert_eq!(
             archive.entry_key(restart).expect("restart key").room,
-            [3, 5, 0]
+            [3, 5, 1]
         );
-        let rooms: &Vec<SmbRoomIdentity> = archive.lineage(restart).expect("lineage");
-        assert_eq!(rooms, &vec![[0, 2, 1], [3, 5, 0], [3, 5, 16]]);
     }
 
     #[test]
@@ -557,7 +544,7 @@ mod tests {
         wram[0x0086] = 120;
         let loading = stamp_arrival_room(archive_key(&wram), &wram).expect("loading key");
         assert_eq!((loading.progress, loading.room_x_bucket), (0, 0));
-        let loading = loading.complete(Some((castle, &Vec::new())));
+        let loading = loading.complete(Some((castle, &())));
         assert_eq!(
             (loading.world, loading.level, loading.room),
             (1, 0, [1, 0, 0])
@@ -573,7 +560,7 @@ mod tests {
             level: 0,
             ..key(182, [2, 0])
         }
-        .complete(Some((warp_zone, &Vec::new())));
+        .complete(Some((warp_zone, &())));
         assert_eq!(
             (entering_pipe.world, entering_pipe.level, entering_pipe.room),
             (0, 1, [2, 0, 11])
@@ -583,7 +570,7 @@ mod tests {
             level: 0,
             ..key(2, [1, 4])
         }
-        .complete(Some((entering_pipe, &Vec::new())));
+        .complete(Some((entering_pipe, &())));
         assert_eq!(
             (arrived.world, arrived.level, arrived.room),
             (2, 0, [1, 4, 0])
@@ -695,18 +682,18 @@ mod tests {
     fn a_new_area_keeps_the_band_its_lineage_reached_and_a_warp_back_drops_it() {
         let castle = key(250, [3, 5]);
         assert_eq!(castle.progress(), (31, 3));
-        let underwater = key(10, [0, 2]).complete(Some((castle, &Vec::new())));
+        let underwater = key(10, [0, 2]).complete(Some((castle, &())));
         assert_eq!(underwater.progress(), (31, 3));
-        let back_in_the_castle = key(260, [3, 5]).complete(Some((underwater, &Vec::new())));
+        let back_in_the_castle = key(260, [3, 5]).complete(Some((underwater, &())));
         assert_eq!(back_in_the_castle.progress(), (31, 4));
-        let wrong_pipe = key(20, [3, 5]).complete(Some((back_in_the_castle, &Vec::new())));
+        let wrong_pipe = key(20, [3, 5]).complete(Some((back_in_the_castle, &())));
         assert_eq!(wrong_pipe.progress(), (31, 0));
         let next_level = SmbArchiveKey {
             world: 7,
             level: 0,
             ..key(10, [1, 0])
         }
-        .complete(Some((SmbArchiveKey { world: 6, ..castle }, &Vec::new())));
+        .complete(Some((SmbArchiveKey { world: 6, ..castle }, &())));
         assert_eq!(next_level.progress(), (28, 0));
     }
 

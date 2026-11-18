@@ -71,7 +71,8 @@ route through a level. The camera column restarts in each area, and in 8-4 the r
 through an underwater area after the castle's third band. A state therefore
 keeps the highest band its parent held in the same level. A pipe that sends
 Mario back within the same area, as 8-4's wrong pipes do, drops that inherited
-band, so those states rank by their own column.
+band, so those states rank by their own column, and the room restarts at the
+page they land on.
 
 The place is the room Mario entered the level section through, his column
 (the camera's column plus his column on the screen), his height bucket, whether
