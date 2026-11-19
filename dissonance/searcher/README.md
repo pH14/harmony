@@ -1641,7 +1641,10 @@ coordinator replays the new input from the first position where it differs from
 the chain, or from the root, on one extra target that a minimize campaign keeps
 beside its workers' targets. Each replayed prefix state is admitted with its
 origin cost and the previous chain state's entry as its parent, and the replayed
-cost must equal the arrival's. The job's stream record carries an `incumbent`
+cost must equal the arrival's. When chain states before the first replayed
+position hold no archive entry, the admitted suffix starts at the last chain
+state that does, and each kept action carries the endpoint certificate of the
+chain snapshot it reached. The job's stream record carries an `incumbent`
 field with the new cost, length, rebuild start position, execution work and
 admission decisions. Rebuild work counts toward the work counters and the work
 budget, stream replay repeats the rebuild and checks the record, and every

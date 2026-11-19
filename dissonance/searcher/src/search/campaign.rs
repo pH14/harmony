@@ -2180,8 +2180,12 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .rev()
             .find(|&position| resident(position).is_some());
         let mut current_parent = base.and_then(resident);
-        let mut pending_suffix = chain.actions[base.unwrap_or(0)..common].to_vec();
-        let mut pending_certificates = vec![None; pending_suffix.len()];
+        let base = base.unwrap_or(0);
+        let mut pending_suffix = chain.actions[base..common].to_vec();
+        let mut pending_certificates = chain.snapshots[base + 1..=common]
+            .iter()
+            .map(|snapshot| workload.candidate_replay_certificate(snapshot))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut previous_key = (!pending_suffix.is_empty()).then_some(chain.keys[common]);
         workload.reset(target);
         workload.restore(target, &chain.snapshots[common])?;
@@ -10493,6 +10497,62 @@ mod tests {
         );
         assert_eq!(core.archive.entries.len(), 1);
         assert_eq!(core.archive.input_index_nodes(), 1);
+    }
+
+    #[test]
+    fn a_certified_incumbent_rebuilt_after_a_rejected_chain_state_certifies_its_kept_prefix() {
+        let targets = Arc::new(LiveTargets::default());
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let mut core = CoordinatorCore::new(&workload, &(), 1_024, None);
+        core.enable_minimize(super::MinimizeConfig::default())
+            .unwrap();
+        let step = TestAction::new(1, 1);
+        let stay = TestAction::new(0, 1);
+        let tape = Input {
+            actions: vec![step, stay, stay, step, TestAction::new(1, 3)],
+        };
+        let shortcut = Input {
+            actions: vec![step, stay, stay, TestAction::new(2, 1), step],
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let result = (|| -> Result<_, Box<dyn Error>> {
+            targets
+                .objective_after_work
+                .store(7, std::sync::atomic::Ordering::SeqCst);
+            let mut target = workload.new_target()?;
+            core.bootstrap(&workload, &(), &mut target)?;
+            core.start_incumbent_chain()?;
+            core.adopt_tape(&workload, &(), &mut target, &tape, 0)?;
+            let chain = core.chain.as_ref().unwrap();
+            assert!(chain.entries[2].is_some());
+            assert!(chain.entries[3].is_none());
+            assert_eq!(core.incumbent_cost, Some(ShrinkCost::new(14, 0)));
+            targets
+                .objective_after_work
+                .store(2, std::sync::atomic::Ordering::SeqCst);
+            core.candidate_incumbent = Some((shortcut.clone(), ShrinkCost::new(10, 0)));
+            let mut target = workload.new_target()?;
+            core.accept_incumbent(&workload, &(), &mut target)
+        })();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        let record = result.unwrap().unwrap();
+        assert_eq!(record.rebuilt_from, 3);
+        assert_eq!(record.cost, ShrinkCost::new(10, 0));
+        assert_eq!(core.objective_witness, Some(shortcut));
+        let chain = core.chain.as_ref().unwrap();
+        let admitted = core.archive.index_of_id(chain.entries[4].unwrap()).unwrap();
+        let (replay, certificates) = core
+            .archive
+            .pinned_job_replay(admitted, core.archive.stable_id(0).unwrap())
+            .unwrap();
+        assert_eq!(replay, vec![step, stay, stay, TestAction::new(2, 1)]);
+        assert_eq!(
+            certificates,
+            vec![Some([1; 32]), Some([1; 32]), Some([1; 32]), Some([3; 32])]
+        );
     }
 
     #[test]
