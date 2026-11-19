@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use super::heap;
+
+#[derive(Default)]
+pub(crate) struct CoverageCounts {
+    jobs: u64,
+    job: u64,
+    job_counted: bool,
+    job_moved: bool,
+    ids: BTreeMap<u64, IdCount>,
+    report: CoverageReport,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Rating {
+    pub(crate) rarity: u8,
+    id: u64,
+}
+
+#[derive(Clone, Copy)]
+struct IdCount {
+    jobs: u64,
+    last_job: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CoverageReport {
+    pub jobs_with_ids: u64,
+    pub distinct_ids: u64,
+    pub actions_with_ids: u64,
+    pub action_ids: u64,
+    pub candidates_rated: u64,
+    pub candidates_moved: u64,
+    pub jobs_moved: u64,
+    pub candidates_by_rarity: Vec<u64>,
+    pub moved_by_rarest_id: BTreeMap<u64, u64>,
+    pub memory_bytes: usize,
+}
+
+impl CoverageCounts {
+    pub(crate) fn is_active(&self) -> bool {
+        self.jobs > 0
+    }
+
+    pub(crate) fn begin_job(&mut self, job: u64) {
+        self.job = job;
+        self.job_counted = false;
+        self.job_moved = false;
+    }
+
+    pub(crate) fn rate(&mut self, ids: &[u64]) -> Option<Rating> {
+        if ids.is_empty() {
+            return None;
+        }
+        if !self.job_counted {
+            self.job_counted = true;
+            self.jobs = self.jobs.saturating_add(1);
+        }
+        let job = self.job;
+        let mut rarest = (u64::MAX, 0);
+        for &id in ids {
+            let count = self.ids.entry(id).or_insert(IdCount {
+                jobs: 0,
+                last_job: 0,
+            });
+            if count.jobs == 0 || count.last_job != job {
+                count.jobs = count.jobs.saturating_add(1);
+                count.last_job = job;
+            }
+            if count.jobs < rarest.0 {
+                rarest = (count.jobs, id);
+            }
+        }
+        self.report.actions_with_ids = self.report.actions_with_ids.saturating_add(1);
+        self.report.action_ids = self
+            .report
+            .action_ids
+            .saturating_add(u64::try_from(ids.len()).unwrap_or(u64::MAX));
+        Some(Rating {
+            rarity: rarity(self.jobs, rarest.0),
+            id: rarest.1,
+        })
+    }
+
+    pub(crate) fn record_candidate(&mut self, rating: Rating, moved: bool) {
+        let index = usize::from(rating.rarity);
+        if self.report.candidates_by_rarity.len() <= index {
+            self.report.candidates_by_rarity.resize(index + 1, 0);
+        }
+        self.report.candidates_by_rarity[index] += 1;
+        self.report.candidates_rated = self.report.candidates_rated.saturating_add(1);
+        if moved {
+            self.report.candidates_moved = self.report.candidates_moved.saturating_add(1);
+            *self.report.moved_by_rarest_id.entry(rating.id).or_insert(0) += 1;
+            self.job_moved = true;
+        }
+    }
+
+    pub(crate) fn finish_job(&mut self) {
+        if self.job_moved {
+            self.report.jobs_moved = self.report.jobs_moved.saturating_add(1);
+            self.job_moved = false;
+        }
+    }
+
+    pub(crate) fn report(&self) -> Option<CoverageReport> {
+        self.is_active().then(|| CoverageReport {
+            jobs_with_ids: self.jobs,
+            distinct_ids: u64::try_from(self.ids.len()).unwrap_or(u64::MAX),
+            memory_bytes: heap::btree_bytes::<u64, IdCount>(1, self.ids.len())
+                + heap::btree_bytes::<u64, u64>(1, self.report.moved_by_rarest_id.len()),
+            ..self.report.clone()
+        })
+    }
+}
+
+#[must_use]
+pub fn rarity(jobs: u64, count: u64) -> u8 {
+    let total = u128::from(jobs) + 1;
+    let hit = u128::from(count) + 1;
+    if total <= hit {
+        return 0;
+    }
+    let mut bits = total.ilog2() - hit.ilog2();
+    if hit << bits > total {
+        bits -= 1;
+    }
+    u8::try_from(bits).unwrap_or(u8::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rarity_is_the_floor_of_log2_of_jobs_over_hits() {
+        assert_eq!(rarity(0, 0), 0);
+        assert_eq!(rarity(1, 1), 0);
+        assert_eq!(rarity(3, 1), 1);
+        assert_eq!(rarity(6, 1), 1);
+        assert_eq!(rarity(7, 1), 2);
+        assert_eq!(rarity(1_000, 0), 9);
+        assert_eq!(rarity(1_023, 0), 10);
+        assert_eq!(rarity(1_000, 1_000), 0);
+        assert_eq!(rarity(u64::MAX, 0), 64);
+        for jobs in 0..200_u64 {
+            for count in 0..=jobs {
+                let exact = ((jobs + 1) as f64 / (count + 1) as f64).log2().floor();
+                assert_eq!(f64::from(rarity(jobs, count)), exact, "{jobs} {count}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_action_is_rated_by_its_rarest_id_counting_each_job_once() {
+        let mut counts = CoverageCounts::default();
+        let rarity =
+            |counts: &mut CoverageCounts, ids: &[u64]| counts.rate(ids).map(|rating| rating.rarity);
+        counts.begin_job(1);
+        assert_eq!(counts.rate(&[]), None);
+        assert!(!counts.is_active());
+        assert_eq!(rarity(&mut counts, &[10, 11]), Some(0));
+        assert_eq!(rarity(&mut counts, &[10, 11]), Some(0));
+        counts.finish_job();
+        for job in 2..=7 {
+            counts.begin_job(job);
+            assert_eq!(rarity(&mut counts, &[10]), Some(0));
+            counts.finish_job();
+        }
+        counts.begin_job(8);
+        let new = counts.rate(&[10, 12]).expect("rated");
+        assert_eq!(new, Rating { rarity: 2, id: 12 });
+        let old = counts.rate(&[10, 11]).expect("rated");
+        assert_eq!(old, Rating { rarity: 1, id: 11 });
+        counts.record_candidate(new, true);
+        counts.record_candidate(old, false);
+        counts.finish_job();
+        let report = counts.report().expect("active");
+        assert_eq!(report.jobs_with_ids, 8);
+        assert_eq!(report.distinct_ids, 3);
+        assert_eq!(report.actions_with_ids, 10);
+        assert_eq!(report.action_ids, 14);
+        assert_eq!(report.candidates_rated, 2);
+        assert_eq!(report.candidates_moved, 1);
+        assert_eq!(report.jobs_moved, 1);
+        assert_eq!(report.candidates_by_rarity, vec![0, 1, 1]);
+        assert_eq!(report.moved_by_rarest_id, BTreeMap::from([(12, 1)]));
+    }
+}

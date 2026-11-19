@@ -329,6 +329,23 @@ the objective orders states within it. Place, identity and preferences remain
 the key's own; a key that wants them to differ by stage reads the stage from
 its progress. A workload without a plan keeps its own progress.
 
+A workload may put coverage rarity in its place. `Evaluation::action_coverage`
+returns the ids an action's run hit, empty by default, and `search::coverage`
+counts them in admission order: J is the number of jobs that hit any id and c
+the number that hit a given id, each including the job being admitted, and an
+id counts once per job. An action's rarity is floor(log2((J+1)/(c+1))) for its
+rarest id, so an id most jobs hit rates 0 and the rating rises by one each time
+the share of jobs that hit the id halves. `Evaluation::rate_coverage(key,
+rarity)` returns the key the archive admits, and its default ignores the
+rarity, so the workload chooses the cap and where the rating sits in its key.
+Search checkpoints do not hold the counts, so a campaign whose actions carried
+ids refuses to write one. The report's `coverage` section, present only then,
+gives J, the distinct ids, the actions with ids and their total ids, the rated
+candidates, the candidates and the jobs in which `rate_coverage` moved a
+candidate to another place, the rated candidates at each rarity before the
+workload's cap, the moved candidates counted by the rarest id that rated each
+one, and the memory the counts hold.
+
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,
 and its contents are the union of those sets. A candidate enters when it

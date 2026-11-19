@@ -8,6 +8,7 @@ pub mod checkpoint;
 pub mod choice;
 mod continuation;
 pub mod cost;
+pub mod coverage;
 pub mod draw;
 pub mod draw_tables;
 pub mod duration;

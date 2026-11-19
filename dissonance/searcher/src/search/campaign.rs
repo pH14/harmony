@@ -29,6 +29,7 @@ use crate::search::choice::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::cost::ShrinkCost;
+use crate::search::coverage::{CoverageCounts, CoverageReport};
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -778,6 +779,14 @@ pub trait Evaluation: TargetExecution {
         key: Self::Key,
         snapshot: &Self::Snapshot,
     ) -> Result<Self::Key, Box<dyn Error>>;
+    fn action_coverage<'a>(&self, action: &'a CampaignActionResult<Self>) -> &'a [u64] {
+        let _ = action;
+        &[]
+    }
+    fn rate_coverage(&self, key: Self::Key, rarity: u8) -> Self::Key {
+        let _ = rarity;
+        key
+    }
     fn merge_milestones(&self, into: &mut Self::Milestones, from: Self::Milestones);
     fn aggregate_milestones(evidence: &Self::Evidence) -> Self::Milestones;
     fn aggregate_progress(evidence: &Self::Evidence) -> Self::Progress;
@@ -1352,6 +1361,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub input_index_nodes: usize,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub historical_cells: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageReport>,
     pub stream_sha256: String,
     pub archive: R,
     #[serde(skip)]
@@ -1850,6 +1861,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     candidate_incumbent: Option<(Input<G::Action>, ShrinkCost)>,
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
+    coverage: CoverageCounts,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1904,6 +1916,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             candidate_incumbent: None,
             shrink: None,
             choices,
+            coverage: CoverageCounts::default(),
         }
     }
 
@@ -2363,6 +2376,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
 
     fn write_checkpoint_state(&self, out: &mut dyn Write) -> Result<(), Box<dyn Error>> {
         use super::checkpoint::image::StreamedBytes;
+        if self.coverage.is_active() {
+            return Err("a search checkpoint does not carry coverage counts".into());
+        }
         postcard::to_io(
             &(
                 StreamedBytes(|out: &mut dyn Write| {
@@ -2872,7 +2888,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let retained_at_start = self.archive.retained;
         let mut left_place = false;
         let mut novel_slots = 0_usize;
+        self.coverage.begin_job(sequence);
         for action in actions {
+            let rating = self.coverage.rate(workload.action_coverage(&action));
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
             let certificate = action
@@ -2935,8 +2953,14 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 decisions.push(CampaignAdmissionDecision::Objective);
             }
             if let Some(candidate) = action.candidate {
-                let completed =
+                let mut completed =
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
+                if let Some(rating) = rating {
+                    let rated = workload.rate_coverage(completed, rating.rarity);
+                    self.coverage
+                        .record_candidate(rating, rated.place() != completed.place());
+                    completed = rated;
+                }
                 if let Some(incumbent) = self.incumbent_cost
                     && self
                         .archive
@@ -3025,6 +3049,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 }
             }
         }
+        self.coverage.finish_job();
         if limited {
             self.archive.record_suffix_outcome(
                 parent_index,
@@ -3704,6 +3729,7 @@ fn build_report<G: Workload>(
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
     let historical_cells = core.archive.historical_cell_count();
+    let coverage = core.coverage.report();
     let (archive, snapshots) = core.into_archive_report_and_snapshots(
         workload,
         header.campaign_seed,
@@ -3780,6 +3806,7 @@ fn build_report<G: Workload>(
         input_reconstructions,
         input_index_nodes,
         historical_cells,
+        coverage,
         stream_sha256,
         archive,
         telemetry: CampaignTelemetry::default(),
