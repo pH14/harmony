@@ -218,3 +218,52 @@ goal = "false"
         match mv {}
     }
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct LedgeKey {
+    pub stage: u8,
+    pub room: u8,
+    pub band: u8,
+}
+
+impl LedgeKey {
+    #[must_use]
+    pub fn raw(spot: Spot) -> Self {
+        Self {
+            stage: u8::from(spot.x >= 3),
+            room: spot.room,
+            band: spot.x,
+        }
+    }
+}
+
+impl crate::search::archive::ArchiveKey for LedgeKey {
+    type Place = u8;
+    type Progress = u8;
+    type Identity = u8;
+    type Lineage = ();
+    fn place(self) -> u8 {
+        self.room
+    }
+    fn progress(self) -> u8 {
+        self.stage
+    }
+    fn identity(self) -> u8 {
+        self.band
+    }
+    fn complete(self, parent: Option<(Self, &())>) -> Self {
+        let Some((parent, ())) = parent else {
+            return self;
+        };
+        Self {
+            stage: self.stage.max(parent.stage),
+            band: if parent.room == self.room {
+                self.band.max(parent.band)
+            } else {
+                self.band
+            },
+            ..self
+        }
+    }
+    fn record(_: &mut (), _: Self) {}
+}

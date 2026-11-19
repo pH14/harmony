@@ -1151,3 +1151,114 @@ fn catalog_choice_sites_round_trip_and_reject_duplicates() {
     );
     assert!(catalog().with_choices(vec![site("buttons", &[])]).is_err());
 }
+
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+struct Banded {
+    bow: u8,
+    room: u8,
+    band: u8,
+}
+
+impl ArchiveKey for Banded {
+    type Place = u8;
+    type Progress = u8;
+    type Identity = u8;
+    type Lineage = ();
+    fn place(self) -> u8 {
+        self.room
+    }
+    fn progress(self) -> u8 {
+        self.bow
+    }
+    fn identity(self) -> u8 {
+        self.band
+    }
+    fn complete(self, parent: Option<(Self, &())>) -> Self {
+        let Some((parent, ())) = parent else {
+            return self;
+        };
+        Self {
+            bow: self.bow.max(parent.bow),
+            band: if parent.room == self.room {
+                self.band.max(parent.band)
+            } else {
+                self.band
+            },
+            ..self
+        }
+    }
+    fn record(_: &mut (), _: Self) {}
+}
+
+fn banded(state: Walk) -> Banded {
+    Banded {
+        bow: u8::from(state.items & 0b010 != 0),
+        room: state.room,
+        band: state.lives,
+    }
+}
+
+#[test]
+fn the_shadow_threads_the_accumulator_and_the_hand_lineage_through_a_restore() {
+    let compiled = Compiled::parse(
+        r#"
+        capacity = 1
+        spread = "'position.room'"
+        identity = "highest(lives, 'position.room')"
+        [[stage]]
+        name = "bow"
+        goal = "'items.bow'"
+        latch = true
+        [[stage]]
+        name = "after"
+        goal = "false"
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    assert!(!compiled.is_pure());
+    let walk = |room, lives, items| Walk {
+        room,
+        lives,
+        items,
+        ..Walk::default()
+    };
+    let table = ShadowTable::default();
+    let raw = ShadowTable::default();
+    let mut cursor = ShadowCursor::<Banded>::default();
+    let arrive = |cursor: &mut ShadowCursor<Banded>, state: Walk| {
+        let key = cursor.observe(&compiled, &record(state));
+        raw.count(Some(banded(state)), key, false);
+        cursor.pair(&table, Some(banded(state)))
+    };
+    arrive(&mut cursor, walk(0, 3, 0));
+    arrive(&mut cursor, walk(0, 5, 0b010));
+    let saved = cursor.clone();
+    assert_eq!(
+        arrive(&mut cursor, walk(0, 2, 0)),
+        Some(Banded {
+            bow: 1,
+            room: 0,
+            band: 5
+        })
+    );
+    arrive(&mut cursor, walk(1, 1, 0));
+    let mut cursor = saved;
+    assert_eq!(
+        cursor.pair(&table, Some(banded(walk(0, 5, 0b010)))),
+        Some(Banded {
+            bow: 1,
+            room: 0,
+            band: 5
+        })
+    );
+    arrive(&mut cursor, walk(0, 4, 0));
+    arrive(&mut cursor, walk(2, 6, 0));
+    let report = table.report(&compiled).unwrap();
+    assert_eq!(report.disagreements, Disagreements::default());
+    assert_eq!(report.keyed_states, 7);
+    assert_eq!(report.lineage_changes, 4);
+    assert_ne!(raw.report(&compiled).unwrap().disagreements.total(), 0);
+}

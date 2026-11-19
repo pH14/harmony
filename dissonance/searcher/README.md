@@ -723,6 +723,19 @@ the last frame of every action.
 **Front ends.** `Compiled::observe` advances the accumulator and returns the
 key, the index of the first `reject` line that holds, and whether the `goal`
 holds.
+
+**Shadow keys.** `assertion/shadow.rs` compares a hand `ArchiveKey` with a
+strategy over the same states. A `ShadowCursor` lives beside a front end's
+state and travels with its snapshots: `observe` advances its accumulator and
+keeps the compiled key, and `pair` completes the hand key against the previous
+completed key with `ArchiveKey::complete` (once per arrival), records its
+lineage, and counts the pair in a `ShadowTable`. `ShadowTable::report` returns
+the `ShadowReport`: absent mismatches, cells and slots that split or join
+between the two keys, progress and preference orders that disagree between
+adjacent keys, a preference count mismatch, unknown restores, and how many
+hand keys the lineage changed. The cursor records a lineage at every arrival
+and the archive at admitted entries, so the two agree for a hand key whose
+`complete` reads only the parent key.
 `workloads/tiny-worlds` keys every world from a strategy file. An emulated
 program's workload lowers each target to a decoder and a declaration list and
 runs every such target through one `Workload` implementation.

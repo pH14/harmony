@@ -7,6 +7,7 @@ mod expr;
 mod key;
 mod records;
 mod rekey;
+mod shadow;
 mod strategy;
 
 pub use catalog::{
@@ -21,6 +22,7 @@ pub use records::{
     StreamIdentity,
 };
 pub use rekey::{Holders, RecordedJob, Rekeyed, Rekeying, Tier, same_decisions};
+pub use shadow::{Disagreements, ShadowCursor, ShadowReport, ShadowTable, ShadowTier};
 pub use strategy::{Lines, Shared, StageLines, Steps, Strategy};
 
 #[cfg(test)]

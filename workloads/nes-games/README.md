@@ -181,6 +181,23 @@ replay of the stream writes its own copy. The snapshot identity hashes the
 policy identifier with the snapshot, so saved states taken under one strategy
 are rebuilt by replay when a run resumes from them under another.
 
+A strategy with `highest` or a latched stage keys a frame from its path, so the
+target advances the accumulator at every observed frame, `NesSnapshot` and the
+snapshot checkpoint carry it, and a restore puts it back; the frames inside a
+forced move are decoded but not observed. `workload/shadow.rs` compares a
+hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy
+and `hook` gives the hand target a `ShadowHook`, which it calls with the
+genesis RAM (`start`), the frames of each action (`advance`), the
+`snapshot_tag` of each snapshot it takes and restores (`saved`, `restored`),
+and its raw key at each candidate (`observe`). The hook decodes each frame,
+advances its own accumulator, completes the raw key against the previous one
+with `ArchiveKey::complete`, and counts the pair in the searcher's
+`ShadowTable`; a save made before the key is observed keeps the key observed
+after it. `Shadow::report` returns the searcher's `ShadowReport`. The hook
+records a hand lineage at every candidate, where the archive records it at
+admitted entries only, so a hand key whose lineage holds more than the parent
+key can disagree there.
+
 ## Arcade live-feed observations
 
 Arcade adapters expose each archived snapshot's game-frame count for exact
