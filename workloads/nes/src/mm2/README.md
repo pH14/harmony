@@ -89,6 +89,26 @@ weapons hold the most. Random input fires whatever weapon is equipped, and a sum
 total hides one weapon spent down while the others stay full, which matters
 where a boss takes damage from one weapon only.
 
+## Strategy key
+
+[`nes-games/src/mm2/game.rs`](../../../nes-games/src/mm2/game.rs) declares
+the same key through assertions as the `MegaMan2` `Game`, with the strategy in
+[`mm2.toml`](../../../nes-games/src/mm2/mm2.toml). Its decoder carries the
+hand target's per-frame context (fall run, dying run, enemy damage, boss
+intro frames, arrival) in its state. A transition is a forced `Drive` move
+whose steps are the hand target's menu chords, so `NesTarget` plays the same
+award wait, stage-select walk, cursor path and arrival wait. The tier is the
+preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
+inside 64 bits. The hand target finishes the current chord before a stage
+transition, while the strategy target cuts it at the transition frame, so a
+witness's frame count can differ by that remainder; no key differs.
+
+`equivalence_tests.rs` runs both targets side by side on one-frame chords
+over random play and replayed tapes and checks every frame's key order. A
+whole-game run with `"shadow": true` gives each hand target a `ShadowHook`.
+While the shadow is on, the hand target drives a transition with
+`MegaMan2::play`'s chords and passes the step states to `forced`.
+
 ## Milestones and evidence
 
 A whole-game run reports `named_progress` with the first try that saw each

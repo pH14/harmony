@@ -12,9 +12,14 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    mm2::action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
+    mm2::{
+        action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
+        archive::Mm2ArchiveKey,
+        game::{self, Drive, MegaMan2},
+    },
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
+    workload::{Game, ShadowHook, snapshot_tag},
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -704,6 +709,7 @@ pub struct Mm2Target<M: NesBackend<Vec<u8>> + NesMemory> {
     execution_work: u64,
     route: Mm2Route,
     sink: Option<CaptureSink<M>>,
+    shadow: Option<ShadowHook<Mm2ArchiveKey>>,
 }
 
 #[cfg(unix)]
@@ -1169,12 +1175,24 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
             execution_work: 0,
             route,
             sink: None,
+            shadow: None,
         })
     }
 
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<Mm2ArchiveKey>) {
+        shadow.start(&self.current_wram);
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<Mm2ArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand);
+        }
     }
 
     #[must_use]
@@ -1407,6 +1425,48 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         Some(frames + self.wait_for_arrival(next, limit)?)
     }
 
+    fn drive_as_played(
+        &mut self,
+        transition: Transition,
+        departure: &[u8; WRAM_SIZE],
+    ) -> Option<u64> {
+        let transition = match transition {
+            Transition::RobotMaster(stage) => game::Transition::RobotMaster(stage),
+            Transition::Castle(stage) => game::Transition::Castle(stage),
+        };
+        let mut state = game::Mm2State {
+            driving: Some(transition),
+            ..MegaMan2.decode(None, departure)
+        };
+        let mut mv = Drive::begin(transition);
+        let bound = MegaMan2.move_frames(mv);
+        let mut frames = 0_u64;
+        let mut steps = Vec::new();
+        while let Some(step) = MegaMan2.play(mv, &state) {
+            frames += u64::try_from(self.run_action(&step.chord)?.len()).ok()?;
+            if let Some(CaptureSink(sink)) = &mut self.sink {
+                sink(&mut self.machine).ok()?;
+            }
+            let wram = self.machine.read_wram().ok()?;
+            state = MegaMan2.decode(Some(&state), &wram);
+            steps.push(wram);
+            if frames > bound {
+                return None;
+            }
+            match step.rest {
+                Some(next) => mv = next,
+                None => break,
+            }
+        }
+        if state.driving.is_some() {
+            return None;
+        }
+        if let Some(shadow) = &self.shadow {
+            shadow.forced(&steps);
+        }
+        Some(frames)
+    }
+
     fn drive(&mut self, transition: Transition) -> Option<u64> {
         match transition {
             Transition::RobotMaster(stage) => self.drive_after_robot_master(stage),
@@ -1427,6 +1487,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&self.genesis_wram);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -1566,8 +1629,16 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             .observation
             .frame_count
             .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
+        if let Some(shadow) = &self.shadow {
+            shadow.advance(&frames[..decoded_frames]);
+        }
         if let Some(transition) = pending {
-            let Some(driven) = self.drive(transition) else {
+            let driven = if self.shadow.is_some() {
+                self.drive_as_played(transition, &frames[decoded_frames - 1])
+            } else {
+                self.drive(transition)
+            };
+            let Some(driven) = driven else {
                 self.failed = true;
                 return;
             };
@@ -1655,6 +1726,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             self.failed = true;
             return None;
         };
+        if let Some(shadow) = &self.shadow {
+            shadow.saved(snapshot_tag(&emulator_state, self.observation.frame_count));
+        }
         Some(Mm2Snapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -1673,6 +1747,12 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
+        if let Some(shadow) = &self.shadow {
+            shadow.restored(
+                snapshot_tag(&snapshot.emulator_state, self.observation.frame_count),
+                &self.current_wram,
+            );
+        }
         Ok(())
     }
 }

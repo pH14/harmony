@@ -40,6 +40,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
+    workload::ShadowHook,
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
@@ -72,6 +73,7 @@ pub struct Mm2Game<M: NesBackend<Vec<u8>> + NesMemory> {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    shadow: Option<ShadowHook<Mm2ArchiveKey>>,
 }
 
 fn actions_sha256(actions: &[Mm2Action]) -> String {
@@ -230,7 +232,14 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            shadow: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_shadow(mut self, shadow: ShadowHook<Mm2ArchiveKey>) -> Self {
+        self.shadow = Some(shadow);
+        self
     }
 
     #[must_use]
@@ -489,8 +498,10 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
                 RetentionPolicy::ProbeAtAdmission => admission_is_viable(target, &snapshot)?,
                 RetentionPolicy::Unprobed => true,
             };
+            let key = archive_key(target.mechanical_state());
+            target.shadow(Some(key));
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state()),
+                key,
                 viable,
                 snapshot,
             })
@@ -783,6 +794,12 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
             }
             Mm2Route::WholeGame => Mm2Target::whole_game_from_machine(machine, &self.prefix),
         }
+        .map(|mut target| {
+            if let Some(shadow) = &self.shadow {
+                target.set_shadow(shadow.clone());
+            }
+            target
+        })
         .map_err(|error| error.to_string())
     }
 
@@ -871,7 +888,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
     }
 
     fn current_key(&self, target: &Mm2Target<M>) -> Result<Mm2ArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()))
+        let key = archive_key(target.mechanical_state());
+        target.shadow(Some(key));
+        Ok(key)
     }
 
     fn complete_candidate_key(

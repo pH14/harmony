@@ -25,7 +25,7 @@ use crate::{
         rand::RomuDuoJrRand,
     },
     target::Target,
-    workload::{Game, Lowered, NesSnapshot, NesTarget},
+    workload::{Game, Lowered, NesSnapshot, NesTarget, Shadow},
 };
 
 struct Inputs {
@@ -65,6 +65,7 @@ type Strategic = NesTarget<MegaMan2, QuickNesMachine>;
 struct Pair {
     hand: Mm2Target<QuickNesMachine>,
     strategy: Strategic,
+    shadow: Arc<Shadow<MegaMan2, Mm2ArchiveKey>>,
 }
 
 #[derive(Clone)]
@@ -88,7 +89,10 @@ enum Frame {
 impl Pair {
     fn new(inputs: &Inputs) -> Self {
         let lowered = Arc::new(Lowered::new(MegaMan2, MegaMan2::STRATEGY).expect("strategy"));
-        let hand = Mm2Target::whole_game_from_machine(machine(inputs), &[]).expect("hand target");
+        let mut hand =
+            Mm2Target::whole_game_from_machine(machine(inputs), &[]).expect("hand target");
+        let shadow = Shadow::new(MegaMan2).expect("shadow");
+        hand.set_shadow(shadow.hook());
         let strategy = NesTarget::from_power_on(lowered, machine(inputs)).expect("strategy target");
         assert_eq!(
             hand.genesis_prefix(),
@@ -100,7 +104,11 @@ impl Pair {
             hand.mechanical_state(),
             "genesis states differ"
         );
-        Self { hand, strategy }
+        Self {
+            hand,
+            strategy,
+            shadow,
+        }
     }
 
     fn save(&mut self) -> Saved {
@@ -175,6 +183,7 @@ impl Pair {
             ),
             "decoded states differ"
         );
+        self.hand.shadow(Some(archive_key(hand_state)));
         Frame::Keyed(Keys {
             hand: archive_key(hand_state),
             compiled: observation.key.expect("a keyed strategy state"),
@@ -233,6 +242,8 @@ impl Pair {
 struct Replayer {
     reference: Mm2Target<QuickNesMachine>,
     genesis: Mm2Snapshot,
+    shadow: Arc<Shadow<MegaMan2, Mm2ArchiveKey>>,
+    arrivals: usize,
 }
 
 struct Replayed {
@@ -245,8 +256,15 @@ impl Replayer {
     fn new(inputs: &Inputs) -> Self {
         let mut reference =
             Mm2Target::whole_game_from_machine(machine(inputs), &[]).expect("reference target");
+        let shadow = Shadow::new(MegaMan2).expect("shadow");
+        reference.set_shadow(shadow.hook());
         let genesis = reference.snapshot().expect("reference snapshot");
-        Self { reference, genesis }
+        Self {
+            reference,
+            genesis,
+            shadow,
+            arrivals: 0,
+        }
     }
 
     fn replay(
@@ -266,6 +284,11 @@ impl Replayer {
         };
         for (index, action) in actions.iter().enumerate() {
             self.reference.apply(action);
+            if self.reference.observe().arrived {
+                self.arrivals += 1;
+            }
+            self.reference
+                .shadow(Some(archive_key(self.reference.mechanical_state())));
             if let Some(goal) = pair.act(*action, keys) {
                 replayed.stop = Some((index, goal));
                 break;
@@ -540,6 +563,7 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         );
     }
     let roots = pool.len();
+    let seeded = pair.shadow.report().expect("shadow report");
     let mut rand = RomuDuoJrRand::with_seed(seed());
     let mut keys = Vec::new();
     let mut stops = 0usize;
@@ -585,6 +609,20 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         tiers.len()
     );
     census("random play", &keys);
+    let played = pair.shadow.report().expect("shadow report");
+    eprintln!(
+        "mm2 random play shadow: while seeding from tapes {} states, disagreements {:?}, unknown restores {}; in total {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}",
+        seeded.states,
+        seeded.disagreements,
+        seeded.unknown_restores,
+        played.states,
+        played.keyed_states,
+        played.distinct_pairs,
+        played.disagreements,
+        played.unknown_restores
+    );
+    assert_eq!(played.disagreements.total(), 0, "{:?}", played.examples);
+    assert_eq!(played.unknown_restores, seeded.unknown_restores);
 }
 
 #[test]
@@ -617,4 +655,16 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
         keys.len()
     );
     census("tape", &keys);
+    let report = replayer.shadow.report().expect("shadow report");
+    eprintln!(
+        "mm2 tape shadow on the faithful replay ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}",
+        replayer.arrivals,
+        report.states,
+        report.keyed_states,
+        report.distinct_pairs,
+        report.disagreements,
+        report.unknown_restores
+    );
+    assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+    assert_eq!(report.unknown_restores, 0);
 }
