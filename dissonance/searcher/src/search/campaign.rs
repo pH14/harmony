@@ -5,6 +5,7 @@ use std::{
     error::Error,
     fmt::Debug,
     io::{BufReader, Read, Write},
+    marker::PhantomData,
     num::{NonZeroU64, NonZeroUsize},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
@@ -906,6 +907,62 @@ impl<G: Workload> SavedStates<G> {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+pub trait ArchiveFormatName {
+    const FORMAT: &'static str;
+}
+
+pub struct ArchiveFormat<F>(PhantomData<fn() -> F>);
+
+impl<F> Default for ArchiveFormat<F> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<F> Clone for ArchiveFormat<F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F> Copy for ArchiveFormat<F> {}
+
+impl<F> PartialEq for ArchiveFormat<F> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<F> Eq for ArchiveFormat<F> {}
+
+impl<F: ArchiveFormatName> Debug for ArchiveFormat<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(F::FORMAT)
+    }
+}
+
+impl<F: ArchiveFormatName> Serialize for ArchiveFormat<F> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(F::FORMAT)
+    }
+}
+
+impl<'de, F: ArchiveFormatName> Deserialize<'de> for ArchiveFormat<F> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<String>::deserialize(deserializer)? {
+            Some(format) if format == F::FORMAT => Ok(Self::default()),
+            Some(format) => Err(serde::de::Error::custom(format!(
+                "archive format is {format}; this build reads {}",
+                F::FORMAT
+            ))),
+            None => Err(serde::de::Error::custom(format!(
+                "archive names no format; this build reads {}",
+                F::FORMAT
+            ))),
+        }
     }
 }
 

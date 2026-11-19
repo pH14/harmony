@@ -102,7 +102,9 @@ Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
 formats are Castlevania v1, Metroid v13, Mega Man 2 v4, SMB
 QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
-The games declared through assertions share `nes-workload-snapshot-checkpoint-v2`.
+The games declared through assertions share `nes-workload-snapshot-checkpoint-v2`,
+and their archive reports carry `format: nes-workload-archive-v1`, which an
+archive import checks.
 These plain snapshots use the postcard payload codec inside the framed envelope.
 Previous flat envelopes are refused. Native `nes` target modules remain
 re-export shims and do not supply separate checkpoint implementations.
