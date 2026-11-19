@@ -557,6 +557,12 @@ shards require additional protocols; these commands implement neither.
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+`debug run --actions FILE --repeat N` compares every repeat's end evidence with
+the first repeat's, using the same fields as replay. When any differ it exits
+2, naming each differing repeat and its state digest; the report keeps every
+repeat. Without full state identity (UML) it compares the remaining evidence.
+The [guest kernel README](../consonance/harmony-linux/linux/README.md#faults-that-depend-on-cached-translations)
+describes using it to recheck a guest kernel on one CPU.
 For supervised runs it compares the final state and outcome as well as every
 recorded action boundary, including the action, observation, settlement marker,
 and bounded console evidence. The repeat ordinal and `guest_horizons` cache

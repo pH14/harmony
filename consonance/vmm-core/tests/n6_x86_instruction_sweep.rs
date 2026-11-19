@@ -88,7 +88,7 @@ fn sweep_profile(kernel_name: &str, initramfs: &[u8], report_root: &Path) {
     );
     let stdout = String::from_utf8_lossy(&positive.stdout);
     assert!(
-        stdout.contains("table_rows=10 exercised_rows=10 operations=174 runs=2"),
+        stdout.contains("table_rows=11 exercised_rows=11 operations=175 runs=2"),
         "{kernel_name}: unexpected sweep summary: {stdout}"
     );
     eprintln!("{kernel_name}: {}", stdout.trim());

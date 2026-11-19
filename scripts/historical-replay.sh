@@ -114,7 +114,11 @@ else
             "$report" >/dev/null 2>&1; then
         identity_unavailable=true
     fi
-    if (( status > 1 )) && [[ "$identity_unavailable" != true ]]; then
+    if [[ "$mode" == sample && "$status" -eq 2 ]] \
+        && grep -Fq 'repeats ended differently from the first' "$console"; then
+        ok="fail: replay-mismatch"
+        verdict=1
+    elif (( status > 1 )) && [[ "$identity_unavailable" != true ]]; then
         ok="fail: infra-failure (CLI exit ${status})"
         verdict=1
     elif ! ok=$("${oracle}" "${mode}" "${report}" "${repeats}" "${actions}"); then

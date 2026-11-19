@@ -65,6 +65,14 @@ EMULATED_REGISTER_VALUES = {
     "RDTSCP upper halves zero": "0000000000000001",
 }
 
+# Without the guest pin, each stale read-only translation turns a probed store
+# into a spurious minor fault. With this many pages, a host whose TLB keeps
+# such entries holds some of them until the stores in every round.
+TRANSLATION_ROW = "x86-translation-upgrade"
+TRANSLATION_PAGES = 1024
+TRANSLATION_ROUNDS = 8
+TRANSLATION_VALUE = "value:0000000000000000:mem:"
+
 TRAPS_OFF_WITNESS_ROWS = {
     "arm64": "arm64-virtual-counter",
     "x86_64": "x86-tsc",
@@ -248,6 +256,111 @@ def arm64_body(operation: str) -> list[str]:
     return bodies[operation]
 
 
+def translation_upgrade_body() -> list[str]:
+    """Return the x86-64 stale read-only translation probe."""
+    length = f"${TRANSLATION_PAGES * 4096:#x}"
+    return [
+        "pushq %rbx",
+        "pushq %r12",
+        "pushq %r13",
+        "pushq %r14",
+        "pushq %r15",
+        "subq $144, %rsp",
+        "xorl %r15d, %r15d",
+        f"movl ${TRANSLATION_ROUNDS}, %ebx",
+        "1:",
+        "movl $9, %eax",
+        "xorl %edi, %edi",
+        f"movl {length}, %esi",
+        "movl $3, %edx",
+        "movl $0x22, %r10d",
+        "movq $-1, %r8",
+        "xorl %r9d, %r9d",
+        "syscall",
+        "cmpq $-4095, %rax",
+        "jae 9f",
+        "movq %rax, %r12",
+        "xorl %ecx, %ecx",
+        "2:",
+        "movb $1, (%r12,%rcx)",
+        "addq $4096, %rcx",
+        f"cmpq {length}, %rcx",
+        "jb 2b",
+        "movl $57, %eax",
+        "syscall",
+        "testq %rax, %rax",
+        "js 9f",
+        "jnz 3f",
+        "movl $231, %eax",
+        "xorl %edi, %edi",
+        "syscall",
+        "3:",
+        "movq %rax, %rdi",
+        "movl $61, %eax",
+        "xorl %esi, %esi",
+        "xorl %edx, %edx",
+        "xorl %r10d, %r10d",
+        "syscall",
+        "testq %rax, %rax",
+        "js 9f",
+        "movq $0, (%rsp)",
+        "movq $0, 136(%rsp)",
+        "xorl %ecx, %ecx",
+        "4:",
+        "movzbl (%r12,%rcx), %eax",
+        "addq $4096, %rcx",
+        f"cmpq {length}, %rcx",
+        "jb 4b",
+        "movl $28, %eax",
+        "movq %r12, %rdi",
+        f"movl {length}, %esi",
+        "movl $23, %edx",
+        "syscall",
+        "testq %rax, %rax",
+        "jnz 9f",
+        "movl $98, %eax",
+        "xorl %edi, %edi",
+        "movq %rsp, %rsi",
+        "syscall",
+        "testq %rax, %rax",
+        "jnz 9f",
+        "movq 64(%rsp), %r13",
+        "xorl %ecx, %ecx",
+        "5:",
+        "movb $2, (%r12,%rcx)",
+        "addq $4096, %rcx",
+        f"cmpq {length}, %rcx",
+        "jb 5b",
+        "movl $98, %eax",
+        "xorl %edi, %edi",
+        "movq %rsp, %rsi",
+        "syscall",
+        "testq %rax, %rax",
+        "jnz 9f",
+        "movq 64(%rsp), %r14",
+        "subq %r13, %r14",
+        "addq %r14, %r15",
+        "movl $11, %eax",
+        "movq %r12, %rdi",
+        f"movl {length}, %esi",
+        "syscall",
+        "decl %ebx",
+        "jnz 1b",
+        "movq %r15, %rax",
+        "jmp 8f",
+        "9:",
+        "movq $-1, %rax",
+        "8:",
+        "addq $144, %rsp",
+        "popq %r15",
+        "popq %r14",
+        "popq %r13",
+        "popq %r12",
+        "popq %rbx",
+        "ret",
+    ]
+
+
 def x86_body(operation: str) -> list[str]:
     """Return one x86-64 JIT body for an exact table operation."""
     cpuid = re.fullmatch(
@@ -374,6 +487,15 @@ def x86_body(operation: str) -> list[str]:
         # five-byte primer preserves the original MOV-immediate footprint,
         # keeping unrelated statically linked code at its audited offsets.
         "SYSCALL R11 capture": ["xorl %eax, %eax", "decl %eax", "nop", "syscall", "movq %r11, %rax", "ret"],
+        # Fork and an immediate child exit leave each written page read-only
+        # but reusable. Reads cache those read-only translations, and
+        # MADV_POPULATE_WRITE upgrades the entries through get_user_pages
+        # without a hardware fault, so only a missing invalidation lets the
+        # stores fault. Fork also write-protects the stack, so the body writes
+        # its rusage buffer before the first count; otherwise getrusage's own
+        # copy-out would fault inside the counted window. The value is the
+        # summed ru_minflt delta of the stores.
+        "stores after a fault-free write upgrade": translation_upgrade_body(),
     }
     if operation not in bodies:
         raise SweepError(f"x86_64 execute operation has no generator: {operation}")
@@ -522,6 +644,16 @@ def parse_operation(
         raise SweepError(
             f"{path}:{line_number}: unrelated ring-3 #GP returned {result!r}, "
             "want signal:11"
+        )
+    elif (
+        enforce_semantics
+        and identifier == TRANSLATION_ROW
+        and not result.startswith(TRANSLATION_VALUE)
+    ):
+        raise SweepError(
+            f"{path}:{line_number}: stores after a fault-free write upgrade returned "
+            f"{result!r}; a nonzero value counts spurious faults from stale "
+            "read-only translations"
         )
     results.append(result)
 
@@ -806,6 +938,10 @@ def synthetic_report(rows: list[Row], arch: str) -> str:
                     "mem:0123456789abcdef"
                     for operation in row.operations
                 ]
+            elif row.identifier == TRANSLATION_ROW:
+                results = [
+                    f"{TRANSLATION_VALUE}0123456789abcdef" for _ in row.operations
+                ]
             else:
                 results = [
                     "signal:11" if row.identifier == "x86-unrelated-gp"
@@ -1026,6 +1162,9 @@ def self_test(rows: list[Row]) -> None:
                 unrelated_row = next(
                     row for row in rows if row.identifier == "x86-unrelated-gp"
                 )
+                translation_row = next(
+                    row for row in rows if row.identifier == TRANSLATION_ROW
+                )
                 semantic_fixtures = [
                     (
                         "counter-signal",
@@ -1068,6 +1207,18 @@ def self_test(rows: list[Row]) -> None:
                         emulated_row,
                         "RDTSCP upper halves zero",
                         "value:0000000000000000:mem:0123456789abcdef",
+                    ),
+                    (
+                        "stale-translation-faults",
+                        translation_row,
+                        "stores after a fault-free write upgrade",
+                        "value:0000000000001cb6:mem:0123456789abcdef",
+                    ),
+                    (
+                        "stale-translation-probe-error",
+                        translation_row,
+                        "stores after a fault-free write upgrade",
+                        "value:ffffffffffffffff:mem:0123456789abcdef",
                     ),
                 ]
                 for label, fixture_row, operation, replacement in semantic_fixtures:
