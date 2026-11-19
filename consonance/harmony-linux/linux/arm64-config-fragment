@@ -178,3 +178,8 @@ CONFIG_DM_LOG_WRITES=y
 # 50 ms or more run on guest jiffies timers.
 CONFIG_DM_DELAY=y
 CONFIG_EXT4_FS=y
+
+## Guest OOM detection
+# The supervisor reads the oom_kill line of /proc/vmstat to end an execution
+# whose guest ran out of memory; the line exists only with VM event counters.
+CONFIG_VM_EVENT_COUNTERS=y
