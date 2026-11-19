@@ -230,6 +230,7 @@ timing:
 | action | effect |
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
+| `EndFaults(ticks)` | every standing window still open at the action's start closes there, including each `EventKill` window, fired or not, which disarms a kill that has not fired; the workload then runs undisturbed; never drawn, only applied by the settle phase |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
 | `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |

@@ -419,7 +419,7 @@ impl ActionPlan {
         let mut deadline = windows.root_seal;
         for (action, window) in actions.iter().zip(windows.iter(actions)) {
             let (start, end) = window?;
-            standing.extend(windows.delta(*action, (start, end)).standing);
+            windows.push_standing(&mut standing, *action, (start, end));
             coverage.push((start, end, action.coverage_quantum));
             deadline = end;
         }
@@ -8714,8 +8714,7 @@ fn active_root_windows(
     actions: &[FaultAction],
     moment: u64,
 ) -> Result<Vec<StandingWindow>, String> {
-    let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
+    let mut standing = standing_windows(windows, inherited, actions)?;
     standing.retain(|window| window.start <= moment);
     Ok(standing)
 }

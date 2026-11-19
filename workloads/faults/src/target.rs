@@ -75,6 +75,7 @@ pub enum FaultOperation {
         rate_ppm: i32,
         ticks: NonZeroU16,
     },
+    EndFaults(NonZeroU16),
 }
 
 impl FaultOperation {
@@ -82,6 +83,7 @@ impl FaultOperation {
     pub fn ticks(&self) -> u64 {
         match *self {
             Self::Wait(ticks)
+            | Self::EndFaults(ticks)
             | Self::Kill(_, ticks)
             | Self::KillAll(ticks)
             | Self::PowerLoss(_, ticks)
@@ -103,6 +105,7 @@ impl FaultOperation {
     pub fn with_ticks(self, ticks: NonZeroU16) -> Self {
         match self {
             Self::Wait(_) => Self::Wait(ticks),
+            Self::EndFaults(_) => Self::EndFaults(ticks),
             Self::Kill(node, _) => Self::Kill(node, ticks),
             Self::KillAll(_) => Self::KillAll(ticks),
             Self::PowerLoss(node, _) => Self::PowerLoss(node, ticks),
@@ -270,6 +273,10 @@ impl FaultOperation {
                 put(&[14]);
                 put(&offset_ms.to_le_bytes());
                 put(&rate_ppm.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::EndFaults(ticks) => {
+                put(&[15]);
                 put(&ticks.get().to_le_bytes());
             }
         }
@@ -488,6 +495,21 @@ impl ActionWindows {
     pub fn delta(self, action: FaultAction, window: (u64, u64)) -> ActionDelta {
         action_delta(action, window, self.hold_hooks)
     }
+
+    pub fn push_standing(
+        self,
+        standing: &mut Vec<StandingWindow>,
+        action: FaultAction,
+        window: (u64, u64),
+    ) {
+        if matches!(action.operation, FaultOperation::EndFaults(_)) {
+            for open in standing.iter_mut().filter(|open| open.end > window.0) {
+                open.end = window.0;
+            }
+            standing.retain(|open| open.start < open.end);
+        }
+        standing.extend(self.delta(action, window).standing);
+    }
 }
 
 #[must_use]
@@ -520,7 +542,7 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
     let (start, end) = window;
     let horizon = end.saturating_sub(start);
     match action.operation {
-        FaultOperation::Wait(_) => ActionDelta::default(),
+        FaultOperation::Wait(_) | FaultOperation::EndFaults(_) => ActionDelta::default(),
         FaultOperation::EventKill { node, rarity, .. } => ActionDelta {
             standing: vec![standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
@@ -679,12 +701,14 @@ pub fn action_deltas(
 
 pub fn standing_windows(
     windows: ActionWindows,
+    inherited: &[StandingWindow],
     actions: &[FaultAction],
 ) -> Result<Vec<StandingWindow>, String> {
-    Ok(action_deltas(windows, actions)?
-        .into_iter()
-        .flat_map(|delta| delta.standing)
-        .collect())
+    let mut standing = inherited.to_vec();
+    for (action, window) in actions.iter().zip(windows.iter(actions)) {
+        windows.push_standing(&mut standing, *action, window?);
+    }
+    Ok(standing)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1838,6 +1862,7 @@ mod tests {
         assert!(
             standing_windows(
                 WINDOWS,
+                &[],
                 &[
                     FaultOperation::Wait(NonZeroU16::MIN).into(),
                     FaultOperation::Wait(NonZeroU16::MIN).into()
@@ -2092,7 +2117,7 @@ mod tests {
     }
 
     fn spans_of(windows: ActionWindows, actions: &[FaultAction]) -> Vec<(u32, u64, u64)> {
-        standing_windows(windows, actions)
+        standing_windows(windows, &[], actions)
             .unwrap()
             .into_iter()
             .filter_map(|fault| match decode_process_target(&fault.target) {
@@ -2114,8 +2139,8 @@ mod tests {
             actions.extend([wait; 8]);
             assert_eq!(spans_of(WINDOWS, &actions), [(1, ROOT, ROOT + 50 * TICK)]);
             assert_eq!(
-                standing_windows(WINDOWS, &actions),
-                standing_windows(WINDOWS, &[hook_with_hold(1, 50, 0)])
+                standing_windows(WINDOWS, &[], &actions),
+                standing_windows(WINDOWS, &[], &[hook_with_hold(1, 50, 0)])
             );
         }
     }
@@ -2184,8 +2209,8 @@ mod tests {
                 .actions;
         assert_eq!(recorded, actions);
         assert_eq!(
-            standing_windows(HELD, &recorded),
-            standing_windows(HELD, &actions)
+            standing_windows(HELD, &[], &recorded),
+            standing_windows(HELD, &[], &actions)
         );
         assert_eq!(hook_spans(&recorded)[0], (1, ROOT, ROOT + 4 * 64 * TICK));
         let mut other = actions;
@@ -2193,10 +2218,11 @@ mod tests {
         assert_ne!(hook_spans(&actions), hook_spans(&other));
         assert_eq!(
             fault_policy::decode_windows(
-                &fault_policy::encode_windows(&standing_windows(HELD, &actions).unwrap()).unwrap()
+                &fault_policy::encode_windows(&standing_windows(HELD, &[], &actions).unwrap())
+                    .unwrap()
             )
             .unwrap(),
-            standing_windows(HELD, &actions).unwrap()
+            standing_windows(HELD, &[], &actions).unwrap()
         );
     }
 
@@ -2208,7 +2234,7 @@ mod tests {
             FaultOperation::Kill(0, ticks(50)),
         ]
         .map(FaultAction::from);
-        let faults = standing_windows(WINDOWS, &actions).unwrap();
+        let faults = standing_windows(WINDOWS, &[], &actions).unwrap();
         assert_eq!(faults.len(), 2);
         assert_eq!(
             (faults[0].start, faults[0].end),
@@ -2226,13 +2252,65 @@ mod tests {
     }
 
     #[test]
+    fn ending_faults_closes_every_window_still_standing_at_its_start() {
+        let inherited = standing_windows(
+            ActionWindows {
+                root_seal: 0,
+                hold_hooks: false,
+            },
+            &[],
+            &[FaultOperation::EventKill {
+                node: 2,
+                rarity: 9,
+                ticks: ticks(4),
+            }
+            .into()],
+        )
+        .unwrap();
+        let actions = [
+            FaultOperation::EventKill {
+                node: 0,
+                rarity: 3,
+                ticks: ticks(50),
+            },
+            FaultOperation::Pause(1, ticks(50)),
+            FaultOperation::EndFaults(ticks(16)),
+            FaultOperation::Kill(1, ticks(50)),
+        ]
+        .map(FaultAction::from);
+        let end = WINDOWS.window(&actions, 2).unwrap().0;
+        let open = standing_windows(WINDOWS, &inherited, &actions[..2]).unwrap();
+        assert_eq!(
+            open.iter().filter(|window| window.end == u64::MAX).count(),
+            2
+        );
+        let ended = standing_windows(WINDOWS, &inherited, &actions).unwrap();
+        assert_eq!(ended.len(), 4);
+        assert_eq!(ended[0].end, end);
+        assert_eq!(ended[1].end, end);
+        assert_eq!(
+            (ended[2].start, ended[2].end),
+            WINDOWS.window(&actions, 1).unwrap()
+        );
+        assert_eq!(
+            (ended[3].start, ended[3].end),
+            WINDOWS.window(&actions, 3).unwrap()
+        );
+        assert_eq!(
+            FaultOperation::EndFaults(ticks(16)).ticks(),
+            16,
+            "ending faults advances the timeline like a wait"
+        );
+    }
+
+    #[test]
     fn the_window_list_round_trips_through_the_shared_codec() {
         let actions = [
             FaultOperation::Kill(1, ticks(50)),
             FaultOperation::Hook(2, ticks(50)),
         ]
         .map(FaultAction::from);
-        let windows = standing_windows(WINDOWS, &actions).unwrap();
+        let windows = standing_windows(WINDOWS, &[], &actions).unwrap();
         let bytes = fault_policy::encode_windows(&windows).expect("encode");
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("decode"),
@@ -2248,16 +2326,16 @@ mod tests {
         ]
         .map(FaultAction::from);
         assert_eq!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(WINDOWS, &actions)
+            standing_windows(WINDOWS, &[], &actions),
+            standing_windows(WINDOWS, &[], &actions)
         );
         let moved = ActionWindows {
             root_seal: 2_000,
             hold_hooks: false,
         };
         assert_ne!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(moved, &actions)
+            standing_windows(WINDOWS, &[], &actions),
+            standing_windows(moved, &[], &actions)
         );
         let shorter = [
             FaultOperation::Restart(3, ticks(10)),
@@ -2265,8 +2343,8 @@ mod tests {
         ]
         .map(FaultAction::from);
         assert_ne!(
-            standing_windows(WINDOWS, &actions),
-            standing_windows(WINDOWS, &shorter)
+            standing_windows(WINDOWS, &[], &actions),
+            standing_windows(WINDOWS, &[], &shorter)
         );
     }
 
