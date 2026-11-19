@@ -97,7 +97,7 @@ impl<A: Clone> Encoded<A> {
 impl<A> Encoded<A> {
     fn decode(self, sequence: u64) -> Result<RecordedAction<A>, Box<dyn Error>> {
         let width = usize::from(self.width);
-        if width > RECORD_SLOTS {
+        if width > ACTION_END_SLOT {
             return Err("a recorded action is wider than the record".into());
         }
         let mut values = [0_i64; RECORD_SLOTS];
@@ -208,10 +208,11 @@ pub struct Recording<A> {
 
 impl<A: DeserializeOwned> Recording<A> {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let (header, mut rest): (RecordsHeader, _) = postcard::take_from_bytes(bytes)?;
-        if header.format != RECORDS_FORMAT {
-            return Err(format!("records format {} is not {RECORDS_FORMAT}", header.format).into());
+        let (format, _): (String, _) = postcard::take_from_bytes(bytes)?;
+        if format != RECORDS_FORMAT {
+            return Err(format!("records format {format} is not {RECORDS_FORMAT}").into());
         }
+        let (header, mut rest): (RecordsHeader, _) = postcard::take_from_bytes(bytes)?;
         let mut actions = Vec::new();
         let mut jobs = 0;
         let mut last = None;

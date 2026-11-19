@@ -14,7 +14,7 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{Game, Lowered, Moves, Satisfied};
+use super::{Game, Lowered, Satisfied};
 #[cfg(unix)]
 use crate::nes_backend::FilmMachine;
 use crate::{
@@ -65,12 +65,13 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
     }
 }
 
-enum Walked<S> {
+enum Walked<S, M> {
     Arrived {
         frames: u64,
         wram: [u8; WRAM_SIZE],
         observation: NesObservation<S>,
         accumulator: Accumulator,
+        forced: Option<M>,
     },
     Overran {
         frames: u64,
@@ -81,13 +82,13 @@ enum Walked<S> {
 
 fn walk_move<G: Game, E>(
     lowered: &Lowered<G>,
-    mut mv: G::Move,
+    (mut mv, offered): (G::Move, bool),
     (frame_count, mut state): (u64, G::State),
     accumulator: &Accumulator,
     mut wram: [u8; WRAM_SIZE],
     mut press: impl FnMut(ButtonChord) -> Result<(u64, [u8; WRAM_SIZE]), E>,
     mut seen: impl FnMut(Record),
-) -> Result<Walked<G::State>, E> {
+) -> Result<Walked<G::State, G::Move>, E> {
     let bound = lowered.game.move_frames(mv);
     let mut frames = 0_u64;
     let mut arrival = None;
@@ -96,9 +97,6 @@ fn walk_move<G: Game, E>(
         frames = frames.saturating_add(pressed);
         wram = after;
         state = lowered.game.decode(Some(&state), &wram);
-        let last_step = step
-            .rest
-            .is_none_or(|next| lowered.game.play(next, &state).is_none());
         if frames > bound {
             seen(lowered.frame_record(&state, true));
             return Ok(Walked::Overran {
@@ -107,39 +105,37 @@ fn walk_move<G: Game, E>(
                 state,
             });
         }
+        let last_step = step
+            .rest
+            .is_none_or(|next| lowered.game.play(next, &state).is_none());
         let mut advanced = accumulator.clone();
-        let (observation, record) = lowered.observe_ending(
+        let framed = lowered.observe_ending(
             frame_count.saturating_add(frames),
             state.clone(),
             &mut advanced,
-            lowered.game.moves(&state).ends_move(last_step),
+            |moves| moves.ends_move(last_step, offered),
         );
-        seen(record);
-        let stops = observation.stops();
-        arrival = Some((observation, advanced));
-        if stops {
-            break;
-        }
+        seen(framed.record);
+        let ends = framed.ends;
+        arrival = Some((framed, advanced));
         match step.rest {
-            Some(next) => mv = next,
-            None => break,
+            Some(next) if !ends => mv = next,
+            _ => break,
         }
     }
-    let (observation, accumulator) = arrival.unwrap_or_else(|| {
+    let (framed, accumulator) = arrival.unwrap_or_else(|| {
         let mut advanced = accumulator.clone();
-        let ends = lowered.game.moves(&state).ends_move(true);
-        (
-            lowered
-                .observe_ending(frame_count, state, &mut advanced, ends)
-                .0,
-            advanced,
-        )
+        let framed = lowered.observe_ending(frame_count, state, &mut advanced, |moves| {
+            moves.ends_move(true, offered)
+        });
+        (framed, advanced)
     });
     Ok(Walked::Arrived {
         frames,
         wram,
-        observation,
+        observation: framed.observation,
         accumulator,
+        forced: framed.forced,
     })
 }
 
@@ -337,12 +333,12 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     fn play_move(
         &mut self,
-        mv: G::Move,
+        mv: (G::Move, bool),
         departure: NesObservation<G::State>,
         wram: [u8; WRAM_SIZE],
         accumulator: &mut Accumulator,
         emitted: &mut Vec<ActionObservation<G::State>>,
-    ) -> Result<(u64, [u8; WRAM_SIZE]), MachineError> {
+    ) -> Result<(u64, [u8; WRAM_SIZE], Option<G::Move>), MachineError> {
         let lowered = Arc::clone(&self.lowered);
         let recording = self.recording;
         let mut records = Vec::new();
@@ -365,15 +361,16 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                 }
             },
         )?;
-        let (frames, wram, observation) = match walked {
+        let (frames, wram, observation, forced) = match walked {
             Walked::Arrived {
                 frames,
                 wram,
                 observation,
                 accumulator: advanced,
+                forced,
             } => {
                 *accumulator = advanced;
-                (frames, wram, observation)
+                (frames, wram, observation, forced)
             }
             Walked::Overran {
                 frames,
@@ -389,6 +386,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                     overran: true,
                     ..departure
                 },
+                None,
             ),
         };
         emitted.push(ActionObservation {
@@ -397,15 +395,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             records,
             choices: Vec::new(),
         });
-        Ok((frames, wram))
-    }
-
-    fn forced_after(&self, emitted: &[ActionObservation<G::State>]) -> Option<G::Move> {
-        let arrival = &emitted.last()?.observation;
-        if arrival.stops() {
-            return None;
-        }
-        self.lowered.game.moves(&arrival.state).forced
+        Ok((frames, wram, forced))
     }
 
     fn play_forced_after(
@@ -420,7 +410,9 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         else {
             return Ok((0, wram));
         };
-        self.play_move(mv, departure, wram, accumulator, emitted)
+        let (frames, wram, _) =
+            self.play_move((mv, false), departure, wram, accumulator, emitted)?;
+        Ok((frames, wram))
     }
 
     fn store_action(
@@ -459,8 +451,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let mut accumulator = std::mem::take(&mut self.accumulator);
         let mut emitted = Vec::new();
         let departure = self.observation.clone();
-        let Ok((frames, wram)) = self.play_move(
-            mv,
+        let Ok((frames, wram, forced)) = self.play_move(
+            (mv, true),
             departure,
             self.current_wram,
             &mut accumulator,
@@ -468,7 +460,6 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         ) else {
             return self.fail();
         };
-        let forced = self.forced_after(&emitted);
         let Ok((forced_frames, wram)) =
             self.play_forced_after(forced, wram, &mut accumulator, &mut emitted)
         else {
@@ -530,31 +521,20 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                 .observation
                 .frame_count
                 .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1));
-            let moves = self.lowered.game.moves(&state);
-            let cut = moves.offer.is_some_and(|offer| offer.cuts());
-            let (observation, record) = self.lowered.observe_ending(
-                frame_count,
-                state,
-                &mut accumulator,
-                moves.ends_input(offset + 1 == produced_frames),
-            );
-            let action_end = record.action_end();
+            let last_frame = offset + 1 == produced_frames;
+            let framed =
+                self.lowered
+                    .observe_ending(frame_count, state, &mut accumulator, |moves| {
+                        moves.ends_input(last_frame)
+                    });
             if self.recording {
-                records.push(record);
+                records.push(framed.record);
             }
-            let (next, offered) = if observation.stops() {
-                (None, false)
-            } else {
-                (moves.forced, cut)
-            };
-            forced = next;
+            let last = framed.cuts();
+            forced = framed.forced;
+            let observation = framed.observation;
             previous = observation.state.clone();
-            let last = action_end
-                || offset + 1 == produced_frames
-                || observation.stops()
-                || forced.is_some()
-                || offered;
-            if observation.key != prior_key || observation.stops() || last {
+            if observation.key != prior_key || last {
                 prior_key = observation.key;
                 emitted.push(ActionObservation {
                     observation,
@@ -708,7 +688,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                     .offer
                     .and_then(|offer| offer.chosen(action));
                 let mut next = match chosen {
-                    Some(mv) => Some(mv),
+                    Some(mv) => Some((mv, true)),
                     None => self
                         .render_action(
                             *action,
@@ -718,15 +698,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                             &mut metadata,
                             &mut skip,
                         )?
-                        .and_then(|moves| moves.forced),
+                        .map(|forced| (forced, false)),
                 };
-                let mut after_offer = chosen.is_some();
-                while let Some(mv) = next.take() {
+                while let Some((mv, offered)) = next.take() {
                     let lowered = Arc::clone(&self.lowered);
                     let wram = read_wram(&self.machine)?;
                     let walked = walk_move(
                         &lowered,
-                        mv,
+                        (mv, offered),
                         (0, tracked.state.clone()),
                         &accumulator,
                         wram,
@@ -749,6 +728,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                     let Walked::Arrived {
                         observation,
                         accumulator: advanced,
+                        forced,
                         ..
                     } = walked
                     else {
@@ -761,10 +741,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                     };
                     accumulator = advanced;
                     tracked = observation;
-                    if after_offer && !tracked.stops() {
-                        next = lowered.game.moves(&tracked.state).forced;
-                    }
-                    after_offer = false;
+                    next = forced.map(|forced| (forced, false));
                 }
             }
             let endpoint = tracked;
@@ -802,7 +779,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         audio_output: &mut dyn Write,
         metadata: &mut Option<VideoMetadata>,
         skip: &mut u64,
-    ) -> Result<Option<Moves<G::Move>>, Box<dyn Error>> {
+    ) -> Result<Option<G::Move>, Box<dyn Error>> {
         let start = self.machine.snapshot()?;
         self.machine
             .branch(start, &nes::reproducer(std::slice::from_ref(&action)))?;
@@ -820,13 +797,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
             if *skip > 0 {
                 *skip -= 1;
                 self.machine.take_audio_samples();
-                if let Some(moves) = self.film_cut(
+                if let Some(forced) = self.film_cut(
                     tracked
                         .as_mut()
                         .map(|(accumulator, observation)| (&mut **accumulator, &mut **observation)),
                     last_frame,
                 )? {
-                    return Ok(Some(moves));
+                    return Ok(forced);
                 }
                 continue;
             }
@@ -865,13 +842,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                     audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
                 )?);
             }
-            if let Some(moves) = self.film_cut(
+            if let Some(forced) = self.film_cut(
                 tracked
                     .as_mut()
                     .map(|(accumulator, observation)| (&mut **accumulator, &mut **observation)),
                 last_frame,
             )? {
-                return Ok(Some(moves));
+                return Ok(forced);
             }
         }
         Ok(None)
@@ -881,7 +858,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         &self,
         tracked: Option<(&mut Accumulator, &mut NesObservation<G::State>)>,
         last_frame: bool,
-    ) -> Result<Option<Moves<G::Move>>, Box<dyn Error>> {
+    ) -> Result<Option<Option<G::Move>>, Box<dyn Error>> {
         let Some((accumulator, tracked)) = tracked else {
             return Ok(None);
         };
@@ -889,15 +866,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
             .lowered
             .game
             .decode(Some(&tracked.state), &read_wram(&self.machine)?);
-        let moves = self.lowered.game.moves(&decoded);
-        let (observation, record) =
-            self.lowered
-                .observe_ending(0, decoded, accumulator, moves.ends_input(last_frame));
-        let action_end = record.action_end();
-        *tracked = observation;
-        Ok((!tracked.stops())
-            .then_some(moves)
-            .filter(|moves| moves.cuts() || (action_end && !last_frame)))
+        let framed = self
+            .lowered
+            .observe_ending(0, decoded, accumulator, |moves| {
+                moves.ends_input(last_frame)
+            });
+        let cut = framed.cuts().then_some(framed.forced);
+        *tracked = framed.observation;
+        Ok(cut)
     }
 
     fn run_one_frame(&mut self) -> Result<bool, Box<dyn Error>> {

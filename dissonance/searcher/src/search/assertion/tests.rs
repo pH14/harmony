@@ -393,6 +393,42 @@ fn an_action_end_stage_latches_only_on_the_kept_frame() {
 }
 
 #[test]
+fn observe_ending_ends_the_action_at_a_frame_whose_first_observation_stops() {
+    let catalog = catalog();
+    let ending = |goal: &str, lives: u8, ends: bool| {
+        let compiled = Compiled::parse(
+            &format!("goal = \"{goal}\"\nspread = \"position\""),
+            &catalog,
+        )
+        .unwrap();
+        let mut frame = record(Walk {
+            lives,
+            ..Walk::default()
+        });
+        let (observed, ended) =
+            compiled.observe_ending(&mut frame, &mut Accumulator::default(), ends);
+        assert_eq!(frame.action_end(), ended);
+        (observed.goal, ended)
+    };
+    assert_eq!(ending("lives >= 5", 3, false), (false, false));
+    assert_eq!(ending("lives >= 5", 3, true), (false, true));
+    assert_eq!(ending("lives >= 5", 6, false), (true, true));
+    assert_eq!(
+        ending("action_end and lives >= 5", 6, false),
+        (false, false)
+    );
+    assert_eq!(ending("action_end and lives >= 5", 6, true), (true, true));
+    assert_eq!(
+        ending("lives >= 5 and not action_end", 6, false),
+        (false, true)
+    );
+    assert_eq!(
+        ending("lives >= 5 and not action_end", 6, true),
+        (false, true)
+    );
+}
+
+#[test]
 fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
     let compiled = Compiled::parse(
         r#"
@@ -984,7 +1020,8 @@ fn written(header: &RecordsHeader, actions: &[RecordedAction<u8>]) -> (Vec<u8>, 
 
 #[test]
 fn records_round_trip_through_the_delta_encoding() {
-    let (genesis, _, mut actions) = walk_recording();
+    let (mut genesis, _, mut actions) = walk_recording();
+    genesis.set_action_end(true);
     for action in &mut actions {
         if let Some(last) = action.frames.last_mut() {
             last.set_action_end(true);
@@ -995,6 +1032,7 @@ fn records_round_trip_through_the_delta_encoding() {
     assert_eq!(size.jobs, 2);
     assert_eq!(usize::try_from(size.bytes).unwrap(), bytes.len());
     let recording = Recording::<u8>::from_bytes(&bytes).unwrap();
+    assert!(recording.header.genesis.action_end());
     assert_eq!(recording.header, header);
     assert_eq!(recording.actions, actions);
     assert_eq!((recording.jobs, recording.truncated_bytes), (2, 0));
@@ -1011,6 +1049,29 @@ fn records_round_trip_through_the_delta_encoding() {
             .is_err()
     );
     assert!(recording.check_stream(&header.stream, "other").is_err());
+}
+
+#[test]
+fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
+    let (genesis, _, _) = walk_recording();
+    let header = walk_header(genesis);
+    let earlier = postcard::to_allocvec(&(
+        "assertion-records-v5",
+        &header.stream,
+        &header.policy,
+        &header.strategy,
+        &header.catalog,
+        genesis.values(),
+    ))
+    .unwrap();
+    let error = Recording::<u8>::from_bytes(&earlier)
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        error,
+        format!("records format assertion-records-v5 is not {RECORDS_FORMAT}")
+    );
 }
 
 #[test]

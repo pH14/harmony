@@ -621,7 +621,8 @@ impl Record {
         let mut record = Self::default();
         record
             .values
-            .get_mut(..values.len())?
+            .get_mut(..values.len())
+            .filter(|_| values.len() <= ACTION_END_SLOT)?
             .copy_from_slice(values);
         record.len = u8::try_from(values.len()).ok()?;
         Some(record)
@@ -649,14 +650,16 @@ impl Record {
 
 impl Serialize for Record {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.values().serialize(serializer)
+        (self.values(), self.action_end()).serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for Record {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let values = Vec::<i64>::deserialize(deserializer)?;
-        Self::from_values(&values)
-            .ok_or_else(|| serde::de::Error::custom("record exceeds the slot limit"))
+        let (values, action_end) = <(Vec<i64>, bool)>::deserialize(deserializer)?;
+        let mut record = Self::from_values(&values)
+            .ok_or_else(|| serde::de::Error::custom("record exceeds the slot limit"))?;
+        record.set_action_end(action_end);
+        Ok(record)
     }
 }
