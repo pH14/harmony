@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use super::{
     action::{Mm2Action, WeaponSwitch, switch_choice},
     archive::{Mm2ArchiveKey, archive_key},
-    game::{MegaMan2, Mm2State},
+    game::{MegaMan2, Mm2State, WEAPON_SITE},
     target::{
         Mm2MechanicalState, Mm2Snapshot, Mm2Target, decode_state, switch_choices, weapon_menu_row,
     },
@@ -25,7 +25,7 @@ use crate::{
         rand::RomuDuoJrRand,
     },
     target::Target,
-    workload::{Game, Lowered, NesSnapshot, NesTarget, Shadow},
+    workload::{Game, Lowered, NesSnapshot, NesTarget, Shadow, move_chord},
 };
 
 struct Inputs {
@@ -139,6 +139,47 @@ impl Pair {
         let chord = ButtonChord::new(buttons, 1);
         self.hand.apply(&Mm2Action::Chord(chord));
         self.strategy.apply(&chord);
+        self.compare()
+    }
+
+    fn switch(&mut self, word: u32) -> (bool, Frame) {
+        let state = self.strategy.observation().state;
+        let wram = *self.strategy.wram();
+        let choices = switch_choices(&wram).expect("choices");
+        let starts = WeaponSwitch::starts(state.menu, state.playable());
+        let offer = MegaMan2.moves(&state).offer;
+        let mut expected: Vec<u16> = choices
+            .iter()
+            .map(|weapon| u16::from(*weapon) + 1)
+            .collect();
+        expected.insert(0, 0);
+        assert_eq!(
+            offer.map(|offer| offer.labels()),
+            (starts && !choices.is_empty()).then_some(expected),
+            "the weapon offer differs from the hand's choices at {state:?}"
+        );
+        self.hand.apply(&Mm2Action::Switch(word));
+        let switched = match (offer, switch_choice(&choices, word)) {
+            (Some(_), Some(weapon)) => {
+                self.strategy
+                    .apply(&move_chord(WEAPON_SITE, u16::from(weapon) + 1).expect("move chord"));
+                true
+            }
+            _ => {
+                self.strategy
+                    .apply(&ButtonChord::new(0, super::action::SWITCH_WAIT_FRAMES));
+                false
+            }
+        };
+        assert_eq!(
+            decode_state(self.strategy.wram()).expect("decode"),
+            self.hand.mechanical_state(),
+            "states differ after a switch from {state:?}"
+        );
+        (switched, self.compare())
+    }
+
+    fn compare(&mut self) -> Frame {
         assert_eq!(
             self.hand.exit_kind(),
             self.strategy.exit_kind(),
@@ -535,21 +576,15 @@ fn seed() -> u64 {
         .unwrap_or(0x6d6d_325f_6571)
 }
 
-#[test]
-#[ignore = "needs HARMONY_MM2_ROM and HARMONY_QUICKNES_CORE, and seeds from HARMONY_MM2_TAPES"]
-fn compiled_keys_match_hand_keys_on_played_states() {
-    let inputs = inputs();
-    let samples = samples();
-    let lowered = Lowered::new(MegaMan2, MegaMan2::STRATEGY).expect("strategy");
-    let mut pair = Pair::new(&inputs);
+fn tape_pool(inputs: &Inputs, pair: &mut Pair) -> Vec<(u64, Saved)> {
     let genesis = pair.save();
     let mut pool: Vec<(u64, Saved)> = vec![(0, genesis.clone())];
-    let mut replayer = Replayer::new(&inputs, &pair);
+    let mut replayer = Replayer::new(inputs, pair);
     for path in tape_paths() {
         pair.restore(&genesis);
         let mut discarded = Vec::new();
         replayer.replay(
-            &mut pair,
+            pair,
             &read_tape(&path).actions,
             &mut discarded,
             |index, pair| {
@@ -559,6 +594,56 @@ fn compiled_keys_match_hand_keys_on_played_states() {
             },
         );
     }
+    pool
+}
+
+#[test]
+#[ignore = "needs HARMONY_MM2_ROM and HARMONY_QUICKNES_CORE, and seeds from HARMONY_MM2_TAPES"]
+fn switch_moves_match_hand_switches_on_played_states() {
+    let inputs = inputs();
+    let samples = samples();
+    let mut pair = Pair::new(&inputs);
+    let pool = tape_pool(&inputs, &mut pair);
+    let mut rand = RomuDuoJrRand::with_seed(seed());
+    let (mut switched, mut idle, mut keys) = (0_usize, 0_usize, Vec::new());
+    while switched < samples {
+        let pick = usize::try_from(rand.next_u64() % pool.len() as u64).unwrap();
+        pair.restore(&pool[pick].1);
+        let mut previous = None;
+        for _ in 0..32 {
+            let action = Mm2Action::draw(&mut rand, previous.as_ref()).expect("draw");
+            previous = Some(action);
+            let stopped = match action {
+                Mm2Action::Chord(_) => pair.act(action, &mut keys).is_some(),
+                Mm2Action::Switch(word) => {
+                    let (ran, frame) = pair.switch(word);
+                    if ran {
+                        switched += 1;
+                    } else {
+                        idle += 1;
+                    }
+                    matches!(frame, Frame::Stopped { .. })
+                }
+            };
+            if stopped {
+                break;
+            }
+        }
+    }
+    eprintln!(
+        "mm2 switch equivalence: {switched} switches played as moves, {idle} switches without a target, {} chord frames",
+        keys.len()
+    );
+}
+
+#[test]
+#[ignore = "needs HARMONY_MM2_ROM and HARMONY_QUICKNES_CORE, and seeds from HARMONY_MM2_TAPES"]
+fn compiled_keys_match_hand_keys_on_played_states() {
+    let inputs = inputs();
+    let samples = samples();
+    let lowered = Lowered::new(MegaMan2, MegaMan2::STRATEGY).expect("strategy");
+    let mut pair = Pair::new(&inputs);
+    let mut pool = tape_pool(&inputs, &mut pair);
     let roots = pool.len();
     let seeded = pair.shadow.report().expect("shadow report");
     let mut rand = RomuDuoJrRand::with_seed(seed());
@@ -633,11 +718,15 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
     let genesis = pair.save();
     let mut replayer = Replayer::new(&inputs, &pair);
     let mut keys = Vec::new();
+    let mut offered = [0_usize; 2];
     for path in tape_paths() {
         let tape = read_tape(&path);
         pair.restore(&genesis);
         let start = keys.len();
-        let replayed = replayer.replay(&mut pair, &tape.actions, &mut keys, |_, _| {});
+        let replayed = replayer.replay(&mut pair, &tape.actions, &mut keys, |_, pair| {
+            let state = &pair.strategy.observation().state;
+            offered[usize::from(MegaMan2.moves(state).offer.is_some())] += 1;
+        });
         let last = keys.last().map(|k: &Keys| k.hand.tier);
         eprintln!(
             "mm2 tape {path}: {} actions, {} keyed frames, {} resyncs after drives ({} with a different arrival key), stop at {:?}, last tier {last:?}",
@@ -654,6 +743,10 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
         keys.len()
     );
     census("tape", &keys);
+    eprintln!(
+        "mm2 tape weapon offers: {} action endpoints with a switch target, {} without",
+        offered[1], offered[0]
+    );
     let report = pair.shadow.report().expect("shadow report");
     eprintln!(
         "mm2 tape shadow on the faithful replay and the played pair ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}, unobserved {}",

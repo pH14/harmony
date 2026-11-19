@@ -21,6 +21,7 @@ use nes_workload::{
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
     mm2::{
+        Mm2Workload,
         archive::Mm2ArchiveKey,
         campaign::{Mm2CampaignRun, Mm2Game},
         target::{Mm2Input, Mm2Stage},
@@ -245,6 +246,14 @@ fn main() -> Result<()> {
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
             }
+            "mm2-strategy"
+                if request.stage.is_some()
+                    || request.ai.is_some()
+                    || !request.whole_game
+                    || request.root_input.is_some() =>
+            {
+                return Err("the strategy MM2 runs the whole game from power-on".into());
+            }
             "famidash"
                 if request.ai.is_some() || (request.stage.is_none() && !request.whole_game) =>
             {
@@ -258,6 +267,7 @@ fn main() -> Result<()> {
             | "pac-man"
             | "punchout"
             | "ice-climbers"
+            | "mm2-strategy"
             | "twin-dragons" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
@@ -339,6 +349,21 @@ fn main() -> Result<()> {
                 )?;
                 nes_workload::workload::write_shadow(shadow.as_ref(), &out)
             }
+            "mm2-strategy" => evaluate_watching(
+                nes_workload::workload::configured(
+                    Mm2Workload::new(MegaMan2, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "mega-man-2",
+                <Mm2Workload>::memory_view,
+            ),
             "mm2" => evaluate_watching(
                 Mm2Game::new_at_stage(
                     &rom,

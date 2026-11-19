@@ -15,7 +15,7 @@ use crate::{
     mm2::{
         action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
         archive::{Mm2ArchiveKey, archive_key},
-        game::{self, Drive, MegaMan2},
+        game::{self, Drive, MegaMan2, Mm2Move},
     },
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
@@ -467,7 +467,7 @@ pub fn menu_next_row(menu: u8) -> u8 {
 }
 
 #[must_use]
-pub fn weapon_menu_row(weapon: u8) -> u8 {
+pub const fn weapon_menu_row(weapon: u8) -> u8 {
     if weapon <= LAST_FIRST_PAGE_WEAPON {
         weapon + 1
     } else {
@@ -1592,7 +1592,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
             driving: Some(transition),
             ..MegaMan2.decode(None, departure)
         };
-        let mut mv = Drive::begin(transition);
+        let mut mv = Mm2Move::Drive(Drive::begin(transition));
         let bound = MegaMan2.move_frames(mv);
         let mut frames = 0_u64;
         let mut steps = Vec::new();

@@ -25,7 +25,7 @@ pub const SWITCH_PLANNED_FRAMES: u64 = 40;
 
 const SWITCH_OPEN_WAIT_FRAMES: u32 = 30;
 
-const SWITCH_FRAME_LIMIT: u32 = 240;
+pub const SWITCH_FRAME_LIMIT: u32 = 240;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Mm2Action {
@@ -84,7 +84,7 @@ pub struct WeaponSwitch {
 
 impl WeaponSwitch {
     #[must_use]
-    pub fn to_row(row: u8) -> Self {
+    pub const fn to_row(row: u8) -> Self {
         Self {
             row,
             step: Step::Open {
@@ -97,19 +97,28 @@ impl WeaponSwitch {
     }
 
     pub fn next(&mut self, state: Mm2MechanicalState) -> Option<ButtonChord> {
+        self.step(state.menu, state.playable())
+    }
+
+    #[must_use]
+    pub fn starts(menu: u8, playable: bool) -> bool {
+        Self::to_row(0).step(menu, playable).is_some()
+    }
+
+    pub fn step(&mut self, menu: u8, playable: bool) -> Option<ButtonChord> {
         if self.frames >= SWITCH_FRAME_LIMIT {
             return None;
         }
-        let settled = menu_row_is_open(state.menu) && state.menu == self.last_menu;
-        self.last_menu = state.menu;
+        let settled = menu_row_is_open(menu) && menu == self.last_menu;
+        self.last_menu = menu;
         let buttons = match self.step {
             Step::Open { pressed, waited } => {
                 if settled {
                     self.step = Step::Move { released: true };
-                    self.choose(state.menu)
+                    self.choose(menu)
                 } else if !pressed {
-                    if state.menu != MENU_CLOSED || !state.playable() {
-                        if !menu_row_is_open(state.menu) {
+                    if menu != MENU_CLOSED || !playable {
+                        if !menu_row_is_open(menu) {
                             return None;
                         }
                         0
@@ -120,7 +129,7 @@ impl WeaponSwitch {
                         };
                         JOYPAD_START
                     }
-                } else if waited >= SWITCH_OPEN_WAIT_FRAMES && state.menu == MENU_CLOSED {
+                } else if waited >= SWITCH_OPEN_WAIT_FRAMES && menu == MENU_CLOSED {
                     return None;
                 } else {
                     self.step = Step::Open {
@@ -136,13 +145,13 @@ impl WeaponSwitch {
             }
             Step::Move { released: true } => {
                 if settled {
-                    self.choose(state.menu)
+                    self.choose(menu)
                 } else {
                     0
                 }
             }
             Step::Close => {
-                if state.menu == MENU_CLOSED {
+                if menu == MENU_CLOSED {
                     return None;
                 }
                 0

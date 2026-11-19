@@ -109,8 +109,19 @@ hand target ends an action, a weapon switch included, at the frame where the
 player first reads dead, as the strategy target does outside a `Drive` step,
 so a rejected path charges the same frames in each.
 
+A weapon switch is a move at the `weapon` site, declared at 1 in 12 beside
+the chord tree. Its 12 options are P, the eight Robot Master weapons and the
+three items, and each plays the hand target's `WeaponSwitch` menu path one
+frame per step. A state offers exactly the hand's switch choices, and only
+where the menu can open; with no choice the state offers no move, where the
+hand target idles 12 frames. A switch answer costs the hand switch's 40
+planned frames. nes-eval runs this workload as `mm2-strategy`, whole game from
+power-on, and the hand workload stays `mm2`.
+
 `equivalence_tests.rs` runs both targets side by side on one-frame chords
-over random play and replayed tapes and checks every frame's key order. A
+over random play and replayed tapes and checks every frame's key order. It
+also plays each hand switch as the strategy's move and checks the offered
+labels and the state after the switch. A
 whole-game run with `"shadow": true` gives each hand target a `ShadowHook`.
 While the shadow is on, the hand target drives a transition with
 `MegaMan2::play`'s chords and passes the step states to `forced`.

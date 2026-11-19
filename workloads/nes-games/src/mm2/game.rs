@@ -4,8 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
-    search::assertion::{Assertion, Declarations, Number},
-    workload::{Game, Moves, Step},
+    mm2::{
+        action::{SWITCH_FRAME_LIMIT, SWITCH_ODDS, SWITCH_PLANNED_FRAMES, WeaponSwitch},
+        target::weapon_menu_row,
+    },
+    search::{
+        assertion::{Assertion, Declarations, Number},
+        choice::{CERTAIN, ChoiceSite},
+    },
+    workload::{Game, Moves, Offer, Play, Step},
 };
 use machine::nes::{ButtonChord, MAX_HOLD_FRAMES};
 
@@ -16,6 +23,7 @@ const CURRENT_BANK: usize = 0x29;
 const STAGE: usize = 0x2a;
 const PLAYER_STATE: usize = 0x2c;
 const WEAPONS_OBTAINED: usize = 0x9a;
+const ITEMS_OBTAINED: usize = 0x9b;
 const WEAPON_ENERGY: usize = 0x9c;
 const WEAPON_ENERGY_BYTES: usize = 12;
 const LIVES: usize = 0xa8;
@@ -40,6 +48,7 @@ const ENEMY_HEALTH_TABLE: usize = 0x6d0;
 const ENEMY_SLOTS: usize = 16;
 const OBJECT_SLOTS: usize = 0x20;
 const OBJECT_ACTIVE: u8 = 0x80;
+const PLAYER_FACING_RIGHT: u8 = 0x40;
 const ENEMY_KILLED_ID: u8 = 0x06;
 const ENEMY_HIT_CAP: u8 = 4;
 const ENEMY_DAMAGE_CAP: u8 = 24;
@@ -99,6 +108,13 @@ const CURSOR_SETTLE_FRAMES: u8 = 30;
 const GENESIS_WAIT_FRAMES: u32 = 670;
 const AWARD_SETTLE_FRAMES: u32 = 900;
 const DRIVE_FRAMES: u64 = 1_800 + 900 + 16 * 338 + 68 + 4 + 8_000;
+
+const FIRST_ITEM_WEAPON: u8 = 9;
+const LAST_WEAPON: u8 = 11;
+const CHORD_LABEL: u16 = 0;
+const SWITCH_OPTIONS: usize = LAST_WEAPON as usize + 2;
+pub const WEAPON_SITE: u16 = 0;
+pub const SWITCHES: [(u16, Play<Mm2Move>); SWITCH_OPTIONS] = switches();
 
 const ROBOT_MASTER_ORDER: [u8; 8] = [7, 5, 6, 1, 3, 0, 2, 4];
 const CRASH: u8 = 7;
@@ -222,6 +238,8 @@ pub struct Mm2State {
     pub menu: u8,
     pub menu_mode: u8,
     pub weapons_obtained: u8,
+    pub items_obtained: u8,
+    pub facing_right: bool,
     pub boss_health: u8,
     pub boss_phase: u8,
     pub camera_state: u8,
@@ -327,6 +345,8 @@ impl Mm2State {
             menu: menu_row(ram, bank),
             menu_mode: byte(ram, MENU_MODE),
             weapons_obtained: byte(ram, WEAPONS_OBTAINED),
+            items_obtained: byte(ram, ITEMS_OBTAINED),
+            facing_right: byte(ram, OBJECT_FLAG_TABLE) & PLAYER_FACING_RIGHT != 0,
             boss_health: byte(ram, BOSS_HEALTH),
             boss_phase,
             camera_state: byte(ram, CAMERA_STATE),
@@ -452,6 +472,51 @@ impl Mm2State {
 
     fn last_castle_boss(&self) -> bool {
         self.stage != WILY5_STAGE || (self.refights == u8::MAX && self.current_boss == WILY_MACHINE)
+    }
+
+    #[must_use]
+    pub fn stage_cleared(&self) -> bool {
+        if self.stage < FIRST_WILY_STAGE {
+            self.boss_phase >= BOSS_PHASE_DEFEATED
+        } else {
+            self.stage <= LAST_WILY_STAGE
+                && self.boss_phase == BOSS_PHASE_CLEARED
+                && self.last_castle_boss()
+        }
+    }
+
+    #[must_use]
+    pub fn is_dying(&self) -> bool {
+        self.player_state == PLAYER_STATE_DYING
+    }
+
+    fn holds(&self, weapon: u8) -> bool {
+        let energy = || {
+            self.weapon_energies
+                .get(usize::from(weapon) - 1)
+                .is_some_and(|energy| *energy > 0)
+        };
+        match weapon {
+            0 => true,
+            1..=ROBOT_MASTERS => self.weapons_obtained & (1 << (weapon - 1)) != 0 && energy(),
+            FIRST_ITEM_WEAPON..=LAST_WEAPON => {
+                self.items_obtained & (1 << (weapon - FIRST_ITEM_WEAPON)) != 0 && energy()
+            }
+            _ => false,
+        }
+    }
+
+    pub fn switch_targets(&self) -> impl Iterator<Item = u8> + '_ {
+        (0..=LAST_WEAPON).filter(|weapon| *weapon != self.weapon && self.holds(*weapon))
+    }
+
+    #[must_use]
+    pub fn switch_offer(&self) -> u64 {
+        if !WeaponSwitch::starts(self.menu, self.playable()) {
+            return 0;
+        }
+        self.switch_targets()
+            .fold(0, |offered, weapon| offered | 1 << switch_label(weapon))
     }
 
     #[must_use]
@@ -647,6 +712,31 @@ pub enum Drive {
     Arrive { stage: u8, waited: u16 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mm2Move {
+    Drive(Drive),
+    Switch(WeaponSwitch),
+}
+
+const fn switch_label(weapon: u8) -> u16 {
+    weapon as u16 + 1
+}
+
+const fn switches() -> [(u16, Play<Mm2Move>); SWITCH_OPTIONS] {
+    let mut options = [(CHORD_LABEL, Play::Chord); SWITCH_OPTIONS];
+    let mut weapon = 0;
+    while weapon <= LAST_WEAPON {
+        options[weapon as usize + 1] = (
+            switch_label(weapon),
+            Play::Move(Mm2Move::Switch(WeaponSwitch::to_row(weapon_menu_row(
+                weapon,
+            )))),
+        );
+        weapon += 1;
+    }
+    options
+}
+
 impl Drive {
     #[must_use]
     pub fn begin(transition: Transition) -> Self {
@@ -704,6 +794,106 @@ pub fn power_on_walk() -> Vec<ButtonChord> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MegaMan2;
 
+impl MegaMan2 {
+    pub fn drive(self, mv: Drive, state: &Mm2State) -> Option<Step<Drive>> {
+        match mv {
+            Drive::Award { stage, chunks } => {
+                if state.weapons_obtained & (1 << stage) != 0 {
+                    self.drive(Drive::Settle { chord: 0 }, state)
+                } else if chunks >= AWARD_WAIT_CHUNKS {
+                    None
+                } else {
+                    step(
+                        0,
+                        MAX_HOLD_FRAMES,
+                        Drive::Award {
+                            stage,
+                            chunks: chunks + 1,
+                        },
+                    )
+                }
+            }
+            Drive::Settle { chord } => match idle(AWARD_SETTLE_FRAMES).get(usize::from(chord)) {
+                Some(settle) => step(0, settle.hold_frames, Drive::Settle { chord: chord + 1 }),
+                None => self.drive(Drive::Walk { round: 0, chord: 0 }, state),
+            },
+            Drive::Walk { round: _, chord: 0 } if state.at_stage_select() => self.drive(
+                Drive::Path {
+                    stage: next_stage_after(state.weapons_obtained),
+                    chord: 0,
+                },
+                state,
+            ),
+            Drive::Walk { round, chord: 0 } if round >= STAGE_SELECT_WALK_ROUNDS => None,
+            Drive::Walk { round, chord } => match walk_round().get(usize::from(chord)) {
+                Some(press) => step(
+                    press.buttons,
+                    press.hold_frames,
+                    Drive::Walk {
+                        round,
+                        chord: chord + 1,
+                    },
+                ),
+                None => self.drive(
+                    Drive::Walk {
+                        round: round + 1,
+                        chord: 0,
+                    },
+                    state,
+                ),
+            },
+            Drive::Path { stage, chord } => {
+                let path = select_path(stage);
+                match path.get(usize::from(chord / 2)) {
+                    Some(direction) if chord % 2 == 0 => step(
+                        *direction,
+                        PRESS_FRAMES,
+                        Drive::Path {
+                            stage,
+                            chord: chord + 1,
+                        },
+                    ),
+                    Some(_) => step(
+                        0,
+                        CURSOR_SETTLE_FRAMES,
+                        Drive::Path {
+                            stage,
+                            chord: chord + 1,
+                        },
+                    ),
+                    None => step(
+                        JOYPAD_START,
+                        PRESS_FRAMES,
+                        Drive::Arrive { stage, waited: 0 },
+                    ),
+                }
+            }
+            Drive::Arrive { stage, waited } => {
+                if state.arrived_at(stage) || waited >= arrival_limit(stage) {
+                    None
+                } else {
+                    step(
+                        0,
+                        1,
+                        Drive::Arrive {
+                            stage,
+                            waited: waited + 1,
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn drive_frames(mv: Drive) -> u64 {
+        match mv {
+            Drive::Arrive { stage, .. } => u64::from(arrival_limit(stage)),
+            _ => DRIVE_FRAMES,
+        }
+    }
+}
+
 fn value(name: &'static str, value: i64, min: i64, max: i64) -> Assertion {
     Assertion::Value {
         name,
@@ -727,7 +917,7 @@ fn flag(name: &'static str, value: bool) -> Assertion {
 
 impl Game for MegaMan2 {
     type State = Mm2State;
-    type Move = Drive;
+    type Move = Mm2Move;
 
     const NAME: &'static str = "mm2";
     const STRATEGY: &'static str = include_str!("mm2.toml");
@@ -850,106 +1040,60 @@ impl Game for MegaMan2 {
         }
     }
 
-    fn moves(&self, state: &Mm2State) -> Moves<Drive> {
-        state.driving.map_or_else(Moves::none, |transition| {
-            Moves::forced(Drive::begin(transition))
-        })
+    fn moves(&self, state: &Mm2State) -> Moves<Mm2Move> {
+        match state.driving {
+            Some(transition) => Moves::forced(Mm2Move::Drive(Drive::begin(transition))),
+            None => match state.switch_offer() {
+                0 => Moves::none(),
+                offered => Moves::offer(Offer {
+                    site: WEAPON_SITE,
+                    default: CHORD_LABEL,
+                    options: &SWITCHES,
+                    offered,
+                }),
+            },
+        }
     }
 
-    fn play(&self, mv: Drive, state: &Mm2State) -> Option<Step<Drive>> {
+    fn move_sites(&self) -> Vec<ChoiceSite> {
+        let labels = ["chord", "p"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain((1..=ROBOT_MASTERS).map(|weapon| format!("weapon_{weapon}")))
+            .chain(
+                (FIRST_ITEM_WEAPON..=LAST_WEAPON)
+                    .map(|item| format!("item_{}", item - ROBOT_MASTERS)),
+            );
+        vec![ChoiceSite::new("weapon", labels).with_contrary(CERTAIN / SWITCH_ODDS as u32)]
+    }
+
+    fn play(&self, mv: Mm2Move, state: &Mm2State) -> Option<Step<Mm2Move>> {
         match mv {
-            Drive::Award { stage, chunks } => {
-                if state.weapons_obtained & (1 << stage) != 0 {
-                    self.play(Drive::Settle { chord: 0 }, state)
-                } else if chunks >= AWARD_WAIT_CHUNKS {
-                    None
-                } else {
-                    step(
-                        0,
-                        MAX_HOLD_FRAMES,
-                        Drive::Award {
-                            stage,
-                            chunks: chunks + 1,
-                        },
-                    )
-                }
-            }
-            Drive::Settle { chord } => match idle(AWARD_SETTLE_FRAMES).get(usize::from(chord)) {
-                Some(settle) => step(0, settle.hold_frames, Drive::Settle { chord: chord + 1 }),
-                None => self.play(Drive::Walk { round: 0, chord: 0 }, state),
-            },
-            Drive::Walk { round: _, chord: 0 } if state.at_stage_select() => self.play(
-                Drive::Path {
-                    stage: next_stage_after(state.weapons_obtained),
-                    chord: 0,
-                },
-                state,
-            ),
-            Drive::Walk { round, chord: 0 } if round >= STAGE_SELECT_WALK_ROUNDS => None,
-            Drive::Walk { round, chord } => match walk_round().get(usize::from(chord)) {
-                Some(press) => step(
-                    press.buttons,
-                    press.hold_frames,
-                    Drive::Walk {
-                        round,
-                        chord: chord + 1,
-                    },
-                ),
-                None => self.play(
-                    Drive::Walk {
-                        round: round + 1,
-                        chord: 0,
-                    },
-                    state,
-                ),
-            },
-            Drive::Path { stage, chord } => {
-                let path = select_path(stage);
-                match path.get(usize::from(chord / 2)) {
-                    Some(direction) if chord % 2 == 0 => step(
-                        *direction,
-                        PRESS_FRAMES,
-                        Drive::Path {
-                            stage,
-                            chord: chord + 1,
-                        },
-                    ),
-                    Some(_) => step(
-                        0,
-                        CURSOR_SETTLE_FRAMES,
-                        Drive::Path {
-                            stage,
-                            chord: chord + 1,
-                        },
-                    ),
-                    None => step(
-                        JOYPAD_START,
-                        PRESS_FRAMES,
-                        Drive::Arrive { stage, waited: 0 },
-                    ),
-                }
-            }
-            Drive::Arrive { stage, waited } => {
-                if state.arrived_at(stage) || waited >= arrival_limit(stage) {
-                    None
-                } else {
-                    step(
-                        0,
-                        1,
-                        Drive::Arrive {
-                            stage,
-                            waited: waited + 1,
-                        },
-                    )
-                }
+            Mm2Move::Drive(drive) => self.drive(drive, state).map(|step| Step {
+                chord: step.chord,
+                rest: step.rest.map(Mm2Move::Drive),
+            }),
+            Mm2Move::Switch(mut switch) => {
+                switch.step(state.menu, state.playable()).map(|chord| Step {
+                    chord,
+                    rest: Some(Mm2Move::Switch(switch)),
+                })
             }
         }
     }
 
-    fn move_frames(&self, mv: Drive) -> u64 {
+    fn move_frames(&self, mv: Mm2Move) -> u64 {
         match mv {
-            Drive::Arrive { stage, .. } => u64::from(arrival_limit(stage)),
-            _ => DRIVE_FRAMES,
+            Mm2Move::Drive(drive) => Self::drive_frames(drive),
+            Mm2Move::Switch(_) => u64::from(SWITCH_FRAME_LIMIT),
+        }
+    }
+
+    fn answer_frames(site: u16, label: u16) -> u64 {
+        if site == WEAPON_SITE && label != CHORD_LABEL && usize::from(label) < SWITCH_OPTIONS {
+            SWITCH_PLANNED_FRAMES
+        } else {
+            1
         }
     }
 }
@@ -962,7 +1106,7 @@ mod tests {
     fn drive_frames(mut mv: Drive, state: &Mm2State) -> (u64, u8) {
         let mut frames = 0;
         let mut longest = 0;
-        while let Some(step) = MegaMan2.play(mv, state) {
+        while let Some(step) = MegaMan2.drive(mv, state) {
             frames += u64::from(step.chord.hold_frames);
             longest = longest.max(step.chord.hold_frames);
             match step.rest {
@@ -997,7 +1141,7 @@ mod tests {
         };
         let (frames, longest) = drive_frames(begin, &awarded);
         assert!(longest <= MAX_HOLD_FRAMES);
-        assert!(frames <= MegaMan2.move_frames(begin));
+        assert!(frames <= MegaMan2::drive_frames(begin));
         let (waited, _) = drive_frames(begin, &Mm2State::default());
         assert_eq!(
             waited,
@@ -1009,5 +1153,81 @@ mod tests {
     fn a_fresh_decode_of_blank_memory_drives_nothing() {
         let state = MegaMan2.decode(None, &[0; machine::nes::WRAM_SIZE]);
         assert!(state.driving.is_none());
+    }
+
+    #[test]
+    fn the_switch_targets_are_the_hand_switch_choices() {
+        let mut rand = crate::search::rand::RomuDuoJrRand::with_seed(12);
+        let mut wram = [0_u8; machine::nes::WRAM_SIZE];
+        for _ in 0..20_000 {
+            for address in [WEAPONS_OBTAINED, ITEMS_OBTAINED, SELECTED_WEAPON] {
+                wram[address] = u8::try_from(rand.next_u64() >> 56).unwrap();
+            }
+            wram[SELECTED_WEAPON] %= LAST_WEAPON + 2;
+            for energy in &mut wram[WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES] {
+                *energy = u8::try_from(rand.next_u64() >> 62).unwrap();
+            }
+            let state = MegaMan2.decode(None, &wram);
+            assert_eq!(
+                state.switch_targets().collect::<Vec<_>>(),
+                crate::mm2::target::switch_choices(&wram).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn each_switch_label_plays_the_hand_switch_to_its_weapon_row() {
+        for weapon in 0..=LAST_WEAPON {
+            let label = switch_label(weapon);
+            assert_eq!(
+                SWITCHES[usize::from(label)],
+                (
+                    label,
+                    Play::Move(Mm2Move::Switch(WeaponSwitch::to_row(weapon_menu_row(
+                        weapon
+                    ))))
+                )
+            );
+        }
+        assert_eq!(SWITCHES[0], (CHORD_LABEL, Play::Chord));
+        assert_eq!(MegaMan2.move_sites()[0].labels.len(), SWITCHES.len());
+    }
+
+    #[test]
+    fn the_weapon_offer_needs_a_target_and_a_menu_that_can_open() {
+        let playing = Mm2State {
+            bank: GAMEPLAY_BANK,
+            health: FULL_HEALTH,
+            player_state: PLAYER_STATE_STANDING,
+            menu: MENU_CLOSED,
+            weapon: 0,
+            ..Mm2State::default()
+        };
+        assert_eq!(MegaMan2.moves(&playing).offer, None);
+        let armed = Mm2State {
+            weapons_obtained: 1,
+            weapon_energies: [28; WEAPONS],
+            ..playing
+        };
+        let offer = MegaMan2.moves(&armed).offer.expect("an offer");
+        assert_eq!(offer.labels(), [CHORD_LABEL, switch_label(1)]);
+        assert_eq!(
+            MegaMan2
+                .moves(&Mm2State {
+                    menu: MENU_UNKNOWN,
+                    ..armed
+                })
+                .offer,
+            None
+        );
+    }
+
+    #[test]
+    fn a_switch_answer_costs_the_hand_switch_plan() {
+        assert_eq!(
+            MegaMan2::answer_frames(WEAPON_SITE, 1),
+            SWITCH_PLANNED_FRAMES
+        );
+        assert_eq!(MegaMan2::answer_frames(WEAPON_SITE, CHORD_LABEL), 1);
     }
 }
