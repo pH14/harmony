@@ -433,6 +433,31 @@ searcher's `ShadowReport`. The hook records a hand lineage at every candidate,
 where the archive records it at admitted entries only, so a hand key whose
 lineage holds more than the parent key can disagree there.
 
+### Metroid
+
+Metroid implements `Game` in `metroid/game.rs`, and its `decode` reads work RAM
+followed by the cartridge RAM that holds equipment, missile capacity and energy
+tanks (`MEMORY_SIZE`). It still runs in its own `target` and `campaign`.
+`metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
+`metroid/plan.rs` with the same goals and latches, the place (area, map cell,
+boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
+and the two hand preferences. A route stage's objective is the last route index
+the path stood on within that stage, `last(index(cell, route), stage)`, and 0
+when the stage is entered off the route, as the hand plan carries a route
+objective only from a parent in the same stage. The kraid_door stage ends at the
+last cell of its route, `objective + 1 >= len(to_kraid_door)`. Boss damage is the drop from
+`highest` boss health since the area last changed, rounded up to fours.
+`balance` is the rank of the smaller of missiles over capacity and health over
+the energy cap among every such ratio, so the second preference line is
+(items, tanks, balance) and ends in `"above"`, which breaks its ties by missiles
+then health as the hand balance preference does. The first line reads health
+below 8192, since health of 8000 and above is the BCD-underflow terminal.
+Tests in `metroid/game.rs` check that the strategy's stage and objective equal
+`plan::locate` along random paths with restores, and a test in
+`metroid/archive.rs` checks the second line against the hand balance order.
+`StrategyKeying` keys the campaign by a strategy without aggregates, by default
+`metroid/position.toml`, the position strategy.
+
 ## Arcade live-feed observations
 
 Arcade adapters expose each archived snapshot's game-frame count for exact

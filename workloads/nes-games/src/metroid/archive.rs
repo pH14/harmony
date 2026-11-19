@@ -1098,11 +1098,16 @@ mod tests {
     }
 
     #[test]
-    fn the_balance_rank_orders_every_reachable_stock_as_its_exact_ratio() {
-        use crate::metroid::{
-            game::{balance, balance_max},
-            target::MAX_ENERGY_TANKS,
+    fn the_strategy_balance_line_orders_every_reachable_stock_as_the_balance_preference() {
+        use crate::{
+            metroid::{
+                game::{Metroid, balance, balance_max},
+                target::MAX_ENERGY_TANKS,
+            },
+            search::assertion::{Accumulator, AssertionKey},
+            workload::{Game, Lowered},
         };
+        let lowered = Lowered::new(Metroid, Metroid::STRATEGY).unwrap();
         let stocked = |missiles, missile_capacity, health, energy_tanks| MetroidMechanicalState {
             area: 0x10,
             map_x: 3,
@@ -1137,6 +1142,34 @@ mod tests {
                 states.push(stocked(0, 0, health, energy_tanks));
             }
         }
+        let keyed: Vec<(MetroidArchiveKey, AssertionKey)> = states
+            .iter()
+            .map(|state| {
+                let (record, _) = lowered.record(state);
+                let key = lowered
+                    .compiled
+                    .observe(&record, &mut Accumulator::default())
+                    .key
+                    .unwrap();
+                (archive_key(*state), key)
+            })
+            .collect();
+        let mut sorted = keyed.clone();
+        sorted.sort_by(|a, b| a.0.balance_cmp(b.0));
+        let shape = lowered.compiled.shape();
+        let mut tied_tiers = 0_usize;
+        for pair in sorted.windows(2) {
+            let ((hand_a, strategy_a), (hand_b, strategy_b)) = (pair[0], pair[1]);
+            assert_eq!(
+                shape.preference_cmp(strategy_a, 1, strategy_b),
+                hand_a.balance_cmp(hand_b),
+                "{hand_a:?} {hand_b:?}"
+            );
+            if (hand_a.items, hand_a.tanks) == (hand_b.items, hand_b.tanks) {
+                tied_tiers += 1;
+            }
+        }
+        assert!(tied_tiers > 60_000);
         let ratio = |state: &MetroidMechanicalState| {
             if state.missile_capacity == 0 {
                 return (0_u64, 1_u64);
