@@ -1044,6 +1044,30 @@ impl FaultTarget {
         result
     }
 
+    pub fn run_detached<T>(
+        &mut self,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, Box<dyn Error>> {
+        let endpoint = self
+            .snapshot()?
+            .ok_or("a detached run needs a runnable endpoint")?;
+        let action_observations = self.action_observations.clone();
+        let execution_ticks = self.execution_ticks;
+        let guest_horizons_run = self.guest_horizons_run;
+        let job = crate::job_observation::take();
+        let result = run(self);
+        let rewound = self.restore(&endpoint);
+        crate::job_observation::put(job);
+        rewound?;
+        if self.failed {
+            return Err("the endpoint before a detached run could not be restored".into());
+        }
+        self.action_observations = action_observations;
+        self.execution_ticks = execution_ticks;
+        self.guest_horizons_run = guest_horizons_run;
+        Ok(result)
+    }
+
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
             let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;

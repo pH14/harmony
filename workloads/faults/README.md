@@ -710,6 +710,37 @@ doubling only while its completed generation is stale or faults remain pending.
 `actions_applied` remains the recorded input prefix, while `settle_actions` and
 `settle_ticks` account for that deterministic validation tail.
 
+A campaign run with `HARMONY_FAULTS_SETTLE_RECORD=PATH` ends every job with a
+settle phase that observes the endpoint after faults end without changing the
+search. After the suffix, the target snapshots its endpoint and applies, outside
+the recorded input, a 16-tick `EndFaults`, a 16-tick `Restart` for each node
+whose alive bit is clear, the heal hook named by `HARMONY_FAULTS_SETTLE_HEAL`
+for 16 ticks when that is set, and then 50-tick `Wait` actions. An `EventKill`
+window stays in the supervisor's active set for the rest of the execution,
+whether or not its kill fires, and the supervisor reports a fault in force
+while any window is active, so without `EndFaults` no check after the first
+`EventKill` would run the replica comparison. The faults-in-force,
+recovery-pending and fault-free-check registers of the
+[supervisor](../../consonance/harmony-linux/supervisor/README.md) end it: the
+workload is ready once neither faults nor recovery are pending, and the outcome
+is `compared` when a check that started after that has exited successfully.
+The phase also ends when the workload is not ready 3,000 ticks (the 30-second
+recovery limit) after the restarts and heal end, when no such check has
+finished 6,000 ticks after they end, or at a new violation, a terminal stop, a
+hang or a cancellation. The target then restores the snapshot and its tick,
+horizon and last-action observation counters, so the job's result, its
+`execution_work` and every search decision are those of the run without the
+phase. Each job appends one JSON line to `PATH` with the path and suffix
+lengths, the job's execution work, the event-kill armed bits at the suffix's
+end, the nodes restarted, the ticks to ready and
+to the comparison, the phase's actions and ticks, the fault-free check count at
+the job's start, after the suffix and after the phase, and the outcome. A
+violation found in the phase appears only there, with its full input for
+`harmony debug`; it enters neither the archive nor the report. A job that hung,
+ended terminal, was cancelled or reached its objective gets a line with a
+`skipped:` outcome and no phase. A resumed run replays its recorded jobs and
+appends their lines again.
+
 ## macOS
 
 Hypervisor.framework allows one virtual machine per process, so a macOS run

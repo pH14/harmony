@@ -59,6 +59,8 @@ use crate::{
     },
 };
 
+mod settle;
+
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v13";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
 pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v10";
@@ -534,8 +536,16 @@ pub(crate) fn execute_job(
         return Err("fault replay certificate count does not match its action path".into());
     }
     let _cancel = crate::consonance::JobCancel::install(stop.cancellation().cloned());
+    let settle_policy = settle::policy()?;
+    let mut settle_start = settle::JobStart {
+        work: target.execution_ticks(),
+        fault_free_checks_finished: 0,
+    };
     target.restore(origin_snapshot)?;
     if job_hung(target, "parent reconstruction")? {
+        if let Some(policy) = settle_policy {
+            settle::skipped(target, policy, settle_start, 0, settle::Skip::Hung);
+        }
         return Ok(hung_job(&[]));
     }
     for (action, certificate) in replay.iter().zip(replay_certificates) {
@@ -546,11 +556,15 @@ pub(crate) fn execute_job(
         let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
         if job_hung(target, "parent replay")? {
+            if let Some(policy) = settle_policy {
+                settle::skipped(target, policy, settle_start, 0, settle::Skip::Hung);
+            }
             return Ok(hung_job(&[]));
         }
         checked?;
         crate::job_observation::tail(true);
     }
+    settle_start.fault_free_checks_finished = target.observation().fault_free_checks_finished;
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = outcome(run, target);
@@ -563,6 +577,9 @@ pub(crate) fn execute_job(
         let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
         if job_hung(target, "suffix execution")? {
+            if let Some(policy) = settle_policy {
+                settle::skipped(target, policy, settle_start, index + 1, settle::Skip::Hung);
+            }
             return Ok(hung_job(&suffix[..=index]));
         }
         let captured = captured?;
@@ -597,6 +614,23 @@ pub(crate) fn execute_job(
         });
         if outcome.should_stop(&stop) {
             break;
+        }
+    }
+    if let Some(policy) = settle_policy {
+        let skip = if objective_seen {
+            Some(settle::Skip::Finding)
+        } else if !matches!(disposition(target), ExecutionDisposition::Runnable) {
+            Some(settle::Skip::Terminal)
+        } else if stop.cancelled() {
+            Some(settle::Skip::Cancelled)
+        } else {
+            None
+        };
+        match skip {
+            Some(skip) => settle::skipped(target, policy, settle_start, actions.len(), skip),
+            None => {
+                settle::settle_execution(run, target, &stop, policy, settle_start, actions.len())?
+            }
         }
     }
     Ok(CampaignJobResult {
