@@ -242,7 +242,6 @@ impl Pair {
 struct Replayer {
     reference: Mm2Target<QuickNesMachine>,
     genesis: Mm2Snapshot,
-    shadow: Arc<Shadow<MegaMan2, Mm2ArchiveKey>>,
     arrivals: usize,
 }
 
@@ -253,16 +252,14 @@ struct Replayed {
 }
 
 impl Replayer {
-    fn new(inputs: &Inputs) -> Self {
+    fn new(inputs: &Inputs, pair: &Pair) -> Self {
         let mut reference =
             Mm2Target::whole_game_from_machine(machine(inputs), &[]).expect("reference target");
-        let shadow = Shadow::new(MegaMan2).expect("shadow");
-        reference.set_shadow(shadow.hook());
+        reference.set_shadow(pair.shadow.hook());
         let genesis = reference.snapshot().expect("reference snapshot");
         Self {
             reference,
             genesis,
-            shadow,
             arrivals: 0,
         }
     }
@@ -547,7 +544,7 @@ fn compiled_keys_match_hand_keys_on_played_states() {
     let mut pair = Pair::new(&inputs);
     let genesis = pair.save();
     let mut pool: Vec<(u64, Saved)> = vec![(0, genesis.clone())];
-    let mut replayer = Replayer::new(&inputs);
+    let mut replayer = Replayer::new(&inputs, &pair);
     for path in tape_paths() {
         pair.restore(&genesis);
         let mut discarded = Vec::new();
@@ -623,7 +620,7 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         played.unobserved
     );
     assert_eq!(played.disagreements.total(), 0, "{:?}", played.examples);
-    assert_eq!(played.unknown_restores, seeded.unknown_restores);
+    assert_eq!(played.unknown_restores, 0);
     assert_eq!(played.unobserved, 0);
 }
 
@@ -634,7 +631,7 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
     let lowered = Lowered::new(MegaMan2, MegaMan2::STRATEGY).expect("strategy");
     let mut pair = Pair::new(&inputs);
     let genesis = pair.save();
-    let mut replayer = Replayer::new(&inputs);
+    let mut replayer = Replayer::new(&inputs, &pair);
     let mut keys = Vec::new();
     for path in tape_paths() {
         let tape = read_tape(&path);
@@ -657,9 +654,9 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
         keys.len()
     );
     census("tape", &keys);
-    let report = replayer.shadow.report().expect("shadow report");
+    let report = pair.shadow.report().expect("shadow report");
     eprintln!(
-        "mm2 tape shadow on the faithful replay ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}, unobserved {}",
+        "mm2 tape shadow on the faithful replay and the played pair ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}, unobserved {}",
         replayer.arrivals,
         report.states,
         report.keyed_states,
