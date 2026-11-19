@@ -1,5 +1,5 @@
 goal = "victory"
-reject = ["dead", "doomed", "not in(raw_world * 4 + raw_level, route_levels)", "vine_out_of_reach"]
+reject = ["dead", "doomed and action_end", "not in(raw_world * 4 + raw_level, route_levels) and action_end", "vine_out_of_reach and action_end"]
 spread = ["area_type", "area_pointer", "arrival_page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
 identity = "screen_x"
 prefer = [["clock: more"]]
