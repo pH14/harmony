@@ -126,7 +126,11 @@ executions, and under `"keep_stream": true` with witness verification, which
 keeps the stream of a run of any length. A campaign-verified run's replay writes
 `records-replay.bin`, and `result.json` says whether it equals `records.bin`
 byte for byte. Other games reject `strategy` and `records`, and a live view
-rejects `strategy`, `records` and `keep_stream`.
+rejects `strategy`, `records`, `shadow` and `keep_stream`.
+
+A hand-keyed game with a shadow hook takes `"shadow": true`: the run computes
+the game's strategy key beside every hand key it observes and writes the
+comparison (`ShadowReport`) to `shadow-keys.json`. Other games reject it.
 
 Every run also reports `decision_stream_sha256` and `decision_stream_records`
 in `result.json`, a digest of the stream's records after the header without
