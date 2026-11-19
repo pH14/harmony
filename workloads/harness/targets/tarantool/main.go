@@ -141,7 +141,7 @@ func (c *client) change(ctx context.Context, node, function string, args ...any)
 }
 
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	node := c.names[sdk.Below(uint64(len(c.names)))]
+	node := c.names[sdk.Below("tarantool.server", uint64(len(c.names)))]
 	switch op.F {
 	case family.RegisterWrite:
 		_, err := c.change(ctx, node, "harness_write", op.K, op.V.(string))

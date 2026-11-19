@@ -42,7 +42,7 @@ func quiet(client.LogLevel, string, ...any) {}
 // dqlite serves reads and writes only there. The connector dials the leader
 // last, so the last dialed address names the node behind the connection.
 func connect(ctx context.Context) (*dqlite.Conn, string, error) {
-	start := int(sdk.Below(uint64(len(nodes))))
+	start := int(sdk.Below("dqlite.server", uint64(len(nodes))))
 	infos := make([]client.NodeInfo, 0, len(nodes))
 	for at := range nodes {
 		index := (start + at) % len(nodes)

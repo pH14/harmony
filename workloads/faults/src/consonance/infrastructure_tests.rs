@@ -65,6 +65,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
         )?)),
         root: None,
         boot_cache: None,
+        answers: Vec::new(),
     };
     let mut target = FaultTarget::fresh(&[], &initramfs, &config)?;
     let root = target

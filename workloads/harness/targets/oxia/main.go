@@ -44,7 +44,7 @@ type client struct {
 }
 
 func (c *client) dial(ctx context.Context) error {
-	address := c.servers[sdk.Below(uint64(len(c.servers)))]
+	address := c.servers[sdk.Below("oxia.server", uint64(len(c.servers)))]
 	type dialed struct {
 		client oxia.SyncClient
 		err    error

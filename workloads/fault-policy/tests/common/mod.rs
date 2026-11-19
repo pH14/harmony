@@ -109,6 +109,7 @@ pub fn arb_answer() -> impl Strategy<Value = Answer> {
         Just(Answer::Nominal),
         prop::collection::vec(any::<u8>(), 0..64).prop_map(Answer::Supply),
         arb_fault().prop_map(Answer::Fault),
+        any::<u16>().prop_map(Answer::Label),
     ]
 }
 
@@ -170,6 +171,7 @@ pub fn arb_class() -> impl Strategy<Value = DecisionClass> {
         Just(DecisionClass::BlockIo),
         Just(DecisionClass::Process),
         Just(DecisionClass::Buggify),
+        Just(DecisionClass::Choice),
     ]
 }
 
@@ -188,6 +190,8 @@ pub fn arb_point() -> impl Strategy<Value = DecisionPoint> {
             .prop_map(|(op, lba, len)| DecisionPoint::BlockIo { op, lba, len }),
         any::<u32>().prop_map(|n| DecisionPoint::Process { node: NodeId(n) }),
         any::<u32>().prop_map(|point| DecisionPoint::Buggify { point }),
+        (any::<u32>(), 0u16..=64)
+            .prop_map(|(site, options)| DecisionPoint::Choice { site, options }),
     ]
 }
 
@@ -299,7 +303,7 @@ pub fn ref_admissible(point: &DecisionPoint, ans: &Answer) -> bool {
         | DecisionPoint::Buggify { .. } => match ans {
             Answer::Nominal => true,
             Answer::Fault(f) => f.class() == point.class(),
-            Answer::Supply(_) => false,
+            Answer::Supply(_) | Answer::Label(_) => false,
         },
         DecisionPoint::BlockIo { len, .. } => match ans {
             Answer::Nominal => true,
@@ -310,7 +314,12 @@ pub fn ref_admissible(point: &DecisionPoint, ans: &Answer) -> bool {
                         _ => true,
                     }
             }
-            Answer::Supply(_) => false,
+            Answer::Supply(_) | Answer::Label(_) => false,
+        },
+        DecisionPoint::Choice { options, .. } => match ans {
+            Answer::Nominal => true,
+            Answer::Label(label) => label < options,
+            Answer::Supply(_) | Answer::Fault(_) => false,
         },
     }
 }

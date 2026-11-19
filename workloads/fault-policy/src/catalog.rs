@@ -14,6 +14,7 @@ pub enum DecisionClass {
     BlockIo = 5,
     Process = 6,
     Buggify = 7,
+    Choice = 8,
 }
 
 impl DecisionClass {
@@ -22,7 +23,7 @@ impl DecisionClass {
     }
 
     pub fn is_fault(self) -> bool {
-        !self.is_supply()
+        !self.is_supply() && self != Self::Choice
     }
 
     #[must_use]
@@ -39,6 +40,7 @@ impl DecisionClass {
             5 => Some(Self::BlockIo),
             6 => Some(Self::Process),
             7 => Some(Self::Buggify),
+            8 => Some(Self::Choice),
             _ => None,
         }
     }
@@ -86,6 +88,10 @@ pub enum DecisionPoint {
     Buggify {
         point: u32,
     },
+    Choice {
+        site: u32,
+        options: u16,
+    },
 }
 
 impl DecisionPoint {
@@ -98,6 +104,7 @@ impl DecisionPoint {
             Self::BlockIo { .. } => DecisionClass::BlockIo,
             Self::Process { .. } => DecisionClass::Process,
             Self::Buggify { .. } => DecisionClass::Buggify,
+            Self::Choice { .. } => DecisionClass::Choice,
         }
     }
 
@@ -122,6 +129,8 @@ impl DecisionPoint {
                 | Self::Buggify { .. },
                 Answer::Fault(f),
             ) => f.class() == self.class() && self.fault_bounds_ok(f),
+            (Self::Choice { .. }, Answer::Nominal) => true,
+            (Self::Choice { options, .. }, Answer::Label(label)) => label < options,
             _ => false,
         }
     }
@@ -208,6 +217,7 @@ pub enum Answer {
     Nominal,
     Supply(Vec<u8>),
     Fault(Fault),
+    Label(u16),
 }
 
 impl Answer {

@@ -284,6 +284,11 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
     let out = request.destination.create()?;
     let mut manifest = original.inherit(&parent, &out, "search")?;
     manifest.config = config;
+    if let SearchStart::Actions(prefix) = &start {
+        manifest
+            .answers
+            .retain(|answer| answer.step <= prefix.len() as u64);
+    }
     manifest.actions.clear();
     manifest.settle = true;
     manifest.save(&out)?;
@@ -391,18 +396,20 @@ pub fn run_prepared(
             .vocabulary
             .as_ref()
             .ok_or("missing admitted vocabulary")?;
-        let actions = match actions {
-            Some(path) => {
-                faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions
-            }
-            None => vec![faults_workload::FaultAction::new(
-                faults_workload::FaultOperation::Wait(std::num::NonZeroU16::new(100).unwrap()),
-                std::num::NonZeroU16::new(256).unwrap(),
-            )],
+        let recorded = match actions {
+            Some(path) => faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?,
+            None => faults_workload::RecordedActions {
+                actions: vec![faults_workload::FaultAction::new(
+                    faults_workload::FaultOperation::Wait(std::num::NonZeroU16::new(100).unwrap()),
+                    std::num::NonZeroU16::new(256).unwrap(),
+                )],
+                answers: Vec::new(),
+            },
         };
         let out = destination.create()?;
         let mut manifest = Manifest::new(c, "run", Some(bundle), true)?;
-        manifest.actions = actions;
+        manifest.actions = recorded.actions;
+        manifest.answers = recorded.answers;
         capture_runtime(&mut manifest, &out, &artifacts)?;
         manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
         manifest.save(&out)?;

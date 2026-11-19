@@ -58,7 +58,7 @@ func notApplied(err error) bool {
 // Each operation goes to one server drawn from the SDK stream. A follower
 // answers "TRY <leader>", and the client follows that redirect once.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	base := c.servers[sdk.Below(uint64(len(c.servers)))]
+	base := c.servers[sdk.Below("summitdb.server", uint64(len(c.servers)))]
 	switch op.F {
 	case family.RegisterWrite:
 		_, err := c.call(ctx, base, "SET", op.K, op.V.(string))

@@ -4,6 +4,7 @@ use super::runs::Manifest;
 use crate::{config::Result, runs::Destination};
 use faults_workload::{
     FaultAction,
+    guest::GuestAnswer,
     package::{self, ReplaySummary, Report, StateHashEncoding},
 };
 use std::fs;
@@ -251,6 +252,17 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
     branch_saved(request, saved)
 }
 
+fn shifted_answers(answers: &[GuestAnswer], cut: usize, offset: usize) -> Vec<GuestAnswer> {
+    answers
+        .iter()
+        .filter(|answer| answer.step > cut as u64)
+        .map(|answer| GuestAnswer {
+            step: answer.step - cut as u64 + offset as u64,
+            ..*answer
+        })
+        .collect()
+}
+
 pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
     let source = saved.path;
@@ -285,26 +297,29 @@ pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved
         return Err("guest script exceeds 1 MiB".into());
     }
     let mut continuation = Vec::new();
+    let mut answers = Vec::new();
     if let Some(path) = request.actions {
-        continuation
-            .extend(faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions);
+        let recorded = faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?;
+        continuation.extend(recorded.actions);
+        answers.extend(recorded.answers);
     }
     let stop = request.stop || request.shell;
     if !stop {
+        answers.extend(shifted_answers(&original.answers, cut, continuation.len()));
         continuation.extend_from_slice(&actions[cut..]);
     }
     let out = request.destination.create()?;
     let mut manifest = original.inherit(&source, &out, "branch")?;
     manifest.actions = continuation;
+    manifest.answers = answers;
     manifest.settle = !stop;
     manifest.save(&out)?;
     println!("branch point: after action {cut}");
     let result = (|| -> Result<u8> {
-        let mut target = package::prepare_debug(
-            &manifest.fault_artifacts(&out)?,
-            &actions[..cut],
-            &manifest.options(&out)?,
-        )?;
+        let mut prefix = manifest.options(&out)?;
+        prefix.answers.clone_from(&original.answers);
+        let mut target =
+            package::prepare_debug(&manifest.fault_artifacts(&out)?, &actions[..cut], &prefix)?;
         if let Some(script) = &script {
             manifest.store(&out, "debug-script.sh", script)?;
         }
@@ -632,6 +647,25 @@ mod tests {
     use std::num::NonZeroU16;
 
     #[test]
+    fn a_branch_moves_the_answers_after_its_cut_behind_its_new_actions() {
+        let answer = |step, choice| GuestAnswer {
+            step,
+            choice,
+            label: Some(1),
+        };
+        let original = [answer(2, 0), answer(3, 4), answer(5, 1)];
+        assert_eq!(
+            shifted_answers(&original, 2, 0),
+            vec![answer(1, 4), answer(3, 1)]
+        );
+        assert_eq!(
+            shifted_answers(&original, 2, 3),
+            vec![answer(4, 4), answer(6, 1)]
+        );
+        assert!(shifted_answers(&original, 5, 1).is_empty());
+    }
+
+    #[test]
     fn undecided_keys_show_only_when_a_check_left_keys_undecided() {
         let line = undecided_line(&serde_json::json!({"executions": 2, "keys": 5}));
         assert_eq!(
@@ -656,6 +690,7 @@ mod tests {
             observation: FaultObservations::default(),
             console: "ready".into(),
             settlement: false,
+            choices: 0,
         }];
         let mut actual = expected.clone();
         actual.timeline[0].console = "different output".into();
@@ -739,6 +774,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "replay",
@@ -881,6 +917,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "search",
@@ -959,6 +996,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "search",
@@ -1062,6 +1100,7 @@ mod tests {
                 },
                 console: String::new(),
                 settlement: step > 1,
+                choices: 0,
             })
             .collect();
         let (actions, boundaries, anchor) = trajectory(&replay, true);
