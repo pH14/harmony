@@ -11,7 +11,8 @@ use super::{
 use crate::{
     chord::CHORD_SITES,
     search::{
-        assertion::{RecordedAction, Recording},
+        assertion::{RecordedAction, RecordedJobs},
+        choice::{Choice, ChoiceRecord},
         rand::RomuDuoJrRand,
     },
     workload::move_answer,
@@ -69,11 +70,11 @@ fn ask_of(action: &RecordedAction<ButtonChord>) -> Ask {
     }
 }
 
-fn strategy_drawn(action: &RecordedAction<ButtonChord>) -> Drawn {
-    match move_answer(&action.action) {
+fn played(chord: ButtonChord) -> Drawn {
+    match move_answer(&chord) {
         Some((site, label)) if site == WEAPON_SITE => Drawn::Switch(label),
         Some(_) => Drawn::Idle,
-        None => Drawn::Chord(action.action),
+        None => Drawn::Chord(chord),
     }
 }
 
@@ -173,34 +174,39 @@ fn upper_quantile(p: f64) -> f64 {
     high
 }
 
-#[test]
-#[ignore = "needs HARMONY_MM2_RECORDS from a strategy run with records, and HARMONY_MM2_HAND_SEED"]
-fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
-    let path = std::env::var_os("HARMONY_MM2_RECORDS").expect("HARMONY_MM2_RECORDS");
-    let seed: u64 = std::env::var("HARMONY_MM2_HAND_SEED")
-        .expect("HARMONY_MM2_HAND_SEED")
-        .parse()
-        .expect("a seed");
-    let recording = Recording::<ButtonChord>::from_bytes(&std::fs::read(path).expect("records"))
-        .expect("decode");
+fn compare<I>(recorded: I, seed: u64) -> usize
+where
+    I: IntoIterator<Item = Vec<RecordedAction<ButtonChord>>>,
+{
     let mut rand = RomuDuoJrRand::with_seed(seed);
     let (mut strategy, mut hand) = (Side::default(), Side::default());
-    let (mut asks, mut untargeted, mut actions) = (0_u64, 0_u64, 0_u64);
-    let mut jobs: BTreeMap<u64, Vec<&RecordedAction<ButtonChord>>> = BTreeMap::new();
-    for action in &recording.actions {
-        jobs.entry(action.sequence).or_default().push(action);
-    }
-    for job in jobs.values() {
+    let (mut asks, mut untargeted, mut actions, mut jobs) = (0_u64, 0_u64, 0_u64, 0_usize);
+    let (mut replayed_jobs, mut replayed_actions, mut mixed_jobs) = (0_usize, 0_u64, 0_usize);
+    for job in recorded {
+        let drawn = job
+            .iter()
+            .filter(|action| !action.choices.is_empty())
+            .count();
+        if drawn < job.len() {
+            if drawn == 0 {
+                replayed_jobs += 1;
+            } else {
+                mixed_jobs += 1;
+            }
+            replayed_actions += job.len() as u64;
+            continue;
+        }
+        jobs += 1;
         let mut strategy_job = Vec::with_capacity(job.len());
         let mut hand_job = Vec::with_capacity(job.len());
         let mut previous = None;
-        for action in job {
+        for action in &job {
             let ask = ask_of(action);
             actions += 1;
             asks += u64::from(ask.weapon_record);
             untargeted += u64::from(ask.targets.is_empty());
             let targeted = !ask.targets.is_empty();
-            strategy_job.push((strategy_drawn(action), targeted));
+            strategy_job.push((played(action.action), targeted));
             let drawn = hand_draw(&mut rand, previous.as_ref());
             previous = Some(drawn);
             hand_job.push((hand_drawn(drawn, &ask.targets), targeted));
@@ -252,10 +258,83 @@ fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
         );
     }
     println!(
-        "{{\"jobs\":{},\"actions\":{actions},\"weapon_asks\":{asks},\"untargeted_actions\":{untargeted},\"judged\":{k},\"z_limit\":{limit:.3},\"failures\":{failures}}}",
-        jobs.len()
+        "{{\"jobs\":{jobs},\"actions\":{actions},\"weapon_asks\":{asks},\"untargeted_actions\":{untargeted},\"judged\":{k},\"z_limit\":{limit:.3},\"failures\":{failures},\"replayed_jobs\":{replayed_jobs},\"replayed_actions\":{replayed_actions},\"mixed_jobs\":{mixed_jobs}}}"
     );
+    failures
+}
+
+#[test]
+#[ignore = "needs HARMONY_MM2_RECORDS from a strategy run with records, and HARMONY_MM2_HAND_SEED"]
+fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
+    let path = std::env::var_os("HARMONY_MM2_RECORDS").expect("HARMONY_MM2_RECORDS");
+    let seed: u64 = std::env::var("HARMONY_MM2_HAND_SEED")
+        .expect("HARMONY_MM2_HAND_SEED")
+        .parse()
+        .expect("a seed");
+    let bytes = std::fs::read(path).expect("records");
+    let (_, recorded) = RecordedJobs::<ButtonChord>::from_bytes(&bytes).expect("decode");
+    let failures = compare(recorded.map(|job| job.expect("decode")), seed);
     assert_eq!(failures, 0);
+}
+
+fn synthetic(
+    fresh: impl Fn(&mut RomuDuoJrRand, Option<&Mm2Action>) -> ButtonChord,
+) -> Vec<Vec<RecordedAction<ButtonChord>>> {
+    let mut rand = RomuDuoJrRand::with_seed(0x5eed);
+    let skewed = ButtonChord::new(0x83, 9);
+    (0..40_000_u64)
+        .map(|sequence| {
+            let drawn = sequence % 2 == 0;
+            let mut previous: Option<Mm2Action> = None;
+            (0..3)
+                .map(|_| {
+                    let (action, choices) = if drawn {
+                        let chord = fresh(&mut rand, previous.as_ref());
+                        previous = Some(Mm2Action::Chord(chord));
+                        (
+                            chord,
+                            vec![ChoiceRecord::new(0, vec![0, 1], 0, Choice::Default)],
+                        )
+                    } else {
+                        (skewed, Vec::new())
+                    };
+                    RecordedAction {
+                        sequence,
+                        action,
+                        failed: false,
+                        cost: u64::from(action.hold_frames),
+                        frames: Vec::new(),
+                        choices,
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn hand_chord(rand: &mut RomuDuoJrRand, previous: Option<&Mm2Action>) -> ButtonChord {
+    loop {
+        if let Mm2Action::Chord(chord) = hand_draw(rand, previous) {
+            return chord;
+        }
+    }
+}
+
+#[test]
+fn replayed_tails_are_left_out_and_fresh_draws_like_the_hand_pass() {
+    assert_eq!(compare(synthetic(hand_chord), 0x6d32), 0);
+}
+
+#[test]
+fn fresh_draws_skewed_from_the_hand_draw_fail() {
+    let skewed = |rand: &mut RomuDuoJrRand, previous: Option<&Mm2Action>| {
+        if rand.next_u64().is_multiple_of(4) {
+            ButtonChord::new(0x83, 9)
+        } else {
+            hand_chord(rand, previous)
+        }
+    };
+    assert!(compare(synthetic(skewed), 0x6d32) > 0);
 }
 
 #[test]
