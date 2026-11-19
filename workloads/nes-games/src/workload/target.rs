@@ -80,6 +80,12 @@ pub struct NesSnapshot<S> {
     pub failed: bool,
 }
 
+impl<S: Clone + Serialize> NesSnapshot<S> {
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
+    }
+}
+
 impl<S: Clone> searcher::search::snapshot_codec::CheckpointSnapshot for NesSnapshot<S>
 where
     Self: Serialize + serde::de::DeserializeOwned,

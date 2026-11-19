@@ -47,6 +47,18 @@ stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`
 and an archive checkpoint must match those digests. SMB hashes the logical
 snapshot identity; the other games hash the serialized snapshot.
 
+`SnapshotState` has two identities. `logical_identity` is the archive and
+saved-state identity: equal logical identities mean the state restores in
+this execution, so for a native QuickNES state it keeps the whole header,
+prepared execution hash included. `endpoint_identity` is the witness identity:
+the emulated state, whichever binary reached it. It defaults to
+`logical_identity`, and for a packed QuickNES state it zeroes the prepared
+execution hash in the header, which differs between any two binaries.
+`NesSnapshot`, `StbSnapshot`, `MetroidSnapshot`, `Mm2Snapshot`,
+`CastlevaniaSnapshot` and `SmbSnapshot` expose `endpoint_identity_sha256`,
+which hashes the serialized snapshot with its emulator state replaced by
+`endpoint_identity`, through `nes_backend::endpoint_identity_sha256`.
+
 Each game's recorded emulator policy ends with a hash field. The native
 constructors take the core hash and the prepared execution hash from
 `machine::quicknes::prepared_execution_sha256`, record both, and load every

@@ -66,6 +66,10 @@ impl<P: SnapshotState> SmbSnapshot<P> {
     pub fn snapshot_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
         crate::search::campaign::postcard_value_sha256(&self.logical_identity()?)
     }
+
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1380,6 +1384,39 @@ mod tests {
         };
         assert_eq!(identity(&raw), identity(&other_raw));
         assert_ne!(identity(&raw), identity(&other_logical));
+    }
+
+    #[test]
+    fn the_archive_identity_keeps_the_execution_hash_and_the_endpoint_identity_drops_it() {
+        let mut target = SmbTarget::from_machine(FakeMachine::new()).expect("boot");
+        let snapshot = target.snapshot().expect("snapshot");
+        let native = |execution: u8, core: u8| {
+            let mut raw = b"HQNESST3".to_vec();
+            raw.resize(machine::nes::STATE_HEADER_LEN, 0);
+            raw[112..176].fill(execution);
+            raw.extend([core; 64]);
+            SmbSnapshot::<Vec<u8>> {
+                emulator_state: crate::nes_backend::pack_quicknes_state(&raw).expect("pack"),
+                observation: snapshot.observation.clone(),
+                work_ram: (),
+                room_area: snapshot.room_area,
+                dead: snapshot.dead,
+                failed: snapshot.failed,
+            }
+        };
+        let (own, foreign, changed) = (native(b'a', 1), native(b'b', 1), native(b'a', 2));
+        assert_ne!(
+            own.snapshot_identity_sha256().unwrap(),
+            foreign.snapshot_identity_sha256().unwrap()
+        );
+        assert_eq!(
+            own.endpoint_identity_sha256().unwrap(),
+            foreign.endpoint_identity_sha256().unwrap()
+        );
+        assert_ne!(
+            own.endpoint_identity_sha256().unwrap(),
+            changed.endpoint_identity_sha256().unwrap()
+        );
     }
 
     #[test]

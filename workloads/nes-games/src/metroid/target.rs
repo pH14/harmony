@@ -467,6 +467,10 @@ pub struct MetroidSnapshot {
 }
 
 impl MetroidSnapshot {
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_census_tests(decoded: MetroidMechanicalState) -> Self {
         Self {

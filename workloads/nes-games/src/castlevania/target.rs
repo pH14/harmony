@@ -177,6 +177,10 @@ pub struct CastlevaniaSnapshot {
 }
 
 impl CastlevaniaSnapshot {
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
+    }
+
     #[must_use]
     pub fn state(&self) -> CastlevaniaMechanicalState {
         self.observation.decoded
@@ -1085,5 +1089,29 @@ mod checkpoint_tests {
             SnapshotCheckpoint::<CastlevaniaSnapshot>::from_bytes(&old, &checkpoint.format)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_endpoint_identity_drops_only_the_execution_hash() {
+        let native = |execution: u8, core: u8, frame_count: u64| {
+            let mut raw = b"HQNESST3".to_vec();
+            raw.resize(nes::STATE_HEADER_LEN, 0);
+            raw[112..176].fill(execution);
+            raw.extend([core; 64]);
+            CastlevaniaSnapshot {
+                emulator_state: crate::nes_backend::pack_quicknes_state(&raw).unwrap(),
+                observation: CastlevaniaObservations {
+                    frame_count,
+                    decoded: Default::default(),
+                    terminal: false,
+                },
+                failed: false,
+            }
+        };
+        let identity = |snapshot: CastlevaniaSnapshot| snapshot.endpoint_identity_sha256().unwrap();
+        let own = identity(native(b'a', 1, 11));
+        assert_eq!(own, identity(native(b'b', 1, 11)));
+        assert_ne!(own, identity(native(b'a', 2, 11)));
+        assert_ne!(own, identity(native(b'a', 1, 12)));
     }
 }
