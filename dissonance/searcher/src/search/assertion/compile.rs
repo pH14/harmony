@@ -92,7 +92,7 @@ impl Span {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Aggregate {
     value: Vec<Op>,
     since: Option<Vec<Op>>,
@@ -842,11 +842,6 @@ impl Compiler<'_> {
                 if self.in_aggregate {
                     return Err("an aggregate cannot contain another aggregate".into());
                 }
-                if self.aggregates.len() == MAX_AGGREGATES {
-                    return Err(
-                        format!("a strategy holds at most {MAX_AGGREGATES} aggregates").into(),
-                    );
-                }
                 self.in_aggregate = true;
                 let mut value = Vec::new();
                 let span = self.scalar(&args[0], &mut value);
@@ -863,9 +858,22 @@ impl Compiler<'_> {
                 if let Some(since) = &since {
                     depth_of(since)?;
                 }
-                ops.push(Op::Aggregate(u8::try_from(self.aggregates.len())?));
-                self.aggregates.push(Aggregate { value, since });
-                self.aggregate_spans.push(span);
+                let aggregate = Aggregate { value, since };
+                let index = match self.aggregates.iter().position(|held| *held == aggregate) {
+                    Some(index) => index,
+                    None if self.aggregates.len() == MAX_AGGREGATES => {
+                        return Err(format!(
+                            "a strategy holds at most {MAX_AGGREGATES} aggregates"
+                        )
+                        .into());
+                    }
+                    None => {
+                        self.aggregates.push(aggregate);
+                        self.aggregate_spans.push(span);
+                        self.aggregates.len() - 1
+                    }
+                };
+                ops.push(Op::Aggregate(u8::try_from(index)?));
                 Ok(span)
             }
             _ => Err(format!("`{function}` is not a strategy function").into()),

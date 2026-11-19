@@ -724,6 +724,24 @@ fn a_lane_over_a_wide_signed_range_packs_both_ends_apart() {
 }
 
 #[test]
+fn identical_aggregates_share_one_slot_and_distinct_ones_are_counted() {
+    let catalog = catalog();
+    let stages: String = (0..12)
+        .map(|stage| format!("[[stage]]\ngoal = \"lives > {stage}\"\nobjective = \"band\"\n"))
+        .collect();
+    Compiled::parse(
+        &format!("spread = \"band\"\n[define]\nband = \"highest(time, lives)\"\n{stages}"),
+        &catalog,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let nine: Vec<String> = (0..9).map(|n| format!("\"highest(time + {n})\"")).collect();
+    let error = Compiled::parse(&format!("spread = [{}]", nine.join(", ")), &catalog)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("at most 8 aggregates"), "{error}");
+}
+
+#[test]
 fn a_preference_scope_reads_only_whole_values_of_the_cell() {
     let catalog = catalog();
     for (text, read) in [
