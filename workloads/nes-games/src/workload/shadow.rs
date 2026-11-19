@@ -665,6 +665,37 @@ mod tests {
     }
 
     #[test]
+    fn a_state_that_ends_the_path_observed_before_a_restore_leaves_nothing_unobserved() {
+        let strategy = format!("reject = \"room == 2\"\n{}", Ledge::STRATEGY);
+        let shadow = Shadow::<Ledge, LedgeKey>::with_strategy(Ledge, &strategy).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(WARP, 1)]);
+        let root = hand.save();
+        for _ in 0..2 {
+            hand.apply(WARP, 1);
+            hand.rejected();
+            hand.restore(&root);
+            hand.walk(&[(RIGHT, 1)]);
+            hand.restore(&root);
+        }
+        let report = shadow.report().unwrap();
+        assert_eq!(report.unobserved, 0);
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.unknown_restores), (6, 0));
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        let root = hand.save();
+        for _ in 0..2 {
+            hand.walk(&[(WARP, 1); 9]);
+            hand.restore(&root);
+        }
+        let report = shadow.report().unwrap();
+        assert_eq!(report.unobserved, 0);
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.unknown_restores), (19, 0));
+    }
+
+    #[test]
     fn a_hand_target_that_observes_only_its_root_leaves_arrivals_unobserved() {
         let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
         let mut hand = Hand::new(shadow.hook());

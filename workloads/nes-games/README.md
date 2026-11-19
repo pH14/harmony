@@ -204,39 +204,40 @@ RAM (`start`), the frames of each action up to the departure of a forced move
 snapshot it takes (`saved`, which returns a `ShadowToken` the hand snapshot
 keeps) and restores (`restored`, with a reference to that token, or `None`
 where the snapshot has none), and its raw key, or `None` where it has none,
-after every action that leaves the target runnable (`observe`). In a campaign
-that means each state a job reaches, replayed actions included, after the
-candidate's snapshot; `current_key` keys only the root, so a target that
-observes only there compares one state. A hand target may also observe a state
-that ends its path, a dead or doomed state with `None` and a goal state with
-its key. The hook pairs a frame that a `reject` line matches with no strategy
-key, since the strategy target ends there as a doomed terminal, and keys a goal
-frame, even one a `reject` line matches, since the strategy target ends it as a
-terminal objective. The strategy target archives neither frame, since a rollout
-admits only runnable states. A forced move cut short at a goal or reject passes
-`hook.forced` the steps up to the stopping frame, the last being where it
-stopped. The report counts an action applied before the previous action's state
-was observed as `unobserved`. A restore brings back the cursor saved under its
-token, so two paths that reach the same RAM at the same frame keep their own
-lineages. A `ShadowToken` is opaque and does not serialize, so the hand
-snapshot keeps it in a `#[serde(skip)]` field and a snapshot read from a
-checkpoint restores with `None`. `None`, or a token another `Shadow` issued,
-counts as an unknown restore. Clones of a token share one handle, and when the
-last clone drops, the hook forgets the cursor saved under it, so the saved
-cursors are those of the snapshots still alive. The handle holds a weak
-reference to its `Shadow`, which keeps the cursors in a `Mutex` behind the
-`Arc` its hooks share, so a snapshot can drop on any worker. The hook decodes
-each frame from the one before, decodes a forced move's steps in a chain as the
-target does and observes only the arrival, advances its own accumulator at the
-observed frames, completes the raw key against the previous one with
-`ArchiveKey::complete`, and counts the pair in the searcher's `ShadowTable`.
-The first `observe` after a save or a restore, with no action between, replaces
-the cursor saved under that token while the token lives, so a candidate whose
-snapshot an admission probe restores before its key is observed keeps the key.
-`Shadow::report` returns the searcher's `ShadowReport`. The hook records a hand
-lineage at every candidate, where the archive records it at admitted entries
-only, so a hand key whose lineage holds more than the parent key can disagree
-there.
+after every action (`observe`), including an action that ends the path: the
+hand target observes a dead or doomed state with `None` and a goal state with
+its key, so the shadow checks that the two targets end paths at the same
+frames. In a campaign that means each state a job reaches, replayed actions
+included, after the candidate's snapshot; `current_key` keys only the root, so
+a target that observes only there compares one state. The hook pairs a frame
+that a `reject` line matches with no strategy key, since the strategy target
+ends there as a doomed terminal, and keys a goal frame, even one a `reject`
+line matches, since the strategy target ends it as a terminal objective. The
+strategy target archives neither frame, since a rollout admits only runnable
+states. A forced move cut short at a goal or reject passes `hook.forced` the
+steps up to the stopping frame, the last being where it stopped. The report
+counts an action applied before the previous action's state was observed as
+`unobserved`; a state that ends a path, observed and then left by a restore,
+counts nothing there. A restore brings back the cursor saved under its token,
+so two paths that reach the same RAM at the same frame keep their own lineages.
+A `ShadowToken` is opaque and does not serialize, so the hand snapshot keeps it
+in a `#[serde(skip)]` field and a snapshot read from a checkpoint restores with
+`None`. `None`, or a token another `Shadow` issued, counts as an unknown
+restore. Clones of a token share one handle, and when the last clone drops, the
+hook forgets the cursor saved under it, so the saved cursors are those of the
+snapshots still alive. The handle holds a weak reference to its `Shadow`, which
+keeps the cursors in a `Mutex` behind the `Arc` its hooks share, so a snapshot
+can drop on any worker. The hook decodes each frame from the one before,
+decodes a forced move's steps in a chain as the target does and observes only
+the arrival, advances its own accumulator at the observed frames, completes the
+raw key against the previous one with `ArchiveKey::complete`, and counts the
+pair in the searcher's `ShadowTable`. The first `observe` after a save or a
+restore, with no action between, replaces the cursor saved under that token
+while the token lives, so a candidate whose snapshot an admission probe
+restores before its key is observed keeps the key. `Shadow::report` returns the
+searcher's `ShadowReport`. The hook records a hand lineage at every candidate,
+where the archive records it at admitted entries only, so a hand key whose
+lineage holds more than the parent key can disagree there.
 
 ## Arcade live-feed observations
 
