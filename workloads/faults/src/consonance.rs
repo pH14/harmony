@@ -4541,6 +4541,24 @@ mod tests {
     }
 
     #[test]
+    fn a_uml_wait_costs_its_ticks_and_host_work_but_no_fault_to_the_shrink() {
+        use searcher::search::campaign::Evaluation;
+        let target = unbooted_uml_target();
+        let workload = capture_fixture_workload(&target);
+        assert!(target.config.uml.is_some());
+        let wait = FaultOperation::Wait(std::num::NonZeroU16::new(64).unwrap()).into();
+        assert_eq!(
+            workload.action_cost(&wait, &[]),
+            64 + crate::archive::ACTION_HOST_TICKS
+        );
+        assert_eq!(workload.action_cost(&wait, &[]), 320);
+        assert_eq!(
+            workload.shrink_cost(&wait, &target, &[]),
+            searcher::search::cost::ShrinkCost::new(0, 64)
+        );
+    }
+
+    #[test]
     fn branch_prefix_capture_hashes_each_action_once_and_empty_setup_freshly() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for depth in [0, 1, 3] {

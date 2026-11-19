@@ -139,6 +139,7 @@ fn reporting(c: &mut Criterion) {
                     snapshot_identity_sha256: None,
                     selector: None,
                     shrink_total: None,
+                    cost_total: None,
                 })
                 .collect(),
         };

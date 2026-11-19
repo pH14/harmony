@@ -511,6 +511,8 @@ pub struct ArchiveEntryReport<A: Ord, K, M> {
     pub selector: Option<EntrySelectorCounters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shrink_total: Option<ShrinkCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_total: Option<u64>,
 }
 
 pub mod entries_by_suffix {
@@ -539,6 +541,8 @@ pub mod entries_by_suffix {
         selector: Option<EntrySelectorCounters>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shrink_total: Option<ShrinkCost>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_total: Option<u64>,
     }
 
     pub fn serialize<S, A, K, M>(
@@ -577,6 +581,7 @@ pub mod entries_by_suffix {
                 snapshot_identity_sha256: entry.snapshot_identity_sha256.clone(),
                 selector: entry.selector,
                 shrink_total: entry.shrink_total,
+                cost_total: entry.cost_total,
             }
         });
         serializer.collect_seq(wires)
@@ -628,6 +633,7 @@ pub mod entries_by_suffix {
                 snapshot_identity_sha256: wire.snapshot_identity_sha256,
                 selector: wire.selector,
                 shrink_total: wire.shrink_total,
+                cost_total: wire.cost_total,
             });
         }
         Ok(entries)
@@ -646,6 +652,7 @@ pub struct SavedStateRecord<A, M> {
     pub actions: Vec<A>,
     pub milestones: M,
     pub shrink_total: ShrinkCost,
+    pub cost_total: u64,
 }
 
 pub fn saved_state_entries<A: Clone + Ord, M>(
@@ -679,6 +686,7 @@ pub fn saved_state_entries<A: Clone + Ord, M>(
             snapshot_identity_sha256: None,
             selector: None,
             shrink_total: Some(record.shrink_total),
+            cost_total: Some(record.cost_total),
         });
     }
     Ok(entries)
@@ -751,6 +759,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     shrink_total: Vec<ShrinkCost>,
+    cost_total: Vec<u64>,
     remaining_bound: Vec<ShrinkCost>,
     rank_by_shrink_total: bool,
     replacement_cost_displaced: u64,
@@ -1389,6 +1398,7 @@ where
             },
             cost_in_group: Vec::new(),
             shrink_total: Vec::new(),
+            cost_total: Vec::new(),
             remaining_bound: Vec::new(),
             rank_by_shrink_total: false,
             replacement_cost_displaced: 0,
@@ -1895,6 +1905,7 @@ where
         self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.shrink_total = retain_marked(std::mem::take(&mut self.shrink_total), &keep);
+        self.cost_total = retain_marked(std::mem::take(&mut self.cost_total), &keep);
         self.remaining_bound = retain_marked(std::mem::take(&mut self.remaining_bound), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
@@ -2213,6 +2224,7 @@ where
             column(&self.opened_novel_slot, entries),
             column(&self.cost_in_group, entries),
             column(&self.shrink_total, entries),
+            column(&self.cost_total, entries),
             column(&self.remaining_bound, entries),
             column(&self.replacement_preferences, entries),
             column(&self.in_place_lengths, entries),
@@ -2594,6 +2606,10 @@ where
         self.shrink_total.get(id).copied()
     }
 
+    pub fn entry_cost_total(&self, id: usize) -> Option<u64> {
+        self.cost_total.get(id).copied()
+    }
+
     #[must_use]
     pub fn entry_remaining_bound(&self, id: usize) -> Option<ShrinkCost> {
         self.remaining_bound.get(id).copied()
@@ -2950,6 +2966,10 @@ where
         }
         let key = self.complete_after(parent_id, previous, key)?;
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, cost, key);
+        let candidate_cost_total = parent_id
+            .and_then(|id| self.cost_total.get(id).copied())
+            .unwrap_or(0)
+            .saturating_add(cost);
         let candidate_holder_cost = if self.rank_by_shrink_total {
             shrink_total
         } else {
@@ -3166,6 +3186,7 @@ where
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
         self.shrink_total.push(shrink_total);
+        self.cost_total.push(candidate_cost_total);
         self.remaining_bound.push(ShrinkCost::ZERO);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
@@ -4256,6 +4277,11 @@ where
                         .get(index)
                         .copied()
                         .ok_or("an archive entry has no shrink total")?,
+                    cost_total: self
+                        .cost_total
+                        .get(index)
+                        .copied()
+                        .ok_or("an archive entry has no cost total")?,
                 })
             })
             .collect()
@@ -4289,6 +4315,7 @@ where
                     productive: self.productive[id],
                 }),
                 shrink_total: self.shrink_total.get(id).copied(),
+                cost_total: self.cost_total.get(id).copied(),
             };
             reports.push(report);
             if let Some(snapshot) = entry.snapshot {
@@ -5150,6 +5177,7 @@ mod tests {
             snapshot_identity_sha256: None,
             selector: None,
             shrink_total: None,
+            cost_total: None,
         };
         let mut reports = Reports {
             entries: vec![

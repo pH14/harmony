@@ -2665,15 +2665,16 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     if ancestor_index != index_of[&entry.parent_id.unwrap_or(u64::MAX)] {
                         counts.rerooted = counts.rerooted.saturating_add(1);
                     }
+                    let base = &source_entries[ancestor_index];
                     (
                         parent_input.len(),
                         new_id,
-                        source_entries[ancestor_index].shrink_total,
+                        (base.shrink_total, base.cost_total),
                     )
                 }
                 None => {
                     counts.rerooted = counts.rerooted.saturating_add(1);
-                    (0, genesis_id, Some(ShrinkCost::ZERO))
+                    (0, genesis_id, (Some(ShrinkCost::ZERO), Some(0)))
                 }
             };
             let parent_entry = &self.archive.entries[parent_id];
@@ -2785,15 +2786,22 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 return Err("imported endpoint differs from its source entry digest".into());
             }
             if !replayed {
-                let (Some(total), Some(base)) = (entry.shrink_total, source_base) else {
+                let (Some(total), Some(base), Some(cost_total), Some(cost_base)) = (
+                    entry.shrink_total,
+                    source_base.0,
+                    entry.cost_total,
+                    source_base.1,
+                ) else {
                     return Err(
-                        "a checkpointed import without replay needs the source's shrink totals"
+                        "a checkpointed import without replay needs the source's shrink and cost totals"
                             .into(),
                     );
                 };
                 let (primary, secondary) = total.saving_over(base);
                 shrink = ShrinkCost::new(primary, secondary);
-                spent = primary;
+                spent = cost_total.checked_sub(cost_base).ok_or(
+                    "a source entry's cost total is below that of the entry it is imported under",
+                )?;
             }
             workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = workload.current_key(target)?;
@@ -10135,6 +10143,7 @@ mod tests {
                 snapshot_identity_sha256: None,
                 selector: None,
                 shrink_total: None,
+                cost_total: None,
             };
         let source = TestArchiveReport {
             entries: vec![
@@ -10204,6 +10213,7 @@ mod tests {
                         snapshot_identity_sha256: None,
                         selector: None,
                         shrink_total: None,
+                        cost_total: None,
                     },
                     ArchiveEntryReport {
                         id: 1,
@@ -10219,6 +10229,7 @@ mod tests {
                         ),
                         selector: None,
                         shrink_total: None,
+                        cost_total: None,
                     },
                 ],
                 marker: 0,
@@ -10285,6 +10296,7 @@ mod tests {
                     snapshot_identity_sha256: None,
                     selector: None,
                     shrink_total: None,
+                    cost_total: None,
                 },
                 ArchiveEntryReport {
                     id: 1,
@@ -10298,6 +10310,7 @@ mod tests {
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
                     selector: None,
                     shrink_total: None,
+                    cost_total: None,
                 },
             ],
             marker: 0,
@@ -10391,12 +10404,12 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpointed_import_without_replay_takes_its_source_shrink_total() {
+    fn a_checkpointed_import_without_replay_takes_its_source_costs() {
         let workload = TestWorkload {
             bootstrap_objective: false,
             targets: None,
         };
-        let source = |shrink_total| TestArchiveReport {
+        let source = |shrink_total, cost_total| TestArchiveReport {
             entries: vec![
                 ArchiveEntryReport {
                     id: 0,
@@ -10408,6 +10421,7 @@ mod tests {
                     snapshot_identity_sha256: None,
                     selector: None,
                     shrink_total: Some(ShrinkCost::ZERO),
+                    cost_total: Some(0),
                 },
                 ArchiveEntryReport {
                     id: 1,
@@ -10425,6 +10439,7 @@ mod tests {
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
                     selector: None,
                     shrink_total,
+                    cost_total,
                 },
             ],
             marker: 0,
@@ -10433,39 +10448,153 @@ mod tests {
             format: workload.checkpoint_format().to_owned(),
             entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 6 }],
         };
-        let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
-        let mut target = TestTarget::default();
-        let counts = core
-            .import_tree(
-                &workload,
-                &(),
-                &mut target,
-                &source(Some(ShrinkCost::new(40, 7))),
-                Some(&checkpoint),
-            )
-            .unwrap();
+        let import = |source: &TestArchiveReport| {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            core.import_tree(&workload, &(), &mut target, source, Some(&checkpoint))
+                .map(|counts| (core, counts))
+        };
+        let (core, counts) = import(&source(Some(ShrinkCost::new(0, 64)), Some(320))).unwrap();
         assert_eq!((counts.imported, counts.checkpointed), (1, 1));
         let child = core.archive.index_of_id(1).unwrap();
         assert_eq!(
             core.archive.entry_shrink_total(child),
-            Some(ShrinkCost::new(40, 7))
+            Some(ShrinkCost::new(0, 64))
         );
-        assert_eq!(core.archive.entry_cost_in_group(child), Some(40));
+        assert_eq!(core.archive.entry_cost_total(child), Some(320));
+        assert_eq!(core.archive.entry_cost_in_group(child), Some(320));
+        for (shrink_total, cost_total) in [(None, Some(320)), (Some(ShrinkCost::new(0, 64)), None)]
+        {
+            let error = import(&source(shrink_total, cost_total))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                error.contains("needs the source's shrink and cost totals"),
+                "{error}"
+            );
+        }
+        let mut below = source(Some(ShrinkCost::new(0, 64)), Some(320));
+        below.entries[0].cost_total = Some(321);
+        let error = import(&below).err().unwrap().to_string();
+        assert!(error.contains("cost total is below"), "{error}");
+    }
+
+    #[test]
+    fn a_checkpointed_import_charges_its_own_path_after_its_parent_is_displaced() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let build = || {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.bootstrap(&workload, &(), &mut TestTarget::default())
+                .unwrap();
+            let mut insert = |parent, action: TestAction, value| {
+                core.archive
+                    .insert(
+                        Some(parent),
+                        1,
+                        crate::search::archive::ArchiveCandidate {
+                            suffix: vec![action],
+                            key: TestKey(value),
+                            milestones: (),
+                            cost: test_action_cost(&action),
+                        },
+                        value,
+                    )
+                    .unwrap()
+                    .unwrap()
+            };
+            let slow = insert(0, TestAction::new(1, 3), 1);
+            let child = insert(slow, TestAction::new(2, 1), 3);
+            insert(0, TestAction::new(1, 1), 1);
+            insert(0, TestAction::new(1, 2), 1);
+            assert!(!core.archive.active[slow]);
+            assert!(core.archive.active[child]);
+            assert_eq!(core.archive.entry_cost_total(child), Some(8));
+            let ids = (
+                core.archive.stable_id(slow).unwrap(),
+                core.archive.stable_id(child).unwrap(),
+            );
+            (core, ids)
+        };
+        let report = |mut core: CoordinatorCore<TestWorkload>, child_id| {
+            let mut entries = core.archive.take_entry_reports_and_snapshots().0;
+            for entry in &mut entries {
+                if entry.id == child_id {
+                    entry.snapshot_identity_sha256 =
+                        Some(workload.snapshot_identity_sha256(&3).unwrap());
+                }
+            }
+            TestArchiveReport { entries, marker: 0 }
+        };
+        let (core, (slow_id, child_id)) = build();
+        let displaced = report(core, child_id);
+        let (mut core, _) = build();
+        core.archive.compact_history_for_final_report().unwrap();
+        let saved = crate::search::archive::saved_state_entries(
+            core.archive.saved_state_records().unwrap(),
+        )
+        .unwrap();
+        let compacted = report(core, child_id);
+        assert!(displaced.entries.iter().any(|entry| entry.id == slow_id));
+        assert!(compacted.entries.iter().all(|entry| entry.id != slow_id));
+        let checkpoint = SnapshotCheckpoint {
+            format: workload.checkpoint_format().to_owned(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: child_id,
+                snapshot: 3,
+            }],
+        };
+        for (source, rerooted) in [(&displaced, 0), (&compacted, 1)] {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let counts = core
+                .import_tree(&workload, &(), &mut target, source, Some(&checkpoint))
+                .unwrap();
+            assert_eq!((counts.checkpointed, counts.rerooted), (1, rerooted));
+            let imported = core
+                .archive
+                .entries
+                .iter()
+                .position(|entry| entry.key == TestKey(3));
+            assert_eq!(
+                imported.and_then(|id| core.archive.entry_cost_total(id)),
+                Some(8)
+            );
+            assert_eq!(
+                imported.and_then(|id| core.archive.entry_cost_in_group(id)),
+                Some(8)
+            );
+        }
+        assert_eq!(
+            saved
+                .iter()
+                .find(|entry| entry.id == child_id)
+                .and_then(|entry| entry.cost_total),
+            Some(8)
+        );
         let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
         let mut target = TestTarget::default();
-        let error = core
-            .import_tree(
+        let counts = core
+            .import_entries(
                 &workload,
                 &(),
                 &mut target,
-                &source(None),
-                Some(&checkpoint),
+                &saved,
+                &std::collections::BTreeMap::from([(child_id, 3)]),
             )
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("needs the source's shrink totals"),
-            "{error}"
+            .unwrap();
+        assert_eq!(counts.checkpointed, 1);
+        let imported = core
+            .archive
+            .entries
+            .iter()
+            .position(|entry| entry.key == TestKey(3));
+        assert_eq!(
+            imported.and_then(|id| core.archive.entry_cost_total(id)),
+            Some(8)
         );
     }
 
@@ -10487,6 +10616,7 @@ mod tests {
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&0).unwrap()),
                     selector: None,
                     shrink_total: None,
+                    cost_total: None,
                 },
                 ArchiveEntryReport {
                     id: 1,
@@ -10500,6 +10630,7 @@ mod tests {
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&3).unwrap()),
                     selector: None,
                     shrink_total: None,
+                    cost_total: None,
                 },
             ],
             marker: 9,

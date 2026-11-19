@@ -1550,29 +1550,36 @@ Outside a job, the shrink's tape walk, the window search, the incumbent chain
 and an import's replay pass `rollout_observations(target)` as the action's
 observations.
 
-Each archive entry keeps two costs. Its tier cost, the cost since it entered
+Each archive entry keeps three costs. Its tier cost, the cost since it entered
 its progress tier, adds the candidate's `ArchiveCandidate::cost`, the summed
 `action_cost` of its suffix, to its parent's tier cost when the parent is in
 the same tier; the continuation bank records the same sum as the tail's cost.
-Its shrink total is its parent's plus the summed `shrink_cost` of its suffix.
-Live admission and the incumbent chain sum both costs from each action's
-observations, and an import that replays its suffix sums them over the replay.
+Its cost total is its parent's plus the same sum, so it is the summed
+`action_cost` of its input from the origin. Its shrink total is its parent's
+plus the summed `shrink_cost` of its suffix.
+Live admission and the incumbent chain sum the action and shrink costs from
+each action's observations, and an import that replays its suffix sums them
+over the replay.
 Live admission reads the observations from the job's `JobOutcome`, which a
 browser worker hands over as postcard bytes, so `action_cost` reads only what
 the observations serialize.
-An import restored from a checkpoint snapshot without replay takes the
-difference between its source entry's reported `shrink_total` and that of the
+An import restored from a checkpoint snapshot without replay charges the
+difference between its source entry's reported `cost_total` and that of the
 source entry it is imported under, or all of it when rerooted at genesis, and
-uses the difference's first part as its cost; a source entry without a
-`shrink_total` is an error there. A workload whose `shrink_cost` first part is
-not its `action_cost` must therefore implement `candidate_replay_certificate`,
-so that its imports replay and get a measured cost. `Archive::insert` and
-`insert_after` add the candidate's cost as the shrink total's first part, and
-`insert_after_costed` takes the shrink total from its caller. Holders of a slot
-rank by the tier cost unless `Archive::set_rank_by_shrink_total` was set before
-the first entry; then they rank by the shrink total. The archive checkpoint
-carries both costs and the setting, and the archive report gives each entry's
-`shrink_total`.
+takes its shrink total the same way from `shrink_total`. The import has already
+checked that the entry's input extends the input of the entry it is imported
+under, and each total is the sum along its own entry's input, so the difference
+is the cost of the actions between them. A source parent that a cheaper holder
+displaced keeps its own input and totals; one that history compaction removed
+is absent from the report, and the entry is rerooted at genesis. A source entry
+without either total, or with a cost total below its base's, is an error there.
+`insert_after_costed` takes the shrink total from its caller, and
+`Archive::insert` and `insert_after` add the candidate's cost as the shrink
+total's first part. Holders of a slot rank by the tier cost unless
+`Archive::set_rank_by_shrink_total` was set before the first entry; then they
+rank by the shrink total. The archive checkpoint carries all three costs and
+the setting, and the archive report and saved-state records give each entry's
+`cost_total` and `shrink_total`.
 
 The goal is `Evaluation::objective_reached`. `ShrinkCost` (in `search::cost`) is a pair ordered
 first part first and added part by part, so a workload can rank by one measure
