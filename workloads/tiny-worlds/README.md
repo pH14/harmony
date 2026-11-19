@@ -526,6 +526,18 @@ ends on the landing above it, so the stair and the positions it climbs past are
 never resting states. A climb that would pass `length` stops at the goal and is
 cut short. The tier counts the stairs climbed, and the place is the position.
 
+A nonzero `walkway` gives every stair whose climb is not cut short a second way
+up: from the position below the stair, the action after the walking action (mod
+4) steps onto a walkway in the stair's tier, and `walkway` minus one more
+steps, each the stair's pattern action, arrive on the climb's landing. Any
+other action on the walkway slides back to the landing below the stair. The
+walkway takes `walkway` actions with no forced steps, so it plans and records
+`walkway` transitions, while the climb plans one and records one plus `climb`.
+With `walkway` from 2 to `climb`, planned cost ranks the climb's landing below
+the walkway's and record cost ranks it above, so the two costs keep different
+holders of the landing. A walkway state's place is its stair's position plus 32
+times its step.
+
 Execution work counts each forced step, so the action that reaches a stair does
 one transition of work plus its forced steps. Its planned cost is one
 transition. The workload's `action_cost` is the work of the transition the
@@ -534,8 +546,9 @@ steps included, while the planning clock still counts one. The report's `stairs`
 object counts the final archive entries (`entries`), the entries whose input
 ran a forced climb, so that its record cost is above its planned cost
 (`entries_with_forced_steps`), the entries whose input ran a climb cut short at
-the goal (`entries_cut_short`), and the entries whose shrink total equals the
-record cost of their input (`entries_charged_record_cost`).
+the goal (`entries_cut_short`), the entries whose input completed a walkway
+(`entries_with_walkway`), and the entries whose shrink total equals the record
+cost of their input (`entries_charged_record_cost`).
 
 ## Twelve picks
 
@@ -588,7 +601,7 @@ family's and passive clock's reachability hold by construction.
 | Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
 | Picks | `depth` 1–16; any `seed`; `default_right` 0–`depth`; `draw` is `flat` or `{"choices": POLICY}`. Reachability holds by construction. |
 | Ridge | `length` 2–31; `spacing` and `ridge` 1 to one below `length`; `pattern` encodes two-bit actions per position. Not a chain stage. |
-| Stairs | `length` 3–31; `spacing` 2 to one below `length`; `climb` 1 to one below `spacing`; `pattern` encodes two-bit actions per position. Not a chain stage. |
+| Stairs | `length` 3–31; `spacing` 2 to one below `length`; `climb` 1 to one below `spacing`; `walkway` 0 or 2 to `climb`; `pattern` encodes two-bit actions per position. Not a chain stage. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 

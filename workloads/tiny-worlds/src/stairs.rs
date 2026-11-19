@@ -10,6 +10,7 @@ pub struct Config {
     pub length: u8,
     pub spacing: u8,
     pub climb: u8,
+    pub walkway: u8,
     pub pattern: u64,
 }
 
@@ -17,6 +18,7 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub position: u8,
+    pub side: u8,
 }
 
 impl Config {
@@ -24,9 +26,11 @@ impl Config {
         if !(3..=31).contains(&self.length)
             || !(2..self.length).contains(&self.spacing)
             || !(1..self.spacing).contains(&self.climb)
+            || self.walkway != 0 && !(2..=self.climb).contains(&self.walkway)
         {
             return Err(
-                "stairs needs length 3..=31, spacing 2..length and climb 1..spacing".into(),
+                "stairs needs length 3..=31, spacing 2..length, climb 1..spacing and walkway 0 or 2..=climb"
+                    .into(),
             );
         }
         Ok(())
@@ -34,6 +38,14 @@ impl Config {
 
     pub fn action(&self, position: u8) -> u8 {
         crate::pattern_action(self.pattern, position)
+    }
+
+    pub fn side_action(&self, position: u8) -> u8 {
+        (self.action(position) + 1) % 4
+    }
+
+    pub fn walkway_at(&self, stair: u8) -> bool {
+        self.walkway > 0 && self.stair(stair) && stair + self.climb <= self.length
     }
 
     pub fn stair(&self, position: u8) -> bool {
@@ -49,19 +61,26 @@ impl Config {
     }
 
     pub fn initial(&self) -> State {
-        State { position: 0 }
+        State {
+            position: 0,
+            side: 0,
+        }
     }
 
     pub fn state_is_bounded(&self, s: State) -> bool {
         self.validate().is_ok()
-            && (self.goal(s)
-                || s.position < self.length
-                    && !self.stair(s.position)
-                    && self.landing(s.position) <= s.position)
+            && if s.side == 0 {
+                self.goal(s)
+                    || s.position < self.length
+                        && !self.stair(s.position)
+                        && self.landing(s.position) <= s.position
+            } else {
+                self.walkway_at(s.position) && s.side < self.walkway
+            }
     }
 
     pub fn goal(&self, s: State) -> bool {
-        s.position == self.length
+        s.side == 0 && s.position == self.length
     }
 
     pub fn step(&self, s: State, action: u8) -> State {
@@ -77,26 +96,54 @@ impl Config {
         forced > 0 && forced < self.climb && self.goal(after)
     }
 
+    pub fn completes_walkway(&self, s: State, action: u8) -> bool {
+        s.side > 0 && self.step(s, action).position == s.position + self.climb
+    }
+
     fn walk(&self, s: State, action: u8) -> (State, u8) {
         if action > 3 || !self.state_is_bounded(s) || self.goal(s) {
             return (s, 0);
+        }
+        if s.side > 0 {
+            let after = if action != self.action(s.position) {
+                State {
+                    position: self.landing(s.position - 1),
+                    side: 0,
+                }
+            } else if s.side + 1 == self.walkway {
+                State {
+                    position: s.position + self.climb,
+                    side: 0,
+                }
+            } else {
+                State {
+                    side: s.side + 1,
+                    ..s
+                }
+            };
+            return (after, 0);
+        }
+        let position = s.position + 1;
+        if action == self.side_action(s.position) && self.walkway_at(position) {
+            return (State { position, side: 1 }, 0);
         }
         if action != self.action(s.position) {
             return (
                 State {
                     position: self.landing(s.position),
+                    side: 0,
                 },
                 0,
             );
         }
-        let position = s.position + 1;
         if !self.stair(position) {
-            return (State { position }, 0);
+            return (State { position, side: 0 }, 0);
         }
         let forced = self.climb.min(self.length - position);
         (
             State {
                 position: position + forced,
+                side: 0,
             },
             forced,
         )
@@ -105,7 +152,7 @@ impl Config {
     pub fn key(&self, s: State) -> Key {
         Key {
             stock: 0,
-            place: u16::from(s.position),
+            place: u16::from(s.position) + 32 * u16::from(s.side),
             context: 0,
             charge: 0,
             health: 0,
@@ -119,24 +166,27 @@ impl Config {
         crate::reachable(self.initial(), |s| self.goal(s), |s, a| self.step(s, a))
     }
 
-    pub fn record_cost(&self, actions: &[u8]) -> (u64, bool) {
+    pub fn record_cost(&self, actions: &[u8]) -> (u64, bool, bool) {
         let mut s = self.initial();
         let mut cost = 0;
         let mut cut_short = false;
+        let mut walkway = false;
         for &action in actions {
             cost += 1 + u64::from(self.forced_steps(s, action));
             cut_short |= self.cut_short(s, action);
+            walkway |= self.completes_walkway(s, action);
             s = self.step(s, action);
         }
-        (cost, cut_short)
+        (cost, cut_short, walkway)
     }
 
     pub fn report<K, M>(&self, entries: &[ArchiveEntryReport<u8, K, M>]) -> serde_json::Value {
-        let (mut forced, mut cut_short, mut charged) = (0_u64, 0_u64, 0_u64);
+        let (mut forced, mut cut_short, mut walkway, mut charged) = (0_u64, 0_u64, 0_u64, 0_u64);
         for entry in entries {
-            let (record, cut) = self.record_cost(&entry.input.actions);
+            let (record, cut, walked) = self.record_cost(&entry.input.actions);
             forced += u64::from(record != entry.input.actions.len() as u64);
             cut_short += u64::from(cut);
+            walkway += u64::from(walked);
             charged += u64::from(
                 entry
                     .shrink_total
@@ -147,6 +197,7 @@ impl Config {
             "entries": entries.len(),
             "entries_with_forced_steps": forced,
             "entries_cut_short": cut_short,
+            "entries_with_walkway": walkway,
             "entries_charged_record_cost": charged,
         })
     }
@@ -161,6 +212,7 @@ mod tests {
             length: 13,
             spacing: 5,
             climb: 2,
+            walkway: 0,
             pattern: crate::test_seed(),
         }
     }
@@ -183,7 +235,10 @@ mod tests {
         assert_eq!(landed.position, 7);
         assert!(!w.cut_short(below, w.action(4)));
         for skipped in 5..7 {
-            assert!(!w.state_is_bounded(State { position: skipped }));
+            assert!(!w.state_is_bounded(State {
+                position: skipped,
+                side: 0
+            }));
         }
         assert_eq!(w.key(landed).tier, 1);
         assert_eq!(w.forced_steps(w.initial(), w.action(0)), 0);
@@ -273,6 +328,73 @@ mod tests {
         );
     }
 
+    fn walkway() -> Config {
+        Config {
+            climb: 3,
+            walkway: 3,
+            ..config()
+        }
+    }
+
+    #[test]
+    fn a_walkway_reaches_the_climbs_landing_in_more_actions_with_no_forced_steps() {
+        let w = walkway();
+        let below = climb_to(&w, 4);
+        let climbed = w.step(below, w.action(4));
+        assert_eq!(climbed.position, 8);
+        assert_eq!(w.forced_steps(below, w.action(4)), 3);
+        let mut s = below;
+        let mut walked = Vec::new();
+        for action in [w.side_action(4), w.action(5), w.action(5)] {
+            assert_eq!(w.forced_steps(s, action), 0);
+            walked.push(w.completes_walkway(s, action));
+            s = w.step(s, action);
+            assert!(w.state_is_bounded(s));
+        }
+        assert_eq!(walked, [false, false, true]);
+        assert_eq!(s, climbed);
+        assert_eq!(w.key(s), w.key(climbed));
+        let entered = w.step(below, w.side_action(4));
+        assert_eq!(
+            entered,
+            State {
+                position: 5,
+                side: 1
+            }
+        );
+        assert_eq!(w.key(entered).tier, w.key(climbed).tier);
+        assert_ne!(w.key(entered).place, w.key(climbed).place);
+        let wrong = (0..4).find(|&a| a != w.action(5)).unwrap();
+        assert_eq!(w.step(entered, wrong), w.initial());
+        let to_landing = |tail: &[u8]| {
+            let mut actions: Vec<u8> = (0..4).map(|position| w.action(position)).collect();
+            actions.extend_from_slice(tail);
+            w.record_cost(&actions)
+        };
+        assert_eq!(to_landing(&[w.action(4)]), (8, false, false));
+        assert_eq!(
+            to_landing(&[w.side_action(4), w.action(5), w.action(5)]),
+            (7, false, true)
+        );
+        assert!(w.reachable().unwrap());
+    }
+
+    #[test]
+    fn a_walkway_world_campaign_replays_and_charges_the_record_cost() {
+        let report = crate::run(&workload(walkway()), crate::test_seed(), 20_000, true).unwrap();
+        assert_eq!(report["verified"], true);
+        assert_eq!(report["success"], true, "{report}");
+        let stairs = &report["stairs"];
+        assert!(
+            stairs["entries_with_walkway"].as_u64().is_some(),
+            "{stairs}"
+        );
+        assert_eq!(
+            stairs["entries_charged_record_cost"], stairs["entries"],
+            "{stairs}"
+        );
+    }
+
     #[test]
     fn strict_schema_and_bounds() {
         let w = config();
@@ -282,8 +404,15 @@ mod tests {
         assert!(Config { climb: 5, ..w }.validate().is_err());
         assert!(Config { climb: 0, ..w }.validate().is_err());
         for position in [5, 6, 14] {
-            assert!(!w.state_is_bounded(State { position }));
+            assert!(!w.state_is_bounded(State { position, side: 0 }));
         }
+        assert!(Config { walkway: 1, ..w }.validate().is_err());
+        assert!(Config { walkway: 3, ..w }.validate().is_err());
+        assert!(Config { walkway: 2, ..w }.validate().is_ok());
+        assert!(!w.state_is_bounded(State {
+            position: 5,
+            side: 1
+        }));
         let mut v = serde_json::to_value(w).unwrap();
         v["unused"] = true.into();
         assert!(serde_json::from_value::<Config>(v).is_err());
