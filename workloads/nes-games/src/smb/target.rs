@@ -310,12 +310,13 @@ where
 
     pub fn observe_shadow(&self) {
         if let Some(shadow) = &self.shadow {
+            if self.failed {
+                return;
+            }
             let wram = self.wram();
-            if !self.failed
-                && !self.dead
-                && !smb_player_is_doomed(&wram)
-                && !self.route.is_doomed(&wram)
-            {
+            if self.dead || smb_player_is_doomed(&wram) || self.route.is_doomed(&wram) {
+                shadow.observe(None);
+            } else {
                 shadow.observe(Some(self.frame_key.on_route(self.route)));
             }
         }
