@@ -8,6 +8,13 @@ pub const WRAM_SIZE: usize = 2 * 1024;
 pub const MAX_HOLD_FRAMES: u8 = 120;
 pub(crate) const STATE_MAGIC: &[u8; 8] = b"HQNESST3";
 pub const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 64 + 8;
+const STATE_EXECUTION_SHA256: std::ops::Range<usize> = 112..176;
+
+pub fn clear_execution_sha256(header: &mut [u8]) {
+    if header.len() == STATE_HEADER_LEN && header.starts_with(STATE_MAGIC) {
+        header[STATE_EXECUTION_SHA256].fill(0);
+    }
+}
 
 #[must_use]
 pub fn core_state(state: &[u8]) -> &[u8] {

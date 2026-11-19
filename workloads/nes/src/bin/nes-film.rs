@@ -12,6 +12,7 @@ use nes_games::workload::{Game, NesRun, NesWorkload};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     donkey_kong::{DonkeyKong, DonkeyKongWorkload},
+    eval::RESULT_FORMAT,
     famidash::{
         Famidash, FamidashGame,
         levels::{Side, Stage},
@@ -159,6 +160,14 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     let native = args.recorded_backend == "native";
     let replayed = replay_witness(&game, &run, &input)?;
     if native {
+        let format = recorded.get("format").and_then(Value::as_str);
+        if format != Some(RESULT_FORMAT) {
+            return Err(format!(
+                "the recorded result has format {}; this nes-film checks witnesses in {RESULT_FORMAT}, so rerun the search with this nes-eval",
+                format.unwrap_or("none")
+            )
+            .into());
+        }
         let expected = recorded
             .get("witness")
             .ok_or("the recorded result carries no witness evidence")?;

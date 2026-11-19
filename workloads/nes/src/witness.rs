@@ -28,11 +28,23 @@ pub trait EndpointIdentity: Serialize {
 
 impl EndpointIdentity for CastlevaniaSnapshot {}
 
-impl EndpointIdentity for MetroidSnapshot {}
+impl EndpointIdentity for MetroidSnapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.snapshot_identity_sha256()
+    }
+}
 
-impl EndpointIdentity for Mm2Snapshot {}
+impl EndpointIdentity for Mm2Snapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.snapshot_identity_sha256()
+    }
+}
 
-impl EndpointIdentity for StbSnapshot {}
+impl EndpointIdentity for StbSnapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.snapshot_identity_sha256()
+    }
+}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {

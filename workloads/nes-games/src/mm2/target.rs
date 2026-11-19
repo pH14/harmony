@@ -632,6 +632,19 @@ pub struct Mm2Snapshot {
 }
 
 impl Mm2Snapshot {
+    pub fn logical_identity(&self) -> Result<Self, MachineError> {
+        Ok(Self {
+            emulator_state: crate::nes_backend::SnapshotState::logical_identity(
+                &self.emulator_state,
+            )?,
+            ..self.clone()
+        })
+    }
+
+    pub fn snapshot_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
+        crate::search::campaign::postcard_value_sha256(&self.logical_identity()?)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_census_tests(decoded: Mm2MechanicalState) -> Self {
         Self {

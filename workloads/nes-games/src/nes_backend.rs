@@ -76,6 +76,18 @@ impl SnapshotState for Vec<u8> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         budget.array::<u8>(self.capacity())
     }
+
+    fn logical_identity(&self) -> Result<Self, MachineError> {
+        let mut identity = self.clone();
+        if let Ok((_, header_len)) = packed_preamble(self)
+            && let Some(header) = identity
+                .get_mut(PACKED_PREAMBLE_LEN..)
+                .and_then(|rest| rest.get_mut(..header_len))
+        {
+            machine::nes::clear_execution_sha256(header);
+        }
+        Ok(identity)
+    }
 }
 
 pub trait NesBackend<P>: Machine

@@ -45,7 +45,12 @@ any other marker. Job results are digested with
 state, so a browser campaign and a native one produce the same decision
 stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`,
 and an archive checkpoint must match those digests. SMB hashes the logical
-snapshot identity; the other games hash the serialized snapshot.
+snapshot identity; the other games hash the serialized snapshot. The logical
+identity of a packed QuickNES state zeroes the prepared execution hash in its
+header, so two binaries that reach the same emulated state agree on it.
+`NesSnapshot`, `StbSnapshot`, `MetroidSnapshot`, `Mm2Snapshot` and
+`SmbSnapshot` expose `snapshot_identity_sha256` over that identity, and the
+witness endpoint digest in `nes-workload` uses it.
 
 Each game's recorded emulator policy ends with a hash field. The native
 constructors take the core hash and the prepared execution hash from
