@@ -726,8 +726,9 @@ in a cell. Across cells, the gains mask recorded in the continuation bank and
 by `prefer_across`.
 
 **Key.** `AssertionKey` is 32 bytes: packed `progress` (32 bits), `place` (64
-bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
-padding), `identity` (64 bits), two `prefer` values (32 bits each), and
+bits, held as `Wide` at 4-byte alignment so a 12-byte cell and a 16-byte
+position carry no padding), `identity` (64 bits, so a slot is 24 bytes with 4
+bytes of padding), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
 its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
 the latched stage live in an `Accumulator` that the front end keeps beside its

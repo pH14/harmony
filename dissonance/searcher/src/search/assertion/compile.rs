@@ -133,8 +133,9 @@ impl Lane {
         let packed = if value == NONE {
             0
         } else {
-            let bucket = value.clamp(self.lo, self.hi).div_euclid(self.step) - self.floor;
-            bucket.unsigned_abs() + u64::from(self.none)
+            let bucket = i128::from(value.clamp(self.lo, self.hi).div_euclid(self.step))
+                - i128::from(self.floor);
+            u64::try_from(bucket).unwrap_or(u64::MAX) + u64::from(self.none)
         };
         if self.less {
             self.radix - 1 - packed
@@ -152,8 +153,9 @@ impl Lane {
         if self.none && packed == 0 {
             return NONE;
         }
-        let bucket = i64::try_from(packed - u64::from(self.none)).unwrap_or(i64::MAX);
-        (bucket + self.floor).saturating_mul(self.step)
+        let value = (i128::from(packed - u64::from(self.none)) + i128::from(self.floor))
+            * i128::from(self.step);
+        i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
     }
 }
 

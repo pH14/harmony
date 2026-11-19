@@ -435,6 +435,18 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
     );
     assert!(std::mem::size_of::<Accumulator>() <= 24);
     assert_eq!(std::mem::size_of::<AssertionKey>(), 32);
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Cell<AssertionKey>>(),
+        12
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Position<AssertionKey>>(),
+        16
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Slot<AssertionKey>>(),
+        24
+    );
 }
 
 #[test]
@@ -595,6 +607,42 @@ fn an_identity_holds_more_than_32_bits() {
         .unwrap();
     assert!(key.identity > u64::from(u32::MAX));
     assert_eq!(compiled.view(key).identity, [i64::from(u16::MAX); 3]);
+}
+
+#[test]
+fn a_lane_over_a_wide_signed_range_packs_both_ends_apart() {
+    let declare = |x| {
+        [Assertion::Value {
+            name: "x",
+            value: Number::new(x, -2, i64::MAX),
+        }]
+    };
+    let catalog = Catalog::from_assertions(declare(0)).unwrap();
+    for (text, field) in [
+        (r#"spread = "x""#, "place"),
+        (r#"identity = "x""#, "identity"),
+    ] {
+        let compiled = Compiled::parse(text, &catalog).unwrap();
+        let ends = [-2, -1, i64::MAX - 2, i64::MAX];
+        let keys: Vec<_> = ends
+            .iter()
+            .map(|&x| compiled.key(&Record::from_assertions(declare(x))).unwrap())
+            .collect();
+        for (&x, key) in ends.iter().zip(&keys) {
+            let view = compiled.view(*key);
+            let values = if field == "place" {
+                view.place
+            } else {
+                view.identity
+            };
+            assert_eq!(values, [x], "{text}");
+        }
+        let packed: std::collections::BTreeSet<_> = keys
+            .iter()
+            .map(|key| (key.place.get(), key.identity))
+            .collect();
+        assert_eq!(packed.len(), ends.len(), "{text}");
+    }
 }
 
 #[test]
