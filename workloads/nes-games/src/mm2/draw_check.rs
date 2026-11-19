@@ -98,9 +98,17 @@ fn kind(drawn: Drawn) -> &'static str {
     }
 }
 
-fn tally_job(side: &mut Side, job: &[(Drawn, bool)]) {
-    let mut previous: Option<(Drawn, bool)> = None;
+fn tally_job(
+    side: &mut Side,
+    context: Option<ButtonChord>,
+    strategy: &[(Drawn, bool)],
+    job: &[(Drawn, bool)],
+) {
     for (index, &(drawn, targeted)) in job.iter().enumerate() {
+        let previous = match index.checked_sub(1) {
+            Some(before) => strategy.get(before).copied(),
+            None => context.map(|chord| (Drawn::Chord(chord), false)),
+        };
         if targeted {
             let family = if index == 0 {
                 "first_switch_taken"
@@ -125,11 +133,10 @@ fn tally_job(side: &mut Side, job: &[(Drawn, bool)]) {
             );
         }
         let Drawn::Chord(chord) = drawn else {
-            previous = Some((drawn, targeted));
             continue;
         };
         match previous {
-            None if index == 0 => side.count("context", "context:first_in_job".to_owned()),
+            None => side.count("context", "context:fresh_first_in_job".to_owned()),
             Some((Drawn::Switch(_) | Drawn::Idle, _)) => {
                 side.count("context", "context:after_switch".to_owned());
             }
@@ -141,9 +148,7 @@ fn tally_job(side: &mut Side, job: &[(Drawn, bool)]) {
                     format!("chord_pair:{:02x}>{:02x}", before.buttons, chord.buttons),
                 );
             }
-            None => {}
         }
-        previous = Some((drawn, targeted));
     }
 }
 
@@ -197,22 +202,27 @@ where
             continue;
         }
         jobs += 1;
+        let context = job.first().and_then(|action| action.context);
         let mut strategy_job = Vec::with_capacity(job.len());
         let mut hand_job = Vec::with_capacity(job.len());
-        let mut previous = None;
+        let mut previous = context.map(Mm2Action::Chord);
         for action in &job {
             let ask = ask_of(action);
             actions += 1;
             asks += u64::from(ask.weapon_record);
             untargeted += u64::from(ask.targets.is_empty());
             let targeted = !ask.targets.is_empty();
-            strategy_job.push((played(action.action), targeted));
+            let strategy_drawn = played(action.action);
+            strategy_job.push((strategy_drawn, targeted));
             let drawn = hand_draw(&mut rand, previous.as_ref());
-            previous = Some(drawn);
             hand_job.push((hand_drawn(drawn, &ask.targets), targeted));
+            previous = Some(match strategy_drawn {
+                Drawn::Chord(chord) => Mm2Action::Chord(chord),
+                Drawn::Switch(_) | Drawn::Idle => Mm2Action::Switch(0),
+            });
         }
-        tally_job(&mut strategy, &strategy_job);
-        tally_job(&mut hand, &hand_job);
+        tally_job(&mut strategy, context, &strategy_job, &strategy_job);
+        tally_job(&mut hand, context, &strategy_job, &hand_job);
     }
     let categories: Vec<String> = strategy
         .counts
@@ -288,6 +298,10 @@ fn synthetic(
             let mut previous: Option<Mm2Action> = None;
             (0..3)
                 .map(|_| {
+                    let context = match previous {
+                        Some(Mm2Action::Chord(chord)) => Some(chord),
+                        _ => None,
+                    };
                     let (action, choices) = if drawn {
                         let chord = fresh(&mut rand, previous.as_ref());
                         previous = Some(Mm2Action::Chord(chord));
@@ -305,6 +319,7 @@ fn synthetic(
                         cost: u64::from(action.hold_frames),
                         frames: Vec::new(),
                         choices,
+                        context,
                     }
                 })
                 .collect()
