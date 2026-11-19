@@ -2,6 +2,9 @@
 
 pub mod archive;
 pub mod campaign;
+#[cfg(all(test, unix))]
+mod equivalence_tests;
+pub mod game;
 pub mod plan;
 pub mod shrink;
 pub mod target;

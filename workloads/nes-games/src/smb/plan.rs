@@ -281,7 +281,8 @@ fn metatile(wram: &[u8; WRAM_SIZE], column: usize, row: usize) -> u8 {
     wram[buffer + row * 16 + column % 16]
 }
 
-fn vine_out_of_reach(wram: &[u8; WRAM_SIZE]) -> bool {
+#[must_use]
+pub fn vine_out_of_reach(wram: &[u8; WRAM_SIZE]) -> bool {
     in_four_two(wram)
         && room(wram) == FOUR_TWO_VINE_ROOM
         && !smb_area_is_loading(wram)
