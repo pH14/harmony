@@ -90,13 +90,11 @@ func exists(argv ...string) bool {
 	return exec.Command(argv[0], argv[1:]...).Run() == nil
 }
 
-func inNode(i int, argv ...string) error {
-	return run(append([]string{"ip", "netns", "exec", namespace(i)}, argv...)...)
-}
-
-func inNodeInput(i int, input string, argv ...string) error {
+var nodeCommand = func(i int, input string, argv ...string) error {
 	return runInput(input, append([]string{"ip", "netns", "exec", namespace(i)}, argv...)...)
 }
+
+func inNode(i int, argv ...string) error { return nodeCommand(i, "", argv...) }
 
 func setup(n int) error {
 	if !exists("ip", "link", "show", bridge) {
@@ -186,12 +184,11 @@ func restoreInput(i, n int, side func(int) bool) string {
 }
 
 func cut(n int, side func(int) bool) error {
+	var errs []error
 	for i := 1; i <= n; i++ {
-		if err := inNodeInput(i, restoreInput(i, n, side), "iptables-restore", "--noflush"); err != nil {
-			return err
-		}
+		errs = append(errs, nodeCommand(i, restoreInput(i, n, side), "iptables-restore", "--noflush"))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func partition() error {
