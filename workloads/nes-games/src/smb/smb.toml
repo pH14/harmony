@@ -1,13 +1,9 @@
 goal = "victory"
 reject = ["dead", "doomed and action_end"]
-spread = ["area_type", "area_pointer", "arrival_page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
+spread = ["area_type", "area_pointer", "page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
 identity = "screen_x"
 prefer = [["clock: more"]]
 prefer_scope = "0"
-
-[define]
-arrival_page = "127 - highest(127 - progress / 16, room_epoch)"
-band = "highest((progress + screen_x) / 64, level_epoch)"
 
 [[stage]]
 name = "1-1"

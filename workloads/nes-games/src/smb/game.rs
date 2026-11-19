@@ -20,6 +20,7 @@ pub const WARPS_STRATEGY: &str = include_str!("smb_warps.toml");
 pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
 pub const BOOT_IDLE_FRAMES: usize = 152;
 pub const WARP_DROP: u16 = 17;
+const BAND_MAX: i64 = 32;
 pub const LEVELS: u8 = 32;
 
 const PLAYER_Y: usize = 0x00ce;
@@ -91,8 +92,8 @@ pub struct SmbState {
     pub playing: bool,
     pub control: bool,
     pub operating_mode: u8,
-    pub level_epoch: u8,
-    pub room_epoch: u8,
+    pub page: u8,
+    pub band: u16,
 }
 
 impl SmbState {
@@ -180,7 +181,12 @@ impl Game for SuperMarioBros {
         }
     }
 
-    fn decode(&self, _parent: Option<&SmbState>, previous: Option<&SmbState>, ram: &[u8]) -> SmbState {
+    fn decode(
+        &self,
+        parent: Option<&SmbState>,
+        _previous: Option<&SmbState>,
+        ram: &[u8],
+    ) -> SmbState {
         let wram = wram(ram);
         let loading = smb_area_is_loading(&wram);
         let area = ROOM_IDENTITY_BYTES.map(|offset| wram[offset]);
@@ -190,30 +196,25 @@ impl Game for SuperMarioBros {
         } else {
             u16::try_from(smb_camera_pixels(&wram) / 16).unwrap_or(u16::MAX)
         };
-        let (world, level) = match previous {
-            Some(previous) if previous.area == area => (previous.world, previous.level),
+        let screen_x = if loading { 0 } else { screen_x_bucket(&wram) };
+        let (world, level) = match parent {
+            Some(parent) if parent.area == area => (parent.world, parent.level),
             _ => (raw_world, raw_level),
         };
-        let (level_epoch, room_epoch) = match previous {
-            Some(previous) => {
-                let same_level = (previous.world, previous.level) == (world, level);
-                let warped = same_level
-                    && previous.area == area
-                    && previous.progress >= progress.saturating_add(WARP_DROP);
-                let level_epoch = if same_level && !warped {
-                    previous.level_epoch
+        let arrived = u8::try_from(progress / 16).unwrap_or(u8::MAX);
+        let (page, carried) = match parent {
+            Some(parent) if (parent.world, parent.level) == (world, level) => {
+                if parent.area != area {
+                    (arrived, parent.band)
+                } else if parent.progress >= progress.saturating_add(WARP_DROP) {
+                    (arrived, 0)
                 } else {
-                    previous.level_epoch.wrapping_add(1)
-                };
-                let room_epoch = if level_epoch == previous.level_epoch && previous.area == area {
-                    previous.room_epoch
-                } else {
-                    previous.room_epoch.wrapping_add(1)
-                };
-                (level_epoch, room_epoch)
+                    (parent.page, parent.band)
+                }
             }
-            None => (0, 0),
+            _ => (arrived, 0),
         };
+        let band = plan::band(progress.saturating_add(u16::from(screen_x))).max(carried);
         let dead = wram[PLAYER_ENGINE_STATE] == PLAYER_KILLED_STATE
             || wram[PLAYER_VERTICAL_PAGE] >= PLAYER_BELOW_PLAY_AREA_PAGE;
         SmbState {
@@ -223,7 +224,7 @@ impl Game for SuperMarioBros {
             raw_level,
             area,
             progress,
-            screen_x: if loading { 0 } else { screen_x_bucket(&wram) },
+            screen_x,
             y_bucket: wram[PLAYER_Y] / 16,
             loop_on_path: wram[LOOP_CORRECT_PASSES] == wram[LOOP_PASSES],
             time_bucket: wram[GAME_TIMER],
@@ -237,8 +238,8 @@ impl Game for SuperMarioBros {
             playing: smb_is_playing(&wram),
             control: smb_player_has_control(&wram),
             operating_mode: wram[OPERATING_MODE],
-            level_epoch,
-            room_epoch,
+            page,
+            band,
         }
     }
 
@@ -265,8 +266,8 @@ impl Game for SuperMarioBros {
         ));
         out.declare(byte_value("operating_mode", state.operating_mode));
         out.declare(flag("control", state.control));
-        out.declare(byte_value("level_epoch", state.level_epoch));
-        out.declare(byte_value("room_epoch", state.room_epoch));
+        out.declare(value("page", i64::from(state.page), 0, 127));
+        out.declare(value("band", i64::from(state.band), 0, BAND_MAX));
         out.declare(flag("dead", state.dead));
         out.declare(flag("doomed", state.doomed));
         out.declare(flag("vine_out_of_reach", state.vine_out_of_reach));
@@ -323,21 +324,28 @@ mod tests {
     }
 
     #[test]
-    fn the_level_follows_the_area_and_a_warp_starts_new_epochs() {
+    fn the_level_page_and_band_follow_the_parent_and_a_warp_restarts_the_page() {
         let game = SuperMarioBros;
         let castle = game.decode(None, None, &ram([3, 5], 4_000, 0, 3));
-        let next = game.decode(None, Some(&castle), &ram([3, 5], 4_000, 1, 0));
+        assert_eq!((castle.page, castle.band), (15, 3));
+        let next = game.decode(Some(&castle), Some(&castle), &ram([3, 5], 4_000, 1, 0));
         assert_eq!((next.world, next.level), (0, 3));
-        assert_eq!((next.level_epoch, next.room_epoch), (0, 0));
-        let loaded = game.decode(None, Some(&next), &ram([1, 0], 0, 1, 0));
-        assert_eq!((loaded.world, loaded.level), (1, 0));
-        assert_eq!((loaded.level_epoch, loaded.room_epoch), (1, 1));
-        let ahead = game.decode(None, Some(&loaded), &ram([1, 0], 1_000, 1, 0));
-        let bonus = game.decode(None, Some(&ahead), &ram([0, 2], 0, 1, 0));
-        assert_eq!((bonus.level_epoch, bonus.room_epoch), (1, 2));
-        let back = game.decode(None, Some(&ahead), &ram([1, 0], 1_000 - 16 * 16, 1, 0));
-        assert_eq!((back.level_epoch, back.room_epoch), (1, 1));
-        let warped = game.decode(None, Some(&ahead), &ram([1, 0], 1_000 - 17 * 16, 1, 0));
-        assert_eq!((warped.level_epoch, warped.room_epoch), (2, 2));
+        let loaded = game.decode(Some(&next), Some(&next), &ram([1, 0], 0, 1, 0));
+        assert_eq!(
+            (loaded.world, loaded.level, loaded.page, loaded.band),
+            (1, 0, 0, 0)
+        );
+        let ahead = game.decode(Some(&loaded), Some(&loaded), &ram([1, 0], 2_000, 1, 0));
+        assert_eq!((ahead.page, ahead.band), (0, 1));
+        let bonus = game.decode(Some(&ahead), Some(&ahead), &ram([0, 2], 0, 1, 0));
+        assert_eq!((bonus.page, bonus.band), (0, 1));
+        let warped = game.decode(Some(&ahead), Some(&ahead), &ram([1, 0], 1_000, 1, 0));
+        assert_eq!((warped.page, warped.band), (3, 0));
+        let back = game.decode(
+            Some(&ahead),
+            Some(&warped),
+            &ram([1, 0], 2_000 - 16 * 16, 1, 0),
+        );
+        assert_eq!((back.page, back.band), (0, 1));
     }
 }

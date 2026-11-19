@@ -102,9 +102,10 @@ fn genesis(inputs: &Inputs) -> (QuickNesMachine, SnapId, [u8; WRAM_SIZE]) {
 
 #[derive(Clone)]
 struct Chain {
-    frame: SmbArchiveKey,
+    kept: SmbArchiveKey,
     candidate: SmbArchiveKey,
     bucket: u32,
+    parent: SmbState,
     state: SmbState,
     accumulator: Accumulator,
 }
@@ -116,9 +117,10 @@ impl Chain {
         let mut accumulator = Accumulator::default();
         let _ = lowered.observe(0, state, &mut accumulator);
         Self {
-            frame: key,
+            kept: key,
             candidate: key,
             bucket: smb_camera_pixels(wram) / 16,
+            parent: state,
             state,
             accumulator,
         }
@@ -158,13 +160,19 @@ fn step(
     endpoint: bool,
 ) -> Frame {
     let raw = hand_key(route, wram);
-    let hand = raw.complete(Some((chain.frame, &())));
-    chain.frame = hand;
-    let state = lowered.game.decode(None, Some(&chain.state), wram);
+    let hand = raw.complete(Some((chain.kept, &())));
+    let state = lowered
+        .game
+        .decode(Some(&chain.parent), Some(&chain.state), wram);
     chain.state = state;
+    if endpoint {
+        chain.kept = hand;
+        chain.parent = state;
+    }
     let bucket = smb_camera_pixels(wram) / 16;
-    let hand_stops =
-        state.dead || state.victory || state.doomed || (!state.dead && route.is_doomed(wram));
+    let hand_stops = state.dead
+        || state.victory
+        || (endpoint && (state.doomed || (!state.dead && route.is_doomed(wram))));
     let candidate =
         (bucket != chain.bucket || state.dead || state.victory || endpoint).then(|| {
             let key = raw.complete(Some((chain.candidate, &())));
@@ -173,7 +181,9 @@ fn step(
         });
     chain.bucket = bucket;
     lowered.checked_record(&state).expect("checked record");
-    let observation = lowered.observe(0, state, &mut chain.accumulator);
+    let observation = lowered
+        .observe_ending(0, state, &mut chain.accumulator, |_| endpoint)
+        .observation;
     Frame {
         hand,
         candidate,

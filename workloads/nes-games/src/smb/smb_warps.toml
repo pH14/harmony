@@ -1,6 +1,6 @@
 goal = "victory"
 reject = ["dead", "doomed and action_end", "not in(raw_world * 4 + raw_level, route_levels) and action_end", "vine_out_of_reach and action_end"]
-spread = ["area_type", "area_pointer", "arrival_page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
+spread = ["area_type", "area_pointer", "page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
 identity = "screen_x"
 prefer = [["clock: more"]]
 prefer_scope = "0"
@@ -10,8 +10,6 @@ route_levels = [0, 1, 12, 13, 28, 29, 30, 31]
 
 [define]
 here = "world * 4 + level"
-arrival_page = "127 - highest(127 - progress / 16, room_epoch)"
-band = "highest((progress + screen_x) / 64, level_epoch)"
 
 [[stage]]
 name = "1-1"

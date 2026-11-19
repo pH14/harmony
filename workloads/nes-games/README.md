@@ -132,7 +132,11 @@ written this way. The other games have their own `target`, `archive` and
   genesis), and the previous frame's state. Lineage, a value carried from one
   kept state to the next, belongs in `decode` and reads the parent, so every
   frame of an action computes it as if that frame were the action's end and
-  interior frames never chain it through each other. The previous frame is for
+  interior frames never chain it through each other. Super Mario Bros.'s
+  `page` and `band` are lineage: the page restarts where a new area or a warp
+  back of 17 or more columns arrives and is carried otherwise, and the band
+  carries the parent's band unless the level changes or a warp drops it. The
+  previous frame is for
   carries across frames, such as a position held while the player has no
   control. A forced move after an input belongs to that input's action and
   decodes against the same parent.
