@@ -408,6 +408,86 @@ fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
 }
 
 #[test]
+fn last_holds_the_latest_value_that_is_not_none_and_resets_since_a_signal_changes() {
+    let compiled = Compiled::parse(
+        r#"
+        spread = [
+            "last(lives)",
+            "last(if 'in transition' then none else 'position.x')",
+            "last(if 'in transition' then none else 'position.x', 'position.room')",
+        ]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let mut views = Vec::new();
+    for (room, lives, x, transition) in [
+        (0, 3, 10, false),
+        (0, 5, 20, true),
+        (0, 1, 30, true),
+        (1, 2, 40, true),
+        (1, 4, 50, false),
+    ] {
+        let state = Walk {
+            room,
+            lives,
+            x,
+            transition,
+            ..Walk::default()
+        };
+        let observed = compiled.observe(&record(state), &mut accumulator);
+        views.push(compiled.view(observed.key.unwrap()).place);
+    }
+    assert_eq!(
+        views,
+        [
+            vec![3, 10, 10],
+            vec![5, 10, 10],
+            vec![1, 10, 10],
+            vec![2, 10, NONE],
+            vec![4, 50, 50],
+        ]
+    );
+}
+
+#[test]
+fn a_last_route_objective_follows_the_route_back_and_is_carried_off_it() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "route"
+        objective = "last(index('position.room', route))"
+        goal = "'items.key'"
+        [[stage]]
+        name = "after"
+        goal = "false"
+        [table]
+        route = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let objectives: Vec<_> = [15, 0, 4]
+        .into_iter()
+        .map(|room| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            let view = compiled.view(observed.key.unwrap());
+            assert_eq!(view.stage.as_deref(), Some("route"));
+            view.progress
+        })
+        .collect();
+    assert_eq!(objectives, [vec![14], vec![14], vec![3]]);
+}
+
+#[test]
 fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
     let width = |text: &str| {
         let compiled = Compiled::parse(text, &catalog()).unwrap();
@@ -427,6 +507,7 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
         width("spread = [\"highest('items.key')\", \"highest(time, 'position.room')\"]"),
         4
     );
+    assert_eq!(width("spread = \"last(time, 'position.room')\""), 2);
     assert_eq!(
         width(
             "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"highest(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
@@ -558,6 +639,8 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         (r#"prefer = [["time: most"]]"#, "is not `more`"),
         (r#"spread = "in(time, nothing)""#, "no table"),
         (r#"spread = "highest(highest(lives))""#, "another aggregate"),
+        (r#"spread = "last(highest(lives))""#, "another aggregate"),
+        (r#"spread = "last(lives, last(time))""#, "another aggregate"),
         (r#"spread = "count(lives)""#, "not a strategy function"),
         ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
@@ -590,6 +673,10 @@ fn a_preference_scope_reads_only_whole_values_of_the_cell() {
         (
             "spread = \"lives\"\nprefer_scope = \"highest(lives)\"",
             "highest(...)",
+        ),
+        (
+            "spread = \"lives\"\nprefer_scope = \"last(lives)\"",
+            "last(...)",
         ),
         (
             "spread = \"place\"\nprefer_scope = \"inner\"\n[define]\nplace = \"inner + lives\"\ninner = \"time / 10\"",
@@ -628,6 +715,10 @@ fn malformed_strategies_return_errors_rather_than_panicking() {
     for (text, message) in [
         (
             format!("spread = \"highest(lives, e40)\"\n[define]\n{deep}"),
+            "stack values",
+        ),
+        (
+            format!("spread = \"last(e40)\"\n[define]\n{deep}"),
             "stack values",
         ),
         (
