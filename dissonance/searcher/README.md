@@ -735,15 +735,19 @@ from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 
 **Records.** A front end that keeps records writes a file beside the run's
 stream with `RecordsWriter`. The header holds the stream's identity (campaign
-seed and workload identity), the policy identifier, the strategy text, the
-catalog and the genesis record. Each entry is one job: its sequence number,
+seed and workload identity), the policy identifier, the choice policy
+identifier, the strategy text, the catalog and the genesis record. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
 ran for it outside the tape), the record of every frame it decoded, stored
-as changes from the previous frame, and the choices it resolved. The writer
+as changes from the previous frame, the choices it resolved, and the action it
+edited (`context`), when the front end edits one, such as the parent's last
+chord for an NES job's first action. The writer
 writes a job whole once the next job starts or the file finishes, so a file
 cut short by a crash ends in at most one partial job. `Recording::from_bytes`
-reads the whole jobs and reports the bytes left over, `check_stream` refuses a
+reads the whole jobs and reports the bytes left over, `RecordedJobs::from_bytes`
+reads them one job at a time without decoding frames into memory together,
+`check_stream` refuses a
 stream with another identity or key policy, and `continue_with` joins a resumed
 run's file, whose jobs replace the earlier file's from its first job on.
 

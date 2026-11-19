@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::catalog::{Catalog, RECORD_SLOTS, Record};
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v5";
+pub const RECORDS_FORMAT: &str = "assertion-records-v6";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -26,6 +26,7 @@ pub struct RecordsHeader {
     pub format: String,
     pub stream: StreamIdentity,
     pub policy: String,
+    pub choice_policy: Option<String>,
     pub strategy: String,
     pub catalog: Catalog,
     pub genesis: Record,
@@ -39,6 +40,7 @@ pub struct RecordedAction<A> {
     pub cost: u64,
     pub frames: Vec<Record>,
     pub choices: Vec<ChoiceRecord>,
+    pub context: Option<A>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,6 +57,7 @@ struct Encoded<A> {
     width: u8,
     changes: Vec<Vec<(u8, i64)>>,
     choices: Vec<ChoiceRecord>,
+    context: Option<A>,
 }
 
 impl<A: Clone> Encoded<A> {
@@ -86,6 +89,7 @@ impl<A: Clone> Encoded<A> {
             width: u8::try_from(width).unwrap_or(u8::MAX),
             changes,
             choices: recorded.choices.clone(),
+            context: recorded.context.clone(),
         }
     }
 }
@@ -116,6 +120,7 @@ impl<A> Encoded<A> {
             cost: self.cost,
             frames,
             choices: self.choices,
+            context: self.context,
         })
     }
 }
@@ -276,7 +281,9 @@ impl<A: DeserializeOwned> Iterator for RecordedJobs<'_, A> {
 
 impl<A> Recording<A> {
     pub fn continue_with(mut self, later: Self) -> Result<Self, Box<dyn Error>> {
-        if later.header.policy != self.header.policy || later.header.catalog != self.header.catalog
+        if later.header.policy != self.header.policy
+            || later.header.choice_policy != self.header.choice_policy
+            || later.header.catalog != self.header.catalog
         {
             return Err("a continued recording has another policy or catalog".into());
         }

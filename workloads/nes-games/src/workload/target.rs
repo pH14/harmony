@@ -54,6 +54,8 @@ pub struct ActionObservation<S> {
     pub records: Vec<Record>,
     #[serde(skip)]
     pub choices: Vec<ChoiceRecord>,
+    #[serde(skip)]
+    pub edited: Option<ButtonChord>,
 }
 
 impl<S> From<NesObservation<S>> for ActionObservation<S> {
@@ -63,6 +65,7 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
             cost: 0,
             records: Vec::new(),
             choices: Vec::new(),
+            edited: None,
         }
     }
 }
@@ -391,6 +394,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             cost: 0,
             records,
             choices: Vec::new(),
+            edited: None,
         });
         Ok((frames, wram))
     }
@@ -547,6 +551,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                     cost: 0,
                     records: std::mem::take(&mut records),
                     choices: Vec::new(),
+                    edited: None,
                 });
             }
             if last {
