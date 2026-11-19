@@ -74,7 +74,7 @@ pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 pub const DOOMED_POLICY_FIELD: &str = "doomed_policy";
 pub const DOOMED_POLICY_IDENTIFIER: &str =
-    "block_below_ground_line_over_open_floor_without_lifts_v2";
+    "block_below_ground_line_over_open_floor_without_lifts_at_the_first_doomed_frame";
 pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
 pub fn recorded_policy<'a>(
@@ -172,8 +172,21 @@ where
     }
 
     #[must_use]
-    pub fn with_route(self, route: SmbRoute) -> Self {
-        Self { route, ..self }
+    pub fn with_route(self, route: SmbRoute) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            route,
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target.set_route(route);
+                Ok(target)
+            }),
+            ..self
+        }
     }
 
     #[must_use]

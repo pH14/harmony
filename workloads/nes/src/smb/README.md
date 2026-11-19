@@ -21,8 +21,9 @@ draw of whole new chords rarely keeps it. The first chord of a new game has
 nothing before it and is drawn from the controller vocabulary.
 
 An action runs its chord in one machine run and reads each frame's work RAM
-from the run. The target stops reading at the frame where Mario dies or the
-game is won, and counts the frames up to that one. A film of the action keeps
+from the run. The target stops reading at the first frame where Mario dies, the
+game is won or the state is doomed, and counts the frames up to that one. Its
+execution work counts every frame the run produced, as `NesTarget` does. A film of the action keeps
 the video and audio of those frames only. The machine has run the
 rest of the chord by then, so the target keeps the action's starting state. A
 dead or won target takes no further action. A snapshot of it first reruns the
@@ -51,8 +52,8 @@ or a jump spring (`$32`). The game lands his feet on any metatile but blank,
 the vine blank `$26`, the coins `$C2` and `$C3` and the hidden blocks `$5F`
 and `$60`, and it still lands feet a few pixels into a ledge, which is why
 the depth is a full block. Lifts move through pits and catch a falling
-Mario below the ground line. The check reads only the action's last frame. A
-doomed state ends the job like a death and is never kept.
+Mario below the ground line. A doomed state, under the game's route as well,
+ends the job like a death and is never kept.
 
 A job's length comes from its parent's earlier jobs. A parent's first job runs
 one chord, and each job that keeps no state and stays in the parent's place

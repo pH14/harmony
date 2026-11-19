@@ -14,7 +14,10 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState, WorkRamCopy},
-    smb::archive::{SmbArchiveKey, fold_frame},
+    smb::{
+        archive::{SmbArchiveKey, fold_frame},
+        plan::SmbRoute,
+    },
     target::Target,
     workload::{ShadowHook, ShadowToken},
 };
@@ -182,6 +185,7 @@ where
     genesis_frame_key: SmbArchiveKey,
     frame_key: SmbArchiveKey,
     shadow: Option<ShadowHook<SmbArchiveKey>>,
+    route: SmbRoute,
     stopped_at: Option<(SnapId, ButtonChord)>,
     dead: bool,
     failed: bool,
@@ -248,6 +252,7 @@ where
             genesis_frame_key: frame_key,
             frame_key,
             shadow: None,
+            route: SmbRoute::AllLevels,
             stopped_at: None,
             dead: false,
             failed: false,
@@ -292,6 +297,10 @@ where
     #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.observation.frame_count
+    }
+
+    pub fn set_route(&mut self, route: SmbRoute) {
+        self.route = route;
     }
 
     pub fn set_shadow(&mut self, shadow: ShadowHook<SmbArchiveKey>) {
@@ -341,6 +350,7 @@ where
             let _ = self.machine.drop_snapshot(start);
             return 0;
         }
+        let produced_frames = self.machine.frames().len() as u64;
         let mut endpoint = self.wram();
         let mut prior_bucket = smb_scroll_bucket(&endpoint);
         let mut executed_frames = 0_u64;
@@ -368,7 +378,12 @@ where
                     self.dead,
                 ));
             }
-            if self.dead || victory || (until_control && smb_player_has_control(wram)) {
+            if self.dead
+                || victory
+                || smb_player_is_doomed(wram)
+                || self.route.is_doomed(wram)
+                || (until_control && smb_player_has_control(wram))
+            {
                 break;
             }
         }
@@ -383,7 +398,7 @@ where
         } else {
             let _ = self.machine.drop_snapshot(start);
         }
-        self.execution_work = self.execution_work.saturating_add(executed_frames);
+        self.execution_work = self.execution_work.saturating_add(produced_frames);
         self.last_frames = self.last_frames.saturating_add(executed_frames);
         self.last_level_frames = self.last_level_frames.saturating_add(level_frames);
         let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
@@ -1528,7 +1543,7 @@ mod tests {
 
         target.apply(&ButtonChord::new(0x10, 5));
         assert!(target.is_dead());
-        assert_eq!(target.execution_work(), 2);
+        assert_eq!(target.execution_work(), 5);
         assert_eq!(target.machine.kept_capture, [2]);
         let observations = target.last_action_observations();
         assert_eq!(
