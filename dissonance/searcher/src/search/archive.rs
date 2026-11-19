@@ -680,6 +680,11 @@ pub fn saved_state_entries<A: Clone + Ord, M>(
     Ok(entries)
 }
 
+#[must_use]
+pub const fn entry_bytes<A: Ord, K, M, S>() -> usize {
+    size_of::<ArchiveEntry<A, K, M, S>>()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(bound(
     serialize = "A: Serialize, K: Serialize, M: Serialize",

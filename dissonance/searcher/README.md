@@ -234,7 +234,8 @@ The archive's limit is enforced incrementally, a bounded number of eviction
 visits per admission, so resident bytes sit above the limit while maintenance
 catches up. History compaction runs once the history's estimated bytes pass a
 quarter of the archive's limit, and the estimate counts every entry's key at its
-size, so the size of the key type is a decision input. Maintenance does not
+size, so the size of the key type is a decision input. `archive::entry_bytes`
+gives an entry's size for a workload's action, key, milestone and snapshot types. Maintenance does not
 always converge below the limit: history
 compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS` or
 one sixteenth of the entries, whichever is larger, and entry dropping stops at

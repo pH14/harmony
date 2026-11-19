@@ -6,8 +6,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     metroid::{
-        action::MetroidAction, archive::MetroidArchiveKey, game::Metroid, target::MetroidTarget,
+        action::MetroidAction,
+        archive::MetroidArchiveKey,
+        game::Metroid,
+        target::{MetroidSnapshot, MetroidTarget},
     },
+    nes_backend::packed_state_len,
     target::{ExitKind, Target},
     workload::Shadow,
 };
@@ -40,6 +44,7 @@ fn the_route_strategy_shadow_agrees_with_the_hand_key_on_replayed_tapes_with_res
     target.set_shadow(shadow.state_hook());
     let genesis = target.snapshot().unwrap();
     target.shadow_current();
+    let mut state_bytes = (0_usize, 0_usize, 0_usize);
     for path in var("HARMONY_METROID_TAPES").split(':') {
         let tape = actions(path);
         target.restore(&genesis).unwrap();
@@ -54,6 +59,11 @@ fn the_route_strategy_shadow_agrees_with_the_hand_key_on_replayed_tapes_with_res
             }
             let saved = target.snapshot().unwrap();
             target.shadow_current();
+            state_bytes = (
+                state_bytes.0 + saved.emulator_state_bytes_len(),
+                state_bytes.1 + 1,
+                packed_state_len(saved.emulator_state()).unwrap(),
+            );
             for action in tape.iter().skip(index).take(DETOUR).rev() {
                 target.apply(action);
                 target.shadow_current();
@@ -77,6 +87,14 @@ fn the_route_strategy_shadow_agrees_with_the_hand_key_on_replayed_tapes_with_res
             report.unobserved,
         );
     }
+    let mean = state_bytes.0 / state_bytes.1.max(1);
+    eprintln!(
+        "metroid snapshots: {} saved, mean emulator state {mean} bytes packed from {} bytes, MetroidSnapshot {} bytes, charge {} bytes",
+        state_bytes.1,
+        state_bytes.2,
+        size_of::<MetroidSnapshot>(),
+        size_of::<MetroidSnapshot>() + mean,
+    );
     let report = shadow.report().unwrap();
     assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
     assert_eq!(report.unknown_restores, 0);
