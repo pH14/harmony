@@ -270,7 +270,12 @@ Tests in `metroid/game.rs` check that the strategy's stage and objective equal
 `plan::locate` along random paths with restores, and a test in
 `metroid/archive.rs` checks the second line against the hand balance order.
 `StrategyKeying` keys the campaign by a strategy without aggregates, by default
-`metroid/position.toml`, the position strategy.
+`metroid/position.toml`, the position strategy. From power-on with a budget of 4M
+executions it failed against the route key: it reached bombs on 3 of 5 seeds,
+at a median of 3.31M executions against the route key's highest 0.47M, and
+Kraid's door on none. It spreads its draws evenly over the screens it has
+found. Between missiles and bombs it gave the newest screen 1.4% of its jobs,
+where the route key gave 31%.
 `MetroidTarget::set_shadow` takes a `StateHook` and passes it every frame's
 followed state of an action, through the first dead frame, since the target
 stops reading frames there; the route campaign observes the route key after
