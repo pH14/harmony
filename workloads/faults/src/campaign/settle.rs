@@ -181,6 +181,7 @@ pub(crate) fn skipped(
             .saturating_sub(start.fault_free_checks_finished),
         faults_in_force_after_settle: observation.faults_in_force,
         recovery_pending_after_settle: observation.recovery_pending,
+        input: target.actions().to_vec(),
         ..SettleRecord::default()
     };
     write_record(&policy.record, &record);
@@ -297,6 +298,9 @@ fn settle(
         }
     }
     record.settle_ticks = target.execution_ticks().saturating_sub(began);
+    if record.outcome != "compared" && record.input.is_empty() {
+        record.input = target.actions().to_vec();
+    }
 }
 
 fn ticks(value: u16) -> NonZeroU16 {

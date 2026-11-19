@@ -734,11 +734,13 @@ phase. Each job appends one JSON line to `PATH` with the path and suffix
 lengths, the job's execution work, the event-kill armed bits at the suffix's
 end, the nodes restarted, the ticks to ready and
 to the comparison, the phase's actions and ticks, the fault-free check count at
-the job's start, after the suffix and after the phase, and the outcome. A
-violation found in the phase appears only there, with its full input for
-`harmony debug`; it enters neither the archive nor the report. A job that hung,
-ended terminal, was cancelled or reached its objective gets a line with a
-`skipped:` outcome and no phase. A resumed run replays its recorded jobs and
+the job's start, after the suffix and after the phase, and the outcome. Every
+line whose outcome is not `compared` also carries the full input for
+`harmony debug`: the path with the phase's actions, or the path alone for a
+skipped job. A violation found in the phase appears only there; it enters
+neither the archive nor the report. A job that hung, ended terminal, was
+cancelled or reached its objective gets a line with a `skipped:` outcome and
+no phase. A resumed run replays its recorded jobs and
 appends their lines again.
 
 ## macOS
