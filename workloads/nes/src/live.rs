@@ -1573,7 +1573,7 @@ mod tests {
     #[test]
     fn live_resident_root_skips_evicted_genesis_metadata_and_rejects_missing_snapshots() {
         use crate::search::archive::{Archive, ArchiveCandidate};
-        let mut archive = Archive::<u8, ResidentKey, (), u8>::new(|_| 1);
+        let mut archive = Archive::<u8, ResidentKey, (), u8>::new();
         archive.max_entries = 1;
         let first = archive
             .insert(
@@ -1583,6 +1583,7 @@ mod tests {
                     suffix: vec![0],
                     key: ResidentKey(0),
                     milestones: (),
+                    cost: 1,
                 },
                 11,
             )
@@ -1598,6 +1599,7 @@ mod tests {
                     suffix: vec![1],
                     key: ResidentKey(1),
                     milestones: (),
+                    cost: 1,
                 },
                 22,
             )

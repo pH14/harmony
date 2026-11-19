@@ -280,7 +280,7 @@ impl TargetExecution for TimingWorkload {
         target.execution_work
     }
 
-    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64 {
         |action| action.duration.get()
     }
 

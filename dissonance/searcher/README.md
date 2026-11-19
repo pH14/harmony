@@ -21,7 +21,7 @@ in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The window is the number of
 reservations in flight and is set apart from the worker count. Each job's
 planned finish is the planned finish of the last admission before its
-selection plus `action_cost` summed over its replay and suffix actions. Jobs
+selection plus `planned_cost_fn` summed over its replay and suffix actions. Jobs
 are dispatched and admitted in planned-finish order, with ties broken by
 reservation, so a short job reserved after a long one does not wait for it.
 Job records carry their reservation, and replay checks that admissions follow
@@ -356,7 +356,14 @@ environment variable, this test checks the same fixtures without timing them.
 
 Each contract depends on `CampaignTypes` and can be implemented independently,
 except that `Evaluation` also requires `TargetExecution`, whose
-`action_cost_fn` is the default shrink cost.
+`planned_cost_fn`, a job's planned length read before it runs, is the default
+`Evaluation::action_cost`. `Evaluation::action_cost` is what an action cost to
+run, read from its observations, and it is the archive's cost: tier cost,
+in-tier holder cost and the continuation bank's tail cost.
+`Evaluation::shrink_cost` is what a shrink minimizes. It defaults to
+`action_cost`, and the archive keeps its total from the origin as
+`shrink_total` for a minimize campaign's holder ranking, incumbent pruning and
+job ceiling; a workload overrides it only to state a different objective.
 A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
@@ -1397,8 +1404,10 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 13; a checkpoint from another
-executable is refused before the new stream is written. Within that same
+match. The search checkpoint format is `dissonance-search-checkpoint-v19`. A
+checkpoint of another format is refused with an error that names the format it
+has and the format the build reads, and a checkpoint from another executable is
+refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation
 identifiers are compiled constants; draw-table and preference identifiers come
@@ -1422,7 +1431,7 @@ in through `Reporting::evidence_checkpoint` and
 
 The body starts with a key-free record of every archive entry: its id, its
 nearest saved ancestor, the actions from that ancestor (or from the root when
-none is saved) and its milestones (`SavedStateRecord`). When history compaction
+none is saved), its milestones and its shrink total (`SavedStateRecord`). When history compaction
 has dropped an entry's archive parent, its nearest saved ancestor is the
 earlier saved entry with the longest input that prefixes its own, so the import
 keys it from that ancestor's key and keeps the stage latches it carries. Only the action and
@@ -1521,7 +1530,8 @@ hooks:
 
 | Method | Trait | Default | Meaning |
 |---|---|---|---|
-| `shrink_cost(action, target)` | `Evaluation` | `action_cost_fn`, second part 0 | Cost of the action just applied, read from the target after it ran. |
+| `action_cost(action, observations)` | `Evaluation` | `planned_cost_fn` | What the action just applied cost to run, read from its observations. |
+| `shrink_cost(action, target, observations)` | `Evaluation` | `action_cost`, second part 0 | Cost of the action just applied under the shrink's objective, read from the target and the action's observations after it ran. |
 | `remaining_cost_bound(run, target)` | `Evaluation` | zero | A lower bound on the cost still to pay from this state. |
 | `stage(run, target)` | `Evaluation` | `None` | The stage the state is in, in the workload's order. |
 | `stage_run(run, stage)` | `Evaluation` | `None` | The run whose objective is reaching `stage`, or `None` when there is no such stage. |
@@ -1534,14 +1544,30 @@ Every campaign job records, on each `CampaignActionResult`, the action's
 `shrink_cost` as `cost` and the `remaining_cost_bound` after it as `bound`, and
 the result digests cover both. A workload with its own `execute_job` fills them
 from its hooks, or records zero where its suffix runs without the workload.
+Outside a job, the shrink's tape walk, the window search, the incumbent chain
+and an import's replay pass `rollout_observations(target)` as the action's
+observations.
 
-Each archive entry keeps its cost from the origin beside its cost since it
-entered its progress tier. Admission adds a job's step costs to its parent's
-origin cost; an entry inserted without step costs, such as an imported one,
-adds `action_cost` as the first part. Holders of a slot rank by the cost within
-the tier unless `Archive::set_rank_by_origin_cost` was set before the first
-entry; then they rank by the cost from the origin. The archive checkpoint
-carries both costs and the setting.
+Each archive entry keeps two costs. Its tier cost, the cost since it entered
+its progress tier, adds the candidate's `ArchiveCandidate::cost`, the summed
+`action_cost` of its suffix, to its parent's tier cost when the parent is in
+the same tier; the continuation bank records the same sum as the tail's cost.
+Its shrink total is its parent's plus the summed `shrink_cost` of its suffix.
+Live admission and the incumbent chain sum both costs from each action's
+observations, and an import that replays its suffix sums them over the replay.
+An import restored from a checkpoint snapshot without replay takes the
+difference between its source entry's reported `shrink_total` and that of the
+source entry it is imported under, or all of it when rerooted at genesis, and
+uses the difference's first part as its cost; a source entry without a
+`shrink_total` is an error there. A workload whose `shrink_cost` first part is
+not its `action_cost` must therefore implement `candidate_replay_certificate`,
+so that its imports replay and get a measured cost. `Archive::insert` and
+`insert_after` add the candidate's cost as the shrink total's first part, and
+`insert_after_costed` takes the shrink total from its caller. Holders of a slot
+rank by the tier cost unless `Archive::set_rank_by_shrink_total` was set before
+the first entry; then they rank by the shrink total. The archive checkpoint
+carries both costs and the setting, and the archive report gives each entry's
+`shrink_total`.
 
 The goal is `Evaluation::objective_reached`. `ShrinkCost` (in `search::cost`) is a pair ordered
 first part first and added part by part, so a workload can rank by one measure
@@ -1568,21 +1594,21 @@ far, which never exceeds a dropped estimate.
 ## Minimizing
 
 `CampaignConfig::minimize`, a `MinimizeConfig`, turns a campaign into a search
-for a cheaper objective. The archive ranks slot holders by their cost from the
-origin (`Archive::set_rank_by_origin_cost`), and the campaign keeps reserving
+for a cheaper objective. The archive ranks slot holders by their shrink total
+(`Archive::set_rank_by_shrink_total`), and the campaign keeps reserving
 jobs after an objective, as if `stop_campaign_on_objective` were off; a rollout
 still stops at the objective when `stop_rollout_on_objective` is set. The stream
 header and the search checkpoint policies record the options.
 
 The coordinator core keeps an incumbent: the cheapest objective input and its
-`ShrinkCost`. An objective arrival whose cost, its parent's origin cost plus the
+`ShrinkCost`. An objective arrival whose cost, its parent's shrink total plus the
 job's step costs up to the objective, is strictly below the incumbent's
 replaces it; an equal or costlier arrival changes nothing. The incumbent is held
 as the chain of per-prefix states that the shrink uses. On acceptance the
 coordinator replays the new input from the first position where it differs from
 the chain, or from the root, on one extra target that a minimize campaign keeps
 beside its workers' targets. Each replayed prefix state is admitted with its
-origin cost and the previous chain state's entry as its parent, and the replayed
+shrink total and the previous chain state's entry as its parent, and the replayed
 cost must equal the arrival's. The job's stream record carries an `incumbent`
 field with the new cost, length, rebuild start position, execution work and
 admission decisions. Rebuild work counts toward the work counters and the work
@@ -1590,15 +1616,15 @@ budget, stream replay repeats the rebuild and checks the record, and every
 acceptance rewrites the objective witness file.
 
 Three checks prune against the incumbent. Parent selection redraws, up to 64
-times, an entry whose origin cost plus its recorded `remaining_cost_bound`
+times, an entry whose shrink total plus its recorded `remaining_cost_bound`
 reaches the incumbent, and then falls back to the root's chain entry or another
 entry at or after the root. Every job carries a `JobCeiling`, the
-incumbent cost when the job was selected and its parent's origin cost, in its
+incumbent cost when the job was selected and its parent's shrink total, in its
 `JobSpec` and stream record. `RolloutStop::with_ceiling` makes
 `rollout::execute_suffix` end, as a doomed terminal endpoint, at the first step
 whose running cost plus `remaining_cost_bound` reaches the ceiling without
 reaching the objective; replay recomputes each ceiling at selection and checks
-it. Admission does not retain a candidate whose origin cost plus bound reaches
+it. Admission does not retain a candidate whose shrink total plus bound reaches
 the current incumbent and records a `pruned` decision instead, which also
 covers workloads whose own `execute_job` does not run `execute_suffix`.
 
@@ -1665,8 +1691,8 @@ repeats each kind draw at its selection point and rejects a stream whose record
 differs. Live progress lines and the report carry `MinimizeReport`: per-kind
 jobs and acceptances, shares, generation, pending continuations and the
 shortcut position. Archive, saved-state and snapshot-root origins are rejected:
-their imported entries' origin costs come from `action_cost` rather than from
-replay, or their root cannot be rebuilt on resume.
+an imported entry without replay carries its source's shrink total rather than
+one measured by this campaign, and a snapshot root cannot be rebuilt on resume.
 
 ## Host hashing
 

@@ -695,7 +695,7 @@ where
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
 
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -709,7 +709,12 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
-    fn shrink_cost(&self, _action: &ButtonChord, target: &SmbTarget<M, P>) -> ShrinkCost {
+    fn shrink_cost(
+        &self,
+        _action: &ButtonChord,
+        target: &SmbTarget<M, P>,
+        _observations: &[SmbObservations],
+    ) -> ShrinkCost {
         ShrinkCost::new(
             target.last_action_frames(),
             target.last_action_level_frames(),

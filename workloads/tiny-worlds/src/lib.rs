@@ -864,8 +864,8 @@ impl<K: Keying> TargetExecution for Workload<K> {
     fn execution_work(&self, target: &Target<K::Lane>) -> u64 {
         target.work
     }
-    fn action_cost_fn(&self) -> fn(&u8) -> u64 {
-        self.config.action_cost_fn()
+    fn planned_cost_fn(&self) -> fn(&u8) -> u64 {
+        self.config.planned_cost_fn()
     }
     fn snapshot_memory_charge(snapshot: &Snapshot<K::Lane>) -> usize {
         std::mem::size_of::<Snapshot<K::Lane>>()
@@ -883,7 +883,7 @@ impl<K: Keying> TargetExecution for Workload<K> {
         {
             return Err("unavailable passive-clock duration".into());
         }
-        let cost = (self.action_cost_fn())(action);
+        let cost = (self.planned_cost_fn())(action);
         let before = target.state;
         self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
@@ -2371,7 +2371,7 @@ mod tests {
         };
         for fast_first in [false, true] {
             for broken in [false, true] {
-                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                let mut archive = Archive::<u8, Key, bool, State>::new();
                 for fast in [fast_first, !fast_first] {
                     let suffix = if fast { vec![1, 1, 1, 1] } else { vec![0, 0] };
                     let state = suffix.iter().fold(w.initial(), |s, &a| w.step(s, a));
@@ -2380,6 +2380,7 @@ mod tests {
                             None,
                             suffix.len() as u64,
                             ArchiveCandidate {
+                                cost: suffix.len() as u64,
                                 suffix,
                                 key: w.key(state, broken),
                                 milestones: false,
@@ -2417,7 +2418,7 @@ mod tests {
         };
         for order in [[10_u16, 5_u16], [5_u16, 10_u16]] {
             for broken in [false, true] {
-                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                let mut archive = Archive::<u8, Key, bool, State>::new();
                 for history in order {
                     let input: Vec<u8> = (0..4).map(|bit| ((history >> bit) & 1) as u8).collect();
                     let state = input.iter().fold(maze.initial(), |s, &a| maze.step(s, a));
@@ -2427,6 +2428,7 @@ mod tests {
                             None,
                             0,
                             ArchiveCandidate {
+                                cost: input.len() as u64,
                                 suffix: input,
                                 key: maze.key(state, broken),
                                 milestones: false,

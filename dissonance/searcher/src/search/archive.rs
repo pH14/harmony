@@ -21,10 +21,6 @@ use crate::search::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-fn unset_action_cost<A>() -> fn(&A) -> u64 {
-    |_| 0
-}
-
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
     let mut kept: Vec<T> = values
         .into_iter()
@@ -513,13 +509,15 @@ pub struct ArchiveEntryReport<A: Ord, K, M> {
     pub snapshot_identity_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<EntrySelectorCounters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrink_total: Option<ShrinkCost>,
 }
 
 pub mod entries_by_suffix {
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-    use super::{ArchiveEntryReport, ArchiveKey, EntrySelectorCounters, Input};
+    use super::{ArchiveEntryReport, ArchiveKey, EntrySelectorCounters, Input, ShrinkCost};
 
     #[derive(Deserialize, Serialize)]
     #[serde(bound(
@@ -539,6 +537,8 @@ pub mod entries_by_suffix {
         snapshot_identity_sha256: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<EntrySelectorCounters>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shrink_total: Option<ShrinkCost>,
     }
 
     pub fn serialize<S, A, K, M>(
@@ -576,6 +576,7 @@ pub mod entries_by_suffix {
                 milestones: &entry.milestones,
                 snapshot_identity_sha256: entry.snapshot_identity_sha256.clone(),
                 selector: entry.selector,
+                shrink_total: entry.shrink_total,
             }
         });
         serializer.collect_seq(wires)
@@ -626,6 +627,7 @@ pub mod entries_by_suffix {
                 milestones: wire.milestones,
                 snapshot_identity_sha256: wire.snapshot_identity_sha256,
                 selector: wire.selector,
+                shrink_total: wire.shrink_total,
             });
         }
         Ok(entries)
@@ -643,6 +645,7 @@ pub struct SavedStateRecord<A, M> {
     pub created_execution: u64,
     pub actions: Vec<A>,
     pub milestones: M,
+    pub shrink_total: ShrinkCost,
 }
 
 pub fn saved_state_entries<A: Clone + Ord, M>(
@@ -675,6 +678,7 @@ pub fn saved_state_entries<A: Clone + Ord, M>(
             milestones: record.milestones,
             snapshot_identity_sha256: None,
             selector: None,
+            shrink_total: Some(record.shrink_total),
         });
     }
     Ok(entries)
@@ -714,6 +718,7 @@ pub struct ArchiveCandidate<T, K, M> {
     pub suffix: T,
     pub key: K,
     pub milestones: M,
+    pub cost: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -745,9 +750,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(with = "crate::search::checkpoint::json_bytes")]
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
-    origin_cost: Vec<ShrinkCost>,
+    shrink_total: Vec<ShrinkCost>,
     remaining_bound: Vec<ShrinkCost>,
-    rank_by_origin_cost: bool,
+    rank_by_shrink_total: bool,
     replacement_cost_displaced: u64,
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
@@ -755,8 +760,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     in_place_lengths: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
-    #[serde(skip, default = "unset_action_cost::<A>")]
-    action_cost: fn(&A) -> u64,
     live_progress: Option<(K, ShrinkCost)>,
     selector_indexed: bool,
     #[serde(skip)]
@@ -1328,6 +1331,18 @@ impl ActiveIds {
     }
 }
 
+impl<A, K, M, S> Default for Archive<A, K, M, S>
+where
+    A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
+    K: ArchiveKey,
+    M: Clone + Copy + Debug + Eq + Serialize + DeserializeOwned,
+    S: Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<A, K, M, S> Archive<A, K, M, S>
 where
     A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
@@ -1336,8 +1351,8 @@ where
     S: Clone,
 {
     #[must_use]
-    pub fn new(action_cost: fn(&A) -> u64) -> Self {
-        Self::with_shape(action_cost, KeyShape::of::<K>())
+    pub fn new() -> Self {
+        Self::with_shape(KeyShape::of::<K>())
     }
 
     #[must_use]
@@ -1346,7 +1361,7 @@ where
     }
 
     #[must_use]
-    pub fn with_shape(action_cost: fn(&A) -> u64, shape: KeyShape) -> Self {
+    pub fn with_shape(shape: KeyShape) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             shape,
@@ -1373,9 +1388,9 @@ where
                 ..SelectorAccounting::default()
             },
             cost_in_group: Vec::new(),
-            origin_cost: Vec::new(),
+            shrink_total: Vec::new(),
             remaining_bound: Vec::new(),
-            rank_by_origin_cost: false,
+            rank_by_shrink_total: false,
             replacement_cost_displaced: 0,
             portfolio_replacements: vec![0; shape.preferences.max(1)],
             portfolio_cross_improvements: 0,
@@ -1383,7 +1398,6 @@ where
             in_place_lengths: Vec::new(),
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
-            action_cost,
             live_progress: None,
             selector_indexed: false,
             selector_weighted: false,
@@ -1880,7 +1894,7 @@ where
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_novel_slot = retain_marked(std::mem::take(&mut self.opened_novel_slot), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
-        self.origin_cost = retain_marked(std::mem::take(&mut self.origin_cost), &keep);
+        self.shrink_total = retain_marked(std::mem::take(&mut self.shrink_total), &keep);
         self.remaining_bound = retain_marked(std::mem::take(&mut self.remaining_bound), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
@@ -2198,7 +2212,7 @@ where
             column(&self.opened_slot, entries),
             column(&self.opened_novel_slot, entries),
             column(&self.cost_in_group, entries),
-            column(&self.origin_cost, entries),
+            column(&self.shrink_total, entries),
             column(&self.remaining_bound, entries),
             column(&self.replacement_preferences, entries),
             column(&self.in_place_lengths, entries),
@@ -2576,8 +2590,8 @@ where
     }
 
     #[must_use]
-    pub fn entry_origin_cost(&self, id: usize) -> Option<ShrinkCost> {
-        self.origin_cost.get(id).copied()
+    pub fn entry_shrink_total(&self, id: usize) -> Option<ShrinkCost> {
+        self.shrink_total.get(id).copied()
     }
 
     #[must_use]
@@ -2596,21 +2610,21 @@ where
     }
 
     #[must_use]
-    pub const fn ranks_by_origin_cost(&self) -> bool {
-        self.rank_by_origin_cost
+    pub const fn ranks_by_shrink_total(&self) -> bool {
+        self.rank_by_shrink_total
     }
 
-    pub fn set_rank_by_origin_cost(&mut self, enabled: bool) -> Result<(), &'static str> {
+    pub fn set_rank_by_shrink_total(&mut self, enabled: bool) -> Result<(), &'static str> {
         if !self.entries.is_empty() {
             return Err("holder ranking can change only before the first entry");
         }
-        self.rank_by_origin_cost = enabled;
+        self.rank_by_shrink_total = enabled;
         Ok(())
     }
 
     fn holder_cost(&self, index: usize) -> ShrinkCost {
-        if self.rank_by_origin_cost {
-            self.origin_cost[index]
+        if self.rank_by_shrink_total {
+            self.shrink_total[index]
         } else {
             ShrinkCost::new(self.cost_in_group[index], 0)
         }
@@ -2668,11 +2682,9 @@ where
 
     pub(crate) fn restore_runtime(
         &mut self,
-        action_cost: fn(&A) -> u64,
         charge: Option<fn(&S) -> usize>,
         snapshots: Vec<(u64, S)>,
     ) -> Result<(), &'static str> {
-        self.action_cost = action_cost;
         self.selector_accounting
             .best_holder_draws
             .resize(self.shape.preferences, 0);
@@ -2824,17 +2836,10 @@ where
         retired
     }
 
-    fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
-        let cost_of = |actions: &[A]| -> u64 {
-            actions
-                .iter()
-                .map(|action| (self.action_cost)(action))
-                .sum()
-        };
+    fn cost_in_group_of(&self, parent_id: Option<usize>, added: u64, key: K) -> u64 {
         let Some(parent) = parent_id.and_then(|id| self.entries.get(id)) else {
-            return cost_of(suffix);
+            return added;
         };
-        let added = cost_of(suffix);
         if parent.key.progress() == key.progress() {
             self.cost_in_group
                 .get(parent_id.unwrap_or_default())
@@ -2846,13 +2851,11 @@ where
         }
     }
 
-    fn origin_cost_of(&self, parent_id: Option<usize>, suffix: &[A]) -> ShrinkCost {
-        let parent = parent_id
-            .and_then(|id| self.origin_cost.get(id).copied())
-            .unwrap_or(ShrinkCost::ZERO);
-        suffix.iter().fold(parent, |cost, action| {
-            cost + ShrinkCost::new((self.action_cost)(action), 0)
-        })
+    fn shrink_total_of(&self, parent_id: Option<usize>, cost: u64) -> ShrinkCost {
+        parent_id
+            .and_then(|id| self.shrink_total.get(id).copied())
+            .unwrap_or(ShrinkCost::ZERO)
+            + ShrinkCost::new(cost, 0)
     }
 
     pub fn insert<T: AsRef<[A]> + Into<Vec<A>>>(
@@ -2900,7 +2903,7 @@ where
         snapshot: S,
         certificates: Option<&[Option<[u8; 32]>]>,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
-        let origin_cost = self.origin_cost_of(parent_id, candidate.suffix.as_ref());
+        let shrink_total = self.shrink_total_of(parent_id, candidate.cost);
         self.insert_after_costed(
             parent_id,
             previous,
@@ -2908,7 +2911,7 @@ where
             candidate,
             snapshot,
             certificates,
-            origin_cost,
+            shrink_total,
         )
     }
 
@@ -2921,12 +2924,13 @@ where
         candidate: ArchiveCandidate<T, K, M>,
         mut snapshot: S,
         certificates: Option<&[Option<[u8; 32]>]>,
-        origin_cost: ShrinkCost,
+        shrink_total: ShrinkCost,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
             suffix,
             key,
             milestones,
+            cost,
         } = candidate;
         if let Some(certificates) = certificates {
             let ancestor = self.input_index_start(parent_id);
@@ -2945,9 +2949,9 @@ where
             return Ok((Some(existing), self.entries[existing].key));
         }
         let key = self.complete_after(parent_id, previous, key)?;
-        let candidate_cost_in_group = self.cost_in_group_of(parent_id, suffix.as_ref(), key);
-        let candidate_holder_cost = if self.rank_by_origin_cost {
-            origin_cost
+        let candidate_cost_in_group = self.cost_in_group_of(parent_id, cost, key);
+        let candidate_holder_cost = if self.rank_by_shrink_total {
+            shrink_total
         } else {
             ShrinkCost::new(candidate_cost_in_group, 0)
         };
@@ -3080,11 +3084,6 @@ where
                 );
             }
             if let Some(parent) = parent_id {
-                let tail_cost: u64 = suffix
-                    .as_ref()
-                    .iter()
-                    .map(|action| (self.action_cost)(action))
-                    .sum();
                 let entry = &self.entries[parent];
                 let gains = (0..self.shape.preferences.min(8))
                     .filter(|preference| {
@@ -3097,7 +3096,7 @@ where
                     entry.id,
                     self.next_entry_id,
                     suffix.as_ref(),
-                    tail_cost,
+                    cost,
                     gains,
                 );
             }
@@ -3166,7 +3165,7 @@ where
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
-        self.origin_cost.push(origin_cost);
+        self.shrink_total.push(shrink_total);
         self.remaining_bound.push(ShrinkCost::ZERO);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
@@ -4213,7 +4212,8 @@ where
         }
         self.entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(index, entry)| {
                 let direct = entry.parent_id.filter(|parent| {
                     input_len
                         .get(parent)
@@ -4251,6 +4251,11 @@ where
                     created_execution: entry.created_execution,
                     actions,
                     milestones: entry.milestones,
+                    shrink_total: self
+                        .shrink_total
+                        .get(index)
+                        .copied()
+                        .ok_or("an archive entry has no shrink total")?,
                 })
             })
             .collect()
@@ -4283,6 +4288,7 @@ where
                     selected: self.selected[id],
                     productive: self.productive[id],
                 }),
+                shrink_total: self.shrink_total.get(id).copied(),
             };
             reports.push(report);
             if let Some(snapshot) = entry.snapshot {
@@ -4614,7 +4620,7 @@ mod tests {
             }
         }
         let copies = std::cell::Cell::new(0);
-        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new();
         let mut insert = |actions: &[u8], quality, parent| {
             archive.insert(
                 parent,
@@ -4626,6 +4632,7 @@ mod tests {
                     },
                     key: PreferredKey { slot: 0, quality },
                     milestones: (),
+                    cost: actions.len() as u64,
                 },
                 (),
             )
@@ -4645,10 +4652,11 @@ mod tests {
 
     #[test]
     fn borrowed_and_owned_admission_preserve_the_same_archive() {
-        let mut owned = Archive::<u8, PreferredKey, u64, ()>::new(|action| u64::from(*action));
-        let mut borrowed = Archive::<u8, PreferredKey, u64, ()>::new(|action| u64::from(*action));
+        let mut owned = Archive::<u8, PreferredKey, u64, ()>::new();
+        let mut borrowed = Archive::<u8, PreferredKey, u64, ()>::new();
         for step in 0..512_u64 {
             let suffix = vec![1 + (step % 17) as u8; 1 + (step % 9) as usize];
+            let cost = suffix.iter().map(|action| u64::from(*action)).sum();
             let parent = if step % 3 == 0 || owned.entries.is_empty() {
                 None
             } else {
@@ -4671,6 +4679,7 @@ mod tests {
                         suffix: suffix.clone(),
                         key,
                         milestones: step,
+                        cost,
                     },
                     (),
                 )
@@ -4684,6 +4693,7 @@ mod tests {
                         suffix: suffix.as_slice(),
                         key,
                         milestones: step,
+                        cost,
                     },
                     (),
                 )
@@ -4737,7 +4747,7 @@ mod tests {
     fn portfolio_fixture<const P: usize, const C: usize>(
         shared: bool,
     ) -> Archive<u64, ReportKey<P, C>, (), ()> {
-        let mut archive = Archive::new(|_| 1);
+        let mut archive = Archive::new();
         let mut action = 0;
         for slot in 0..128 {
             for preference in 0..if shared { 1 } else { P } {
@@ -4757,6 +4767,7 @@ mod tests {
                                 suffix: vec![action],
                                 key: ReportKey { slot, scores },
                                 milestones: (),
+                                cost: 1,
                             },
                             (),
                         )
@@ -4825,7 +4836,7 @@ mod tests {
     }
 
     fn compare_portfolio_classification<const P: usize, const C: usize>() {
-        let mut archive = Archive::<u64, ReportKey<P, C>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u64, ReportKey<P, C>, (), ()>::new();
         let mut rand = RomuDuoJrRand::with_seed(413);
         for sequence in 0..256 {
             let mut scores = [0; 8];
@@ -4843,6 +4854,7 @@ mod tests {
                             scores,
                         },
                         milestones: (),
+                        cost: 1 + sequence % 3,
                     },
                     (),
                 )
@@ -4917,7 +4929,7 @@ mod tests {
             fn record(_: &mut Self::Lineage, _: Self) {}
         }
         for shared in [false, true] {
-            let mut archive = Archive::<u64, Key, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u64, Key, (), ()>::new();
             for id in 0..if shared { 2 } else { 8 } {
                 let mut scores = [0; 8];
                 if shared {
@@ -4933,6 +4945,7 @@ mod tests {
                             suffix: vec![id as u64],
                             key: Key(ReportKey { slot: 0, scores }),
                             milestones: (),
+                            cost: 1,
                         },
                         (),
                     )
@@ -4953,7 +4966,7 @@ mod tests {
 
     #[test]
     fn admitted_suffix_keeps_its_allocation() {
-        let mut archive = TestArchive::new(|_| 1);
+        let mut archive = TestArchive::new();
         let suffix = vec![1, 2, 3, 4];
         let allocation = suffix.as_ptr();
         let id = archive
@@ -4961,6 +4974,7 @@ mod tests {
                 None,
                 0,
                 ArchiveCandidate {
+                    cost: suffix.len() as u64,
                     suffix,
                     key: TestKey::default(),
                     milestones: (),
@@ -4975,7 +4989,7 @@ mod tests {
 
     #[test]
     fn admitted_suffix_does_not_retain_unused_capacity() {
-        let mut archive = TestArchive::new(|_| 1);
+        let mut archive = TestArchive::new();
         let mut suffix = Vec::with_capacity(1024);
         suffix.extend([1, 2, 3, 4]);
         let id = archive
@@ -4983,6 +4997,7 @@ mod tests {
                 None,
                 0,
                 ArchiveCandidate {
+                    cost: suffix.len() as u64,
                     suffix,
                     key: TestKey::default(),
                     milestones: (),
@@ -5035,8 +5050,8 @@ mod tests {
 
     #[test]
     fn preference_ranking_matches_pairwise_ranks_and_ties() {
-        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        let mut flat = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new();
+        let mut flat = Archive::<u8, FlatKey, (), ()>::new();
         for value in 0..8_u8 {
             let suffix = vec![value; usize::from(value % 3) + 1];
             portfolio
@@ -5051,6 +5066,7 @@ mod tests {
                             second: (value / 3) % 3,
                         },
                         milestones: (),
+                        cost: suffix.len() as u64,
                     },
                     (),
                 )
@@ -5060,6 +5076,7 @@ mod tests {
                 None,
                 0,
                 ArchiveCandidate {
+                    cost: suffix.len() as u64,
                     suffix,
                     key: FlatKey([u16::from(value); 4]),
                     milestones: (),
@@ -5132,6 +5149,7 @@ mod tests {
             milestones: vec![Counted(3)],
             snapshot_identity_sha256: None,
             selector: None,
+            shrink_total: None,
         };
         let mut reports = Reports {
             entries: vec![
@@ -5324,7 +5342,7 @@ mod tests {
     }
 
     fn shared_memory_archive() -> Archive<u8, FlatKey, (), SharedMemorySnapshot> {
-        let mut archive = Archive::new(|_| 1);
+        let mut archive = Archive::new();
         archive.set_memory_budget(usize::MAX, |_| 7);
         archive.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
         archive
@@ -5343,6 +5361,7 @@ mod tests {
                     suffix: vec![index],
                     key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 snapshot,
             )
@@ -5457,7 +5476,6 @@ mod tests {
         restored.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
         restored
             .restore_runtime(
-                |_| 1,
                 Some(|_| 7),
                 vec![
                     (0, SharedMemorySnapshot::root(17).child(19)),
@@ -5508,9 +5526,7 @@ mod tests {
         let mut resumed: Archive<u8, FlatKey, (), SharedMemorySnapshot> =
             postcard::from_bytes(&metadata).unwrap();
         resumed.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
-        resumed
-            .restore_runtime(|_| 1, Some(|_| 7), snapshots)
-            .unwrap();
+        resumed.restore_runtime(Some(|_| 7), snapshots).unwrap();
         assert_eq!(
             archive.resident_memory_bytes(),
             resumed.resident_memory_bytes()
@@ -5571,7 +5587,8 @@ mod tests {
         for bytes in 100..228 {
             parent = parent.child(bytes);
         }
-        let candidate = |suffix| ArchiveCandidate {
+        let candidate = |suffix: Vec<u8>| ArchiveCandidate {
+            cost: suffix.len() as u64,
             suffix,
             key: FlatKey([0, 0, 0, 0]),
             milestones: (),
@@ -5621,6 +5638,7 @@ mod tests {
             suffix: vec![0],
             key: FlatKey([0, 0, 0, 0]),
             milestones: (),
+            cost: 1,
         };
         assert!(
             archive
@@ -5667,6 +5685,7 @@ mod tests {
             suffix: vec![9],
             key: FlatKey([1, 1, 0, 0]),
             milestones: (),
+            cost: 1,
         };
         assert!(
             archive
@@ -5685,13 +5704,15 @@ mod tests {
             suffix: vec![0],
             key: FlatKey([0, 0, 0, 0]),
             milestones: (),
+            cost: 1,
         };
         archive
             .insert(None, 0, duplicate, SharedMemorySnapshot::root(101))
             .unwrap();
         assert_eq!(archive.resident_snapshot_bytes(), before);
         assert_eq!(archive.shared_snapshot_memory.allocations.len(), 1);
-        let candidate = |suffix| ArchiveCandidate {
+        let candidate = |suffix: Vec<u8>| ArchiveCandidate {
+            cost: suffix.len() as u64,
             suffix,
             key: FlatKey([0, 0, 0, 0]),
             milestones: (),
@@ -5784,6 +5805,7 @@ mod tests {
                     None,
                     0,
                     ArchiveCandidate {
+                        cost: suffix.len() as u64,
                         suffix,
                         key: FlatKey([0, 0, 0, 0]),
                         milestones: (),
@@ -5825,7 +5847,7 @@ mod tests {
 
     #[test]
     fn snapshot_charge_uses_the_configured_machine_accounting() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         assert_eq!(archive.snapshot_charge(&()), 0);
         archive.set_memory_budget(1024, |_| 17);
         assert_eq!(archive.snapshot_charge(&()), 17);
@@ -5848,7 +5870,7 @@ mod tests {
 
     #[test]
     fn retired_origins_stay_charged_until_the_last_ordered_admission() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 11);
         for index in 0_u8..3 {
             archive
@@ -5859,6 +5881,7 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([index.into(), index.into(), 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -5899,7 +5922,7 @@ mod tests {
 
     #[test]
     fn metadata_unpin_reclaims_budget_evicted_worker_snapshot() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..2 {
             archive
@@ -5910,6 +5933,7 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -6093,7 +6117,7 @@ mod tests {
     }
 
     fn candidate_draw_fixture(count: usize, draws: u64) -> Archive<u8, SpliceKey, (), ()> {
-        let mut archive = Archive::new(|_| 1);
+        let mut archive = Archive::new();
         archive.selected = (0..count * 3 + 1)
             .map(|id| draws.saturating_add((id % 7) as u64))
             .collect();
@@ -6283,7 +6307,7 @@ mod tests {
     fn indexed_candidates_preserve_complete_parent_selection() {
         use std::hint::black_box;
         for count in [1, 16, 256, 4096] {
-            let mut archive = Archive::<u64, TierKey, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u64, TierKey, (), ()>::new();
             for tier in 0..count {
                 archive
                     .insert(
@@ -6293,6 +6317,7 @@ mod tests {
                             suffix: vec![tier as u64],
                             key: TierKey(tier),
                             milestones: (),
+                            cost: 1,
                         },
                         (),
                     )
@@ -6351,7 +6376,7 @@ mod tests {
     #[test]
     fn streamed_tiers_preserve_materialized_selection_and_rng_state() {
         for count in [0, 1, 2, 7, 8, 9, 16, 255, 256, 257, 4096] {
-            let mut archive = Archive::<u8, TierKey, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u8, TierKey, (), ()>::new();
             for tier in 0..count {
                 archive.tiers.insert(tier * 3 + 5, TierCells::default());
             }
@@ -6429,7 +6454,7 @@ mod tests {
     }
     #[test]
     fn opaque_preference_displaces_only_a_weaker_same_slot_representative() {
-        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new();
         let insert = |archive: &mut Archive<u8, PreferredKey, (), ()>, input, quality| {
             archive
                 .insert(
@@ -6439,6 +6464,7 @@ mod tests {
                         suffix: vec![input],
                         key: PreferredKey { slot: 7, quality },
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -6547,11 +6573,11 @@ mod tests {
 
     #[test]
     fn resuming_continuations_follows_the_key_preference_count() {
-        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut portfolio = Archive::<u8, PortfolioKey, (), ()>::new();
         assert!(portfolio.continuations.is_none());
         portfolio.resume_continuations(4);
         assert!(portfolio.continuations.is_some());
-        let mut plain = Archive::<u8, TestKey, (), ()>::new(|_| 1);
+        let mut plain = Archive::<u8, TestKey, (), ()>::new();
         plain.continuations = Some(crate::search::continuation::ContinuationBank::new(4));
         plain.resume_continuations(4);
         assert!(plain.continuations.is_none());
@@ -6559,7 +6585,7 @@ mod tests {
 
     #[test]
     fn a_carried_in_arrival_that_takes_one_preference_counts_as_a_win() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         let mut insert = |input, parent, slot, first, second| {
             archive
                 .insert(
@@ -6573,6 +6599,7 @@ mod tests {
                             second,
                         },
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -6589,7 +6616,7 @@ mod tests {
     #[test]
     fn reranking_slot_holders_retires_holders_that_win_no_preference() {
         SECOND_ORDER_FLIPPED.set(false);
-        let mut archive = Archive::<u8, SwitchedOrderKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, SwitchedOrderKey, (), ()>::new();
         for (input, first, second) in [(1, 10, 20), (2, 5, 200)] {
             archive
                 .insert(
@@ -6599,6 +6626,7 @@ mod tests {
                         suffix: vec![input],
                         key: SwitchedOrderKey { first, second },
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -6674,6 +6702,7 @@ mod tests {
                         first,
                     },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -6683,7 +6712,7 @@ mod tests {
 
     #[test]
     fn a_move_inside_one_region_records_an_edge_and_an_improvement_there_queues_it() {
-        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new();
         archive.enable_continuations(4);
         let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
         insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
@@ -6699,7 +6728,7 @@ mod tests {
 
     #[test]
     fn a_new_position_inside_an_open_cell_opens_a_slot_and_no_cell() {
-        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new();
         let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
         assert!(archive.opened_new_slot(origin) && archive.opened_new_cell(origin));
         let beside = insert_region_at(&mut archive, Some(origin), 2, (1, 4, 5));
@@ -6713,7 +6742,7 @@ mod tests {
 
     #[test]
     fn an_edge_inside_a_region_lands_on_its_position_and_one_across_lands_anywhere_there() {
-        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new();
         let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
         let beside = insert_region_at(&mut archive, Some(origin), 2, (1, 4, 5));
         let across = insert_region_at(&mut archive, Some(origin), 3, (2, 6, 5));
@@ -6741,6 +6770,7 @@ mod tests {
                         second,
                     },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -6760,6 +6790,7 @@ mod tests {
                 parent,
                 0,
                 ArchiveCandidate {
+                    cost: suffix.len() as u64,
                     suffix,
                     key: PortfolioKey {
                         slot,
@@ -6774,7 +6805,7 @@ mod tests {
     }
 
     fn portfolio_bank() -> Archive<u8, PortfolioKey, (), ()> {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         archive.enable_continuations(4);
         archive
     }
@@ -6855,6 +6886,7 @@ mod tests {
                     suffix: vec![input],
                     key: ResourceKey { place, amount },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -6862,7 +6894,7 @@ mod tests {
     }
     #[test]
     fn recent_cells_are_bounded_and_old_cells_remain_selectable() {
-        let mut archive = Archive::<u16, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u16, ResourceKey, (), ()>::new();
         for place in 0..300 {
             archive
                 .insert(
@@ -6875,6 +6907,7 @@ mod tests {
                             amount: 5,
                         },
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -6909,8 +6942,8 @@ mod tests {
 
     #[test]
     fn recent_cells_deduplicate_holders_and_filter_the_drawn_tier() {
-        let mut single = TestArchive::new(|_| 1);
-        let mut repeated = TestArchive::new(|_| 1);
+        let mut single = TestArchive::new();
+        let mut repeated = TestArchive::new();
         for archive in [&mut single, &mut repeated] {
             for progress in [1, 2] {
                 archive
@@ -6925,6 +6958,7 @@ mod tests {
                                 ..TestKey::default()
                             },
                             milestones: (),
+                            cost: 1,
                         },
                         (),
                     )
@@ -6959,6 +6993,7 @@ mod tests {
                         suffix: vec![3, key.major, key.state_fingerprint],
                         key,
                         milestones: (),
+                        cost: 3,
                     },
                     (),
                 )
@@ -6989,7 +7024,7 @@ mod tests {
 
     #[test]
     fn recent_selection_reconstructs_from_serialized_archive_state() {
-        let mut archive = Archive::<u16, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u16, ResourceKey, (), ()>::new();
         for place in 0..300 {
             archive
                 .insert(
@@ -7002,6 +7037,7 @@ mod tests {
                             amount: 5,
                         },
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7032,7 +7068,7 @@ mod tests {
 
     #[test]
     fn a_richer_arrival_from_another_cell_resets_its_cells_draw_count() {
-        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new();
         archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         assert!(archive.opened_new_cell(first));
@@ -7063,7 +7099,7 @@ mod tests {
     }
     #[test]
     fn opening_a_new_cell_resets_the_parents_cell_draw_count() {
-        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new();
         archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         let draw = SelectorDraw {
@@ -7088,7 +7124,7 @@ mod tests {
     }
     #[test]
     fn cell_interval_counts_draw_routes_resets_and_yields_per_cell() {
-        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new();
         archive.report_cell_intervals(true);
         archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
@@ -7148,7 +7184,7 @@ mod tests {
     }
     #[test]
     fn cell_interval_counts_stay_empty_while_reporting_is_off() {
-        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new();
         archive.rebuild_selector_index();
         let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         let draw = SelectorDraw {
@@ -7177,7 +7213,7 @@ mod tests {
 
     #[test]
     fn a_key_declaring_no_preference_holds_no_bank() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.enable_continuations(4);
         assert_eq!(archive.continuation_pending(), 0);
         assert_eq!(archive.continuation_report().edges, 0);
@@ -7186,7 +7222,7 @@ mod tests {
 
     #[test]
     fn a_slot_keeps_the_champion_of_every_preference() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         assert_eq!(insert_portfolio(&mut archive, 1, 10, 20), Some(0));
         assert_eq!(insert_portfolio(&mut archive, 2, 5, 200), Some(1));
         assert_eq!(archive.active, vec![true, true]);
@@ -7195,7 +7231,7 @@ mod tests {
 
     #[test]
     fn a_candidate_losing_every_preference_is_rejected() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 4, 19), None);
@@ -7204,7 +7240,7 @@ mod tests {
 
     #[test]
     fn one_entry_winning_both_preferences_is_stored_once() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 60, 240), Some(2));
@@ -7214,7 +7250,7 @@ mod tests {
 
     #[test]
     fn a_candidate_taking_one_preference_leaves_the_other_champion() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 11, 21), Some(2));
@@ -7224,7 +7260,7 @@ mod tests {
 
     #[test]
     fn each_preference_champion_is_drawn() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
@@ -7242,7 +7278,7 @@ mod tests {
 
     #[test]
     fn a_champion_of_one_preference_is_not_a_champion_of_the_other() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert!(archive.is_preference_champion(0, 0));
@@ -7253,14 +7289,14 @@ mod tests {
 
     #[test]
     fn a_sole_holder_is_the_champion_of_every_preference() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         assert!(archive.is_preference_champion(0, 0));
         assert!(archive.is_preference_champion(0, 1));
     }
     #[test]
     fn the_portfolio_report_counts_holders() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         let mut rand = RomuDuoJrRand::with_seed(0x7ea1_f0f0);
@@ -7279,7 +7315,7 @@ mod tests {
     }
     #[test]
     fn a_quarter_of_holder_draws_go_to_the_best_holder_of_each_preference() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         let first = insert_portfolio(&mut archive, 1, 10, 20).expect("first-resource holder");
         let second = insert_portfolio(&mut archive, 2, 5, 200).expect("second-resource holder");
         assert_eq!(archive.selector_report().best_holder_draws, vec![0, 0]);
@@ -7307,7 +7343,7 @@ mod tests {
     fn recent_draws_preserve_best_holder_preference_and_accounting() {
         let mut recent_best = [0_u64; 2];
         for seed in 0..64 {
-            let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
             let first = insert_portfolio(&mut archive, 1, 10, 20).expect("first-resource holder");
             let second = insert_portfolio(&mut archive, 2, 5, 200).expect("second-resource holder");
             let mut expected = [0_u64; 2];
@@ -7331,7 +7367,7 @@ mod tests {
 
     #[test]
     fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         archive.enable_continuations(4);
         let holder = insert_portfolio_at(&mut archive, None, vec![1], 7, 10, 20)
             .expect("the first holder is kept");
@@ -7369,7 +7405,7 @@ mod tests {
 
     #[test]
     fn the_portfolio_report_survives_draining_the_entries() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         let before = archive.selector_report();
@@ -7389,7 +7425,7 @@ mod tests {
 
     #[test]
     fn compaction_keeps_each_entry_with_its_replacement_preferences() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 1, 1);
         let replacing = insert_portfolio(&mut archive, 2, 9, 9).expect("the replacement is kept");
         assert_ne!(archive.replacement_preferences(replacing), 0);
@@ -7413,7 +7449,7 @@ mod tests {
 
     #[test]
     fn a_parent_doubles_its_suffix_after_each_job_that_stays_in_its_place() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         let parent = insert_portfolio(&mut archive, 1, 1, 1).expect("the parent is kept");
         assert_eq!(archive.suffix_limit(parent), 1);
         archive.record_suffix_outcome(parent, 1, false, false, false);
@@ -7453,7 +7489,7 @@ mod tests {
 
     #[test]
     fn one_preference_reports_no_portfolio() {
-        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new();
         archive
             .insert(
                 None,
@@ -7465,6 +7501,7 @@ mod tests {
                         quality: 2,
                     },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -7474,7 +7511,7 @@ mod tests {
 
     #[test]
     fn a_replacement_records_the_preference_it_won_under() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new();
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(archive.replacement_preferences(0), 0);
@@ -7487,7 +7524,7 @@ mod tests {
     }
 
     fn flat_archive(keys: &[[u16; 4]]) -> Archive<u8, FlatKey, (), ()> {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         for (index, components) in keys.iter().enumerate() {
             archive
                 .insert(
@@ -7497,6 +7534,7 @@ mod tests {
                         suffix: vec![u8::try_from(index).expect("input byte")],
                         key: FlatKey(*components),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7517,18 +7555,19 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
                 .expect("insert budgeted entry")
                 .expect("budget admits a replacement");
         };
-        let mut unbounded = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut unbounded = Archive::<u8, FlatKey, (), ()>::new();
         unbounded.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..3 {
             insert(&mut unbounded, index);
         }
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(unbounded.resident_memory_bytes() - 1, |_| 1);
         for index in 0_u8..3 {
             insert(&mut archive, index);
@@ -7571,6 +7610,7 @@ mod tests {
                     suffix: vec![7],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -7582,7 +7622,7 @@ mod tests {
 
     #[test]
     fn budget_enforcement_reaches_the_limit_but_keeps_one_snapshot() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..4 {
             archive
@@ -7593,6 +7633,7 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7627,7 +7668,7 @@ mod tests {
 
     #[test]
     fn a_budget_below_the_anchor_itself_is_an_error() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..4 {
             archive
@@ -7638,6 +7679,7 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7658,7 +7700,7 @@ mod tests {
     #[test]
     fn the_final_compaction_refuses_a_budget_the_compacted_archive_exceeds() {
         let anchored = || {
-            let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u8, FlatKey, (), ()>::new();
             archive.set_memory_budget(usize::MAX, |_| 1);
             for index in 0_u8..4 {
                 archive
@@ -7669,6 +7711,7 @@ mod tests {
                             suffix: vec![index],
                             key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                             milestones: (),
+                            cost: 1,
                         },
                         (),
                     )
@@ -7718,7 +7761,7 @@ mod tests {
 
     #[test]
     fn the_final_compaction_releases_an_inactive_liveness_anchor() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1 << 20);
         for index in 0_u8..2 {
             archive
@@ -7729,6 +7772,7 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7759,7 +7803,7 @@ mod tests {
 
     #[test]
     fn the_final_compaction_keeps_passing_while_a_quantum_reclaims_no_bytes() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 0);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 0);
         let entries = MAINTENANCE_QUANTUM * 4;
         for index in 0..entries {
@@ -7772,6 +7816,7 @@ mod tests {
                         suffix: vec![u8::try_from(index % 251).expect("suffix byte")],
                         key: FlatKey([key, key, key, 0]),
                         milestones: (),
+                        cost: 0,
                     },
                     (),
                 )
@@ -7805,7 +7850,7 @@ mod tests {
 
     #[test]
     fn the_maintenance_quantum_counts_entries_the_clock_examines() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         let entries = MAINTENANCE_QUANTUM * 4;
         for index in 0..entries {
@@ -7818,6 +7863,7 @@ mod tests {
                         suffix: vec![u8::try_from(index % 251).expect("suffix byte"), key as u8],
                         key: FlatKey([key, key, key, 0]),
                         milestones: (),
+                        cost: 2,
                     },
                     (),
                 )
@@ -7851,7 +7897,7 @@ mod tests {
 
     #[test]
     fn budget_enforcement_evicts_cached_snapshots_before_dropping_entries() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
             .insert(
@@ -7861,6 +7907,7 @@ mod tests {
                     suffix: vec![0],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -7875,6 +7922,7 @@ mod tests {
                         suffix: vec![step],
                         key: FlatKey([u16::from(step), u16::from(step), 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -7943,7 +7991,7 @@ mod tests {
 
     #[test]
     fn replay_prefix_certificates_survive_eviction_compaction_and_checkpoint_restore() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
             .insert_after_certified(
@@ -7954,6 +8002,7 @@ mod tests {
                     suffix: vec![0],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
                 Some(&[Some([0; 32])]),
@@ -7971,6 +8020,7 @@ mod tests {
                     suffix: vec![1, 2, 3],
                     key: FlatKey([3, 3, 0, 0]),
                     milestones: (),
+                    cost: 3,
                 },
                 (),
                 Some(&certificates),
@@ -7986,6 +8036,7 @@ mod tests {
                 suffix: vec![1, 2, 3],
                 key: FlatKey([3, 3, 0, 0]),
                 milestones: (),
+                cost: 3,
             },
             (),
             Some(&[Some([11; 32]), Some([99; 32]), Some([33; 32])]),
@@ -8014,9 +8065,7 @@ mod tests {
             .collect();
         let bytes = postcard::to_stdvec(&archive).unwrap();
         let mut restored: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
-        restored
-            .restore_runtime(|_| 1, Some(|_| 1), snapshots)
-            .unwrap();
+        restored.restore_runtime(Some(|_| 1), snapshots).unwrap();
         let child = restored.index_of_id(1).expect("child survives checkpoint");
         let (pinned, replay, persisted_certificates, origin_id) =
             restored.pin_job_origin(child).unwrap();
@@ -8029,7 +8078,7 @@ mod tests {
 
     #[test]
     fn entry_drop_sweep_clears_reference_bits_first_and_reports_exhaustion() {
-        let mut empty = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut empty = Archive::<u8, FlatKey, (), ()>::new();
         assert!(!empty.drop_one_entry());
 
         let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
@@ -8043,7 +8092,7 @@ mod tests {
 
     #[test]
     fn selection_preparation_reactivates_a_budgeted_executable_anchor() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
             .insert(
@@ -8053,6 +8102,7 @@ mod tests {
                     suffix: Vec::new(),
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -8070,6 +8120,7 @@ mod tests {
                         suffix: vec![suffix],
                         key: FlatKey([0, 0, 0, 0]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -8100,7 +8151,7 @@ mod tests {
 
     #[test]
     fn budgeted_anchor_yields_to_single_entry_admission_and_reactivates() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive.max_entries = 1;
         archive
@@ -8111,6 +8162,7 @@ mod tests {
                     suffix: Vec::new(),
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -8126,6 +8178,7 @@ mod tests {
                     suffix: vec![1],
                     key: FlatKey([1, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8151,7 +8204,7 @@ mod tests {
     }
 
     fn archive_with_prunable_history() -> Archive<u8, FlatKey, (), ()> {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         for index in 0_u16
             ..=u16::try_from(HISTORY_COMPACTION_MIN_DROPS)
                 .expect("compaction threshold fits in u16")
@@ -8164,6 +8217,7 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index, index, 0, 0]),
                         milestones: (),
+                        cost: 2,
                     },
                     (),
                 )
@@ -8178,7 +8232,7 @@ mod tests {
 
     #[test]
     fn the_final_census_offers_active_endpoints_with_their_selection_counts() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         for index in 0_u16..3 {
             archive
                 .insert(
@@ -8188,6 +8242,7 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index, index, 0, 0]),
                         milestones: (),
+                        cost: 2,
                     },
                     (),
                 )
@@ -8212,7 +8267,7 @@ mod tests {
     }
 
     fn indexed_landings_fixture(entries: usize, stride: usize, stale: bool) -> TestArchive {
-        let mut archive = TestArchive::new(|_| 1);
+        let mut archive = TestArchive::new();
         for index in 0..entries {
             let id = u64::try_from(index).unwrap() * 3 + 1;
             archive.entries.push(super::ArchiveEntry {
@@ -8452,6 +8507,7 @@ mod tests {
                     suffix: vec![255, 255, 255],
                     key: old,
                     milestones: (),
+                    cost: 3,
                 },
                 (),
             )
@@ -8513,7 +8569,7 @@ mod tests {
     fn entry_pressure_compaction_waits_for_a_share_of_the_archive() {
         let entries = HISTORY_COMPACTION_MIN_DROPS * HISTORY_COMPACTION_SHARE * 2;
         let min_drops = entries / HISTORY_COMPACTION_SHARE;
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         for index in 0..u16::try_from(entries).expect("entry count fits in u16") {
             archive
                 .insert(
@@ -8523,6 +8579,7 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index, index, 0, 0]),
                         milestones: (),
+                        cost: 2,
                     },
                     (),
                 )
@@ -8624,7 +8681,7 @@ mod tests {
 
     #[test]
     fn compact_prefix_accounting_and_duplicate_lookup_are_exact() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let root = archive
             .insert(
                 None,
@@ -8633,6 +8690,7 @@ mod tests {
                     suffix: vec![1],
                     key: FlatKey([1, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8646,6 +8704,7 @@ mod tests {
                     suffix: vec![2],
                     key: FlatKey([2, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8659,6 +8718,7 @@ mod tests {
                     suffix: vec![3],
                     key: FlatKey([3, 0, 0, 0]),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8694,6 +8754,7 @@ mod tests {
                         suffix: vec![3],
                         key: FlatKey([9, 9, 9, 9]),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -8705,7 +8766,7 @@ mod tests {
 
     #[test]
     fn progress_and_expandable_ids_follow_exact_archive_state() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|action| u64::from(*action));
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         for (index, (suffix, key)) in [
             (5, FlatKey([1, 0, 0, 0])),
             (2, FlatKey([0, 0, 0, 0])),
@@ -8723,6 +8784,7 @@ mod tests {
                         suffix: vec![suffix],
                         key,
                         milestones: (),
+                        cost: u64::from(suffix),
                     },
                     (),
                 )
@@ -8746,7 +8808,7 @@ mod tests {
     }
     #[test]
     fn deepest_leaf_tracks_a_new_deepest_descendant() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let root_key = FlatKey([1, 7, 9, 0]);
         let child_key = FlatKey([2, 7, 9, 0]);
         let root = archive
@@ -8757,6 +8819,7 @@ mod tests {
                     suffix: vec![1],
                     key: root_key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8771,6 +8834,7 @@ mod tests {
                     suffix: vec![2],
                     key: child_key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8863,7 +8927,7 @@ mod tests {
                 lineage.values.push(key.0);
             }
         }
-        let mut archive = Archive::<u8, Key, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, Key, (), ()>::new();
         archive
             .insert(
                 None,
@@ -8872,6 +8936,7 @@ mod tests {
                     suffix: vec![1],
                     key: Key(10),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8889,6 +8954,7 @@ mod tests {
                             suffix: [2].as_slice(),
                             key: Key(0),
                             milestones: (),
+                            cost: 1,
                         },
                         ()
                     )
@@ -8909,6 +8975,7 @@ mod tests {
                         suffix: [3].as_slice(),
                         key: Key(20),
                         milestones: (),
+                        cost: 1,
                     },
                     ()
                 )
@@ -8922,7 +8989,7 @@ mod tests {
 
     #[test]
     fn lineage_is_inherited_across_classes() {
-        let mut archive = Archive::<u8, LineageKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, LineageKey, (), ()>::new();
         let parent = archive
             .insert(
                 None,
@@ -8931,6 +8998,7 @@ mod tests {
                     suffix: vec![1],
                     key: LineageKey { value: 1, class: 7 },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8944,6 +9012,7 @@ mod tests {
                     suffix: vec![2],
                     key: LineageKey { value: 2, class: 7 },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8957,6 +9026,7 @@ mod tests {
                     suffix: vec![3],
                     key: LineageKey { value: 3, class: 8 },
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -8970,7 +9040,7 @@ mod tests {
 
     #[test]
     fn saved_state_records_skip_a_dropped_parent_to_its_nearest_saved_prefix() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,
                       parent: Option<usize>,
                       suffix: Vec<u8>,
@@ -8980,6 +9050,7 @@ mod tests {
                     parent,
                     u64::from(rank),
                     ArchiveCandidate {
+                        cost: suffix.len() as u64,
                         suffix,
                         key: FlatKey([rank, rank, 0, 0]),
                         milestones: (),
@@ -9011,7 +9082,7 @@ mod tests {
 
     #[test]
     fn compaction_preserves_an_evicted_inflight_parents_input_prefix() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let parent = archive
             .insert(
                 None,
@@ -9020,6 +9091,7 @@ mod tests {
                     suffix: vec![0xff, 0xfe, 0xfd],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
+                    cost: 3,
                 },
                 (),
             )
@@ -9041,6 +9113,7 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index.saturating_add(1), index.saturating_add(1), 0, 0]),
                         milestones: (),
+                        cost: 2,
                     },
                     (),
                 )
@@ -9066,6 +9139,7 @@ mod tests {
                         0,
                     ]),
                     milestones: (),
+                    cost: 3,
                 },
                 (),
             )
@@ -9115,6 +9189,7 @@ mod tests {
                     suffix: vec![9, 9, 9],
                     key: FlatKey([4_099, 0, 0, 0]),
                     milestones: (),
+                    cost: 3,
                 },
                 (),
             )
@@ -9130,7 +9205,7 @@ mod tests {
     where
         A: Clone + std::fmt::Debug + Ord + Serialize + serde::de::DeserializeOwned,
     {
-        let mut archive = Archive::new(|_| 1);
+        let mut archive = Archive::new();
         let key = SpliceKey {
             class_label: 1,
             class_progress: 0,
@@ -9145,6 +9220,7 @@ mod tests {
                     suffix: vec![action(255)],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -9158,6 +9234,7 @@ mod tests {
                     suffix: vec![action(1); prefix],
                     key,
                     milestones: (),
+                    cost: prefix as u64,
                 },
                 (),
             )
@@ -9176,6 +9253,7 @@ mod tests {
                         ..key
                     },
                     milestones: (),
+                    cost: tail as u64,
                 },
                 (),
             )
@@ -9508,11 +9586,11 @@ mod tests {
         let mut restored: Archive<u8, SpliceKey, (), ()> =
             postcard::from_bytes(&bytes).expect("decode archive");
         restored
-            .restore_runtime(|_| 1, None, Vec::new())
+            .restore_runtime(None, Vec::new())
             .expect("restore a consistent archive");
         restored.entries[donor].input_len += 1;
         assert_eq!(
-            restored.restore_runtime(|_| 1, None, Vec::new()),
+            restored.restore_runtime(None, Vec::new()),
             Err("a checkpoint entry's input length does not match its stored prefix")
         );
         let donor_node = restored.entries[donor].input_node;
@@ -9522,7 +9600,7 @@ mod tests {
             .unwrap()
             .parent = Some(donor_node);
         assert_eq!(
-            restored.restore_runtime(|_| 1, None, Vec::new()),
+            restored.restore_runtime(None, Vec::new()),
             Err("a checkpoint entry's input length does not match its stored prefix")
         );
     }
@@ -9633,7 +9711,7 @@ mod tests {
 
     #[test]
     fn a_splice_tail_extends_past_the_parent_from_a_donor_in_its_slot() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,
                       parent: Option<usize>,
                       components: [u16; 4],
@@ -9647,6 +9725,7 @@ mod tests {
                         suffix: actions[parent_len..].to_vec(),
                         key: FlatKey(components),
                         milestones: (),
+                        cost: (actions.len() - parent_len) as u64,
                     },
                     (),
                 )
@@ -9737,16 +9816,18 @@ mod tests {
         hold: u8,
         key: TestKey,
     ) -> (Option<usize>, Input<TestAction>) {
+        let action = TestAction::new(code, hold);
         let mut input = prefix.clone();
-        input.actions.push(TestAction::new(code, hold));
+        input.actions.push(action);
         let id = archive
             .insert(
                 parent,
                 0,
                 ArchiveCandidate {
-                    suffix: vec![TestAction::new(code, hold)],
+                    suffix: vec![action],
                     key,
                     milestones: (),
+                    cost: TestAction::duration(&action),
                 },
                 (),
             )
@@ -9756,7 +9837,7 @@ mod tests {
 
     #[test]
     fn cost_in_group_counts_from_the_recorded_coarse_transition() {
-        let mut archive = TimedArchive::new(TestAction::duration);
+        let mut archive = TimedArchive::new();
         let genesis = archive
             .insert(
                 None,
@@ -9765,6 +9846,7 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -9812,10 +9894,10 @@ mod tests {
         assert_eq!(archive.entry_cost_in_group(after.expect("retained")), 50);
     }
 
-    fn origin_cost_ranking_case(by_origin: bool) -> (TimedArchive, [Option<usize>; 4]) {
-        let mut archive = TimedArchive::new(TestAction::duration);
+    fn shrink_total_ranking_case(by_shrink_total: bool) -> (TimedArchive, [Option<usize>; 4]) {
+        let mut archive = TimedArchive::new();
         archive
-            .set_rank_by_origin_cost(by_origin)
+            .set_rank_by_shrink_total(by_shrink_total)
             .expect("an empty archive takes a ranking");
         let genesis = archive
             .insert(
@@ -9825,6 +9907,7 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -9857,9 +9940,9 @@ mod tests {
     }
 
     #[test]
-    fn holders_rank_by_cost_in_group_unless_origin_cost_ranking_is_set() {
+    fn holders_rank_by_cost_in_group_unless_shrink_total_ranking_is_set() {
         let (archive, [fast_crossing, slow_crossing, mid_crossing, late]) =
-            origin_cost_ranking_case(false);
+            shrink_total_ranking_case(false);
         let fast_crossing = fast_crossing.expect("cost five in the tier is retained");
         let mid_crossing = mid_crossing.expect("cost twenty in the tier displaces fifty");
         assert!(slow_crossing.is_some());
@@ -9867,14 +9950,14 @@ mod tests {
             late.is_none(),
             "cost forty in the tier loses to five and twenty"
         );
-        assert!(!archive.ranks_by_origin_cost());
+        assert!(!archive.ranks_by_shrink_total());
         assert_eq!(
             slot_holders(&archive, probe_key(0, 1, 16, 0)),
             BTreeSet::from([fast_crossing, mid_crossing])
         );
         assert_eq!(archive.entry_cost_in_group(fast_crossing), 5);
         assert_eq!(
-            archive.entry_origin_cost(fast_crossing),
+            archive.entry_shrink_total(fast_crossing),
             Some(ShrinkCost::new(105, 0))
         );
         assert_eq!(
@@ -9884,29 +9967,29 @@ mod tests {
     }
 
     #[test]
-    fn origin_cost_carries_across_a_tier_change_and_ranks_holders() {
+    fn shrink_total_carries_across_a_tier_change_and_ranks_holders() {
         let (archive, [fast_crossing, slow_crossing, mid_crossing, late]) =
-            origin_cost_ranking_case(true);
-        assert!(archive.ranks_by_origin_cost());
+            shrink_total_ranking_case(true);
+        assert!(archive.ranks_by_shrink_total());
         assert!(fast_crossing.is_some());
-        let slow_crossing = slow_crossing.expect("origin cost sixty is retained");
+        let slow_crossing = slow_crossing.expect("shrink total sixty is retained");
         assert!(
             mid_crossing.is_none(),
-            "origin cost two hundred loses to sixty and one hundred five"
+            "shrink total two hundred loses to sixty and one hundred five"
         );
-        let late = late.expect("origin cost forty-one displaces one hundred five");
+        let late = late.expect("shrink total forty-one displaces one hundred five");
         assert_eq!(
             slot_holders(&archive, probe_key(0, 1, 16, 0)),
             BTreeSet::from([slow_crossing, late])
         );
         assert_eq!(archive.entry_cost_in_group(slow_crossing), 50);
         assert_eq!(
-            archive.entry_origin_cost(slow_crossing),
+            archive.entry_shrink_total(slow_crossing),
             Some(ShrinkCost::new(60, 0))
         );
         assert_eq!(archive.entry_cost_in_group(late), 40);
         assert_eq!(
-            archive.entry_origin_cost(late),
+            archive.entry_shrink_total(late),
             Some(ShrinkCost::new(41, 0))
         );
         assert_eq!(
@@ -9917,20 +10000,20 @@ mod tests {
             postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode archive"))
                 .expect("decode archive");
         restored
-            .restore_runtime(TestAction::duration, None, Vec::new())
+            .restore_runtime(None, Vec::new())
             .expect("restore archive");
-        assert!(restored.ranks_by_origin_cost());
+        assert!(restored.ranks_by_shrink_total());
         assert_eq!(
-            restored.entry_origin_cost(late),
+            restored.entry_shrink_total(late),
             Some(ShrinkCost::new(41, 0))
         );
     }
 
     #[test]
-    fn a_caller_supplied_origin_cost_ranks_a_holder() {
-        let mut archive = TimedArchive::new(TestAction::duration);
+    fn a_caller_supplied_shrink_total_ranks_a_holder() {
+        let mut archive = TimedArchive::new();
         archive
-            .set_rank_by_origin_cost(true)
+            .set_rank_by_shrink_total(true)
             .expect("an empty archive takes a ranking");
         let genesis = archive
             .insert(
@@ -9940,12 +10023,13 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
             .expect("genesis insert")
             .expect("genesis retained");
-        assert!(archive.set_rank_by_origin_cost(false).is_err());
+        assert!(archive.set_rank_by_shrink_total(false).is_err());
         let slot = probe_key(0, 0, 16, 0);
         let costed = |archive: &mut TimedArchive, code: u8, cost: ShrinkCost| {
             archive
@@ -9957,6 +10041,7 @@ mod tests {
                         suffix: vec![TestAction::new(code, 1)],
                         key: slot,
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                     None,
@@ -9968,7 +10053,7 @@ mod tests {
         let first = costed(&mut archive, 0x01, ShrinkCost::new(9, 9)).expect("first holder");
         let second = costed(&mut archive, 0x02, ShrinkCost::new(9, 3)).expect("second holder");
         assert_eq!(
-            archive.entry_origin_cost(first),
+            archive.entry_shrink_total(first),
             Some(ShrinkCost::new(9, 9))
         );
         assert!(
@@ -9985,7 +10070,7 @@ mod tests {
     #[test]
     fn the_time_rule_displaces_a_slower_route_into_a_full_slot() {
         let slot = probe_key(0, 0, 16, 0);
-        let mut archive = TimedArchive::new(TestAction::duration);
+        let mut archive = TimedArchive::new();
         let genesis = archive
             .insert(
                 None,
@@ -9994,6 +10079,7 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -10065,7 +10151,7 @@ mod tests {
     }
     #[test]
     fn a_splice_leaf_advances_by_progress_not_by_label() {
-        let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, SpliceKey, (), ()>::new();
         let insert = |archive: &mut Archive<u8, SpliceKey, (), ()>,
                       parent: Option<usize>,
                       action: u8,
@@ -10078,6 +10164,7 @@ mod tests {
                         suffix: vec![action],
                         key,
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -10134,7 +10221,7 @@ mod tests {
     }
 
     fn tier_archive(keys: &[(u8, u8, u16)]) -> TestArchive {
-        let mut archive = TestArchive::new(|_| 1);
+        let mut archive = TestArchive::new();
         for (index, (major, minor, progress)) in keys.iter().enumerate() {
             let mut key = probe_key(*major, *minor, *progress, 0);
             key.state_fingerprint = u8::try_from(index).expect("fingerprint byte");
@@ -10147,6 +10234,7 @@ mod tests {
                         suffix: vec![u8::try_from(index).expect("input byte")],
                         key,
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -10271,6 +10359,7 @@ mod tests {
                     suffix: vec![7],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -10291,6 +10380,7 @@ mod tests {
                     suffix: vec![8],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -10409,6 +10499,7 @@ mod tests {
                     suffix: vec![9],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -10419,7 +10510,7 @@ mod tests {
 
     #[test]
     fn every_dry_tier_falls_until_the_lowest_draws_a_real_share() {
-        let mut archive = Archive::<u8, TierKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, TierKey, (), ()>::new();
         for tier in 0..4_u8 {
             archive.prepare_selection();
             archive
@@ -10430,6 +10521,7 @@ mod tests {
                         suffix: vec![tier],
                         key: TierKey(usize::from(tier)),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )
@@ -10522,7 +10614,7 @@ mod tests {
             postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode archive"))
                 .expect("decode archive");
         restored
-            .restore_runtime(|_| 1, None, Vec::new())
+            .restore_runtime(None, Vec::new())
             .expect("restore archive");
         assert_eq!(restored.selector_counters().tier_runs, runs);
         assert_eq!(
@@ -10553,6 +10645,7 @@ mod tests {
                     suffix: vec![2],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -10571,6 +10664,7 @@ mod tests {
                     suffix: vec![3],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )
@@ -10604,6 +10698,7 @@ mod tests {
                     suffix: vec![9],
                     key,
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )

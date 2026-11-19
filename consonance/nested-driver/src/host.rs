@@ -421,7 +421,7 @@ impl TargetExecution for NestedWorkload {
     fn execution_work(&self, target: &Target) -> u64 {
         target.work
     }
-    fn action_cost_fn(&self) -> fn(&u64) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&u64) -> u64 {
         |_| 1
     }
     fn snapshot_memory_charge(snapshot: &Snapshot) -> usize {
@@ -692,7 +692,7 @@ mod tests {
                 disposition: self.0.disposition(),
             })
         }
-        fn shrink_cost(&self, _: &u64) -> ShrinkCost {
+        fn shrink_cost(&self, _: &u64, _: &[Observation]) -> ShrinkCost {
             panic!("a failed parent must not cost suffix actions")
         }
         fn remaining_cost_bound(&self) -> ShrinkCost {

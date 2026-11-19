@@ -231,7 +231,7 @@ impl World {
             "transitions"
         }
     }
-    pub fn action_cost_fn(&self) -> fn(&u8) -> u64 {
+    pub fn planned_cost_fn(&self) -> fn(&u8) -> u64 {
         if matches!(self, Self::PassiveClock(_)) {
             |a| u64::from(*a)
         } else {

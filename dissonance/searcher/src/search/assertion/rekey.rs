@@ -111,7 +111,7 @@ impl Rekeying<'_> {
         A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
     {
         let mut archive: Archive<A, AssertionKey, (), ()> =
-            Archive::with_shape(action_cost, self.strategy.shape());
+            Archive::with_shape(self.strategy.shape());
         archive.max_entries = self.entry_limit;
         let mut recorded = Accumulator::default();
         let _ = self.recorded.observe(genesis, &mut recorded);
@@ -128,6 +128,7 @@ impl Rekeying<'_> {
                     suffix: Vec::new(),
                     key: genesis_key,
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )?
@@ -203,6 +204,7 @@ impl Rekeying<'_> {
                             suffix: suffix.as_slice(),
                             key,
                             milestones: (),
+                            cost: suffix.iter().map(action_cost).sum(),
                         },
                         (),
                         Some(&certificates),

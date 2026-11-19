@@ -310,7 +310,7 @@ fn walk<G: Workload>(
     let mut cost = ShrinkCost::ZERO;
     for action in &tape.actions {
         workload.apply_action(target, action, &mut milestones)?;
-        cost = cost + workload.shrink_cost(action, target);
+        cost = cost + workload.shrink_cost(action, target, &workload.rollout_observations(target));
         walk.stages.push(workload.stage(run, target));
         walk.costs.push(cost);
         let outcome = classify(workload, run, target)?;

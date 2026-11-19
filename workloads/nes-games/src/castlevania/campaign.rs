@@ -568,7 +568,7 @@ impl<M: NesBackend<Vec<u8>>> InputPolicy for CastlevaniaGame<M> {
 }
 
 impl<M: NesBackend<Vec<u8>>> TargetExecution for CastlevaniaGame<M> {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 

@@ -198,7 +198,7 @@ pub trait Rollout<G: Workload + ?Sized> {
     ) -> Result<(), Box<dyn Error>>;
     fn observations(&self) -> Vec<G::Observations>;
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>>;
-    fn shrink_cost(&self, action: &G::Action) -> ShrinkCost;
+    fn shrink_cost(&self, action: &G::Action, observations: &[G::Observations]) -> ShrinkCost;
     fn remaining_cost_bound(&self) -> ShrinkCost;
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>>;
     fn key(&self) -> Result<G::Key, Box<dyn Error>>;
@@ -249,8 +249,8 @@ impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
         classify(self.workload, self.run, self.target)
     }
 
-    fn shrink_cost(&self, action: &G::Action) -> ShrinkCost {
-        self.workload.shrink_cost(action, self.target)
+    fn shrink_cost(&self, action: &G::Action, observations: &[G::Observations]) -> ShrinkCost {
+        self.workload.shrink_cost(action, self.target, observations)
     }
 
     fn remaining_cost_bound(&self) -> ShrinkCost {
@@ -341,7 +341,8 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         };
         let action = &resolved;
         target.apply(action, &mut milestones)?;
-        let cost = target.shrink_cost(action);
+        let observations = target.observations();
+        let cost = target.shrink_cost(action, &observations);
         let bound = target.remaining_cost_bound();
         let raw_outcome = target.outcome()?;
         let objective_reached = raw_outcome.objective_reached && !objective_seen;
@@ -359,7 +360,6 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             outcome.disposition = ExecutionDisposition::Terminal;
             outcome.doomed = true;
         }
-        let observations = target.observations();
         let candidate =
             if stop.candidates && matches!(outcome.disposition, ExecutionDisposition::Runnable) {
                 let snapshot = target.snapshot()?;

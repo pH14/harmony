@@ -444,7 +444,7 @@ impl InputPolicy for StbGame {
 }
 
 impl TargetExecution for StbGame {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 

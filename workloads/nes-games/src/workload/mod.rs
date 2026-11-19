@@ -524,11 +524,7 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
         let action_start_frame = target.observation().frame_count;
         target.apply(action);
         merge_action_milestones(&mut aggregate, target);
-        let observations = if target.exit_kind() == ExitKind::Ok {
-            target.last_action_observations().to_vec()
-        } else {
-            Vec::new()
-        };
+        let observations = game.rollout_observations(target);
         let raw = outcome(target);
         let outcome = Outcome {
             objective_reached: raw.objective_reached && !objective_seen,
@@ -555,13 +551,14 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
             }),
             _ => None,
         };
+        let cost = game.shrink_cost(&recorded_action, target, &observations);
         actions.push(CampaignActionResult {
             action: recorded_action,
             observations,
             milestones: aggregate,
             outcome,
             candidate,
-            cost: game.shrink_cost(&recorded_action, target),
+            cost,
             bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
@@ -778,7 +775,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> InputPolicy for NesWorkload<G, M> {
 }
 
 impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkload<G, M> {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -821,6 +818,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
         target.apply(action);
         merge_action_milestones(aggregate, target);
         Ok(())
+    }
+
+    fn rollout_observations(&self, target: &NesTarget<G, M>) -> Vec<ActionObservation<G::State>> {
+        if target.exit_kind() == ExitKind::Ok {
+            target.last_action_observations().to_vec()
+        } else {
+            Vec::new()
+        }
     }
 
     fn snapshot(&self, target: &mut NesTarget<G, M>) -> Result<Self::Snapshot, Box<dyn Error>> {
