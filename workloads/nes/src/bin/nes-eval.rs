@@ -250,6 +250,7 @@ fn main() -> Result<()> {
             | "punchout"
             | "ice-climbers"
             | "twin-dragons" => {}
+            "smb" if request.shadow && !request.records => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -271,15 +272,23 @@ fn main() -> Result<()> {
                     .map(SmbRoute::from_identifier)
                     .transpose()?
                     .unwrap_or_default();
-                if request.shadow && route != SmbRoute::AllLevels {
-                    return Err(
-                        "the Super Mario Bros. shadow key follows the all-levels route".into(),
-                    );
-                }
-                let shadow = request
-                    .shadow
-                    .then(|| nes_games::workload::Shadow::new(nes_games::smb::game::SuperMarioBros))
-                    .transpose()?;
+                let shadow = if request.shadow {
+                    let strategy = match &request.strategy {
+                        Some(path) => fs::read_to_string(path)?,
+                        None if route == SmbRoute::Warps => {
+                            nes_games::smb::game::WARPS_STRATEGY.to_owned()
+                        }
+                        None => <nes_games::smb::game::SuperMarioBros as nes_games::workload::Game>::STRATEGY.to_owned(),
+                    };
+                    fs::create_dir_all(&out)?;
+                    fs::write(out.join(nes_workload::workload::STRATEGY_FILE), &strategy)?;
+                    Some(nes_games::workload::Shadow::with_strategy(
+                        nes_games::smb::game::SuperMarioBros,
+                        &strategy,
+                    )?)
+                } else {
+                    None
+                };
                 let game = SmbGame::new(&rom, p, h, &execution_sha256)
                     .with_root(
                         root_actions::<nes_games::smb::target::SmbInput>(
