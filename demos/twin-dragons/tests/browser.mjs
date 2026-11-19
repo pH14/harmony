@@ -959,7 +959,7 @@ try {
   if ((await page.locator("#play").getAttribute("data-state")) === "pause") await page.locator("#play").click();
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
-    document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
+    document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame.toLocaleString()} /`) &&
     !document.querySelector("#take-control").disabled,
     nestedFrame,
   );

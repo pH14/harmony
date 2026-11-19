@@ -248,7 +248,9 @@ and compacts once every sixteenth of its size in admissions, which keeps rebuild
 time per admission constant. Final compaction bypasses the batching threshold
 and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
-campaign.
+campaign. Progress records count dropped entries as `entry_drops` and, of those,
+the entries never selected as a parent as `unselected_entry_drops`: states the
+search kept and lost without trying.
 
 The archive charges its own heap from logical counts: entries, stored suffix
 actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
@@ -546,6 +548,18 @@ default, as in the NetHack player's CONTRARY chance. Otherwise the answer is
 the default. A site with fewer than two offered labels answers the default
 and draws nothing.
 
+Two more calls take per-option weights, as in Bombadil's weighted
+`actions` lists. `choose_weighted(site, offered, default)` runs the same
+rules, but a CONTRARY answer is drawn among the other labels in proportion to
+their weights, and a label of weight zero is offered (for hold and replay) but
+never drawn. With every weight one it draws the same stream as `choose`.
+`draw(site, offered, default)` is for a value that has no default worth
+keeping, such as a hold length: untried first and hold apply as above, and
+otherwise the answer is a weighted draw over every offered label, with no
+CONTRARY chance; a draw that lands on the default answers `Choice::Default`.
+A decision is then a tree of sites (ours): a `choose_weighted` site picks
+which edit to make, and `draw` sites pick its values.
+
 `ChoiceProfile` holds `contrary` and `hold` in units of 1/65,536. It belongs
 to the searcher: each archive entry keeps one beside its selection counts, root
 entries draw it from the campaign seed, a job inherits its parent's profile and
@@ -558,9 +572,33 @@ deviation with probability (1 - hold) * contrary per ask, and a deviation
 lasts about 1 / (1 - hold) asks while its label stays offered. A site asked
 many times in a row under a high hold deviates rarely and for long stretches.
 A label that means something different at each ask belongs to a site of its
-own, as in the `picks` tiny world. `ChoicePolicy`
-is the campaign setting: `profiles` is `inherited` or `fixed` (one profile
-for every job), and `untried_first` turns the first rule on.
+own, as in the `picks` tiny world.
+
+A hold that has to span jobs must be visible in the state the archive keeps.
+A job's hold memory starts from its parent's last action only, and the parent
+is drawn by its key, so an answer repeated over several jobs survives only if
+each step of it lands in a cell of its own. In the `held-world` tiny world
+with fixed 8-frame actions, a running jump needed A held across about a dozen
+jobs, nothing in the key marked a jump in progress, and all 48 runs were
+censored; making the action length a site put the hold inside one job. In
+Famidash's Lucky Draw level, the wait before the start accumulates over many
+jobs, so the game declares the frames waited (`menu_wait`) and its strategy
+keys each level-select state on it. What a choice decides has to stay visible
+in every kept state after it too, not only where the choice was made, and a
+state from which no input changes the outcome holds nothing a later job can
+use. Lucky Draw's outcome is fixed by the wait when the level starts, so the
+game plays the level as a forced move: each start is played to its outcome
+inside one job, and the archive keeps level-select states only. For the same
+reason the default answer should not repeat a decision whose result the archive
+already holds: once the untried walk has played an entry's start, every later
+default start from that entry replays the same death, so Lucky Draw's default
+is one more idle frame. A replacement entry walks its options again, so a
+route that the action cost wrongly counts as cheaper replays, from the new
+entry, every decision already tried at that state: Lucky Draw's waits cost the
+frames they wait, so every route to one wait costs the same.
+
+`ChoicePolicy` is the campaign setting: `profiles` is `inherited` or `fixed`
+(one profile for every job), and `untried_first` turns the first rule on.
 `InputPolicy::choice_policy` returns it, and a workload overrides it only to
 pass an experiment's arm through from its request.
 

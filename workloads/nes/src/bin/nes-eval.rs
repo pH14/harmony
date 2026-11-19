@@ -6,7 +6,7 @@ use nes_workload::{
     donkey_kong::{DonkeyKong, DonkeyKongWorkload},
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
-        Famidash, FamidashGame,
+        Famidash, FamidashGame, LuckyDraw, LuckyDrawGame,
         levels::{GROUPS, Side, Stage},
     },
     ice_climbers::{IceClimbers, IceClimbersWorkload},
@@ -220,8 +220,15 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "ice-climbers" | "pac-man" | "joust"
+            "twin-dragons"
+            | "castlevania"
+            | "punchout"
+            | "zelda"
+            | "donkey-kong"
+            | "ice-climbers"
+            | "pac-man"
+            | "joust"
+            | "famidash-lucky-draw"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -231,8 +238,15 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
-            | "ice-climbers" | "twin-dragons" => {}
+            "joust"
+            | "zelda"
+            | "famidash"
+            | "famidash-lucky-draw"
+            | "donkey-kong"
+            | "pac-man"
+            | "punchout"
+            | "ice-climbers"
+            | "twin-dragons" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -489,6 +503,26 @@ fn main() -> Result<()> {
                     started,
                     &id,
                     view,
+                )
+            }
+            "famidash-lucky-draw" => {
+                if Side::from_rom(&rom) != Some(Side::C) {
+                    return Err("Lucky Draw needs the pinned Famidash C-sides ROM".into());
+                }
+                evaluate_watching(
+                    nes_workload::workload::configured(
+                        LuckyDrawGame::new(LuckyDraw::default(), &rom, p, h, &execution_sha256)?,
+                        &request,
+                        &out,
+                    )?,
+                    nes_games::workload::NesRun,
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    &request.game,
+                    <LuckyDrawGame>::memory_view,
                 )
             }
             _ => Err("unsupported game".into()),

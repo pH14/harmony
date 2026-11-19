@@ -1,0 +1,6 @@
+goal = "finished"
+absent = "not menu and not gameplay"
+reject = "dead"
+capacity = 1
+tier = ["level", "x / 512"]
+spread = ["menu", "menu_wait", "x / 32"]

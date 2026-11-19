@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{
+    error::Error,
+    num::{NonZeroU64, NonZeroUsize},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -256,7 +259,20 @@ impl Chooser {
     }
 
     pub fn choose(&mut self, site: u16, offered: &[u16], default: u16) -> Choice {
-        let answer = self.answer(site, offered, default);
+        let weighted: Vec<(u16, u32)> = offered.iter().map(|label| (*label, 1)).collect();
+        self.ask(site, &weighted, default, Draw::Contrary)
+    }
+
+    pub fn choose_weighted(&mut self, site: u16, offered: &[(u16, u32)], default: u16) -> Choice {
+        self.ask(site, offered, default, Draw::Contrary)
+    }
+
+    pub fn draw(&mut self, site: u16, offered: &[(u16, u32)], default: u16) -> Choice {
+        self.ask(site, offered, default, Draw::Weighted)
+    }
+
+    fn ask(&mut self, site: u16, offered: &[(u16, u32)], default: u16, draw: Draw) -> Choice {
+        let answer = self.answer(site, offered, default, draw);
         match self.held.iter_mut().find(|(held, _)| *held == site) {
             Some(slot) => slot.1 = answer,
             None => self.held.push((site, answer)),
@@ -264,7 +280,7 @@ impl Chooser {
         answer
     }
 
-    fn answer(&mut self, site: u16, offered: &[u16], default: u16) -> Choice {
+    fn answer(&mut self, site: u16, offered: &[(u16, u32)], default: u16, draw: Draw) -> Choice {
         let first = !self.asked;
         self.asked = true;
         if offered.len() < 2 {
@@ -292,27 +308,30 @@ impl Chooser {
         {
             match previous {
                 Choice::Ask | Choice::Default => return Choice::Default,
-                Choice::Option(label) if offered.contains(&label) => {
+                Choice::Option(label) if offered.iter().any(|(offer, _)| *offer == label) => {
                     return normal(label);
                 }
                 Choice::Option(_) => {}
             }
         }
-        if self.chance(self.profile.contrary) {
-            let others = offered.iter().filter(|label| **label != default).count();
-            if others > 0 {
-                let pick = below(&mut self.rand, others);
-                if let Some(label) = offered
-                    .iter()
-                    .copied()
-                    .filter(|label| *label != default)
-                    .nth(pick)
+        match draw {
+            Draw::Contrary => {
+                if self.chance(self.profile.contrary)
+                    && let Some(label) = weighted_pick(
+                        &mut self.rand,
+                        offered
+                            .iter()
+                            .copied()
+                            .filter(|(label, _)| *label != default),
+                    )
                 {
                     return Choice::Option(label);
                 }
+                Choice::Default
             }
+            Draw::Weighted => weighted_pick(&mut self.rand, offered.iter().copied())
+                .map_or(Choice::Default, normal),
         }
-        Choice::Default
     }
 
     fn chance(&mut self, probability: u32) -> bool {
@@ -323,16 +342,38 @@ impl Chooser {
     }
 }
 
-fn untried_order(offered: &[u16], default: u16) -> impl Iterator<Item = u16> + '_ {
+#[derive(Clone, Copy)]
+enum Draw {
+    Contrary,
+    Weighted,
+}
+
+fn weighted_pick(
+    rand: &mut RomuDuoJrRand,
+    options: impl Iterator<Item = (u16, u32)> + Clone,
+) -> Option<u16> {
+    let total: u64 = options.clone().map(|(_, weight)| u64::from(weight)).sum();
+    let mut point = rand.below_u64(NonZeroU64::new(total)?);
+    for (label, weight) in options {
+        if point < u64::from(weight) {
+            return Some(label);
+        }
+        point -= u64::from(weight);
+    }
+    None
+}
+
+fn untried_order(offered: &[(u16, u32)], default: u16) -> impl Iterator<Item = u16> + '_ {
     let mut rest: Vec<u16> = offered
         .iter()
-        .copied()
+        .map(|(label, _)| *label)
         .filter(|label| *label != default)
         .collect();
     rest.sort_unstable();
     rest.dedup();
     offered
-        .contains(&default)
+        .iter()
+        .any(|(label, _)| *label == default)
         .then_some(default)
         .into_iter()
         .chain(rest)
@@ -529,6 +570,44 @@ mod tests {
         assert_eq!(hold.len(), 9);
         assert_eq!(hold.first(), Some(&0));
         assert_eq!(hold.last(), Some(&(CERTAIN - (CERTAIN >> 8))));
+    }
+
+    #[test]
+    fn a_weighted_deviation_follows_the_weights_and_never_takes_a_zero_weight() {
+        let mut chooser = Chooser::new(&plan(CERTAIN, 0, None));
+        let mut counts = [0_u32; 4];
+        for _ in 0..40_000 {
+            match chooser.choose_weighted(0, &[(0, 5), (1, 1), (2, 3), (3, 0)], 0) {
+                Choice::Option(label) => counts[usize::from(label)] += 1,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!((counts[0], counts[3]), (0, 0));
+        assert!((9_400..10_600).contains(&counts[1]), "{counts:?}");
+        assert!((29_400..30_600).contains(&counts[2]), "{counts:?}");
+    }
+
+    #[test]
+    fn a_draw_picks_over_every_option_by_weight_and_ignores_the_contrary_rate() {
+        let mut chooser = Chooser::new(&plan(0, 0, None));
+        let defaults = (0..40_000)
+            .filter(|_| chooser.draw(0, &[(0, 1), (1, 3)], 0) == Choice::Default)
+            .count();
+        assert!((9_400..10_600).contains(&defaults), "{defaults}");
+    }
+
+    #[test]
+    fn a_held_draw_repeats_its_answer() {
+        let mut chooser = Chooser::new(&ChoicePlan {
+            held: vec![(4, Choice::Option(2))],
+            ..plan(0, CERTAIN, None)
+        });
+        for _ in 0..100 {
+            assert_eq!(
+                chooser.draw(4, &[(0, 1), (1, 1), (2, 1)], 0),
+                Choice::Option(2)
+            );
+        }
     }
 
     #[test]

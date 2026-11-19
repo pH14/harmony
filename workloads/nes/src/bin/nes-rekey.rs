@@ -10,6 +10,7 @@ use std::{
 use machine::nes::ButtonChord;
 use nes_games::workload::{
     Game, Lowered, NesSnapshot, RECORDS_FILE, REPLAY_RECORDS_FILE, SNAPSHOT_CHECKPOINT_FORMAT,
+    chord_time,
 };
 use nes_workload::{famidash::Famidash, joust::Joust, zelda::Zelda};
 use searcher::search::{
@@ -22,10 +23,6 @@ use searcher::search::{
 use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-fn chord_time(action: &ButtonChord) -> u64 {
-    u64::from(action.bounded_hold_frames())
-}
 
 fn forced_move_frames<A>(actions: &[RecordedAction<A>]) -> BTreeMap<u64, usize> {
     let mut lengths = BTreeMap::new();
@@ -41,7 +38,7 @@ fn forced_move_frames<A>(actions: &[RecordedAction<A>]) -> BTreeMap<u64, usize> 
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
     let recording = Recording::<ButtonChord>::from_bytes(&fs::read(run.join(RECORDS_FILE))?)?;
     let recorded = Lowered::new(game.clone(), &recording.header.strategy)?;
-    if recorded.catalog != recording.header.catalog {
+    if recorded.records_catalog()? != recording.header.catalog {
         return Err("the records were written against another catalog".into());
     }
     let keyed = Lowered::new(game, strategy.unwrap_or(&recording.header.strategy))?;
@@ -100,7 +97,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
         &recording.header.genesis,
         &jobs,
         &recording.actions,
-        chord_time,
+        chord_time::<G>,
     )?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;
     let mut report = json!({

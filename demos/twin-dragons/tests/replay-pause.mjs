@@ -22,6 +22,31 @@ async function stillDuring(page, ms) {
   assert.ok(during.length >= 4, 'The replay keeps playing while the counter is sampled');
   assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
+const detail = (page, name) => page.evaluate((name) => [...document.querySelectorAll('#details div')].find((d) => d.firstChild.textContent === name)?.lastChild.textContent, name);
+async function scrubMarker(page, frame) {
+  await page.evaluate((frame) => {
+    const scrub = document.querySelector('#scrub');
+    scrub.value = frame;
+    scrub.dispatchEvent(new Event('input', {bubbles: true}));
+  }, frame);
+  await page.waitForFunction((frame) => {
+    const shown = frame.toLocaleString();
+    const field = [...document.querySelectorAll('#details div')].find((d) => d.firstChild.textContent === 'Frame');
+    return document.querySelector('#frame-label').textContent.startsWith(`FRAME ${shown} `) && field?.lastChild.textContent === shown;
+  }, frame, {timeout: 15000});
+  if (await detail(page, 'Level') !== 'Level transition') {
+    await page.waitForFunction((frame) => {
+      const marked = [...document.querySelectorAll('.area-map')].map((c) => c.dataset.markerFrame).filter(Boolean);
+      return marked.length > 0 && marked.every((value) => Number(value) === frame);
+    }, frame, {timeout: 15000});
+    return 'marker';
+  }
+  const unmarked = () => [...document.querySelectorAll('.area-map')].every((c) => !c.dataset.markerFrame);
+  await page.waitForFunction(unmarked, null, {timeout: 15000});
+  for (let sample = 0; sample < 8; sample++, await page.waitForTimeout(50))
+    assert.ok(await page.evaluate(unmarked), `Frame ${frame} has no map evidence, so no map shows a replay marker`);
+  return 'none';
+}
 try {
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
   page.on('pageerror', e => errors.push(e.message));
@@ -79,19 +104,9 @@ try {
   await page.waitForTimeout(400);
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Pausing the replay leaves the search paused while the history is open');
 
-  for (const fraction of [0.3, 0.8, 0.5]) {
-    const frame = await page.evaluate((fraction) => {
-      const scrub = document.querySelector('#scrub');
-      scrub.value = Math.floor(Number(scrub.max) * fraction);
-      scrub.dispatchEvent(new Event('input', {bubbles: true}));
-      return Number(scrub.value);
-    }, fraction);
-    await page.waitForFunction((frame) => document.querySelector('#frame-label').textContent.startsWith(`FRAME ${frame.toLocaleString()} `), frame, {timeout: 15000});
-    await page.waitForFunction((frame) => {
-      const marked = [...document.querySelectorAll('.area-map')].map((c) => c.dataset.markerFrame).filter(Boolean);
-      return marked.length > 0 && marked.every((value) => Number(value) === frame);
-    }, frame, {timeout: 15000});
-  }
+  const branches = {marker: 0, none: 0};
+  for (const fraction of [0.3, 0.8, 0.5])
+    branches[await scrubMarker(page, Math.floor(Number(await page.locator('#scrub').getAttribute('max')) * fraction))]++;
 
   await page.locator('#speed').selectOption('12');
   await page.locator('#play').click();
@@ -109,6 +124,18 @@ try {
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
   await growing(page, await paths(page));
+
+  const tape = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  tape.on('pageerror', e => errors.push(e.message));
+  await tape.addInitScript(key => { try { localStorage.setItem(key, 'seen'); } catch {} }, TOUR_KEY);
+  await tape.route('**/replay-pause-tape.json', (route) => route.fulfill({path: 'tests/fixtures/level-two.json', contentType: 'application/json'}));
+  await tape.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?game=twin-dragons&workers=1&pace=0&tape=replay-pause-tape.json`);
+  await tape.waitForFunction(() => document.querySelector('#play')?.disabled === false && !document.querySelector('#inspector').hidden && Number(document.querySelector('#scrub').max) > 2950, null, {timeout: 60000});
+  if (await tape.locator('#play').getAttribute('data-state') === 'pause') await tape.locator('#play').click();
+  await tape.waitForFunction(() => document.querySelector('#play').dataset.state !== 'pause');
+  for (const frame of [1500, 2700, 2950]) branches[await scrubMarker(tape, frame)]++;
+  await tape.close();
+  assert.ok(branches.marker > 0 && branches.none > 0, `Scrubs cover frames with and without map evidence: ${JSON.stringify(branches)}`);
 
   assert.deepEqual(errors, []);
   console.log('Opening a history pauses the search, and the search resumes when the history closes.');
