@@ -74,6 +74,7 @@ fn sample(seed: u64, nodes: u16, states: usize) -> Vec<FaultObservations> {
 fn a_bundle_past_the_strategy_widths_fails_to_compile() {
     assert!(FaultKeys::new(STRATEGY, 10).is_ok());
     let error = FaultKeys::new(STRATEGY, 11).unwrap_err().to_string();
+    assert!(error.contains("at most 10 nodes, not 11"), "{error}");
     assert!(error.contains("key field holds"), "{error}");
     let error = FaultKeys::new(STRATEGY, 30).unwrap_err().to_string();
     assert!(error.contains("alive and event.ready"), "{error}");
@@ -111,6 +112,30 @@ fn the_node_limit_follows_the_mask_lanes_the_strategy_reads() {
     let error = FaultKeys::new(&ready, 60).unwrap_err().to_string();
     assert!(error.contains("lane event.ready and"), "{error}");
     assert!(error.contains("at most 59 nodes"), "{error}");
+}
+
+#[test]
+fn a_mask_lane_past_its_declared_width_is_refused() {
+    let alive = "capacity = 1\nspread = [\"alive\"]";
+    let error = FaultKeys::new(alive, 64).unwrap_err().to_string();
+    println!("64 nodes: {error}");
+    assert!(error.contains("node mask lane alive"), "{error}");
+    assert!(error.contains("at most 62 nodes"), "{error}");
+    assert!(error.contains("cannot key 64 nodes"), "{error}");
+    let keys = FaultKeys::new(alive, 62).unwrap();
+    let place = |alive| {
+        keys.key(&FaultObservations {
+            alive,
+            ..FaultObservations::default()
+        })
+        .unwrap()
+        .place()
+    };
+    println!(
+        "62 nodes: compiled, {}",
+        keys.compiled().policy_identifier()
+    );
+    assert_ne!(place(1), place(1 | 1 << 61));
 }
 
 #[test]

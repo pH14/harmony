@@ -16,6 +16,8 @@ pub const DECLARATIONS: usize = 18;
 const WIDE: i64 = (1 << 62) - 1;
 const COUNT: i64 = u16::MAX as i64;
 const CONTEXT_FLAGS: u16 = 5;
+const MASK_NODES: u16 = 62;
+const MASK_LANES: [&str; 2] = ["alive", "event.ready"];
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -38,8 +40,47 @@ fn wide(value: u64) -> i64 {
 fn node_mask(nodes: u16) -> u64 {
     match nodes {
         0 => 0,
-        nodes if nodes >= 62 => WIDE as u64,
+        nodes if nodes >= MASK_NODES => WIDE as u64,
         nodes => (1_u64 << nodes) - 1,
+    }
+}
+
+fn reads(strategy: &str, name: &str) -> bool {
+    let part = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    strategy.match_indices(name).any(|(start, _)| {
+        let before = strategy[..start].chars().next_back();
+        let after = strategy[start + name.len()..].chars().next();
+        !before.is_some_and(part) && !after.is_some_and(part)
+    })
+}
+
+fn masks_fit(strategy: &str, nodes: u16) -> Result<(), Box<dyn Error>> {
+    if nodes <= MASK_NODES {
+        return Ok(());
+    }
+    match MASK_LANES.into_iter().find(|lane| reads(strategy, lane)) {
+        Some(lane) => Err(format!(
+            "the strategy reads the node mask lane {lane}, whose declared value holds at most {MASK_NODES} nodes, so it cannot key {nodes} nodes"
+        )
+        .into()),
+        None => Ok(()),
+    }
+}
+
+fn compile(strategy: &Strategy, nodes: u16) -> Result<(Compiled, Catalog), Box<dyn Error>> {
+    let catalog = Catalog::from_assertions(declare(&FaultObservations::default(), nodes))?;
+    Ok((Compiled::new(strategy, &catalog)?, catalog))
+}
+
+fn node_limit(strategy: &Strategy, nodes: u16, error: Box<dyn Error>) -> Box<dyn Error> {
+    match (1..nodes)
+        .rev()
+        .find(|fewer| compile(strategy, *fewer).is_ok())
+    {
+        Some(limit) => {
+            format!("this strategy keys at most {limit} nodes, not {nodes}: {error}").into()
+        }
+        None => error,
     }
 }
 
@@ -166,14 +207,15 @@ impl FaultKeys {
         let parsed = Strategy::parse(strategy)?;
         let lanes = ContextLanes::find(&parsed)?;
         lanes.check(nodes)?;
-        let catalog = Catalog::from_assertions(declare(&FaultObservations::default(), nodes))?;
+        masks_fit(strategy, nodes)?;
         if !parsed.stage.is_empty() {
             return Err("the faults strategy gives a tier, not stages".into());
         }
         if parsed.lines()?.reject.is_some() {
             return Err("the faults workload reads no reject line".into());
         }
-        let compiled = Compiled::new(&parsed, &catalog)?;
+        let (compiled, catalog) =
+            compile(&parsed, nodes).map_err(|error| node_limit(&parsed, nodes, error))?;
         if !compiled.is_pure() {
             return Err(
                 "the faults workload keeps no accumulator, so its strategy holds no aggregates"

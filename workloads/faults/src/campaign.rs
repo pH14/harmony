@@ -16,11 +16,11 @@ use searcher::{
         archive::{KeyShape, RetentionPolicy},
         assertion::AssertionKey,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
-            CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
-            ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
-            run_campaign_checkpointed_with_options,
+            ArchiveFormat, ArchiveReportState, CampaignActionResult, CampaignCandidate,
+            CampaignConfig, CampaignExecutionOptions, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint,
+            TargetExecution, ThreadPlacement, WorkloadPolicies, default_window,
+            postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
         choice::{ChoicePlan, ChoiceSite},
         cost::ShrinkCost,
@@ -718,6 +718,7 @@ impl Reporting for FaultWorkload {
         state: ArchiveReportState<Self>,
     ) -> FaultArchiveReport {
         FaultArchiveReport {
+            format: ArchiveFormat::default(),
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
             executions: state.executions,

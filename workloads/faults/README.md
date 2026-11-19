@@ -1082,10 +1082,16 @@ The node count has these limits:
 | platform supervisor | 64 | `FaultVocabulary` |
 | duration context, strategy reads `alive` and `event.ready` | 29 | `FaultKeys::new` |
 | duration context, strategy reads one of them | 59 | `FaultKeys::new` |
-| duration context, strategy reads neither | the supervisor's 64 | `FaultKeys::new` |
+| duration context, strategy reads neither | the supervisor's 64 | `FaultVocabulary` |
+| strategy reads `alive` or `event.ready` in any line | 62, the width of a declared value | `FaultKeys::new` |
 | shipped strategy's place width | 10 | the strategy compile |
 
 A strategy for a bundle of more than 10 nodes drops or coarsens place lanes.
+When a strategy's lanes do not fit the bundle, the error names the largest node
+count that strategy keys.
+The 62-node check looks for the lane names `alive` and `event.ready` in the
+strategy text, so above 62 nodes a strategy that mentions either name anywhere
+is refused, whether or not its compiled lines read that lane.
 
 The duration context is a function of the parent key alone, because replay
 validates the recorded context. It is read from the key's lanes named

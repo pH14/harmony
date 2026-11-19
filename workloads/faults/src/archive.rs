@@ -12,6 +12,7 @@ use fault_policy::ParkTarget;
 use searcher::search::{
     archive::{ArchiveEntryReport, ProgressPoint, SelectorAccounting, entries_by_suffix},
     assertion::AssertionKey,
+    campaign::{ArchiveFormat, ArchiveFormatName},
     draw_tables::DrawView,
     rand::RomuDuoJrRand,
 };
@@ -380,8 +381,18 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     )
 }
 
+pub const ARCHIVE_FORMAT: &str = "faults-archive-v1";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FaultArchive;
+
+impl ArchiveFormatName for FaultArchive {
+    const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultArchiveReport {
+    pub format: ArchiveFormat<FaultArchive>,
     pub seed: u64,
     pub root_seal: u64,
     pub executions: u64,
@@ -1053,6 +1064,29 @@ mod tests {
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
             8192 + ACTION_HOST_TICKS
+        );
+    }
+
+    #[test]
+    fn an_archive_without_this_format_name_is_refused() {
+        use searcher::search::campaign::ArchiveSource;
+        let refused = |text: &str| {
+            ArchiveSource::<FaultArchiveReport>::from_bytes(text.as_bytes())
+                .err()
+                .expect("the archive is refused")
+                .to_string()
+        };
+        let missing = refused("{}");
+        assert!(
+            missing.contains("archive names no format; this build reads faults-archive-v1"),
+            "{missing}"
+        );
+        let other = refused("{\"format\":\"faults-archive-v0\"}");
+        assert!(
+            other.contains(
+                "archive format is faults-archive-v0; this build reads faults-archive-v1"
+            ),
+            "{other}"
         );
     }
 }
