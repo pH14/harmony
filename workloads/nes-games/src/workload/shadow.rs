@@ -123,6 +123,50 @@ impl<H> ShadowHook<H> {
     }
 }
 
+pub struct StateHook<G: Game, H: ArchiveKey>(Threaded<G, H>);
+
+impl<G: Game, H: ArchiveKey> Clone for StateHook<G, H> {
+    fn clone(&self) -> Self {
+        Self(Threaded::new(Arc::clone(&self.0.shadow)))
+    }
+}
+
+impl<G: Game, H: ArchiveKey> Debug for StateHook<G, H> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StateHook")
+    }
+}
+
+impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> StateHook<G, H>
+where
+    H::Lineage: Send + Sync,
+{
+    pub fn start_state(&self, state: &G::State) {
+        self.0.enter(self.0.begin_state(state.clone()), None);
+    }
+
+    pub fn advance_states(&self, states: &[G::State]) {
+        self.0.moved(|threaded, position| {
+            for state in states {
+                position.state = threaded.arrive_state(state.clone(), &mut position.cursor);
+            }
+        });
+    }
+
+    #[must_use]
+    pub fn saved(&self) -> ShadowToken {
+        self.0.saved()
+    }
+
+    pub fn restored_state(&self, token: Option<&ShadowToken>, state: &G::State) {
+        self.0.resume(token, || self.0.begin_state(state.clone()));
+    }
+
+    pub fn observe(&self, hand: Option<H>) -> Option<H> {
+        self.0.observe(hand)
+    }
+}
+
 struct Position<S, H: ArchiveKey> {
     state: S,
     cursor: ShadowCursor<H>,
@@ -165,22 +209,68 @@ impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Threaded<G, H>
 where
     H::Lineage: Send + Sync,
 {
+    fn arrive_state(&self, state: G::State, cursor: &mut ShadowCursor<H>) -> G::State {
+        let lowered = &self.shadow.lowered;
+        cursor.observe(&lowered.compiled, &lowered.record(&state).0);
+        state
+    }
+
     fn arrive(
         &self,
         previous: Option<&G::State>,
         ram: &[u8],
         cursor: &mut ShadowCursor<H>,
     ) -> G::State {
-        let lowered = &self.shadow.lowered;
-        let state = lowered.game.decode(previous, ram);
-        cursor.observe(&lowered.compiled, &lowered.record(&state).0);
-        state
+        self.arrive_state(self.shadow.lowered.game.decode(previous, ram), cursor)
+    }
+
+    fn begin_state(&self, state: G::State) -> Position<G::State, H> {
+        let mut cursor = ShadowCursor::default();
+        let state = self.arrive_state(state, &mut cursor);
+        Position { state, cursor }
     }
 
     fn begin(&self, ram: &[u8]) -> Position<G::State, H> {
-        let mut cursor = ShadowCursor::default();
-        let state = self.arrive(None, ram, &mut cursor);
-        Position { state, cursor }
+        self.begin_state(self.shadow.lowered.game.decode(None, ram))
+    }
+
+    fn enter(&self, position: Position<G::State, H>, pending: Option<u64>) {
+        if let Ok(mut current) = self.current.lock() {
+            current.position = Some(position);
+            current.pending = pending;
+            current.awaiting = false;
+        }
+    }
+
+    fn moved(&self, step: impl FnOnce(&Self, &mut Position<G::State, H>)) {
+        let Ok(mut current) = self.current.lock() else {
+            return;
+        };
+        current.pending = None;
+        if current.awaiting {
+            self.shadow.table.unobserved();
+        }
+        current.awaiting = true;
+        if let Some(position) = current.position.as_mut() {
+            step(self, position);
+        }
+    }
+
+    fn resume(&self, token: Option<&ShadowToken>, fresh: impl FnOnce() -> Position<G::State, H>) {
+        let found = token
+            .and_then(|token| token.index_in(self.shadow.id))
+            .and_then(|index| {
+                let saved = self.shadow.saved.lock().ok()?;
+                Some((index, saved.get(&index)?.clone()))
+            });
+        let (pending, position) = match found {
+            Some((index, position)) => (Some(index), position),
+            None => {
+                self.shadow.table.unknown_restore();
+                (None, fresh())
+            }
+        };
+        self.enter(position, pending);
     }
 }
 
@@ -193,28 +283,15 @@ where
     }
 
     fn start(&self, ram: &[u8]) {
-        let position = self.begin(ram);
-        if let Ok(mut current) = self.current.lock() {
-            current.position = Some(position);
-            current.pending = None;
-            current.awaiting = false;
-        }
+        self.enter(self.begin(ram), None);
     }
 
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]) {
-        let Ok(mut current) = self.current.lock() else {
-            return;
-        };
-        current.pending = None;
-        if current.awaiting {
-            self.shadow.table.unobserved();
-        }
-        current.awaiting = true;
-        if let Some(position) = current.position.as_mut() {
+        self.moved(|threaded, position| {
             for wram in frames {
-                position.state = self.arrive(Some(&position.state), wram, &mut position.cursor);
+                position.state = threaded.arrive(Some(&position.state), wram, &mut position.cursor);
             }
-        }
+        });
     }
 
     fn forced(&self, steps: &[[u8; WRAM_SIZE]]) {
@@ -256,24 +333,7 @@ where
     }
 
     fn restored(&self, token: Option<&ShadowToken>, ram: &[u8]) {
-        let found = token
-            .and_then(|token| token.index_in(self.shadow.id))
-            .and_then(|index| {
-                let saved = self.shadow.saved.lock().ok()?;
-                Some((index, saved.get(&index)?.clone()))
-            });
-        let (pending, position) = match found {
-            Some((index, position)) => (Some(index), position),
-            None => {
-                self.shadow.table.unknown_restore();
-                (None, self.begin(ram))
-            }
-        };
-        if let Ok(mut current) = self.current.lock() {
-            current.position = Some(position);
-            current.pending = pending;
-            current.awaiting = false;
-        }
+        self.resume(token, || self.begin(ram));
     }
 
     fn observe(&self, hand: Option<H>) -> Option<H> {
@@ -331,6 +391,11 @@ where
     #[must_use]
     pub fn hook(self: &Arc<Self>) -> ShadowHook<H> {
         ShadowHook(Box::new(Threaded::new(Arc::clone(self))))
+    }
+
+    #[must_use]
+    pub fn state_hook(self: &Arc<Self>) -> StateHook<G, H> {
+        StateHook(Threaded::new(Arc::clone(self)))
     }
 
     pub fn report(&self) -> Result<ShadowReport, Box<dyn Error>> {
@@ -486,6 +551,36 @@ mod tests {
         assert!(report.lineage_changes > 0);
         assert_eq!(report.keyed_states, 11);
         assert_eq!(report.unobserved, 0);
+    }
+
+    #[test]
+    fn a_state_hook_takes_decoded_states_and_restores_the_cursor_saved_with_its_token() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let hook = shadow.state_hook();
+        let spot = |x, room| Spot { x, room };
+        let step = |states: &[Spot]| {
+            hook.advance_states(states);
+            hook.observe(states.last().copied().map(LedgeKey::raw))
+        };
+        hook.start_state(&spot(0, 0));
+        hook.observe(Some(LedgeKey::raw(spot(0, 0))));
+        step(&[spot(1, 0), spot(2, 0)]);
+        step(&[spot(5, 0)]);
+        let token = hook.saved();
+        hook.observe(Some(LedgeKey::raw(spot(5, 0))));
+        let on = [[spot(1, 0)], [spot(1, 1)], [spot(4, 1)]];
+        let first: Vec<_> = on.iter().map(|states| step(states)).collect();
+        hook.restored_state(Some(&token), &spot(5, 0));
+        assert_eq!(
+            on.iter().map(|states| step(states)).collect::<Vec<_>>(),
+            first
+        );
+        assert_eq!(first[0].map(|key| key.band), Some(5));
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.unknown_restores, report.unobserved), (0, 0));
+        hook.restored_state(None, &spot(0, 0));
+        assert_eq!(shadow.report().unwrap().unknown_restores, 1);
     }
 
     #[test]
