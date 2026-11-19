@@ -355,6 +355,7 @@ pub struct ContinuationAccounting {
     pub replaced: u64,
     pub opened_new_cell: u64,
     pub useful: u64,
+    pub cut: u64,
     pub gaining_dispatched: u64,
     pub longest_wave: u32,
     pub energy: u16,
@@ -3809,6 +3810,7 @@ where
         landed: Option<usize>,
         replaced: bool,
         opened_new_cell: bool,
+        cut: bool,
         wave: u32,
     ) {
         if let Some(id) = landed
@@ -3826,6 +3828,9 @@ where
         }
         if opened_new_cell {
             accounting.opened_new_cell = accounting.opened_new_cell.saturating_add(1);
+        }
+        if cut {
+            accounting.cut = accounting.cut.saturating_add(1);
         }
         accounting.longest_wave = accounting.longest_wave.max(wave);
     }
@@ -10665,11 +10670,11 @@ mod tests {
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         let neighbour =
             insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
-        archive.record_continuation_outcome(Some(neighbour), true, true, 1);
-        archive.record_continuation_outcome(None, false, false, 1);
+        archive.record_continuation_outcome(Some(neighbour), true, true, false, 1);
+        archive.record_continuation_outcome(None, false, false, true, 1);
         let report = archive.continuation_report();
         assert_eq!((report.jobs, report.landed, report.replaced), (2, 1, 1));
-        assert_eq!(report.opened_new_cell, 1);
+        assert_eq!((report.opened_new_cell, report.cut), (1, 1));
         archive.record_selection_outcome(neighbour, true);
         archive.record_selection_outcome(origin, true);
         archive.record_selection_outcome(neighbour, false);

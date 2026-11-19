@@ -1185,7 +1185,10 @@ in every place.
 `ContinuationAccounting` rides every live progress line under `continuations`:
 `edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
 `replaced`, `opened_new_cell` and `useful` for what the replays did, where a
-useful landing is one whose entry later bred a retained child,
+useful landing is one whose entry later bred a retained child, `cut` for
+continuations whose workload ended the job before its tail ran out without a
+terminal action or a stopping objective, such as a replayed action the new
+parent's state does not offer,
 `gaining_dispatched` for edges dispatched on their gain alone, `longest_wave`,
 and `energy`, `reservations_drawn` and `reservations_taken` for the share.
 

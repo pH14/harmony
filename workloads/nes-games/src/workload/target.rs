@@ -1898,10 +1898,10 @@ mod moves {
         assert_eq!(moves.keys().copied().collect::<Vec<_>>(), [1, 2]);
     }
 
-    fn plain_job(suffix: &[ButtonChord]) -> Vec<(ButtonChord, u8)> {
+    fn plain_job<G: Game<State = u8>>(game: G, suffix: &[ButtonChord]) -> Vec<(ButtonChord, u8)> {
         let workload = NesWorkload::with_machines(
-            Walk,
-            Walk::STRATEGY,
+            game,
+            G::STRATEGY,
             &[],
             "walk",
             "0",
@@ -1937,9 +1937,22 @@ mod moves {
     }
 
     #[test]
+    fn a_continuation_tail_whose_move_meets_no_offer_is_cut_there() {
+        let climb = move_chord(0, 1).expect("a move chord");
+        assert_eq!(plain_job(Ledge, &[climb]), [(climb, LEDGE + 3)]);
+        assert_eq!(
+            plain_job(
+                Ledge,
+                &[ButtonChord::new(1, 8), climb, ButtonChord::new(1, 2)]
+            ),
+            [(ButtonChord::new(1, 8), LEDGE + 3)]
+        );
+    }
+
+    #[test]
     fn a_shrink_candidate_whose_move_is_not_offered_ends_before_it() {
         let far = move_chord(0, 2).expect("a move chord");
-        let witness = plain_job(&[ButtonChord::new(1, FAR_FROM), far]);
+        let witness = plain_job(Walk, &[ButtonChord::new(1, FAR_FROM), far]);
         assert_eq!(
             witness,
             [
@@ -1947,14 +1960,14 @@ mod moves {
                 (far, FAR_FROM + 8)
             ]
         );
-        assert!(plain_job(&[far]).is_empty());
+        assert!(plain_job(Walk, &[far]).is_empty());
     }
 
     #[test]
     fn a_continuation_tail_whose_move_is_not_offered_is_cut_there() {
         let far = move_chord(0, 2).expect("a move chord");
         assert_eq!(
-            plain_job(&[ButtonChord::new(1, 3), far, ButtonChord::new(1, 4)]),
+            plain_job(Walk, &[ButtonChord::new(1, 3), far, ButtonChord::new(1, 4)]),
             [(ButtonChord::new(1, 3), 3)]
         );
     }
