@@ -8,7 +8,8 @@ key=$(python3 - <<'PY'
 import hashlib
 from pathlib import Path
 value = hashlib.sha256()
-for directory in ("consonance/harmony-linux/libvoidstar", "workloads/faults/runtime", "workloads/languages/runtime"):
+for directory in ("consonance/harmony-linux/libvoidstar", "consonance/harmony-linux/linux/patches/musl",
+                  "workloads/faults/runtime", "workloads/harness/image", "workloads/languages/runtime"):
     for path in sorted(Path(directory).rglob("*")):
         if path.is_file() and "build" not in path.parts:
             value.update(str(path).encode() + b"\0" + path.read_bytes())

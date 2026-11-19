@@ -37,7 +37,7 @@ fn forced_move_frames<A>(actions: &[RecordedAction<A>]) -> BTreeMap<u64, usize> 
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
     let recording = Recording::<ButtonChord>::from_bytes(&fs::read(run.join(RECORDS_FILE))?)?;
     let recorded = Lowered::new(game.clone(), &recording.header.strategy)?;
-    if recorded.catalog != recording.header.catalog {
+    if recorded.records_catalog()? != recording.header.catalog {
         return Err("the records were written against another catalog".into());
     }
     let keyed = Lowered::new(game, strategy.unwrap_or(&recording.header.strategy))?;

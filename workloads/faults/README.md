@@ -973,7 +973,12 @@ count as a rediscovery.
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
-([`report`](src/report.rs)). Each `bug-N.json` carries the action list and the
+([`report`](src/report.rs)). A campaign records its first 64 bugs. After that
+it records a bug only when it violates a property that no recorded bug
+violates, so a campaign records at most 64 bugs plus one for each property
+first violated after the 64th, and a long campaign whose first bugs share one
+property still keeps the input of a later bug of another. Each `bug-N.json`
+carries the action list and the
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
 finding's actions when one exists; otherwise it holds the first recorded

@@ -185,6 +185,23 @@ impl FaultCampaignEvidence {
         }
         self.undecided_execution = Some((sequence, keys));
     }
+
+    fn recordable_bug<'a>(
+        &self,
+        observations: &'a [FaultObservations],
+    ) -> Option<&'a FaultObservations> {
+        if self.bugs.len() < MAX_RECORDED_BUGS {
+            return observations.iter().find(|observation| observation.is_bug());
+        }
+        let recorded: BTreeSet<String> = self
+            .bugs
+            .iter()
+            .flat_map(|bug| bug.observations.violations())
+            .collect();
+        observations.iter().find(|observation| {
+            observation.is_bug() && !observation.violations().is_subset(&recorded)
+        })
+    }
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -1263,11 +1280,7 @@ impl Evaluation for FaultWorkload {
                     .map_or(0, |check| check.undecided_keys),
             );
         }
-        let bug = action
-            .observations
-            .iter()
-            .find(|observation| observation.is_bug())
-            .filter(|_| evidence.bugs.len() < MAX_RECORDED_BUGS);
+        let bug = evidence.recordable_bug(&action.observations);
         let champion = (milestone_key(action.milestones)
             > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
@@ -1920,6 +1933,82 @@ mod tests {
             || Err("not materialized".into()),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn past_the_bug_bound_only_a_finding_with_a_new_violated_property_is_recorded() {
+        let game = game();
+        let action = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let violating = |properties: &[&str]| FaultObservations {
+            assertions: crate::assertion::Assertions(
+                properties
+                    .iter()
+                    .map(|property| {
+                        (
+                            (*property).to_owned(),
+                            crate::assertion::AssertionOutcome {
+                                kind: crate::assertion::AssertionKind::Always,
+                                message: (*property).to_owned(),
+                                location: String::new(),
+                                passed: false,
+                                failed: true,
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            ..FaultObservations::default()
+        };
+        let result = |observations| FaultCampaignActionResult {
+            action,
+            observations,
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                doomed: false,
+                objective_reached: true,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
+        };
+        let mut evidence = FaultCampaignEvidence::default();
+        for sequence in 0..u64::try_from(MAX_RECORDED_BUGS).unwrap() + 3 {
+            game.merge_action_evidence(
+                &mut evidence,
+                &result(vec![violating(&["first"])]),
+                sequence,
+                || Ok(FaultInput::default()),
+            )
+            .unwrap();
+        }
+        assert_eq!(evidence.bugs.len(), MAX_RECORDED_BUGS);
+        let input = FaultInput {
+            actions: vec![action, action],
+        };
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(vec![violating(&["first"]), violating(&["first", "second"])]),
+            100,
+            || Ok(input.clone()),
+        )
+        .unwrap();
+        assert_eq!(evidence.bugs.len(), MAX_RECORDED_BUGS + 1);
+        let recorded = evidence.bugs.last().unwrap();
+        assert_eq!(recorded.execution, 100);
+        assert_eq!(recorded.input, input);
+        assert_eq!(
+            recorded.observations.violations(),
+            BTreeSet::from(["first".to_owned(), "second".to_owned()])
+        );
+        game.merge_action_evidence(
+            &mut evidence,
+            &result(vec![violating(&["second"])]),
+            101,
+            || panic!("a finding with no new property requested its input"),
+        )
+        .unwrap();
+        assert_eq!(evidence.bugs.len(), MAX_RECORDED_BUGS + 1);
     }
 
     #[test]

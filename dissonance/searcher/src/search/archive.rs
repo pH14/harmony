@@ -791,6 +791,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     choices: Option<Vec<EntryChoices>>,
     drop_hand: usize,
     entry_drops: u64,
+    unselected_entry_drops: u64,
     memory_limit: Option<usize>,
     liveness_anchor: Option<u64>,
     #[cfg(test)]
@@ -1428,6 +1429,7 @@ where
             choices: None,
             drop_hand: 0,
             entry_drops: 0,
+            unselected_entry_drops: 0,
             memory_limit: None,
             liveness_anchor: None,
             #[cfg(test)]
@@ -1760,6 +1762,9 @@ where
             }
             self.deactivate(id);
             self.entry_drops = self.entry_drops.saturating_add(1);
+            if self.selected.get(id).is_none_or(|selected| *selected == 0) {
+                self.unselected_entry_drops = self.unselected_entry_drops.saturating_add(1);
+            }
             return (true, examined);
         }
         (false, examined)
@@ -3717,6 +3722,10 @@ where
 
     pub fn entry_drops(&self) -> u64 {
         self.entry_drops
+    }
+
+    pub fn unselected_entry_drops(&self) -> u64 {
+        self.unselected_entry_drops
     }
 
     #[must_use]
@@ -8115,7 +8124,15 @@ mod tests {
         assert_eq!(archive.active_count(), 0);
         assert_eq!(archive.resident_snapshot_count(), 0);
         assert_eq!(archive.entry_drops(), 1);
+        assert_eq!(archive.unselected_entry_drops(), 1);
         assert!(!archive.drop_one_entry());
+
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0], [2, 2, 0, 0]]);
+        archive.selected[1] = 1;
+        assert!(archive.drop_one_entry());
+        assert!(archive.drop_one_entry());
+        assert_eq!(archive.entry_drops(), 2);
+        assert_eq!(archive.unselected_entry_drops(), 1);
     }
 
     #[test]

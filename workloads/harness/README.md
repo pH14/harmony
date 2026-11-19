@@ -310,6 +310,43 @@ Images that install `iptables` drop the xtables extensions whose names differ
 only in case, which `harmony prepare` rejects, and purge `libssl3`, which
 arrives through Kerberos and carries unreviewed instructions.
 
+## Arm64 images
+
+Image admission on arm64 rejects every executable whose code pages hold an
+allocated non-executable section and every LL/SC exclusive instruction word
+([faults admission](../faults/README.md)). Debian's arm64 binaries fail both,
+so an arm64 target image is built from source on a dynamic musl libc instead
+of a Debian base. On arm64 the shared runtime image
+(`workloads/languages/runtime/Dockerfile`, built by `harmony prepare`) adds:
+
+| path | contents |
+|---|---|
+| `/out/harness/root` | a root filesystem: musl's loader at `/lib/ld-musl-aarch64.so.1`, BusyBox, iproute2 `ip` and `tc`, legacy `iptables` with built-in extensions, e2fsprogs `mkfs.ext4` for node disks, a musl `libvoidstar.so` and minimal `/etc` files |
+| `/out/harness/musl` | the musl toolchain, installed at `/opt/harmony-musl`, with `bin/harmony-cc` |
+
+`image/build-arm64-root.sh` builds both from pinned sources. musl carries the
+LSE-only atomics patch from `consonance/harmony-linux/linux/patches/musl`, and
+`harmony-cc` compiles with `-march=armv8.1-a+lse -mno-outline-atomics` and
+links with `-z separate-code`. On x86-64 both directories are empty.
+
+A target's Go build stages copy `image/go-env.sh` and
+`consonance/harmony-linux/linux/patches/go/` to `/build/harness-go/`, copy
+`/out/harness/musl` to `/opt/harmony-musl` for cgo, source `go-env.sh` before
+building, and pass `-ldflags="${HARNESS_GO_LDFLAGS}"` to every `go build`. On
+arm64 the script applies the two Go runtime patches to the toolchain, sets
+`GOARM64=v8.1` so the compiler emits LSE atomics, points `CC` at `harmony-cc`,
+and sets `HARNESS_GO_LDFLAGS` to `-buildid= -B none`, which keeps the build-ID
+notes out of the internally linked text segment. On x86-64 it changes nothing.
+The final stage is `FROM base-${TARGETARCH}`, where `base-amd64` is the Debian
+base and `base-arm64` is `scratch` with `/out/harness/root` copied in.
+`targets/rqlite` follows this pattern. The arm64 guest kernel builds in the
+veth, bridge, netem and legacy iptables support that `harness-net` uses.
+
+An rqlite search at one worker ran about 1.1 executions a minute on an msr1
+Cortex-A720 core and 0.24 on a Cortex-A520 core with `ram_mib = 1536`, and 3
+on an Apple M1 Max under HVF with `ram_mib = 8192`. On x86-64 it ran about 2.8
+executions a minute on an ms02 E-core with `ram_mib = 1024`.
+
 ## NATS JetStream
 
 `targets/nats` runs three `nats-server` nodes at 10.77.0.1-3 (client port
