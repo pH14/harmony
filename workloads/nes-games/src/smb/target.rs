@@ -836,7 +836,7 @@ pub fn smb_player_is_doomed(wram: &[u8; WRAM_SIZE]) -> bool {
         )
         && wram[SWIMMING_FLAG_OFFSET] == 0
         && wram[PLAYER_VERTICAL_PAGE_OFFSET] == PLAY_AREA_PAGE
-        && wram[PLAYER_Y_OFFSET] >= GROUND_LINE_Y + METATILE_PIXELS
+        && wram[PLAYER_Y_OFFSET] > GROUND_LINE_Y + METATILE_PIXELS
         && wram[PLAYER_Y_SPEED_OFFSET] < 0x80
         && FOOT_OFFSETS
             .iter()
@@ -1093,6 +1093,11 @@ mod tests {
         let mut within_a_block = falling_over(0x00);
         within_a_block[0x00ce] = 0xbf;
         assert!(!smb_player_is_doomed(&within_a_block));
+        let mut on_the_lower_floor_row = falling_over(0x00);
+        on_the_lower_floor_row[0x00ce] = 0xc0;
+        assert!(!smb_player_is_doomed(&on_the_lower_floor_row));
+        on_the_lower_floor_row[0x00ce] = 0xc1;
+        assert!(smb_player_is_doomed(&on_the_lower_floor_row));
         for id in [0x24, 0x2c, 0x32] {
             let mut over_a_lift = falling_over(0x00);
             over_a_lift[0x0011] = 1;
