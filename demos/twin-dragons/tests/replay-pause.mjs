@@ -91,7 +91,7 @@ try {
   for (let unopened = 0, short = 0; ;) {
     await page.waitForFunction((tried) => {
       const o = window.tdRetained?.get(Number(document.querySelector('#map').dataset.map));
-      return o && !tried.includes(o.id);
+      return o && !tried.includes(String(o.id));
     }, tried, {timeout: 60000});
     const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
     const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
@@ -107,7 +107,7 @@ try {
     assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
     const replay = await startReplay(page);
     if (replay.to - replay.from >= MIN_REPLAY_FRAMES) break;
-    tried.push(o.id, await page.locator('#film-title').getAttribute('data-state-id'));
+    tried.push(String(o.id), await page.locator('#film-title').getAttribute('data-state-id'));
     assert.ok(++short < 5, `A retained history replays at least ${MIN_REPLAY_FRAMES} frames from where Replay starts: ${JSON.stringify(tried)}`);
     await page.locator('#close-inspector').click();
     await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
