@@ -105,10 +105,11 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || !request.mixture.is_empty()
         || request.strategy.is_some()
         || request.records
+        || request.shadow
         || request.keep_stream
     {
         return Err(
-            "a live view runs the arcade game from genesis with its own mixture and built-in strategy, without ai, root, minimize, resume, mixture, strategy, records or keep_stream options"
+            "a live view runs the arcade game from genesis with its own mixture and built-in strategy, without ai, root, minimize, resume, mixture, strategy, records, shadow or keep_stream options"
                 .into(),
         );
     }
@@ -194,6 +195,8 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
     })
 }
 
+const SHADOW_GAMES: &[&str] = &[];
+
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
     run_cli(|request, rom, out, started| {
@@ -239,6 +242,9 @@ fn main() -> Result<()> {
                 );
             }
             _ => {}
+        }
+        if request.shadow && !SHADOW_GAMES.contains(&request.game.as_str()) {
+            return Err("only the hand-keyed games with a shadow hook take a shadow key".into());
         }
         let p = &request.core;
         let h = &request.core_sha256;
