@@ -1,0 +1,79 @@
+x86: invalidate the old translation when a fault upgrades a page-table entry
+
+ptep_set_access_flags() writes a more permissive entry, as do_wp_page()
+does when it reuses a page and makes it writable, without invalidating the
+old translation. The SDM allows that ("Optional Invalidation", Intel SDM
+Vol. 3A 4.10.4.3): a later access may still use the old, less permissive
+TLB entry and raise a spurious page fault. Linux handles that fault as one
+with nothing to fix, but still counts it in the vm event counters, the
+memory cgroup events and the task's minor-fault count.
+
+The CPU raises and the guest kernel handles that fault without a VM exit.
+Whether it happens depends on whether the old entry is still cached, and
+that depends on host activity on the physical CPU, which the VMM does not
+control. On an Arrow Lake P-core, replays of one rqlite path ended in two
+whole-VM states that differed only in those counters (harmony#984).
+
+Invalidating the translation right after the upgrade makes the next access
+walk the new entry, so the spurious fault cannot occur. The pmd and pud
+variants get the same flush. They are compiled only with transparent huge
+pages, which the guest configuration disables.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/mm/pgtable.c
++++ b/arch/x86/mm/pgtable.c
+@@ -386,7 +386,10 @@
+  * on other architectures. On x86, the accessed and dirty bits
+  * are tracked by hardware. However, do_wp_page calls this function
+  * to also make the pte writeable at the same time the dirty bit is
+- * set. In that case we do actually need to write the PTE.
++ * set. In that case we do actually need to write the PTE, and we
++ * also invalidate the old translation: a CPU may keep using the
++ * less permissive entry and raise a spurious fault, and whether it
++ * still holds that entry depends on activity outside the guest.
+  */
+ int ptep_set_access_flags(struct vm_area_struct *vma,
+ 			  unsigned long address, pte_t *ptep,
+@@ -394,8 +397,10 @@
+ {
+ 	int changed = !pte_same(*ptep, entry);
+ 
+-	if (changed && dirty)
++	if (changed && dirty) {
+ 		set_pte(ptep, entry);
++		flush_tlb_page(vma, address);
++	}
+ 
+ 	return changed;
+ }
+@@ -411,12 +416,7 @@
+ 
+ 	if (changed && dirty) {
+ 		set_pmd(pmdp, entry);
+-		/*
+-		 * We had a write-protection fault here and changed the pmd
+-		 * to to more permissive. No need to flush the TLB for that,
+-		 * #PF is architecturally guaranteed to do that and in the
+-		 * worst-case we'll generate a spurious fault.
+-		 */
++		flush_pmd_tlb_range(vma, address, address + HPAGE_PMD_SIZE);
+ 	}
+ 
+ 	return changed;
+@@ -431,12 +431,7 @@
+ 
+ 	if (changed && dirty) {
+ 		set_pud(pudp, entry);
+-		/*
+-		 * We had a write-protection fault here and changed the pud
+-		 * to to more permissive. No need to flush the TLB for that,
+-		 * #PF is architecturally guaranteed to do that and in the
+-		 * worst-case we'll generate a spurious fault.
+-		 */
++		flush_pud_tlb_range(vma, address, address + HPAGE_PUD_SIZE);
+ 	}
+ 
+ 	return changed;

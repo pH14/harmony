@@ -264,6 +264,70 @@ CR4.PAE, so that bit alone is not a legacy-PAE signal.
 These constraints define the Linux guest qualification scope, not a claim
 that the generic backend's AMD PAE continuation failure is fixed.
 
+## Faults that depend on cached translations
+
+The guest kernel must not rely on a hardware fault whose occurrence depends on
+cached translations. TLB and paging-structure cache contents belong to the
+physical CPU. Host interrupts, host kernel threads, the VMM's own work between
+exits and an SMT sibling evict guest entries. Guest RAM is an ordinary
+anonymous host mapping, so host huge-page collapse, compaction and migration
+also invalidate guest translations through KVM's MMU notifier, at times the
+host chooses. A fault the CPU raises from a cached entry is delivered to the
+guest and handled there without a VM exit. Virtual time and the exit sequence
+stay identical while guest memory diverges.
+
+Host activity only removes translations; it never creates one. A stale entry
+exists only when the guest kernel's own invalidation leaves one, so the guest
+kernel invalidates every translation it makes more permissive. Upstream x86
+`ptep_set_access_flags` makes a present entry writable without an
+invalidation, as a write fault or `get_user_pages` does when it reuses a page.
+The Intel SDM permits a later access to use the old read-only entry and raise
+a spurious page fault (Vol. 3A 4.10.4.3, "Optional Invalidation"). Linux
+handles that fault as one with nothing to fix but counts it in the vm event
+counters, the memory cgroup events and the task's minor-fault count. Replays
+of one rqlite path on an Arrow Lake P-core ended in two whole-VM states that
+differed only in those counters
+([#984](https://github.com/pH14/harmony/issues/984)).
+`patches/x86/0020-x86-harmony-flush-access-flag-upgrades.patch` invalidates
+the single entry after each such upgrade, including the PMD and PUD variants
+that only transparent huge pages compile. Linux's other upgrade paths, such
+as `mprotect`, already invalidate.
+
+What the CPU does inside the guest without an exit, from state the VMM does
+not control:
+
+| Event | This guest |
+|---|---|
+| Spurious #PF from a stale, less permissive TLB entry after R/W goes from 0 to 1 or NX from 1 to 0 | Patch 0020 invalidates after `ptep_set_access_flags`; other upgrade paths already invalidate |
+| Accessed-flag setting by page walks, including walks for speculative and prefetch accesses | Matters only after software clears the flag; audit in [#996](https://github.com/pH14/harmony/issues/996) |
+| Paging-structure cache use (PML4E, PDPTE, PDE) | Linux creates upper-level entries fully permissive and invalidates when it frees page tables |
+| XSAVE init-state tracking | XSAVEOPT, XSAVEC and XSAVES are hidden; patch 0008 canonicalizes saves |
+| RTM and HLE aborts | Hidden by CPUID |
+| Counter, entropy and wait instructions | Trapped, hidden or audited; see `scripts/instruction-contract.toml` |
+| Thermal, HFI and PMU state | Hidden by CPUID; guest MSR access is denied by default |
+
+Snapshot restore and dirty-log drains invalidate all guest translations at
+deterministic points
+([KVM backend](../../vmm-backend/README.md)). Between those points the
+translation caches follow the host.
+
+Whether a host shows such a difference depends on its TLB design: #984's path
+split on the P-cores and gave one digest in 50 repeats on the same machine's
+E-cores. Recheck a guest kernel change by hand on an Intel P-core. Pick one P-core with nothing else scheduled, run
+the same action file many times with the candidate kernel and with a control
+kernel without the change, and interleave the two in one batch:
+
+```sh
+taskset -c "${PCORE:?}" harmony debug run --config "${CONFIG:?}" \
+  --actions "${ACTIONS:?}" --repeat 50 --out "${OUT:?}"
+```
+
+`runner.options.kernel` and `runner.options.base_initramfs` in the
+configuration select each kernel. `debug run --repeat` exits 2 and names each
+repeat and state digest when the repeats end differently. The control must
+split in the same batch; otherwise the host did not expose the channel and the
+run shows nothing about the candidate.
+
 
 ## Fixed x86 XSAVE layout
 
