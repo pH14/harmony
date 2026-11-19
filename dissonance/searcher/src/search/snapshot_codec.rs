@@ -262,7 +262,14 @@ pub fn read_checkpoint<S: CheckpointSnapshot>(
         return Err("snapshot checkpoint format is not recognized".into());
     }
     let header: Header = exact(&read_frame(input)?)?;
-    if header.format != expected_format || header.codec != S::Codec::FORMAT {
+    if header.format != expected_format {
+        return Err(format!(
+            "snapshot checkpoint format is {}; this build reads {expected_format}",
+            header.format
+        )
+        .into());
+    }
+    if header.codec != S::Codec::FORMAT {
         return Err("snapshot checkpoint format is not recognized".into());
     }
     let mut state = <S::Codec as SnapshotCodec<S>>::DecodeState::default();

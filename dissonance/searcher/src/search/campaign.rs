@@ -4503,7 +4503,12 @@ fn validate_archive_checkpoint<G: Workload + ?Sized>(
     checkpoint: &CampaignCheckpoint<G::Snapshot>,
 ) -> Result<(), Box<dyn Error>> {
     if checkpoint.snapshots.format != workload.checkpoint_format() {
-        return Err("archive snapshot checkpoint format is not recognized".into());
+        return Err(format!(
+            "archive snapshot checkpoint format is {}; this build reads {}",
+            checkpoint.snapshots.format,
+            workload.checkpoint_format()
+        )
+        .into());
     }
     let mut writer = CheckpointHashWriter(Sha256::new());
     checkpoint.snapshots.write_to(&mut writer)?;
@@ -4530,7 +4535,12 @@ fn validate_snapshot_root_checkpoint<'a, G: Workload + ?Sized>(
         return Err("snapshot-root checkpoint SHA-256 is malformed".into());
     }
     if checkpoint.snapshots.format != workload.checkpoint_format() {
-        return Err("snapshot-root checkpoint format is not recognized".into());
+        return Err(format!(
+            "snapshot-root checkpoint format is {}; this build reads {}",
+            checkpoint.snapshots.format,
+            workload.checkpoint_format()
+        )
+        .into());
     }
     let [entry] = checkpoint.snapshots.entries.as_slice() else {
         return Err("snapshot-root checkpoint must contain exactly one entry".into());
@@ -5588,7 +5598,12 @@ where
         return Err("recorded work budget must be nonzero".into());
     }
     if header.format != workload.stream_format() {
-        return Err("campaign stream format is not recognized".into());
+        return Err(format!(
+            "campaign stream format is {}; this build reads {}",
+            header.format,
+            workload.stream_format()
+        )
+        .into());
     }
     let origin_fields_match = header.origin_checkpoint_policy_changes.is_empty()
         && match header.origin_kind.as_str() {
@@ -11176,7 +11191,7 @@ mod tests {
             SnapshotCheckpoint::<u8>::from_bytes(&bytes, "test-checkpoint-v2")
                 .expect_err("a different format is rejected")
                 .to_string(),
-            "snapshot checkpoint format is not recognized"
+            "snapshot checkpoint format is test-checkpoint-v1; this build reads test-checkpoint-v2"
         );
     }
 
