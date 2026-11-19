@@ -663,6 +663,7 @@ mod tests {
                         },
                         "work_ram": null,
                         "room_area": [0, 0],
+                        "frame_key": nes_workload::smb::archive::fold_frame(None, &[0; 2_048]),
                         "dead": false,
                         "failed": false
             }))
