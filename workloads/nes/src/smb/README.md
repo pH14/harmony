@@ -154,8 +154,8 @@ does not use the ladder.
 
 ## Coverage rarity
 
-`SmbGame::with_coverage(cap)` puts coverage rarity in the place, for a core
-built with `HARMONY_QUICKNES_COVERAGE` (see the
+`SmbGame::with_coverage(SmbCoverage { cap, ids })` puts coverage rarity in the
+place, for a core built with `HARMONY_QUICKNES_COVERAGE` (see the
 [machine README](../../../nes-machine/README.md)). The target drains the core's
 ids before each action, which drops the frames of the viability probe, and after
 each chord. When a chord stops early, at a death, a victory or the return of
@@ -173,6 +173,26 @@ coverage value, 0 with coverage off. The key policy names the cap.
 `nes-eval` takes the cap as `smb_coverage_cap`. A cap of 0 drains and counts the
 ids without moving any state to another place, so the search makes the same
 decisions as without coverage and its speed shows what the mechanism costs.
+
+`SmbCoverageIds::All` (`smb_coverage_ids` `all`, the default) rates every id.
+`SmbCoverageIds::Code` (`code`) rates only branch outcomes and indirect jump
+targets: the ids are sorted and the kind is in the top bits, so the code ids
+are a prefix of each action's ids, and data reads still reach the diagnostics.
+The key policy names the id set.
+
+With coverage on, the progress records' `workload_diagnostics` also give:
+
+- under `vine_steps`, the `rating` of the first job's action at each step: its
+  rarity before the cap, the id that set it, the id's kind and its CPU address
+  (`$8000` plus the PRG ROM offset; a jump's address is its target);
+- under `coverage`, the ids the actions carried by kind
+  (`action_ids_by_kind`), and the candidates whose rarity reached the cap by the
+  kind of the id that rated them (`capped_by_kind`) and how many of those ids
+  sit at `$F400` or above (`capped_from_f400`).
+
+On every route, `vine_step_starts` counts, for each vine step that some job's
+parent key held, the first such job and the number of jobs that started from a
+kept state at that step.
 
 A campaign in the searcher's minimize mode (see
 [Minimizing](../../../../dissonance/searcher/README.md#minimizing)) uses the

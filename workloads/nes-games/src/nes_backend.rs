@@ -12,6 +12,52 @@ pub fn native_identity_sha256(core_sha256: &str, execution_sha256: &str) -> Stri
     format!("{core_sha256};prepared-execution-sha256={execution_sha256}")
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CoverageKind {
+    Branch,
+    Jump,
+    Data,
+}
+
+impl CoverageKind {
+    #[must_use]
+    pub fn of(id: u64) -> Self {
+        match id >> 62 {
+            0 => Self::Branch,
+            1 => Self::Jump,
+            _ => Self::Data,
+        }
+    }
+
+    #[must_use]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::Jump => "jump",
+            Self::Data => "data",
+        }
+    }
+}
+
+#[must_use]
+pub fn coverage_site(id: u64) -> u32 {
+    let site = match CoverageKind::of(id) {
+        CoverageKind::Branch => id >> 1,
+        CoverageKind::Jump | CoverageKind::Data => id,
+    };
+    u32::try_from(site & 0x1F_FFFF).unwrap_or(0)
+}
+
+#[must_use]
+pub fn code_coverage(sorted: &[u64]) -> &[u64] {
+    &sorted[..sorted.partition_point(|&id| CoverageKind::of(id) != CoverageKind::Data)]
+}
+
 pub trait SnapshotState:
     Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned + 'static
 {

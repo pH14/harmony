@@ -32,11 +32,48 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 
 const KEY_POLICY_BASE: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SmbCoverageIds {
+    #[default]
+    All,
+    Code,
+}
+
+impl SmbCoverageIds {
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Code => "code",
+        }
+    }
+
+    pub fn from_identifier(identifier: &str) -> Result<Self, String> {
+        [Self::All, Self::Code]
+            .into_iter()
+            .find(|ids| ids.identifier() == identifier)
+            .ok_or_else(|| format!("unknown coverage id set {identifier}"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmbCoverage {
+    pub cap: u8,
+    pub ids: SmbCoverageIds,
+}
+
 #[must_use]
-pub fn key_policy_identifier(route: SmbRoute, coverage_cap: Option<u8>) -> String {
+pub fn key_policy_identifier(route: SmbRoute, coverage: Option<SmbCoverage>) -> String {
     let base = format!("{KEY_POLICY_BASE}_route_{}", route.identifier());
-    match coverage_cap {
-        Some(cap) => format!("{base}_place_coverage_rarity_of_the_rarest_id_capped_at_{cap}"),
+    match coverage {
+        Some(SmbCoverage {
+            cap,
+            ids: SmbCoverageIds::All,
+        }) => format!("{base}_place_coverage_rarity_of_the_rarest_id_capped_at_{cap}"),
+        Some(SmbCoverage {
+            cap,
+            ids: SmbCoverageIds::Code,
+        }) => format!("{base}_place_coverage_rarity_of_the_rarest_code_id_capped_at_{cap}"),
         None => base,
     }
 }
@@ -385,8 +422,8 @@ pub fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
 #[cfg(test)]
 mod tests {
     use super::{
-        KEY_POLICY_BASE, SmbArchiveKey, SmbRoomIdentity, SmbRoute, archive_key,
-        key_policy_identifier, stamp_arrival_room,
+        KEY_POLICY_BASE, SmbArchiveKey, SmbCoverage, SmbCoverageIds, SmbRoomIdentity, SmbRoute,
+        archive_key, key_policy_identifier, stamp_arrival_room,
     };
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
@@ -644,7 +681,20 @@ mod tests {
             key_policy_identifier(SmbRoute::Warps, None),
             format!("{KEY_POLICY_BASE}_route_{}", SmbRoute::Warps.identifier())
         );
-        assert!(key_policy_identifier(SmbRoute::Warps, Some(4)).ends_with("_capped_at_4"));
+        let cap = |ids| Some(SmbCoverage { cap: 4, ids });
+        assert!(
+            key_policy_identifier(SmbRoute::Warps, cap(SmbCoverageIds::All))
+                .ends_with("_rarest_id_capped_at_4")
+        );
+        assert!(
+            key_policy_identifier(SmbRoute::Warps, cap(SmbCoverageIds::Code))
+                .ends_with("_rarest_code_id_capped_at_4")
+        );
+        assert_eq!(
+            SmbCoverageIds::from_identifier("code"),
+            Ok(SmbCoverageIds::Code)
+        );
+        assert!(SmbCoverageIds::from_identifier("data").is_err());
     }
 
     #[test]

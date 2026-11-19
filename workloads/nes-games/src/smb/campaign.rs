@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeMap;
 use std::error::Error;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ use crate::{
         CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary,
         NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES,
     },
-    nes_backend::{NesBackend, SnapshotState},
+    nes_backend::{CoverageKind, NesBackend, SnapshotState, code_coverage, coverage_site},
     search::campaign::{
         CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
         CampaignOrigin, CampaignProgressRecord, CampaignStreamRecord, CampaignTypes, Evaluation,
@@ -32,14 +33,16 @@ use crate::{
         postcard_semantic_result_sha256, postcard_value_sha256,
     },
     search::cost::ShrinkCost,
+    search::coverage::CoverageRating,
     search::empirical_steps::EmpiricalStepCheckpoint,
     search::rand::RomuDuoJrRand,
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, admission_is_viable, archive_key, chord_time, key_policy_identifier,
-        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
-        stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
+        SmbArchiveReport, SmbCoverage, SmbCoverageIds, admission_is_viable, archive_key,
+        chord_time, key_policy_identifier, merge_action_milestones, merge_milestones,
+        merge_progress_watermark, milestone_key, stamp_arrival_room, stamp_arrival_room_identity,
+        update_first_inputs,
     },
     smb::plan::{Goal, SmbRoute, vine_step},
     smb::shrink::{remaining_frames_bound, simpler_chords},
@@ -98,7 +101,7 @@ where
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
     route: SmbRoute,
-    coverage_cap: Option<u8>,
+    coverage: Option<SmbCoverage>,
 }
 
 #[must_use]
@@ -126,7 +129,7 @@ where
             checkpoint_format,
             targets,
             route: SmbRoute::AllLevels,
-            coverage_cap: None,
+            coverage: None,
         }
     }
 
@@ -166,7 +169,7 @@ where
     }
 
     #[must_use]
-    pub fn with_coverage(self, cap: u8) -> Self
+    pub fn with_coverage(self, coverage: SmbCoverage) -> Self
     where
         M: 'static,
         P: 'static,
@@ -180,18 +183,13 @@ where
                     .map_err(|error| error.to_string())?;
                 Ok(target)
             }),
-            coverage_cap: Some(cap),
+            coverage: Some(coverage),
             ..self
         }
     }
 
-    #[must_use]
-    pub fn coverage_cap(&self) -> Option<u8> {
-        self.coverage_cap
-    }
-
     fn key_policy(&self) -> String {
-        key_policy_identifier(self.route, self.coverage_cap)
+        key_policy_identifier(self.route, self.coverage)
     }
 
     fn doomed_policy(&self) -> String {
@@ -314,14 +312,86 @@ pub struct SmbCampaignEvidence {
     pub first_inputs: SmbMilestoneInputs,
     pub champion_input: SmbInput,
     pub champion_milestones: SmbMilestones,
-    #[serde(default)]
-    pub vine_steps: std::collections::BTreeMap<u16, SmbVineStepReach>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vine_steps: BTreeMap<u16, SmbVineStepReach>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vine_step_starts: BTreeMap<u16, SmbVineStepStarts>,
+    #[serde(default, skip_serializing_if = "SmbCoverageEvidence::is_empty")]
+    pub coverage: SmbCoverageEvidence,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SmbVineStepReach {
     pub first_job: u64,
     pub actions: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<SmbCoverageRating>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SmbCoverageRating {
+    pub rarity: u8,
+    pub id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SmbVineStepStarts {
+    pub first_job: u64,
+    pub jobs: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SmbCoverageEvidence {
+    pub action_ids_by_kind: [u64; 3],
+    pub capped_by_kind: [u64; 3],
+    pub capped_from_f400: u64,
+}
+
+impl SmbCoverageEvidence {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[must_use]
+pub fn smb_cpu_address(site: u32) -> u16 {
+    let address = if site & 0x10_0000 == 0 {
+        0x8000 | (site & 0x7FFF)
+    } else {
+        site & 0xFFFF
+    };
+    u16::try_from(address).unwrap_or(0)
+}
+
+fn coverage_rating_json(rating: SmbCoverageRating) -> serde_json::Value {
+    serde_json::json!({
+        "rarity": rating.rarity,
+        "id": rating.id,
+        "kind": CoverageKind::of(rating.id).identifier(),
+        "address": format!("${:04X}", smb_cpu_address(coverage_site(rating.id))),
+    })
+}
+
+fn kinds_json(counts: [u64; 3]) -> serde_json::Value {
+    serde_json::json!({
+        CoverageKind::Branch.identifier(): counts[CoverageKind::Branch.index()],
+        CoverageKind::Jump.identifier(): counts[CoverageKind::Jump.index()],
+        CoverageKind::Data.identifier(): counts[CoverageKind::Data.index()],
+    })
+}
+
+fn action_vine_step<M, P>(action: &SmbCampaignActionResult<M, P>) -> u16
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
+    action
+        .observations
+        .iter()
+        .filter_map(|observation| <&[u8; WRAM_SIZE]>::try_from(observation.wram.as_slice()).ok())
+        .map(vine_step)
+        .max()
+        .unwrap_or(0)
 }
 
 pub type SmbCampaignOrigin<M, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
@@ -551,15 +621,57 @@ where
     P: SnapshotState,
 {
     fn diagnostics(evidence: &Self::Evidence) -> Option<serde_json::Value> {
-        (!evidence.vine_steps.is_empty()).then(|| {
-            serde_json::json!({
-                "vine_steps": evidence
+        let mut diagnostics = serde_json::Map::new();
+        if !evidence.vine_steps.is_empty() {
+            diagnostics.insert(
+                "vine_steps".to_owned(),
+                evidence
                     .vine_steps
                     .iter()
-                    .map(|(step, reach)| (step.to_string(), reach))
-                    .collect::<std::collections::BTreeMap<_, _>>(),
-            })
-        })
+                    .map(|(step, reach)| {
+                        let mut value = serde_json::json!({
+                            "first_job": reach.first_job,
+                            "actions": reach.actions,
+                        });
+                        if let Some(rating) = reach.rating {
+                            value["rating"] = coverage_rating_json(rating);
+                        }
+                        (step.to_string(), value)
+                    })
+                    .collect::<serde_json::Map<_, _>>()
+                    .into(),
+            );
+        }
+        if !evidence.vine_step_starts.is_empty() {
+            diagnostics.insert(
+                "vine_step_starts".to_owned(),
+                evidence
+                    .vine_step_starts
+                    .iter()
+                    .map(|(step, starts)| {
+                        (
+                            step.to_string(),
+                            serde_json::json!({
+                                "first_job": starts.first_job,
+                                "jobs": starts.jobs,
+                            }),
+                        )
+                    })
+                    .collect::<serde_json::Map<_, _>>()
+                    .into(),
+            );
+        }
+        if !evidence.coverage.is_empty() {
+            diagnostics.insert(
+                "coverage".to_owned(),
+                serde_json::json!({
+                    "action_ids_by_kind": kinds_json(evidence.coverage.action_ids_by_kind),
+                    "capped_by_kind": kinds_json(evidence.coverage.capped_by_kind),
+                    "capped_from_f400": evidence.coverage.capped_from_f400,
+                }),
+            );
+        }
+        (!diagnostics.is_empty()).then(|| diagnostics.into())
     }
 
     fn write_evidence_checkpoint(
@@ -589,7 +701,7 @@ where
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         let semantic = postcard_semantic_result_sha256(result)?;
-        if self.coverage_cap.is_none() {
+        if self.coverage.is_none() {
             return Ok(semantic);
         }
         let coverage: Vec<&[u64]> = result
@@ -861,21 +973,23 @@ where
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
-        let step = action
-            .observations
-            .iter()
-            .filter_map(|observation| {
-                <&[u8; WRAM_SIZE]>::try_from(observation.wram.as_slice()).ok()
-            })
-            .map(vine_step)
-            .max()
-            .unwrap_or(0);
+        let step = action_vine_step(action);
         if step > 0 {
             let reach = evidence.vine_steps.entry(step).or_insert(SmbVineStepReach {
                 first_job: sequence,
-                actions: 0,
+                ..SmbVineStepReach::default()
             });
             reach.actions = reach.actions.saturating_add(1);
+        }
+        if let Some(endpoint) = action.observations.last() {
+            let ids = endpoint.coverage.as_slice();
+            let mut start = 0;
+            for kind in [CoverageKind::Branch, CoverageKind::Jump, CoverageKind::Data] {
+                let end = start + ids[start..].partition_point(|&id| CoverageKind::of(id) == kind);
+                let count = &mut evidence.coverage.action_ids_by_kind[kind.index()];
+                *count = count.saturating_add(u64::try_from(end - start).unwrap_or(u64::MAX));
+                start = end;
+            }
         }
         let first_input_needed = (action.milestones.max_1_1_scroll_bucket > 0
             && evidence.first_inputs.progress_into_1_1.is_none())
@@ -974,19 +1088,75 @@ where
     }
 
     fn action_coverage<'a>(&self, action: &'a CampaignActionResult<Self>) -> &'a [u64] {
-        action
+        let Some(coverage) = self.coverage else {
+            return &[];
+        };
+        let ids = action
             .observations
             .last()
-            .map_or(&[], |endpoint| endpoint.coverage.as_slice())
+            .map_or(&[][..], |endpoint| endpoint.coverage.as_slice());
+        match coverage.ids {
+            SmbCoverageIds::All => ids,
+            SmbCoverageIds::Code => code_coverage(ids),
+        }
     }
 
-    fn rate_coverage(&self, key: SmbArchiveKey, rarity: u8) -> SmbArchiveKey {
-        match self.coverage_cap {
-            Some(cap) => SmbArchiveKey {
-                coverage: rarity.min(cap),
+    fn rate_coverage(&self, key: SmbArchiveKey, rating: CoverageRating) -> SmbArchiveKey {
+        match self.coverage {
+            Some(coverage) => SmbArchiveKey {
+                coverage: rating.rarity.min(coverage.cap),
                 ..key
             },
             None => key,
         }
+    }
+
+    fn merge_coverage_evidence(
+        &self,
+        evidence: &mut SmbCampaignEvidence,
+        action: &SmbCampaignActionResult<M, P>,
+        sequence: u64,
+        rating: CoverageRating,
+    ) {
+        let step = action_vine_step(action);
+        if let Some(reach) = evidence.vine_steps.get_mut(&step)
+            && reach.first_job == sequence
+            && reach.rating.is_none()
+        {
+            reach.rating = Some(SmbCoverageRating {
+                rarity: rating.rarity,
+                id: rating.id,
+            });
+        }
+        if let Some(coverage) = self.coverage
+            && action.candidate.is_some()
+            && rating.rarity >= coverage.cap
+        {
+            let kind = &mut evidence.coverage.capped_by_kind[CoverageKind::of(rating.id).index()];
+            *kind = kind.saturating_add(1);
+            if smb_cpu_address(coverage_site(rating.id)) >= 0xF400 {
+                evidence.coverage.capped_from_f400 =
+                    evidence.coverage.capped_from_f400.saturating_add(1);
+            }
+        }
+    }
+
+    fn merge_job_start_evidence(
+        &self,
+        evidence: &mut SmbCampaignEvidence,
+        parent: &SmbArchiveKey,
+        sequence: u64,
+    ) {
+        if parent.vine == 0 {
+            return;
+        }
+        let starts = evidence
+            .vine_step_starts
+            .entry(parent.vine)
+            .or_insert(SmbVineStepStarts {
+                first_job: sequence,
+                jobs: 0,
+            });
+        starts.jobs = starts.jobs.saturating_add(1);
     }
 }

@@ -17,9 +17,9 @@ pub(crate) struct CoverageCounts {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Rating {
-    pub(crate) rarity: u8,
-    id: u64,
+pub struct CoverageRating {
+    pub rarity: u8,
+    pub id: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -53,7 +53,7 @@ impl CoverageCounts {
         self.job_moved = false;
     }
 
-    pub(crate) fn rate(&mut self, ids: &[u64]) -> Option<Rating> {
+    pub(crate) fn rate(&mut self, ids: &[u64]) -> Option<CoverageRating> {
         if ids.is_empty() {
             return None;
         }
@@ -81,13 +81,13 @@ impl CoverageCounts {
             .report
             .action_ids
             .saturating_add(u64::try_from(ids.len()).unwrap_or(u64::MAX));
-        Some(Rating {
+        Some(CoverageRating {
             rarity: rarity(self.jobs, rarest.0),
             id: rarest.1,
         })
     }
 
-    pub(crate) fn record_candidate(&mut self, rating: Rating, moved: bool) {
+    pub(crate) fn record_candidate(&mut self, rating: CoverageRating, moved: bool) {
         let index = usize::from(rating.rarity);
         if self.report.candidates_by_rarity.len() <= index {
             self.report.candidates_by_rarity.resize(index + 1, 0);
@@ -174,9 +174,9 @@ mod tests {
         }
         counts.begin_job(8);
         let new = counts.rate(&[10, 12]).expect("rated");
-        assert_eq!(new, Rating { rarity: 2, id: 12 });
+        assert_eq!(new, CoverageRating { rarity: 2, id: 12 });
         let old = counts.rate(&[10, 11]).expect("rated");
-        assert_eq!(old, Rating { rarity: 1, id: 11 });
+        assert_eq!(old, CoverageRating { rarity: 1, id: 11 });
         counts.record_candidate(new, true);
         counts.record_candidate(old, false);
         counts.finish_job();

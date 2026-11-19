@@ -336,8 +336,14 @@ the number that hit a given id, each including the job being admitted, and an
 id counts once per job. An action's rarity is floor(log2((J+1)/(c+1))) for its
 rarest id, so an id most jobs hit rates 0 and the rating rises by one each time
 the share of jobs that hit the id halves. `Evaluation::rate_coverage(key,
-rarity)` returns the key the archive admits, and its default ignores the
-rarity, so the workload chooses the cap and where the rating sits in its key.
+rating)` returns the key the archive admits, and its default ignores the
+`CoverageRating` (the rarity and the rarest id), so the workload chooses the cap
+and where the rating sits in its key. `Evaluation::merge_coverage_evidence`
+gives the workload each rated action's rating after `merge_action_evidence`,
+and `Evaluation::merge_job_start_evidence` gives it the key of each job's
+parent before the job's actions, so a workload can record which ids rated the
+states it cares about and how often its kept states were drawn again. Both
+default to doing nothing.
 Search checkpoints do not hold the counts, so a campaign whose actions carried
 ids refuses to write one. The report's `coverage` section, present only then,
 gives J, the distinct ids, the actions with ids and their total ids, the rated

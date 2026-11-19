@@ -29,7 +29,7 @@ use crate::search::choice::{
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::cost::ShrinkCost;
-use crate::search::coverage::{CoverageCounts, CoverageReport};
+use crate::search::coverage::{CoverageCounts, CoverageRating, CoverageReport};
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SUFFIX_DOUBLING_LIMIT, SuffixReach,
     draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
@@ -783,9 +783,26 @@ pub trait Evaluation: TargetExecution {
         let _ = action;
         &[]
     }
-    fn rate_coverage(&self, key: Self::Key, rarity: u8) -> Self::Key {
-        let _ = rarity;
+    fn rate_coverage(&self, key: Self::Key, rating: CoverageRating) -> Self::Key {
+        let _ = rating;
         key
+    }
+    fn merge_coverage_evidence(
+        &self,
+        evidence: &mut Self::Evidence,
+        action: &CampaignActionResult<Self>,
+        sequence: u64,
+        rating: CoverageRating,
+    ) {
+        let _ = (evidence, action, sequence, rating);
+    }
+    fn merge_job_start_evidence(
+        &self,
+        evidence: &mut Self::Evidence,
+        parent: &Self::Key,
+        sequence: u64,
+    ) {
+        let _ = (evidence, parent, sequence);
     }
     fn merge_milestones(&self, into: &mut Self::Milestones, from: Self::Milestones);
     fn aggregate_milestones(evidence: &Self::Evidence) -> Self::Milestones;
@@ -2851,6 +2868,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .archive
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
+        workload.merge_job_start_evidence(
+            &mut self.evidence,
+            &self.archive.entries[parent_index].key,
+            sequence,
+        );
         if let Some(attempted) = hang {
             self.hung_jobs = self.hung_jobs.saturating_add(1);
             self.hang_streak = self.hang_streak.saturating_add(1);
@@ -2910,6 +2932,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 input.actions.extend_from_slice(&pending_suffix);
                 Ok(input)
             })?;
+            if let Some(rating) = rating {
+                workload.merge_coverage_evidence(&mut self.evidence, &action, sequence, rating);
+            }
             match action.outcome.disposition {
                 crate::search::rollout::ExecutionDisposition::Terminal if action.outcome.doomed => {
                     self.doomed_endpoints = self.doomed_endpoints.saturating_add(1);
@@ -2956,7 +2981,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 let mut completed =
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if let Some(rating) = rating {
-                    let rated = workload.rate_coverage(completed, rating.rarity);
+                    let rated = workload.rate_coverage(completed, rating);
                     self.coverage
                         .record_candidate(rating, rated.place() != completed.place());
                     completed = rated;

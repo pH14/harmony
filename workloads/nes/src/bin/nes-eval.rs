@@ -24,6 +24,7 @@ use nes_workload::{
     punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
     smb::{
+        archive::{SmbCoverage, SmbCoverageIds},
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         plan::SmbRoute,
     },
@@ -100,6 +101,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.smb_route.is_some()
         || request.smb_terminal.is_some()
         || request.smb_coverage_cap.is_some()
+        || request.smb_coverage_ids.is_some()
         || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
@@ -203,13 +205,17 @@ fn main() -> Result<()> {
         }
         if (request.smb_route.is_some()
             || request.smb_terminal.is_some()
-            || request.smb_coverage_cap.is_some())
+            || request.smb_coverage_cap.is_some()
+            || request.smb_coverage_ids.is_some())
             && request.game != "smb"
         {
             return Err(
-                "only Super Mario Bros. takes smb_route, smb_terminal and smb_coverage_cap options"
+                "only Super Mario Bros. takes smb_route, smb_terminal and smb_coverage options"
                     .into(),
             );
+        }
+        if request.smb_coverage_ids.is_some() && request.smb_coverage_cap.is_none() {
+            return Err("smb_coverage_ids needs smb_coverage_cap".into());
         }
         match request.game.as_str() {
             "smb" | "metroid"
@@ -269,7 +275,15 @@ fn main() -> Result<()> {
                                 .unwrap_or_default(),
                         );
                     match request.smb_coverage_cap {
-                        Some(cap) => game.with_coverage(cap),
+                        Some(cap) => game.with_coverage(SmbCoverage {
+                            cap,
+                            ids: request
+                                .smb_coverage_ids
+                                .as_deref()
+                                .map(SmbCoverageIds::from_identifier)
+                                .transpose()?
+                                .unwrap_or_default(),
+                        }),
                         None => game,
                     }
                 },

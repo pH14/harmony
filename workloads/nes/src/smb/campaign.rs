@@ -494,6 +494,7 @@ mod tests {
                 super::SmbVineStepReach {
                     first_job: 11,
                     actions: 2,
+                    rating: None,
                 },
             )])
         );
@@ -506,6 +507,94 @@ mod tests {
                 &super::SmbCampaignEvidence::default()
             ),
             None
+        );
+    }
+
+    #[test]
+    fn coverage_evidence_records_reach_ratings_capped_candidates_and_vine_step_starts() {
+        use crate::search::coverage::CoverageRating;
+        use crate::smb::archive::{SmbArchiveKey, SmbCoverage, SmbCoverageIds};
+        let rom = synthetic_nrom();
+        let game = test_game(&rom).with_coverage(SmbCoverage {
+            cap: 4,
+            ids: SmbCoverageIds::Code,
+        });
+        let mut target = test_game(&rom).new_target().expect("load target");
+        target.reset();
+        let key = game.current_key(&target).expect("key");
+        let branch = (0x7410_u64 << 1) | 1;
+        let jump = (1 << 62) | (0x0E04 << 21) | 0x0123;
+        let data = (2 << 62) | 0x0040;
+        let mut vine_area = evidence_action(SmbMilestones::default());
+        let mut wram = vec![0_u8; 2_048];
+        wram[0x075f] = 3;
+        wram[0x075c] = 1;
+        wram[0x074e] = 1;
+        wram[0x074f] = 15;
+        vine_area.observations[0].wram = wram;
+        vine_area.observations[0].coverage = vec![branch, jump, data];
+        vine_area.candidate = Some(crate::search::campaign::CampaignCandidate {
+            key,
+            viable: true,
+            snapshot: target.snapshot().expect("snapshot"),
+        });
+        assert_eq!(game.action_coverage(&vine_area), &[branch, jump]);
+        assert!(test_game(&rom).action_coverage(&vine_area).is_empty());
+        let mut evidence = super::SmbCampaignEvidence::default();
+        for (sequence, rating) in [
+            (
+                11,
+                CoverageRating {
+                    rarity: 6,
+                    id: branch,
+                },
+            ),
+            (
+                12,
+                CoverageRating {
+                    rarity: 3,
+                    id: jump,
+                },
+            ),
+        ] {
+            game.merge_action_evidence(&mut evidence, &vine_area, sequence, || {
+                Ok(SmbInput {
+                    actions: Vec::new(),
+                })
+            })
+            .expect("merge vine evidence");
+            game.merge_coverage_evidence(&mut evidence, &vine_area, sequence, rating);
+        }
+        let on_the_vine = SmbArchiveKey { vine: 7, ..key };
+        for (parent, sequence) in [(&key, 13), (&on_the_vine, 14), (&on_the_vine, 15)] {
+            game.merge_job_start_evidence(&mut evidence, parent, sequence);
+        }
+        assert_eq!(
+            <SmbGame as crate::search::campaign::Reporting>::diagnostics(&evidence),
+            Some(serde_json::json!({
+                "vine_steps": {"8": {
+                    "first_job": 11,
+                    "actions": 2,
+                    "rating": {"rarity": 6, "id": branch, "kind": "branch", "address": "$F410"},
+                }},
+                "vine_step_starts": {"7": {"first_job": 14, "jobs": 2}},
+                "coverage": {
+                    "action_ids_by_kind": {"branch": 2, "jump": 2, "data": 2},
+                    "capped_by_kind": {"branch": 1, "jump": 0, "data": 0},
+                    "capped_from_f400": 1,
+                },
+            }))
+        );
+        assert_eq!(
+            game.rate_coverage(
+                key,
+                CoverageRating {
+                    rarity: 9,
+                    id: jump
+                }
+            )
+            .coverage,
+            4
         );
     }
 
