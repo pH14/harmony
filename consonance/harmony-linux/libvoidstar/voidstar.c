@@ -27,8 +27,12 @@
 #define HARMONY_WRITE(fd, buf, len) write((fd), (buf), (len))
 #endif
 #ifndef HARMONY_IOCTL
+#ifdef __linux__
+#define HARMONY_IOCTL(fd, command, arg) ((int)syscall(SYS_ioctl, (fd), (command), (arg)))
+#else
 #include <sys/ioctl.h>
 #define HARMONY_IOCTL(fd, command, arg) ioctl((fd), (command), (arg))
+#endif
 #endif
 static pthread_mutex_t harmony_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
