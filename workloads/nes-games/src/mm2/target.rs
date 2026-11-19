@@ -386,7 +386,7 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     decode_state_after(wram, None)
 }
 
-fn decode_state_after(
+pub(crate) fn decode_state_after(
     wram: &[u8],
     previous_stage: Option<u8>,
 ) -> Result<Mm2MechanicalState, MachineError> {

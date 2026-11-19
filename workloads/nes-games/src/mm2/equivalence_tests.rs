@@ -15,7 +15,8 @@ use super::{
     archive::{Mm2ArchiveKey, archive_key},
     game::{MegaMan2, Mm2State, WEAPON_SITE},
     target::{
-        Mm2MechanicalState, Mm2Snapshot, Mm2Target, decode_state, switch_choices, weapon_menu_row,
+        Mm2MechanicalState, Mm2Snapshot, Mm2Target, decode_state, decode_state_after,
+        switch_choices, weapon_menu_row,
     },
 };
 use crate::{
@@ -158,6 +159,7 @@ impl Pair {
             (starts && !choices.is_empty()).then_some(expected),
             "the weapon offer differs from the hand's choices at {state:?}"
         );
+        let departure = self.strategy.observation().frame_count;
         self.hand.apply(&Mm2Action::Switch(word));
         let switched = match (offer, switch_choice(&choices, word)) {
             (Some(_), Some(weapon)) => {
@@ -171,15 +173,41 @@ impl Pair {
                 false
             }
         };
+        let frames = self.strategy.observation().frame_count;
+        let cost: u64 = self
+            .strategy
+            .last_action_observations()
+            .iter()
+            .map(|arrival| arrival.cost)
+            .sum();
+        assert_eq!(
+            cost,
+            frames - departure,
+            "the switch from {state:?} costs a different count"
+        );
+        let rejected = self.hand.is_terminal() && !self.hand.objective_reached();
+        if switched {
+            assert_eq!(
+                self.hand.observe().frame_count,
+                frames,
+                "the switch from {state:?} ends at a different frame"
+            );
+        }
         let hand = self.hand.mechanical_state();
         if self.hand.is_terminal() {
+            if switched {
+                eprintln!(
+                    "mm2 switch reaching a terminal state (rejected {rejected}): from frame {departure} to {frames}, cost {cost}, hand at frame {}",
+                    self.hand.observe().frame_count
+                );
+            }
             return (switched, self.compare());
         }
         assert_eq!(
             Mm2MechanicalState {
                 enemy_damage: hand.enemy_damage,
                 boss_intro_frames: hand.boss_intro_frames,
-                ..decode_state(self.strategy.wram()).expect("decode")
+                ..decode_state_after(self.strategy.wram(), Some(state.stage)).expect("decode")
             },
             hand,
             "states differ after a switch from {state:?}"
