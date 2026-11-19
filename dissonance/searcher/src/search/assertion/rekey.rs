@@ -34,7 +34,7 @@ pub struct Tier {
 pub struct Holders {
     pub progress: u32,
     pub place: u64,
-    pub identity: u32,
+    pub identity: u64,
     pub ids: Vec<u64>,
     pub keys: Vec<AssertionKey>,
 }

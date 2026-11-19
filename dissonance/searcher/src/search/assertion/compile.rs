@@ -1054,7 +1054,7 @@ impl Compiler<'_> {
             (None, None) => Tuple::empty(),
         };
         let identity = match (items(&lines.identity), fallback) {
-            (Some(identity), _) => self.tuple(&identity, u128::from(u32::MAX) + 1, "identity")?,
+            (Some(identity), _) => self.tuple(&identity, u128::from(u64::MAX) + 1, "identity")?,
             (None, Some(fallback)) => fallback.identity.clone(),
             (None, None) => Tuple::empty(),
         };
@@ -1610,7 +1610,7 @@ impl Compiled {
             AssertionKey {
                 progress: u32::try_from(progress).unwrap_or(u32::MAX),
                 place: Wide::new(lines.spread.pack(&env, &mut stack)),
-                identity: u32::try_from(lines.identity.pack(&env, &mut stack)).unwrap_or(u32::MAX),
+                identity: lines.identity.pack(&env, &mut stack),
                 across: u16::try_from(lines.across.pack(&env, &mut stack)).unwrap_or(u16::MAX),
                 prefer,
                 scope: lines.scope.as_ref().map_or_else(
@@ -1754,7 +1754,7 @@ impl Compiled {
             stage,
             progress,
             place: lines.spread.unpack(key.place.get()),
-            identity: lines.identity.unpack(u64::from(key.identity)),
+            identity: lines.identity.unpack(key.identity),
         }
     }
 }

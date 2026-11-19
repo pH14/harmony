@@ -51,8 +51,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v2";
 pub const NAMED_PROGRESS_FORMAT: &str = "nes-named-progress-v1";
 pub const MAX_SOMETIMES: usize = 128;
 pub const RECORDS_FILE: &str = "records.bin";

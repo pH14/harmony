@@ -902,7 +902,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
     fn fingerprint(&self) -> u64 {
         self.observation.key.map_or(0, |key| {
             let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-            for word in [key.place.get(), u64::from(key.identity)] {
+            for word in [key.place.get(), key.identity] {
                 for byte in word.to_le_bytes() {
                     hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
                 }

@@ -434,6 +434,7 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
         2 + OBJECTIVE_WIDTH
     );
     assert!(std::mem::size_of::<Accumulator>() <= 24);
+    assert_eq!(std::mem::size_of::<AssertionKey>(), 32);
 }
 
 #[test]
@@ -555,6 +556,10 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
             r#"spread = ["time * 100000", "time * 100000", "time"]"#,
             "key field holds",
         ),
+        (
+            r#"identity = ["time * 100000", "time * 100000", "time"]"#,
+            "key field holds",
+        ),
         (r#"prefer = [["time: most"]]"#, "is not `more`"),
         (r#"spread = "in(time, nothing)""#, "no table"),
         (r#"spread = "highest(highest(lives))""#, "another aggregate"),
@@ -577,6 +582,19 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         let error = Compiled::parse(text, &catalog).unwrap_err().to_string();
         assert!(error.contains(message), "{text}: {error}");
     }
+}
+
+#[test]
+fn an_identity_holds_more_than_32_bits() {
+    let compiled = Compiled::parse(r#"identity = ["time", "time", "time"]"#, &catalog()).unwrap();
+    let key = compiled
+        .key(&record(Walk {
+            time: u16::MAX,
+            ..Walk::default()
+        }))
+        .unwrap();
+    assert!(key.identity > u64::from(u32::MAX));
+    assert_eq!(compiled.view(key).identity, [i64::from(u16::MAX); 3]);
 }
 
 #[test]
