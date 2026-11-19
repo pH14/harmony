@@ -35,9 +35,10 @@ await page.addInitScript((tourKey) => {
   window.tdTestHeatPixels = (canvas) => {
     const context = canvas.getContext('2d'), d = canvas.dataset, pixels = {};
     const scale = Math.min(canvas.width / +d.mapWidth, canvas.height / +d.mapHeight) * +d.zoom;
+    const left = Math.round(canvas.width / 2 - +d.centerX * scale), top = Math.round(canvas.height / 2 - +d.centerY * scale);
     for (let wy = 4; wy < +d.roomHeight; wy += 32)
       for (let wx = 36; wx < +d.roomWidth; wx += 32) {
-        const x = Math.round((wx - +d.centerX) * scale + canvas.width / 2), y = Math.round((wy - +d.centerY) * scale + canvas.height / 2);
+        const x = Math.floor(left + (wx + 0.5) * scale), y = Math.floor(top + (wy + 0.5) * scale);
         if (x >= 0 && y >= 0 && x < canvas.width && y < canvas.height) pixels[`${wx},${wy}`] = [...context.getImageData(x, y, 1, 1).data];
       }
     return pixels;
