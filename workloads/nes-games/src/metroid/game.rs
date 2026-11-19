@@ -247,7 +247,8 @@ mod tests {
 
     fn step(lowered: &Lowered<Metroid>, path: &mut Path) -> StageProgress {
         let hand = plan::locate(path.state, 0, path.hand);
-        let (record, _) = lowered.record(&path.state);
+        let (mut record, _) = lowered.record(&path.state);
+        record.set_action_end(true);
         let key = lowered
             .compiled
             .observe(&record, &mut path.accumulator)

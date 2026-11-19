@@ -17,7 +17,7 @@ goal = "(equipment / 16) % 2 == 1"
 [[stage]]
 name = "energy_before_missiles"
 objective = "health / 10"
-goal = "health / 10 >= 64"
+goal = "action_end and health / 10 >= 64"
 latch = true
 
 [[stage]]
@@ -28,7 +28,7 @@ goal = "missile_capacity > 0"
 [[stage]]
 name = "energy_before_bombs"
 objective = "health / 10"
-goal = "health / 10 >= 64"
+goal = "action_end and health / 10 >= 64"
 latch = true
 
 [[stage]]
@@ -39,7 +39,7 @@ goal = "equipment % 2 == 1"
 [[stage]]
 name = "energy_before_kraid_door"
 objective = "health / 10"
-goal = "health / 10 >= 64"
+goal = "action_end and health / 10 >= 64"
 latch = true
 
 [[stage]]
@@ -51,7 +51,7 @@ latch = true
 [[stage]]
 name = "energy_before_kraid"
 objective = "health / 10"
-goal = "health / 10 >= 80"
+goal = "action_end and health / 10 >= 80"
 latch = true
 
 [[stage]]
