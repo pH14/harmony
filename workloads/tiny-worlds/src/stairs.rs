@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_work_counts_the_forced_steps_and_the_archive_charges_one_transition() {
+    fn the_archive_charges_the_forced_steps_that_execution_work_counts() {
         use searcher::search::campaign::{Evaluation, TargetExecution};
         let w = config();
         let workload = workload(w);
@@ -250,7 +250,7 @@ mod tests {
             .unwrap();
         assert_eq!(workload.execution_work(&target), 7);
         let observations = workload.rollout_observations(&target);
-        assert_eq!(workload.action_cost(&action, &observations), 1);
+        assert_eq!(workload.action_cost(&action, &observations), 3);
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod tests {
         assert!(forced > 0 && forced < entries, "{stairs}");
         assert_eq!(
             stairs["entries_charged_record_cost"].as_u64(),
-            Some(entries - forced),
+            Some(entries),
             "{stairs}"
         );
     }

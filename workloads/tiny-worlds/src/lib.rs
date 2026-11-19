@@ -1008,6 +1008,12 @@ impl<K: Keying> Evaluation for Workload<K> {
         self.keying
             .rejected(&self.config, target.state, self.broken, &target.lane)
     }
+    fn action_cost(&self, action: &u8, observations: &[Observation]) -> u64 {
+        observations.last().map_or_else(
+            || (self.config.planned_cost_fn())(action),
+            |observation| self.config.step_work(observation.before, *action),
+        )
+    }
     fn current_key(&self, target: &Target<K::Lane>) -> Result<K::Key, Box<dyn Error>> {
         self.keying
             .key(&self.config, target.state, self.broken, &target.lane)

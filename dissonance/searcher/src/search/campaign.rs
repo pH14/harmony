@@ -10450,7 +10450,7 @@ mod tests {
             core.archive.entry_shrink_total(child),
             Some(ShrinkCost::new(40, 7))
         );
-        assert_eq!(core.archive.entry_cost_in_group(child), 40);
+        assert_eq!(core.archive.entry_cost_in_group(child), Some(40));
         let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
         let mut target = TestTarget::default();
         let error = core

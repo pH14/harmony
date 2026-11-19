@@ -707,7 +707,9 @@ both the recorded strategy and the new one. The recorded strategy finds the
 actions that were candidates, so the stream's decisions name the archive entry
 each one became. The new strategy makes the candidates that are inserted. A
 parent the new strategy did not keep is reached from its nearest kept ancestor
-with the actions between them as the suffix. `Rekeyed` holds the cells, the
+with the actions between them as the suffix. A candidate's cost is the sum of
+its suffix's `RecordedAction::cost`, the `action_cost` the recording charged.
+`Rekeyed` holds the cells, the
 tiers with their cell and entry counts, the holders of every slot, the
 decisions made, and the check findings. Under the recorded strategy the
 decisions equal the stream's, and `same_decisions` counts the jobs where they
@@ -1555,6 +1557,9 @@ the same tier; the continuation bank records the same sum as the tail's cost.
 Its shrink total is its parent's plus the summed `shrink_cost` of its suffix.
 Live admission and the incumbent chain sum both costs from each action's
 observations, and an import that replays its suffix sums them over the replay.
+Live admission reads the observations from the job's `JobOutcome`, which a
+browser worker hands over as postcard bytes, so `action_cost` reads only what
+the observations serialize.
 An import restored from a checkpoint snapshot without replay takes the
 difference between its source entry's reported `shrink_total` and that of the
 source entry it is imported under, or all of it when rerooted at genesis, and

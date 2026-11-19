@@ -888,6 +888,17 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
         target.observation().rejected.is_some() || target.observation().overran
     }
 
+    fn action_cost(
+        &self,
+        _action: &ButtonChord,
+        observations: &[ActionObservation<G::State>],
+    ) -> u64 {
+        observations
+            .iter()
+            .map(|observation| observation.cost)
+            .fold(0, u64::saturating_add)
+    }
+
     fn current_key(&self, target: &NesTarget<G, M>) -> Result<AssertionKey, Box<dyn Error>> {
         target
             .observation()
@@ -970,11 +981,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                         .observations
                         .iter()
                         .any(|observation| observation.observation.overran),
-                cost: action
-                    .observations
-                    .iter()
-                    .map(|observation| observation.cost)
-                    .sum(),
+                cost: self.action_cost(&action.action, &action.observations),
                 frames: action
                     .observations
                     .iter()
@@ -1055,6 +1062,174 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::campaign::{
+        ArchiveSource, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
+        CampaignExecutionOptions, CampaignOrigin, JobOutcome, MinimizeConfig, run_job,
+    };
+    use crate::search::cost::ShrinkCost;
+    use crate::search::draw::DrawMixture;
+    use fixture::{RIGHT, Stairs, Stepper, WARP};
+
+    type StairsWorkload = NesWorkload<Stairs, Stepper>;
+
+    const CLIMB_RECORD_COST: u64 = 6 + 3;
+
+    fn climb() -> ButtonChord {
+        ButtonChord::new(RIGHT, 6)
+    }
+
+    fn stairs() -> StairsWorkload {
+        NesWorkload::with_machines(
+            Stairs,
+            Stairs::STRATEGY,
+            b"stairs",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+    }
+
+    fn config(minimize: bool) -> CampaignConfig<StairsWorkload> {
+        CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 1,
+            host: "fixture".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 256,
+            window: 1,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: NesRun,
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+            minimize: minimize.then(MinimizeConfig::default),
+        }
+    }
+
+    type Charge = (&'static str, Option<u64>, Option<ShrinkCost>);
+
+    fn charged(
+        label: &'static str,
+        coordinator: &CampaignCoordinator<'_, StairsWorkload>,
+    ) -> Charge {
+        let archive = coordinator.archive();
+        let index = (0..archive.active.len())
+            .find(|&index| {
+                archive
+                    .entry_input(index)
+                    .is_ok_and(|input| input.actions == [climb()])
+            })
+            .expect("an entry for the climb");
+        (
+            label,
+            archive.entry_cost_in_group(index),
+            archive.entry_shrink_total(index),
+        )
+    }
+
+    fn start<'a>(
+        workload: &'a StairsWorkload,
+        config: &'a CampaignConfig<StairsWorkload>,
+        origin: &CampaignOrigin<StairsWorkload>,
+        stream: &'a mut Vec<u8>,
+    ) -> CampaignCoordinator<'a, StairsWorkload> {
+        CampaignCoordinator::start(
+            workload,
+            config,
+            origin,
+            stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn every_insert_path_charges_a_forced_move_its_record_cost() {
+        let workload = stairs();
+        let ordinary = config(false);
+        let mut charges = Vec::new();
+        let mut stream = Vec::new();
+        let mut live = start(&workload, &ordinary, &CampaignOrigin::Genesis, &mut stream);
+        assert!(live.reserve_next().unwrap());
+        let mut job = live.plan(1).pop().expect("a job from genesis");
+        job.suffix = vec![climb()];
+        let mut target = workload.new_target().unwrap();
+        let outcome = run_job(&workload, &ordinary, &mut target, &job, None).unwrap();
+        let received: JobOutcome<StairsWorkload> =
+            postcard::from_bytes(&postcard::to_allocvec(&outcome).unwrap()).unwrap();
+        let received_cost = received.result.actions[0]
+            .observations
+            .last()
+            .map(|observation| observation.cost);
+        live.admit(received).unwrap();
+        charges.push(charged("live admission", &live));
+        let (report, snapshots) = live.finish(Vec::new()).unwrap();
+        let source = serde_json::to_vec(&report.archive).unwrap();
+        let mut imports = Vec::new();
+        for (label, checkpoint) in [
+            ("replayed import", None),
+            ("checkpointed import", Some(snapshots)),
+        ] {
+            let origin = CampaignOrigin::Archive {
+                path: "source.json".to_owned(),
+                source: ArchiveSource::from_bytes(&source).unwrap(),
+                checkpoint: checkpoint.map(|snapshots| CampaignCheckpoint {
+                    path: "checkpoint.bin".to_owned(),
+                    file_sha256: snapshots.sha256().unwrap(),
+                    snapshots,
+                }),
+            };
+            let mut stream = Vec::new();
+            let imported = start(&workload, &ordinary, &origin, &mut stream);
+            charges.push(charged(label, &imported));
+            let counts = imported.finish(Vec::new()).unwrap().0.tree_import.unwrap();
+            imports.push((counts.imported, counts.checkpointed));
+        }
+        let shrink = config(true);
+        let tape = CampaignOrigin::Tape {
+            input: Input {
+                actions: vec![climb(), ButtonChord::new(WARP, 9)],
+            },
+            root: 0,
+        };
+        let mut stream = Vec::new();
+        charges.push(charged(
+            "incumbent chain",
+            &start(&workload, &shrink, &tape, &mut stream),
+        ));
+
+        let record = (
+            Some(CLIMB_RECORD_COST),
+            Some(ShrinkCost::new(CLIMB_RECORD_COST, 0)),
+        );
+        assert_eq!(
+            charges,
+            [
+                "live admission",
+                "replayed import",
+                "checkpointed import",
+                "incumbent chain"
+            ]
+            .map(|label| (label, record.0, record.1))
+        );
+        assert_eq!(imports, [(1, 0), (1, 1)]);
+        assert_eq!(
+            report
+                .archive
+                .entries
+                .iter()
+                .find(|entry| entry.input.actions == [climb()])
+                .and_then(|entry| entry.shrink_total),
+            record.1
+        );
+        assert_eq!(received_cost, Some(CLIMB_RECORD_COST));
+    }
 
     #[test]
     fn a_violation_report_carries_the_input_that_reproduces_it() {

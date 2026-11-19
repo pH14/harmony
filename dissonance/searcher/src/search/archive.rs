@@ -2584,9 +2584,9 @@ where
         self.replacement_cost_displaced
     }
 
-    #[cfg(test)]
-    pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
-        self.cost_in_group[id]
+    #[must_use]
+    pub fn entry_cost_in_group(&self, id: usize) -> Option<u64> {
+        self.cost_in_group.get(id).copied()
     }
 
     #[must_use]
@@ -9852,7 +9852,7 @@ mod tests {
             )
             .expect("genesis insert")
             .expect("genesis retained");
-        assert_eq!(archive.entry_cost_in_group(genesis), 0);
+        assert_eq!(archive.entry_cost_in_group(genesis), Some(0));
         let (first, input) = chain_insert(
             &mut archive,
             Some(genesis),
@@ -9862,7 +9862,7 @@ mod tests {
             probe_key(0, 0, 4, 0),
         );
         let first = first.expect("first retained");
-        assert_eq!(archive.entry_cost_in_group(first), 30);
+        assert_eq!(archive.entry_cost_in_group(first), Some(30));
         let (second, input) = chain_insert(
             &mut archive,
             Some(first),
@@ -9872,7 +9872,7 @@ mod tests {
             probe_key(0, 0, 8, 0),
         );
         let second = second.expect("second retained");
-        assert_eq!(archive.entry_cost_in_group(second), 50);
+        assert_eq!(archive.entry_cost_in_group(second), Some(50));
         let (crossed, input) = chain_insert(
             &mut archive,
             Some(second),
@@ -9882,7 +9882,7 @@ mod tests {
             probe_key(0, 1, 2, 0),
         );
         let crossed = crossed.expect("crossing retained");
-        assert_eq!(archive.entry_cost_in_group(crossed), 40);
+        assert_eq!(archive.entry_cost_in_group(crossed), Some(40));
         let (after, _) = chain_insert(
             &mut archive,
             Some(crossed),
@@ -9891,7 +9891,10 @@ mod tests {
             10,
             probe_key(0, 1, 6, 0),
         );
-        assert_eq!(archive.entry_cost_in_group(after.expect("retained")), 50);
+        assert_eq!(
+            archive.entry_cost_in_group(after.expect("retained")),
+            Some(50)
+        );
     }
 
     fn shrink_total_ranking_case(by_shrink_total: bool) -> (TimedArchive, [Option<usize>; 4]) {
@@ -9955,7 +9958,7 @@ mod tests {
             slot_holders(&archive, probe_key(0, 1, 16, 0)),
             BTreeSet::from([fast_crossing, mid_crossing])
         );
-        assert_eq!(archive.entry_cost_in_group(fast_crossing), 5);
+        assert_eq!(archive.entry_cost_in_group(fast_crossing), Some(5));
         assert_eq!(
             archive.entry_shrink_total(fast_crossing),
             Some(ShrinkCost::new(105, 0))
@@ -9982,12 +9985,12 @@ mod tests {
             slot_holders(&archive, probe_key(0, 1, 16, 0)),
             BTreeSet::from([slow_crossing, late])
         );
-        assert_eq!(archive.entry_cost_in_group(slow_crossing), 50);
+        assert_eq!(archive.entry_cost_in_group(slow_crossing), Some(50));
         assert_eq!(
             archive.entry_shrink_total(slow_crossing),
             Some(ShrinkCost::new(60, 0))
         );
-        assert_eq!(archive.entry_cost_in_group(late), 40);
+        assert_eq!(archive.entry_cost_in_group(late), Some(40));
         assert_eq!(
             archive.entry_shrink_total(late),
             Some(ShrinkCost::new(41, 0))
@@ -10107,7 +10110,7 @@ mod tests {
         let admitted = chain_insert(&mut archive, fast, &input, 0x04, 6, slot)
             .0
             .expect("the route of cost eleven displaces a slower one");
-        assert_eq!(archive.entry_cost_in_group(admitted), 11);
+        assert_eq!(archive.entry_cost_in_group(admitted), Some(11));
         assert_eq!(archive.replacement_cost_displaced(), 1);
         assert_eq!(archive.active_count(), 4);
         let (slower, _) = chain_insert(&mut archive, fast, &input, 0x04, 200, slot);

@@ -105,7 +105,6 @@ impl Rekeying<'_> {
         genesis: &Record,
         jobs: &[RecordedJob],
         actions: &[RecordedAction<A>],
-        action_cost: fn(&A) -> u64,
     ) -> Result<Rekeyed, Box<dyn Error>>
     where
         A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
@@ -204,7 +203,7 @@ impl Rekeying<'_> {
                             suffix: suffix.as_slice(),
                             key,
                             milestones: (),
-                            cost: suffix.iter().map(action_cost).sum(),
+                            cost: pending.iter().map(|index| actions[*index].cost).sum(),
                         },
                         (),
                         Some(&certificates),

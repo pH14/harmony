@@ -528,7 +528,9 @@ cut short. The tier counts the stairs climbed, and the place is the position.
 
 Execution work counts each forced step, so the action that reaches a stair does
 one transition of work plus its forced steps. Its planned cost is one
-transition, and the archive charges it that planned cost. The report's `stairs`
+transition. The workload's `action_cost` is the work of the transition the
+action's observation records, so the archive charges the record cost, forced
+steps included, while the planning clock still counts one. The report's `stairs`
 object counts the final archive entries (`entries`), the entries whose input
 ran a forced climb, so that its record cost is above its planned cost
 (`entries_with_forced_steps`), the entries whose input ran a climb cut short at

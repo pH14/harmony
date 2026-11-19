@@ -162,8 +162,13 @@ work RAM, so a terminal stop runs its chord once. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
 the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it
-covers when the workload keeps records. A snapshot holds the `NesObservation`
-and the accumulator alone. A goal frame is a terminal objective, and a rejected
+covers when the workload keeps records. The cost is serialized with the
+observation, so a browser worker's job outcome carries it; the records are not.
+`NesWorkload`'s `action_cost` sums the observations' costs, so the archive and
+the records file charge an action the frames it ran. An action a stop cuts
+short costs the frames up to the stop, while its planned cost
+(`planned_cost_fn`, the chord's hold) counts the whole hold. A snapshot holds
+the `NesObservation` and the accumulator alone. A goal frame is a terminal objective, and a rejected
 frame is a doomed terminal. Named progress reports each `sometimes`
 declaration by name with its first execution. The strategy's policy identifier
 is part of the recorded workload policies, and `with_strategy` builds the same
@@ -179,8 +184,8 @@ An action also stops at the first frame whose state declares a forced move.
 The target plays the move to its end inside that action and reports the
 arrival state as the action's last observation. The move's chords are absent
 from the tape: replay and films rebuild them from the state. Its frames count
-as execution work, in the frame count and in the action's cost in the records
-file, but not in the archive's action cost, which sums the tape's chords. A move that runs past its bound ends the
+as execution work, in the frame count and in the action's cost, which the
+records file and the archive both charge. A move that runs past its bound ends the
 action as a doomed terminal and reports the `always` violation
 `forced_move_within_bound` with the job's input, under `violations` in the
 archive report and the diagnostics, so the input and the run's identity

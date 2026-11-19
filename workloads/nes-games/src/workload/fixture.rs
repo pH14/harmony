@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
 
 use machine::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::{Game, Moves, Never, Step};
 use crate::{
     chord::ChordVocabulary,
-    nes_backend::NesBackend,
+    nes_backend::{NesBackend, NesMemory},
     search::assertion::{Assertion, Declarations, Number},
 };
 
@@ -143,6 +143,34 @@ impl NesBackend<Vec<u8>> for Stepper {
 
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
         self.import(portable)
+    }
+}
+
+impl NesMemory for Stepper {
+    fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+        Ok(self.wram())
+    }
+
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        *self
+            .ram
+            .get_mut(addr)
+            .ok_or_else(|| MachineError::Backend(format!("no work RAM at {addr}")))? = byte;
+        Ok(())
+    }
+
+    fn capture_save_ram_per_frame(&mut self, _range: Range<usize>) {}
+
+    fn save_ram_frames(&self) -> &[u8] {
+        &[]
+    }
+
+    fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+        Ok(Vec::new())
+    }
+
+    fn write_save_ram(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), MachineError> {
+        Ok(())
     }
 }
 

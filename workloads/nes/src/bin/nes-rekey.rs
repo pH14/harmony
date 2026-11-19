@@ -23,10 +23,6 @@ use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-fn chord_time(action: &ButtonChord) -> u64 {
-    u64::from(action.bounded_hold_frames())
-}
-
 fn forced_move_frames<A>(actions: &[RecordedAction<A>]) -> BTreeMap<u64, usize> {
     let mut lengths = BTreeMap::new();
     for action in actions {
@@ -96,12 +92,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
         strategy: &keyed.compiled,
         entry_limit,
     }
-    .run(
-        &recording.header.genesis,
-        &jobs,
-        &recording.actions,
-        chord_time,
-    )?;
+    .run(&recording.header.genesis, &jobs, &recording.actions)?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;
     let mut report = json!({
         "recorded_policy": recording.header.policy,

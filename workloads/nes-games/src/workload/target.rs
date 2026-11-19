@@ -40,10 +40,8 @@ impl<S> NesObservation<S> {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(transparent)]
 pub struct ActionObservation<S> {
     pub observation: NesObservation<S>,
-    #[serde(skip)]
     pub cost: u64,
     #[serde(skip)]
     pub records: Vec<Record>,
