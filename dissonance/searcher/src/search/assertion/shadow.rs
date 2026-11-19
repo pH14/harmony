@@ -348,14 +348,10 @@ impl<H: ArchiveKey + Debug> ShadowCursor<H> {
         self.arrive(compiled, record, None)
     }
 
-    pub fn observe_ending(
-        &mut self,
-        compiled: &Compiled,
-        record: &mut Record,
-        ends: bool,
-    ) -> Option<AssertionKey> {
-        let observed = compiled.observe_ending(record, &mut self.accumulator, ends);
-        self.settle(&observed, observed.goal)
+    pub fn observe_ending(&mut self, compiled: &Compiled, record: &mut Record, ends: bool) -> bool {
+        let (observed, ends) = compiled.observe_ending(record, &mut self.accumulator, ends);
+        self.settle(&observed, observed.goal);
+        ends
     }
 
     pub fn observe_with_objective(

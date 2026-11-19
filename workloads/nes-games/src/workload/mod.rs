@@ -215,14 +215,6 @@ impl<M> Moves<M> {
     }
 
     #[must_use]
-    pub fn cuts(&self) -> bool
-    where
-        M: Copy,
-    {
-        self.forced.is_some() || self.offer.is_some_and(|offer| offer.cuts())
-    }
-
-    #[must_use]
     pub fn ends_input(&self, last_frame: bool) -> bool
     where
         M: Copy,
@@ -231,8 +223,31 @@ impl<M> Moves<M> {
     }
 
     #[must_use]
-    pub fn ends_move(&self, last_step: bool) -> bool {
-        self.forced.is_none() && last_step
+    pub fn ends_move(&self, last_step: bool, offered: bool) -> bool {
+        last_step && !(offered && self.forced.is_some())
+    }
+
+    #[must_use]
+    pub fn forced_after(&self, ends: bool) -> Option<M>
+    where
+        M: Copy,
+    {
+        self.forced.filter(|_| !ends)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Framed<S, M> {
+    pub observation: NesObservation<S>,
+    pub record: Record,
+    pub ends: bool,
+    pub forced: Option<M>,
+}
+
+impl<S, M> Framed<S, M> {
+    #[must_use]
+    pub fn cuts(&self) -> bool {
+        self.ends || self.forced.is_some()
     }
 }
 
@@ -451,7 +466,8 @@ impl<G: Game> Lowered<G> {
         state: G::State,
         accumulator: &mut Accumulator,
     ) -> NesObservation<G::State> {
-        self.observe_frame(frame_count, state, accumulator, true)
+        self.observe_ending(frame_count, state, accumulator, |_| true)
+            .observation
     }
 
     #[must_use]
@@ -460,44 +476,43 @@ impl<G: Game> Lowered<G> {
         frame_count: u64,
         state: G::State,
         accumulator: &mut Accumulator,
-        ends: bool,
-    ) -> (NesObservation<G::State>, Record) {
+        ends: impl FnOnce(&Moves<G::Move>) -> bool,
+    ) -> Framed<G::State, G::Move> {
+        let moves = self.game.moves(&state);
         let mut record = Record::default();
         let satisfied = self.write_record(&state, &mut record);
-        let observed = self.compiled.observe_ending(&mut record, accumulator, ends);
-        let observation = NesObservation {
-            frame_count,
-            state,
-            key: observed.key,
-            rejected: observed.rejected,
-            goal: observed.goal,
-            satisfied,
-            overran: false,
-        };
-        (observation, record)
+        let (observed, ends) = self
+            .compiled
+            .observe_ending(&mut record, accumulator, ends(&moves));
+        Framed {
+            observation: NesObservation {
+                frame_count,
+                state,
+                key: observed.key,
+                rejected: observed.rejected,
+                goal: observed.goal,
+                satisfied,
+                overran: false,
+            },
+            record,
+            ends,
+            forced: moves.forced_after(ends),
+        }
     }
 
-    #[must_use]
-    pub fn observe_frame(
+    pub fn records_header(
         &self,
-        frame_count: u64,
-        state: G::State,
-        accumulator: &mut Accumulator,
-        action_end: bool,
-    ) -> NesObservation<G::State> {
-        let mut record = Record::default();
-        let satisfied = self.write_record(&state, &mut record);
-        record.set_action_end(action_end);
-        let observed = self.compiled.observe(&record, accumulator);
-        NesObservation {
-            frame_count,
-            state,
-            key: observed.key,
-            rejected: observed.rejected,
-            goal: observed.goal,
-            satisfied,
-            overran: false,
-        }
+        stream: StreamIdentity,
+        genesis: &G::State,
+    ) -> Result<RecordsHeader, Box<dyn Error>> {
+        Ok(RecordsHeader {
+            format: RECORDS_FORMAT.to_owned(),
+            stream,
+            policy: self.compiled.policy_identifier().to_owned(),
+            strategy: self.strategy.clone(),
+            catalog: self.records_catalog()?,
+            genesis: self.genesis_record(genesis),
+        })
     }
 }
 
@@ -562,17 +577,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
 
     pub fn with_records(mut self, path: &Path, campaign_seed: u64) -> Result<Self, Box<dyn Error>> {
         let target = self.new_target()?;
-        let header = RecordsHeader {
-            format: RECORDS_FORMAT.to_owned(),
-            stream: StreamIdentity {
+        let header = self.lowered.records_header(
+            StreamIdentity {
                 campaign_seed,
                 workload_identity_sha256: self.rom_sha256.clone(),
             },
-            policy: self.lowered.compiled.policy_identifier().to_owned(),
-            strategy: self.lowered.strategy.clone(),
-            catalog: self.lowered.records_catalog()?,
-            genesis: self.lowered.genesis_record(&target.observation().state),
-        };
+            &target.observation().state,
+        )?;
         let writer = RecordsWriter::create(path, &header)?;
         self.records = Some(Arc::new(Records {
             header,
@@ -1721,9 +1732,10 @@ mod tests {
         assert_eq!(offer.chosen(&move_chord(1, 3).expect("a move chord")), None);
         assert_eq!(offer.labels(), [0, 1, 3]);
         assert_eq!(jumps(0b1010).labels(), [0, 1, 3]);
-        assert!(!offer.cuts() && !Moves::offer(offer).cuts());
-        assert!(waits().cuts() && Moves::offer(waits()).cuts());
-        assert!(Moves::<Jump>::forced(Jump::Short).cuts() && !Moves::<Jump>::none().cuts());
+        assert!(!offer.cuts() && !Moves::offer(offer).ends_input(false));
+        assert!(waits().cuts() && Moves::offer(waits()).ends_input(false));
+        assert!(!Moves::<Jump>::forced(Jump::Short).ends_input(true));
+        assert!(Moves::<Jump>::none().ends_input(true) && !Moves::<Jump>::none().ends_input(false));
         assert_eq!(waits().chosen(&held), Some(Jump::Short));
         assert_eq!(waits().played(&held).ok(), move_chord(0, 1).ok());
     }

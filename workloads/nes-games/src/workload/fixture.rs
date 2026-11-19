@@ -436,3 +436,47 @@ identity = ["highest(x, room)", "dwell"]
         u64::from(left)
     }
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Switchback;
+
+impl Game for Switchback {
+    type State = Landing;
+    type Move = Climb;
+
+    const NAME: &'static str = "switchback";
+    const STRATEGY: &'static str = Stairs::STRATEGY;
+    const CHORDS: ChordVocabulary = Ledge::CHORDS;
+
+    fn setup(&self) -> Vec<ButtonChord> {
+        Vec::new()
+    }
+
+    fn genesis(&self, _: &Landing) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn decode(&self, previous: Option<&Landing>, ram: &[u8]) -> Landing {
+        Stairs.decode(previous, ram)
+    }
+
+    fn declare(&self, state: &Landing, out: &mut impl Declarations) {
+        Stairs.declare(state, out);
+    }
+
+    fn moves(&self, state: &Landing) -> Moves<Climb> {
+        if state.x == 4 {
+            Moves::forced(Climb(2))
+        } else {
+            Moves::none()
+        }
+    }
+
+    fn play(&self, mv: Climb, state: &Landing) -> Option<Step<Climb>> {
+        Stairs.play(mv, state)
+    }
+
+    fn move_frames(&self, mv: Climb) -> u64 {
+        Stairs.move_frames(mv)
+    }
+}

@@ -690,21 +690,30 @@ comparisons, `and`/`or`/`not`, `if … then … else …`, and the functions `mi
 `max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`.
 
 The name `action_end` is built in: no catalog declares it, the record holds it
-in its last slot, and it is 1 on the frame whose state the target keeps as the
-action's endpoint (the root state, the last frame of an action's input, a cut
-at an offer, a move's arrival, or a frame where the path stops) and 0 on every
-other frame. `Compiled::observe_ending` is the one rule for a frame the target
-did not already know ends the action: it observes the frame with 0, and when
-that observation reaches a goal or a rejection the frame becomes the action's
-endpoint and is observed again with 1 from the accumulator before it, which
-gives the final key even when the second observation no longer stops. A
-strategy that does not read `action_end` keeps its first observation. The
-target writes the decided flag into each recorded frame, the assertion records
-format is `assertion-records-v6` for that slot, and `Rekeying` reads the
-recorded flag instead of deciding it again. A latched stage whose goal includes `action_end` passes only on a kept
-state, as the hand plans latch from the parent key, so a value that crosses a
-threshold inside an action and ends below it does not pass the stage. A
-catalog holds at most one signal fewer than a record because of this slot.
+in its last slot, and it is 1 on the root state and on the last frame of each
+action as recorded, the frame whose state the target keeps, and 0 on every
+other frame. `Compiled::observe_ending` decides the flag and returns it with
+the observation. A frame ends the action when the caller says so (the last
+frame of the action's input, a cut at an offer, the last step of a move) or
+when its observation with 0 reaches a goal or a rejection; such a frame is
+observed again with 1 from the accumulator before it, and stays the action's
+end even when that second observation no longer stops, as an ordinary kept
+state. A strategy that does not read `action_end` keeps its first observation.
+Each producer of keys, the target, its film and its shadow lane, continues only
+on the returned flag: after a frame that ends the action the target cuts the
+input there, a move ends at that step and hands off to no forced move, and a
+film renders no more of that action. A move is one action: the target's move
+walker observes every step from the accumulator at the move's departure, its
+middle steps are interior frames observed with 0, and a middle step ends the
+move only when that observation stops. The target writes the decided flag into
+each recorded frame and into the genesis record of the records header, the
+assertion records format is `assertion-records-v6` for that slot, a records
+file of an earlier format is refused by its format string, and `Rekeying` reads
+the recorded flags instead of deciding them again. A latched stage whose goal
+includes `action_end` passes only on a kept state, as the hand plans latch from
+the parent key, so a value that crosses a threshold inside an action and ends
+below it does not pass the stage. A catalog holds at most one signal fewer than
+a record because of this slot.
 
 Two lineage features read along the parent chain, and both are Antithesis's.
 The aggregate `highest(x)` is the Antithesis watermark: the largest value of

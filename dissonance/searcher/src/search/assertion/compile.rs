@@ -1564,22 +1564,22 @@ impl Compiled {
         record: &mut Record,
         accumulator: &mut Accumulator,
         ends: bool,
-    ) -> Observed {
+    ) -> (Observed, bool) {
         record.set_action_end(ends);
         if ends {
-            return self.observe(record, accumulator);
+            return (self.observe(record, accumulator), true);
         }
         let saved = self.reads_action_end.then(|| accumulator.clone());
         let first = self.observe(record, accumulator);
         if !first.goal && first.rejected.is_none() {
-            return first;
+            return (first, false);
         }
         record.set_action_end(true);
         let Some(saved) = saved else {
-            return first;
+            return (first, true);
         };
         *accumulator = saved;
-        self.observe(record, accumulator)
+        (self.observe(record, accumulator), true)
     }
 
     #[must_use]
