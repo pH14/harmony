@@ -8,6 +8,7 @@ use crate::{MAX_SUPPLY_LEN, Span};
 const ANS_NOMINAL: u8 = 0;
 const ANS_SUPPLY: u8 = 1;
 const ANS_FAULT: u8 = 2;
+const ANS_LABEL: u8 = 3;
 
 const ACT_HOST: u8 = 0;
 const ACT_GUEST: u8 = 1;
@@ -217,6 +218,10 @@ pub(crate) fn write_answer(w: &mut Vec<u8>, a: &Answer) {
             w.push(ANS_FAULT);
             write_fault(w, f);
         }
+        Answer::Label(label) => {
+            w.push(ANS_LABEL);
+            put_u16(w, *label);
+        }
     }
 }
 
@@ -231,6 +236,7 @@ pub(crate) fn read_answer(r: &mut Reader) -> Result<Answer, EnvError> {
             Answer::Supply(b.to_vec())
         }
         ANS_FAULT => Answer::Fault(read_fault(r)?),
+        ANS_LABEL => Answer::Label(r.u16()?),
         _ => return Err(EnvError::Malformed),
     };
     Ok(a)

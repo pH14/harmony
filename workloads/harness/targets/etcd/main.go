@@ -85,7 +85,7 @@ func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) 
 // Each operation goes to one member drawn from the SDK stream, so reads and
 // writes reach followers as well as the leader.
 func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	base := c.members[sdk.Below(uint64(len(c.members)))]
+	base := c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
 	key := enc(op.K)
 	switch op.F {
 	case family.RegisterWrite:

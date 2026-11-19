@@ -295,6 +295,52 @@ corrupts. The guest kernel's `getrandom` state is restored with
 the snapshot and is not reseeded, so decisions drawn from it repeat across
 continuations.
 
+A guest driver's `sdk.Below(site, n)` asks a choice under fault-policy's
+`CHOICE_NAMESPACE` ([harness kit](../harness/README.md)), and the package
+answers it (ours). The faults workload offers the searcher one choice site,
+`guest`, so every drawn job carries the searcher's `ChoicePlan` with its
+CONTRARY rate, hold probability and untried ordinal. The `guest` site declares
+no rate of its own (`ChoiceSite::with_contrary`), so the plan's `declared`
+list is empty. Because a guest asks at
+moments and with option counts only the guest knows, and an action must stay
+`Copy`, an action stores the plan rather than its answers: `execute_job`
+stamps each freshly drawn suffix action with `GuestChoices` (the plan's two
+rates, an answer seed mixed from the plan's seed and the action's index, and
+the untried ordinal on the first action it stamps). A suffix action copied from
+the archive, by an empirical step or a splice, keeps its recorded
+`GuestChoices` as it keeps its 64-bit `choice`, so it replays its recorded
+answers and still matches its archived twin when the search skips a duplicate
+draw. The question is not a local
+service, so it stops at an explicit decision. `run_action` answers it with the
+searcher's `Chooser` built from the action's `GuestChoices`, numbering the
+guest's sites in the order the action first asks them, and hold memory starts
+empty at each action. An action without `GuestChoices`, such as one from a
+recording made before this field existed, answers every choice with the guest's
+own draw, so old recordings replay unchanged. Replay asks the same `Chooser`
+again, and a deterministic guest asks the same questions, so it regenerates the
+same answers. The standing handler answers the namespace `Nominal`, so the
+debug terminal takes every default. In text, an action without `GuestChoices`
+omits the field; the binary encoding that history digests and snapshot records
+use always carries it.
+
+A recorded input can pin answers: `{"actions": [...], "answers": [{"step": 3,
+"choice": 12, "label": 1}]}` replaces the answer to guest choice 12 (counting
+from 0 within the action) of step 3 (counting actions from 1, as replay steps
+do), and an answer without `label` takes the default. Each answer is a
+fault-policy `RecordedEnv` override, one `Answer` per `Moment`, where a guest
+choice's moment is its ordinal within the action. The `Chooser` is still asked
+at an answered choice, so the answers after it keep their stream. Answers are
+part of the target identity, `branch` moves them onto its continuation,
+`search --from` keeps those within its prefix, its `bug-N.json`, `hang-N.json`,
+`failure-N.json` and `first-bug-input.json` carry the answers within their
+actions, and `shrink` refuses a run that has them. Each replay step counts its guest
+choices (`choices`, absent when zero), and `debug run`, `replay` and `branch`
+write every choice to `choices.jsonl` beside `report.json`: the run, step,
+choice ordinal, decision moment, guest clock, site, option count, default,
+what the `Chooser` took, the label applied, and `answered` when an input
+answer replaced it. A search writes no per-choice records; an action served
+from the snapshot cache has none either.
+
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
 recorded resolution before the guest sees it. Worker and UML sessions carry

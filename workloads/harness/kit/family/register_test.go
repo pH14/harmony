@@ -194,8 +194,8 @@ func TestRegisterGeneratorUsesKnownValuesForCAS(t *testing.T) {
 	generator.Observe(Op{F: RegisterWrite, K: "k1", V: "x"}, history.OK, nil)
 	counter := 0
 	value := func() string { counter++; return "v" }
-	op := generator.Next(func(n uint64) uint64 {
-		if n == 4 {
+	op := generator.Next(func(site string, n uint64) uint64 {
+		if site == "register.op" {
 			return 3
 		}
 		return 1

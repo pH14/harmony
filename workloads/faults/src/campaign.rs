@@ -21,6 +21,7 @@ use searcher::{
             ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
             run_campaign_checkpointed_with_options,
         },
+        choice::{ChoicePlan, ChoiceSite},
         cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
@@ -50,6 +51,7 @@ use crate::{
         FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
         validate_snapshot_prefix_certificates,
     },
+    guest::{GUEST_SITE, GuestChoices},
     shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
@@ -73,7 +75,7 @@ const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
 const HOST_FAILURE_POLICY: &str = "host_incomplete_v3";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
+const ACTION_FORMAT: &str = "fault-action-duration-coverage-v6-guest-choices";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -481,6 +483,23 @@ pub(crate) fn capture_replayed_prefix(
     snapshot.ok_or_else(|| "cannot search from a terminal point; rewind further".into())
 }
 
+fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultAction> {
+    let Some(plan) = plan else {
+        return suffix.to_vec();
+    };
+    let mut untried = plan.untried;
+    suffix
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            if action.guest.is_some() {
+                return *action;
+            }
+            action.with_guest(GuestChoices::from_plan(plan, index, untried.take()))
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
     run: &FaultCampaignRun,
@@ -520,6 +539,7 @@ pub(crate) fn execute_job(
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
+    let suffix = guest_suffix(suffix, stop.choices());
     for (index, action) in suffix.iter().enumerate() {
         let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
@@ -705,6 +725,9 @@ impl Reporting for FaultWorkload {
 impl InputPolicy for FaultWorkload {
     fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
         simpler_fault_actions(action)
+    }
+    fn choice_sites(&self, _run: &FaultCampaignRun) -> Vec<ChoiceSite> {
+        vec![ChoiceSite::new(GUEST_SITE, Vec::new())]
     }
     fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
         settle_tail(last)
@@ -1759,6 +1782,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            answers: Vec::new(),
         }
     }
 
@@ -2424,5 +2448,47 @@ mod tests {
             policies.get(ACTION_FORMAT_FIELD).map(String::as_str),
             Some(ACTION_FORMAT)
         );
+    }
+
+    #[test]
+    fn a_job_s_plan_stamps_its_fresh_actions_and_leaves_copied_ones() {
+        use searcher::search::choice::{CERTAIN, ChoicePolicy, ChoiceProfile, ChoiceProfiles};
+        let policy = ChoicePolicy {
+            profiles: ChoiceProfiles::Fixed(ChoiceProfile::new(CERTAIN / 2, 0)),
+            untried_first: true,
+        };
+        let plan = ChoicePlan::new(
+            &policy,
+            ChoiceProfile::default(),
+            7,
+            Some(2),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(plan.untried, Some(2));
+        let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let copied = wait.with_choice(5).with_guest(GuestChoices {
+            contrary: 1,
+            hold: 2,
+            seed: 3,
+            untried: Some(0),
+        });
+        let fresh = wait.with_choice(6);
+        let stamped = guest_suffix(&[copied, fresh, fresh], Some(&plan));
+        assert_eq!(stamped[0], copied);
+        assert_eq!(
+            stamped[1],
+            fresh.with_guest(GuestChoices::from_plan(&plan, 1, Some(2)))
+        );
+        assert_eq!(
+            stamped[2],
+            fresh.with_guest(GuestChoices::from_plan(&plan, 2, None))
+        );
+        assert_ne!(
+            stamped[1].guest.unwrap().seed,
+            stamped[2].guest.unwrap().seed
+        );
+        assert_eq!(stamped[1].guest.unwrap().contrary, CERTAIN / 2);
+        assert_eq!(guest_suffix(&[copied, fresh], None), vec![copied, fresh]);
     }
 }

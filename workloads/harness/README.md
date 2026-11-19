@@ -11,7 +11,7 @@ generic operations onto the target's client API.
 
 | path | contents |
 |---|---|
-| `kit/sdk` | `Random()` and the SDK assertions |
+| `kit/sdk` | `Random()`, the `Below` choice and the SDK assertions |
 | `kit/history` | the JSONL journal writer and loader |
 | `kit/family` | operation families: generators and checkers |
 | `kit/runner` | `Run`, `Check` and `Main` |
@@ -104,12 +104,28 @@ first round's reads can cause one.
 
 ## Randomness
 
-Every choice the driver makes comes from `sdk.Random()`: the operation, its
-key, the pause after it and the journal token. `Random()` writes the
+Every random value the driver uses comes from `sdk.Random()`: the operation,
+its key, the pause after it and the journal token. `Random()` writes the
 entropy command byte `0` to `/dev/harmony` and reads 8 little-endian bytes, the
 protocol of `fuzz_get_random` in `libvoidstar`. Without that device it uses a
 PCG seeded from `HARNESS_SEED`, or from `crypto/rand` when the variable is
 unset.
+
+A draw among a fixed number of options is a choice: `sdk.Below(site, n)`
+names its site (such as `register.op` or `runner.pause`) and returns a value
+below `n`. It first takes its own draw, `Random() % n`, as the default. When
+`/dev/harmony` exists and `n` is between 2 and 65,535, it then asks the host
+through one SDK opaque service request under namespace 11 (fault-policy's
+`CHOICE_NAMESPACE`): the option count, the default, the guest's
+`CLOCK_MONOTONIC` reading and the site name, in the form of fault-policy's
+`ChoiceQuestion`. The host answers `Nominal`, which keeps the default, or a
+label below `n`. The [`faults` package](../faults/README.md) answers from the
+searcher's choice plan for the action (ours), so a run without a plan behaves
+exactly as before. Antithesis's Test Composer treats randomness in the workload
+as the platform's branch points; this is that idea with a declared default per
+site. Without the device `Below` returns its own draw and asks nothing. The
+journal token and `harness-net`'s delay length stay plain `Random()` values,
+because neither is a pick among labelled options.
 
 ## Journal
 
@@ -281,7 +297,7 @@ reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
 |---|---|
 | `setup N` | bridge `hbr0` at 10.77.0.254/24; namespaces `hn1..hnN`, each with `eth0` at 10.77.0.I on the bridge, loopback up, and an empty `HARNESS` iptables chain jumped from `INPUT` and `OUTPUT` |
 | `exec I -- ARGV` | runs ARGV in namespace I through `ip netns exec`, keeping the process ID |
-| `partition` | splits the nodes into two nonempty sides drawn from `Random()`; each node drops traffic to and from the other side |
+| `partition` | splits the nodes into two nonempty sides chosen at site `net.partition`; each node drops traffic to and from the other side |
 | `isolate` | cuts one random node off from the others |
 | `delay` | adds netem delay, log-uniform 1 to 500 ms, to one random node's `eth0` |
 | `heal` | flushes every `HARNESS` chain and removes netem |

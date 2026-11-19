@@ -229,7 +229,7 @@ func TestLogGeneratorMakesBothOps(t *testing.T) {
 	seen := map[string]int{}
 	next := uint64(0)
 	for range 64 {
-		op := generator.Next(func(n uint64) uint64 { next++; return next % n }, func() string { return "v" })
+		op := generator.Next(func(_ string, n uint64) uint64 { next++; return next % n }, func() string { return "v" })
 		seen[op.F]++
 	}
 	if seen[LogRead] == 0 || seen[LogAppend] == 0 {

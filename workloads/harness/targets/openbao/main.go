@@ -232,7 +232,7 @@ func pick(nodes []string, op family.Op) string {
 	if op.Node != "" {
 		return op.Node
 	}
-	return nodes[sdk.Below(uint64(len(nodes)))]
+	return nodes[sdk.Below("openbao.server", uint64(len(nodes)))]
 }
 
 func main() {

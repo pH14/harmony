@@ -46,7 +46,7 @@ func (c client) Close() {}
 // leader.
 func (c client) pick(node string) (string, error) {
 	if node == "" {
-		return c.members[sdk.Below(uint64(len(c.members)))], nil
+		return c.members[sdk.Below("xline.server", uint64(len(c.members)))], nil
 	}
 	at := slices.Index(c.names, node)
 	if at < 0 {

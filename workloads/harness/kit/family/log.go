@@ -53,7 +53,7 @@ func (Log) Generator(int) Generator { return logGenerator{} }
 type logGenerator struct{}
 
 func (logGenerator) Next(draw Draw, value func() string) Op {
-	if draw(8) == 0 {
+	if draw("log.op", 8) == 0 {
 		return Op{F: LogRead}
 	}
 	return Op{F: LogAppend, V: value()}

@@ -188,7 +188,7 @@ func partition() error {
 	if err != nil {
 		return err
 	}
-	mask := sdk.Below(uint64(1)<<n-2) + 1
+	mask := sdk.Below("net.partition", uint64(1)<<n-2) + 1
 	return cut(n, func(i int) bool { return mask&(1<<(i-1)) != 0 })
 }
 
@@ -197,7 +197,7 @@ func isolate() error {
 	if err != nil {
 		return err
 	}
-	lone := int(sdk.Below(uint64(n))) + 1
+	lone := int(sdk.Below("net.isolate", uint64(n))) + 1
 	return cut(n, func(i int) bool { return i == lone })
 }
 
@@ -206,7 +206,7 @@ func delay() error {
 	if err != nil {
 		return err
 	}
-	i := int(sdk.Below(uint64(n))) + 1
+	i := int(sdk.Below("net.delay", uint64(n))) + 1
 	unit := float64(sdk.Random()>>11) / float64(1<<53)
 	ms := math.Exp(unit * math.Log(500))
 	return inNode(i, "tc", "qdisc", "replace", "dev", "eth0", "root", "netem", "delay", fmt.Sprintf("%.1fms", ms))

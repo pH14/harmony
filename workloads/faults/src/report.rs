@@ -6,6 +6,7 @@ use fault_policy::StandingWindow;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
+use crate::guest::{GuestAnswer, answers_through};
 use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
 
 pub const BUG_REPORT_STEM: &str = "bug-";
@@ -18,6 +19,8 @@ pub struct BugReport {
     pub execution: u64,
     pub root_seal: u64,
     pub actions: Vec<FaultAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<GuestAnswer>,
     pub standing: String,
     pub observations: FaultObservations,
 }
@@ -36,6 +39,7 @@ impl BugReport {
             execution,
             root_seal: windows.root_seal,
             actions: actions.to_vec(),
+            answers: Vec::new(),
             standing: standing_hex(windows, inherited, actions)?,
             observations: observations.clone(),
         })
@@ -72,13 +76,14 @@ impl BugReport {
 pub fn write_bug_reports(
     windows: ActionWindows,
     inherited: &[StandingWindow],
+    answers: &[GuestAnswer],
     bugs: &[FaultBugRecord],
     directory: &Path,
 ) -> Result<Vec<BugReport>, Box<dyn Error>> {
     let mut written = Vec::with_capacity(bugs.len());
     for (index, bug) in bugs.iter().enumerate() {
         let ordinal = u64::try_from(index)?.saturating_add(1);
-        let report = BugReport::new(
+        let mut report = BugReport::new(
             ordinal,
             bug.execution,
             windows,
@@ -86,6 +91,7 @@ pub fn write_bug_reports(
             &bug.input.actions,
             &bug.observations,
         )?;
+        report.answers = answers_through(answers, bug.input.actions.len());
         report.write(directory)?;
         written.push(report);
     }
@@ -98,6 +104,8 @@ pub struct HangReport {
     pub execution: u64,
     pub root_seal: u64,
     pub actions: Vec<FaultAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<GuestAnswer>,
     pub standing: String,
 }
 
@@ -111,6 +119,7 @@ impl HangReport {
 pub fn write_hang_reports(
     windows: ActionWindows,
     inherited: &[StandingWindow],
+    answers: &[GuestAnswer],
     hangs: &[FaultHangRecord],
     directory: &Path,
 ) -> Result<Vec<HangReport>, Box<dyn Error>> {
@@ -121,6 +130,7 @@ pub fn write_hang_reports(
             execution: hang.execution,
             root_seal: windows.root_seal,
             actions: hang.input.actions.clone(),
+            answers: answers_through(answers, hang.input.actions.len()),
             standing: standing_hex(windows, inherited, &hang.input.actions)?,
         };
         std::fs::write(
@@ -138,6 +148,8 @@ pub struct FailureReport {
     pub execution: u64,
     pub root_seal: u64,
     pub actions: Vec<FaultAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<GuestAnswer>,
     pub standing: String,
 }
 
@@ -151,6 +163,7 @@ impl FailureReport {
 pub fn write_failure_reports(
     windows: ActionWindows,
     inherited: &[StandingWindow],
+    answers: &[GuestAnswer],
     failures: &[FaultFailureRecord],
     directory: &Path,
 ) -> Result<Vec<FailureReport>, Box<dyn Error>> {
@@ -161,6 +174,7 @@ pub fn write_failure_reports(
             execution: failure.execution,
             root_seal: windows.root_seal,
             actions: failure.input.actions.clone(),
+            answers: answers_through(answers, failure.input.actions.len()),
             standing: standing_hex(windows, inherited, &failure.input.actions)?,
         };
         std::fs::write(
@@ -305,7 +319,27 @@ mod tests {
             bug(9, FaultOperation::Wait(NonZeroU16::MIN).into()),
         ];
         let windows = ActionWindows { root_seal: 7 };
-        let written = write_bug_reports(windows, &[], &bugs, directory.path()).expect("write");
+        let answer = |step| GuestAnswer {
+            step,
+            choice: 0,
+            label: Some(1),
+        };
+        let written = write_bug_reports(
+            windows,
+            &[],
+            &[answer(1), answer(2)],
+            &bugs,
+            directory.path(),
+        )
+        .expect("write");
+        assert_eq!(written[0].answers, vec![answer(1)]);
+        let text = std::fs::read_to_string(directory.path().join("bug-1.json")).expect("read");
+        assert_eq!(
+            crate::package::parse_recorded_input(&text)
+                .expect("recorded input")
+                .answers,
+            vec![answer(1)]
+        );
         assert_eq!(written.len(), 2);
         assert_eq!(written[0].bug, 1);
         assert_eq!(written[0].execution, 4);
@@ -329,7 +363,8 @@ mod tests {
                 actions: actions.clone(),
             },
         }];
-        let written = write_hang_reports(WINDOWS, &[], &hangs, directory.path()).expect("write");
+        let written =
+            write_hang_reports(WINDOWS, &[], &[], &hangs, directory.path()).expect("write");
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].file_name(), "hang-1.json");
         assert_eq!(written[0].execution, 12);
@@ -364,7 +399,7 @@ mod tests {
             },
         }];
         let written =
-            write_failure_reports(WINDOWS, &[], &failures, directory.path()).expect("write");
+            write_failure_reports(WINDOWS, &[], &[], &failures, directory.path()).expect("write");
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].file_name(), "failure-1.json");
         assert_eq!(written[0].execution, 12);

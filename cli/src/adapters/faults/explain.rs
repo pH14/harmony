@@ -2369,6 +2369,7 @@ mod tests {
                 },
                 console: String::new(),
                 settlement: false,
+                choices: 0,
             })
             .collect();
         summary

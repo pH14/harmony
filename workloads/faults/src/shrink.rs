@@ -83,6 +83,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                answers: Vec::new(),
             },
         );
         let kill = action(FaultOperation::Kill(1, ticks(256)));

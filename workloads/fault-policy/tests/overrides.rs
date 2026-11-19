@@ -250,3 +250,23 @@ fn host_action_at_a_decision_moment_is_ignored_by_decide() {
     let mut base = SeededEnv::new(seed, FaultPolicy::none());
     assert_eq!(got, base.decide(&point));
 }
+
+#[test]
+fn a_choice_override_is_recorded_only_when_its_label_is_offered() {
+    let point = P::Choice {
+        site: fault_policy::choice_site("register.op"),
+        options: 3,
+    };
+    let mut offered = one_guest_override(5, FaultPolicy::none(), 2, Answer::Label(2));
+    offered.set_moment(2);
+    assert_eq!(offered.recorded(&point), Some(&Answer::Label(2)));
+    assert_eq!(offered.decide(&point), Outcome::Resolved(Answer::Label(2)));
+    offered.set_moment(1);
+    assert_eq!(offered.recorded(&point), None);
+    assert_eq!(offered.decide(&point), Outcome::Resolved(Answer::Nominal));
+
+    let mut beyond = one_guest_override(5, FaultPolicy::none(), 2, Answer::Label(3));
+    beyond.set_moment(2);
+    assert_eq!(beyond.recorded(&point), None);
+    assert_eq!(beyond.decide(&point), Outcome::Resolved(Answer::Nominal));
+}
