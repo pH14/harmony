@@ -155,6 +155,7 @@ impl Game for Metroid {
 
     fn decode(
         &self,
+        _parent: Option<&MetroidMechanicalState>,
         previous: Option<&MetroidMechanicalState>,
         ram: &[u8],
     ) -> MetroidMechanicalState {
