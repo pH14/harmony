@@ -1,0 +1,17 @@
+capacity = 1
+spread = "ridge.position"
+identity = "highest(ridge.position, ridge.camp)"
+prefer = [["ridge.camp: more"]]
+
+[[stage]]
+name = "ridge"
+goal = "ridge.ridge"
+latch = true
+
+[[stage]]
+name = "summit"
+goal = "goal"
+
+[[stage]]
+name = "top"
+goal = "false"

@@ -2,7 +2,7 @@
 
 use crate::{
     Key, actions, backtrack, chain, crossing, deadline, deadline_actions, delayed, fork, graph,
-    map, maze, passive_clock, picks, resource, route, targets, trap,
+    map, maze, passive_clock, picks, resource, ridge, route, targets, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,7 @@ pub enum World {
     Targets(targets::Config),
     Fork(fork::Config),
     Picks(picks::Config),
+    Ridge(ridge::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -52,6 +53,7 @@ pub enum State {
     Targets(targets::State),
     Fork(fork::State),
     Picks(picks::State),
+    Ridge(ridge::State),
 }
 
 impl World {
@@ -74,6 +76,7 @@ impl World {
             Self::Targets(w) => w.validate(),
             Self::Fork(w) => w.validate(),
             Self::Picks(w) => w.validate(),
+            Self::Ridge(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -100,6 +103,7 @@ impl World {
                 (Self::Targets(w), State::Targets(s)) => w.state_is_bounded(s),
                 (Self::Fork(w), State::Fork(s)) => w.state_is_bounded(s),
                 (Self::Picks(w), State::Picks(s)) => w.state_is_bounded(s),
+                (Self::Ridge(w), State::Ridge(s)) => w.state_is_bounded(s),
                 _ => false,
             }
     }
@@ -122,6 +126,7 @@ impl World {
             Self::Targets(w) => State::Targets(w.initial()),
             Self::Fork(w) => State::Fork(w.initial()),
             Self::Picks(w) => State::Picks(w.initial()),
+            Self::Ridge(w) => State::Ridge(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -147,6 +152,7 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => State::Targets(w.step(s, action)),
             (Self::Fork(w), State::Fork(s)) => State::Fork(w.step(s, action)),
             (Self::Picks(w), State::Picks(s)) => State::Picks(w.step(s, action)),
+            (Self::Ridge(w), State::Ridge(s)) => State::Ridge(w.step(s, action)),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -169,6 +175,7 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => w.goal(s),
             (Self::Fork(w), State::Fork(s)) => w.goal(s),
             (Self::Picks(w), State::Picks(s)) => w.goal(s),
+            (Self::Ridge(w), State::Ridge(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -191,6 +198,7 @@ impl World {
             Self::Targets(w) => w.reachable(),
             Self::Fork(w) => w.reachable(),
             Self::Picks(w) => w.reachable(),
+            Self::Ridge(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -212,6 +220,7 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => w.key(s, broken),
             (Self::Fork(w), State::Fork(s)) => w.key(s, broken),
             (Self::Picks(w), State::Picks(s)) => w.key(s),
+            (Self::Ridge(w), State::Ridge(s)) => w.shared_key(s),
             _ => panic!("world and state family mismatch"),
         }
     }

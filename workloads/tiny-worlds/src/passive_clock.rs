@@ -193,6 +193,7 @@ mod tests {
                 Keep::Portfolio,
                 crate::KeyKind::Hand,
                 None,
+                false,
                 crate::test_seed(),
                 12_000,
                 true,

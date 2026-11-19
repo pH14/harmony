@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::worlds::{State, World};
-use crate::{Keep, backtrack, chain, delayed, fork, map, resource, route, trap};
+use crate::{Keep, backtrack, chain, delayed, fork, map, resource, ridge, route, trap};
 use searcher::search::assertion::{Assertion, Catalog, Number, Record, Strategy};
 use std::error::Error;
 
@@ -227,6 +227,15 @@ fn fork_signals(s: fork::State) -> [Assertion; 3] {
     ]
 }
 
+fn ridge_signals(w: &ridge::Config, s: ridge::State) -> [Assertion; 4] {
+    [
+        goal(w.goal(s)),
+        byte("ridge.position", s.position),
+        byte("ridge.camp", s.camp),
+        flag("ridge.ridge", s.position >= w.ridge),
+    ]
+}
+
 fn signals(world: &World, state: State, broken: bool, buffer: &mut Buffer) {
     buffer.push(&[flag("broken", broken)]);
     match (world, state) {
@@ -272,6 +281,7 @@ fn signals(world: &World, state: State, broken: bool, buffer: &mut Buffer) {
             word("crossing.position", s.position),
             word("crossing.cells", w.cells),
         ]),
+        (World::Ridge(w), State::Ridge(s)) => buffer.push(&ridge_signals(w, s)),
         (World::PassiveClock(w), State::PassiveClock(s)) => buffer.push(&[
             goal(w.goal(s)),
             word(
@@ -302,6 +312,7 @@ fn family(world: &World) -> &'static str {
         World::Targets(_) => "targets",
         World::Fork(_) => "fork",
         World::Picks(_) => "picks",
+        World::Ridge(_) => "ridge",
     }
 }
 
@@ -329,7 +340,8 @@ fn lowered(world: &World) -> Result<(), Box<dyn Error>> {
         | World::Map(_)
         | World::Fork(_)
         | World::Crossing(_)
-        | World::PassiveClock(_) => Ok(()),
+        | World::PassiveClock(_)
+        | World::Ridge(_) => Ok(()),
         _ => Err(format!("no tiny-world strategy lowers the {} family", family(world)).into()),
     }
 }
@@ -360,6 +372,10 @@ pub fn shipped_strategy(world: &World, keep: Keep) -> Result<Strategy, Box<dyn E
         World::Map(_) => include_str!("../strategies/map.toml"),
         World::Fork(_) => include_str!("../strategies/fork.toml"),
         World::Crossing(_) => include_str!("../strategies/crossing.toml"),
+        World::Ridge(_) if keep == Keep::CapacityTwo => {
+            return Err("the ridge strategy keeps portfolio only".into());
+        }
+        World::Ridge(_) => include_str!("../strategies/ridge.toml"),
         _ => include_str!("../strategies/passive_clock.toml"),
     };
     let mut strategy = Strategy::parse(text)?;

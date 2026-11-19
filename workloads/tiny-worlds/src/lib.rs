@@ -16,6 +16,7 @@ pub mod maze;
 pub mod passive_clock;
 pub mod picks;
 pub mod resource;
+pub mod ridge;
 pub mod route;
 pub mod targets;
 pub mod trap;
@@ -43,7 +44,7 @@ impl SearchSettings {
 
 type StreamRecord = CampaignStreamRecord<serde_json::Value, serde_json::Value>;
 
-fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
+fn stream_lines(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut lines = stream
         .split(|&c| c == b'\n')
         .filter(|line| !line.is_empty())
@@ -53,9 +54,41 @@ fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
     }) {
         lines.next();
     }
-    Ok(lines
+    lines
+}
+
+fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
+    Ok(stream_lines(stream)
         .map(serde_json::from_slice)
         .collect::<Result<_, _>>()?)
+}
+
+const WORKLOAD_FIELDS: [&str; 3] = [
+    "result_sha256",
+    "draw_checkpoint_before",
+    "draw_checkpoint_after",
+];
+
+fn decision_stream(stream: &[u8]) -> Result<(String, u64), Box<dyn Error>> {
+    let mut canonical = Vec::new();
+    let mut records = 0;
+    for line in stream_lines(stream) {
+        let mut record: serde_json::Value = serde_json::from_slice(line)?;
+        if let Some(fields) = record.as_object_mut() {
+            for field in WORKLOAD_FIELDS {
+                fields.remove(field);
+            }
+            if let Some(draw) = fields
+                .get_mut("duration_draw")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                draw.remove("context");
+            }
+        }
+        serde_json::to_writer(&mut canonical, &record)?;
+        records += 1;
+    }
+    Ok((postcard_value_sha256(&canonical)?, records))
 }
 
 const MAX_REACHABLE_STATES: usize = 200_000;
@@ -104,7 +137,9 @@ use searcher::search::{
         ArchiveEntryReport, ArchiveKey, Input, KeyShape, MAX_ARCHIVE_ENTRIES, RetentionPolicy,
         SelectorPath, entries_by_suffix,
     },
-    assertion::{AssertionKey, Compiled, Strategy},
+    assertion::{
+        Accumulator, AssertionKey, Compiled, ShadowCursor, ShadowReport, ShadowTable, Strategy,
+    },
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
         CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamHeader,
@@ -116,7 +151,7 @@ use searcher::search::{
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{error::Error, io::Write, num::NonZeroUsize};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -261,15 +296,18 @@ pub struct Observation {
     work_in_job: u64,
     job_work: Option<u64>,
 }
-pub struct Target {
+pub struct Target<L = ()> {
     state: State,
     work: u64,
     observation: Option<Observation>,
+    lane: L,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Snapshot {
+#[serde(bound = "L: Lane")]
+pub struct Snapshot<L = ()> {
     pub state: State,
     pub payload: Vec<u8>,
+    pub lane: L,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -325,12 +363,33 @@ impl Scale {
         Ok(())
     }
 }
+pub trait Lane:
+    Clone + std::fmt::Debug + Default + Eq + Send + Sync + Serialize + DeserializeOwned + 'static
+{
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl Lane for () {}
+
 pub trait Keying: Sync {
     type Key: ArchiveKey + std::fmt::Debug + Eq + Send + Sync;
-    fn key(&self, world: &World, state: State, broken: bool) -> Result<Self::Key, Box<dyn Error>>;
+    type Lane: Lane;
+    fn arrive(&self, world: &World, state: State, broken: bool, lane: &mut Self::Lane);
+    fn key(
+        &self,
+        world: &World,
+        state: State,
+        broken: bool,
+        lane: &Self::Lane,
+    ) -> Result<Self::Key, Box<dyn Error>>;
     fn shape(&self) -> KeyShape;
     fn identity(&self) -> String;
     fn policy(&self) -> Option<&str>;
+    fn shadow(&self) -> Result<Option<ShadowReport>, Box<dyn Error>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -338,7 +397,18 @@ pub struct Hand<const CAPACITY_TWO: bool>;
 
 impl<const CAPACITY_TWO: bool> Keying for Hand<CAPACITY_TWO> {
     type Key = Key<CAPACITY_TWO>;
-    fn key(&self, world: &World, state: State, broken: bool) -> Result<Self::Key, Box<dyn Error>> {
+    type Lane = ();
+    fn arrive(&self, _: &World, _: State, _: bool, _: &mut ()) {}
+    fn key(
+        &self,
+        world: &World,
+        state: State,
+        broken: bool,
+        _: &(),
+    ) -> Result<Self::Key, Box<dyn Error>> {
+        if matches!(world, World::Ridge(_)) {
+            return Err("the ridge family keys by hand with ridge::Hand".into());
+        }
         Ok(world.key(state, broken).kept())
     }
     fn shape(&self) -> KeyShape {
@@ -367,13 +437,9 @@ impl Strategic {
         broken: bool,
         strategy: &Strategy,
     ) -> Result<Self, Box<dyn Error>> {
-        let compiled = Compiled::new(strategy, &assertions::catalog(world, broken)?)?;
-        if !compiled.is_pure() {
-            return Err(
-                "tiny-world strategies hold no lineage aggregates or latched stages".into(),
-            );
-        }
-        Ok(Self { compiled })
+        Ok(Self {
+            compiled: Compiled::new(strategy, &assertions::catalog(world, broken)?)?,
+        })
     }
 
     pub fn shipped(world: &World, broken: bool, keep: Keep) -> Result<Self, Box<dyn Error>> {
@@ -381,16 +447,38 @@ impl Strategic {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StrategyLane {
+    accumulator: Accumulator,
+    key: Option<AssertionKey>,
+}
+
+impl Lane for StrategyLane {
+    fn heap_bytes(&self) -> usize {
+        self.accumulator.heap_bytes()
+    }
+}
+
 impl Keying for Strategic {
     type Key = AssertionKey;
+    type Lane = StrategyLane;
+    fn arrive(&self, world: &World, state: State, broken: bool, lane: &mut StrategyLane) {
+        lane.key = self
+            .compiled
+            .observe(
+                &assertions::record(world, state, broken),
+                &mut lane.accumulator,
+            )
+            .key;
+    }
     fn key(
         &self,
-        world: &World,
-        state: State,
-        broken: bool,
+        _: &World,
+        _: State,
+        _: bool,
+        lane: &StrategyLane,
     ) -> Result<AssertionKey, Box<dyn Error>> {
-        self.compiled
-            .key(&assertions::record(world, state, broken))
+        lane.key
             .ok_or_else(|| "a tiny-world strategy marked a state absent".into())
     }
     fn shape(&self) -> KeyShape {
@@ -401,6 +489,108 @@ impl Keying for Strategic {
     }
     fn policy(&self) -> Option<&str> {
         Some(self.compiled.policy_identifier())
+    }
+}
+
+pub struct Shadowed<K: Keying> {
+    hand: K,
+    compiled: Compiled,
+    table: ShadowTable<K::Key>,
+}
+
+impl<K: Keying> Shadowed<K> {
+    pub fn new(hand: K, strategic: Strategic) -> Self {
+        Self {
+            hand,
+            compiled: strategic.compiled,
+            table: ShadowTable::default(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(bound = "L: Lane, H: ArchiveKey")]
+pub struct ShadowLane<L, H: ArchiveKey> {
+    hand: L,
+    cursor: ShadowCursor<H>,
+}
+
+impl<L: Default, H: ArchiveKey> Default for ShadowLane<L, H> {
+    fn default() -> Self {
+        Self {
+            hand: L::default(),
+            cursor: ShadowCursor::default(),
+        }
+    }
+}
+
+impl<L: std::fmt::Debug, H: ArchiveKey + std::fmt::Debug> std::fmt::Debug for ShadowLane<L, H>
+where
+    H::Lineage: std::fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ShadowLane")
+            .field("hand", &self.hand)
+            .field("cursor", &self.cursor)
+            .finish()
+    }
+}
+
+impl<L: PartialEq, H: ArchiveKey> PartialEq for ShadowLane<L, H>
+where
+    H::Lineage: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.hand == other.hand && self.cursor == other.cursor
+    }
+}
+
+impl<L: Eq, H: ArchiveKey> Eq for ShadowLane<L, H> where H::Lineage: Eq {}
+
+impl<L: Lane, H: ArchiveKey + std::fmt::Debug + Send + Sync + 'static> Lane for ShadowLane<L, H>
+where
+    H::Lineage: std::fmt::Debug + Eq + Send + Sync,
+{
+    fn heap_bytes(&self) -> usize {
+        self.hand.heap_bytes() + self.cursor.heap_bytes()
+    }
+}
+
+impl<K: Keying> Keying for Shadowed<K>
+where
+    K::Key: 'static,
+    <K::Key as ArchiveKey>::Lineage: std::fmt::Debug + Eq + Send + Sync,
+{
+    type Key = K::Key;
+    type Lane = ShadowLane<K::Lane, K::Key>;
+    fn arrive(&self, world: &World, state: State, broken: bool, lane: &mut Self::Lane) {
+        self.hand.arrive(world, state, broken, &mut lane.hand);
+        lane.cursor
+            .observe(&self.compiled, &assertions::record(world, state, broken));
+        let raw = self.hand.key(world, state, broken, &lane.hand).ok();
+        lane.cursor.pair(&self.table, raw);
+    }
+    fn key(
+        &self,
+        world: &World,
+        state: State,
+        broken: bool,
+        lane: &Self::Lane,
+    ) -> Result<K::Key, Box<dyn Error>> {
+        self.hand.key(world, state, broken, &lane.hand)
+    }
+    fn shape(&self) -> KeyShape {
+        self.hand.shape()
+    }
+    fn identity(&self) -> String {
+        self.hand.identity()
+    }
+    fn policy(&self) -> Option<&str> {
+        self.hand.policy()
+    }
+    fn shadow(&self) -> Result<Option<ShadowReport>, Box<dyn Error>> {
+        Ok(Some(self.table.report(&self.compiled)?))
     }
 }
 
@@ -428,6 +618,13 @@ impl<K: Keying> Workload<K> {
         payload
     }
 
+    fn genesis_lane(&self) -> K::Lane {
+        let mut lane = K::Lane::default();
+        self.keying
+            .arrive(&self.config, self.config.initial(), self.broken, &mut lane);
+        lane
+    }
+
     fn spend_action_cost(&self) {
         if let Some(sleep) = self
             .scale
@@ -452,12 +649,12 @@ impl<K: Keying> Workload<K> {
 }
 impl<K: Keying> CampaignTypes for Workload<K> {
     type JobObservation = ();
-    type Target = Target;
+    type Target = Target<K::Lane>;
     type Action = u8;
     type Key = K::Key;
     type Milestones = bool;
     type Progress = bool;
-    type Snapshot = Snapshot;
+    type Snapshot = Snapshot<K::Lane>;
     type Observations = Observation;
     type Evidence = Evidence;
     type ArchiveReport = ArchiveReport<K::Key>;
@@ -608,38 +805,47 @@ impl<K: Keying> InputPolicy for Workload<K> {
     }
 }
 impl<K: Keying> TargetExecution for Workload<K> {
-    fn new_target(&self) -> Result<Target, String> {
+    fn new_target(&self) -> Result<Target<K::Lane>, String> {
         self.config.validate()?;
         Ok(Target {
             state: self.config.initial(),
             work: 0,
             observation: None,
+            lane: self.genesis_lane(),
         })
     }
-    fn reset(&self, target: &mut Target) {
+    fn reset(&self, target: &mut Target<K::Lane>) {
         target.state = self.config.initial();
         target.observation = None;
+        target.lane = self.genesis_lane();
     }
-    fn restore(&self, target: &mut Target, snapshot: &Snapshot) -> Result<(), Box<dyn Error>> {
+    fn restore(
+        &self,
+        target: &mut Target<K::Lane>,
+        snapshot: &Snapshot<K::Lane>,
+    ) -> Result<(), Box<dyn Error>> {
         if !self.config.valid_state(snapshot.state) {
             return Err("invalid snapshot state for world".into());
         }
         target.state = snapshot.state;
         target.observation = None;
+        target.lane = snapshot.lane.clone();
         Ok(())
     }
-    fn execution_work(&self, target: &Target) -> u64 {
+    fn execution_work(&self, target: &Target<K::Lane>) -> u64 {
         target.work
     }
     fn action_cost_fn(&self) -> fn(&u8) -> u64 {
         self.config.action_cost_fn()
     }
-    fn snapshot_memory_charge(snapshot: &Snapshot) -> usize {
-        std::mem::size_of::<Snapshot>() + snapshot.payload.capacity()
+    fn snapshot_memory_charge(snapshot: &Snapshot<K::Lane>) -> usize {
+        std::mem::size_of::<Snapshot<K::Lane>>()
+            + snapshot.payload.capacity()
+            + snapshot.lane.heap_bytes()
     }
     fn apply_action(
         &self,
-        target: &mut Target,
+        target: &mut Target<K::Lane>,
         action: &u8,
         milestones: &mut bool,
     ) -> Result<(), Box<dyn Error>> {
@@ -652,6 +858,8 @@ impl<K: Keying> TargetExecution for Workload<K> {
         let before = target.state;
         self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
+        self.keying
+            .arrive(&self.config, target.state, self.broken, &mut target.lane);
         target.observation = Some(Observation {
             before,
             after: target.state,
@@ -662,12 +870,12 @@ impl<K: Keying> TargetExecution for Workload<K> {
         *milestones |= self.config.goal(target.state);
         Ok(())
     }
-    fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
+    fn rollout_observations(&self, target: &Target<K::Lane>) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
     }
     fn resolve_action(
         &self,
-        target: &Target,
+        target: &Target<K::Lane>,
         action: &u8,
         chooser: &mut Chooser,
     ) -> Result<u8, Box<dyn Error>> {
@@ -727,10 +935,11 @@ impl<K: Keying> TargetExecution for Workload<K> {
         }
         Ok(result)
     }
-    fn snapshot(&self, target: &mut Target) -> Result<Snapshot, Box<dyn Error>> {
+    fn snapshot(&self, target: &mut Target<K::Lane>) -> Result<Snapshot<K::Lane>, Box<dyn Error>> {
         Ok(Snapshot {
             state: target.state,
             payload: self.payload(target.state),
+            lane: target.lane.clone(),
         })
     }
 }
@@ -741,7 +950,7 @@ impl<K: Keying> searcher::search::shrink::ShrinkPolicy for Workload<K> {
             .collect()
     }
 
-    fn window_fingerprint(&self, target: &Target) -> Option<u64> {
+    fn window_fingerprint(&self, target: &Target<K::Lane>) -> Option<u64> {
         Some(
             format!("{:?}", target.state)
                 .bytes()
@@ -756,19 +965,24 @@ impl<K: Keying> Evaluation for Workload<K> {
     fn key_shape(&self) -> KeyShape {
         self.keying.shape()
     }
-    fn execution_disposition(&self, target: &Target) -> ExecutionDisposition {
+    fn execution_disposition(&self, target: &Target<K::Lane>) -> ExecutionDisposition {
         match target.state {
             State::Picks(s) if s.dead => ExecutionDisposition::Terminal,
             _ => ExecutionDisposition::Runnable,
         }
     }
-    fn objective_reached(&self, _: &(), target: &Target) -> Result<bool, Box<dyn Error>> {
+    fn objective_reached(&self, _: &(), target: &Target<K::Lane>) -> Result<bool, Box<dyn Error>> {
         Ok(self.config.goal(target.state))
     }
-    fn current_key(&self, target: &Target) -> Result<K::Key, Box<dyn Error>> {
-        self.keying.key(&self.config, target.state, self.broken)
+    fn current_key(&self, target: &Target<K::Lane>) -> Result<K::Key, Box<dyn Error>> {
+        self.keying
+            .key(&self.config, target.state, self.broken, &target.lane)
     }
-    fn complete_candidate_key(&self, key: K::Key, _: &Snapshot) -> Result<K::Key, Box<dyn Error>> {
+    fn complete_candidate_key(
+        &self,
+        key: K::Key,
+        _: &Snapshot<K::Lane>,
+    ) -> Result<K::Key, Box<dyn Error>> {
         Ok(key)
     }
     fn merge_milestones(&self, into: &mut bool, from: bool) {
@@ -786,7 +1000,7 @@ impl<K: Keying> Evaluation for Workload<K> {
     fn merge_snapshot_root_evidence(
         &self,
         e: &mut Evidence,
-        t: &Target,
+        t: &Target<K::Lane>,
     ) -> Result<(), Box<dyn Error>> {
         e.objectives += u64::from(self.config.goal(t.state));
         Ok(())
@@ -1017,7 +1231,8 @@ impl<K: Keying> Evaluation for Workload<K> {
                     e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_))
-                | (World::Picks(_), State::Picks(_), State::Picks(_)) => {}
+                | (World::Picks(_), State::Picks(_), State::Picks(_))
+                | (World::Ridge(_), State::Ridge(_), State::Ridge(_)) => {}
                 (World::Fork(w), State::Fork(_), State::Fork(after)) => {
                     e.fork_first.resize(3, None);
                     let reached = [
@@ -1181,12 +1396,53 @@ pub enum KeyKind {
     Strategy,
 }
 
+fn rekeyed<J: Keying, K: Keying>(workload: &Workload<J>, keying: K) -> Workload<K> {
+    Workload {
+        config: workload.config.clone(),
+        broken: workload.broken,
+        scale: workload.scale,
+        keying,
+    }
+}
+
+fn hand_campaign<K: Keying>(
+    workload: &Workload,
+    keying: K,
+    shadow: Option<Strategic>,
+    run: (u64, u64, bool, u32, SearchSettings),
+) -> Result<serde_json::Value, Box<dyn Error>>
+where
+    K::Key: 'static,
+    <K::Key as ArchiveKey>::Lineage: std::fmt::Debug + Eq + Send + Sync,
+{
+    let (seed, budget, verify, workers, settings) = run;
+    match shadow {
+        None => campaign(
+            &rekeyed(workload, keying),
+            seed,
+            budget,
+            verify,
+            workers,
+            settings,
+        ),
+        Some(strategic) => campaign(
+            &rekeyed(workload, Shadowed::new(keying, strategic)),
+            seed,
+            budget,
+            verify,
+            workers,
+            settings,
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_kept(
     workload: &Workload,
     keep: Keep,
     key: KeyKind,
     strategy: Option<&str>,
+    shadow: bool,
     seed: u64,
     budget: u64,
     verify: bool,
@@ -1196,38 +1452,30 @@ pub fn run_kept(
     if !(1..=64).contains(&workers) {
         return Err("workers must be 1..=64".into());
     }
-    if strategy.is_some() && key != KeyKind::Strategy {
-        return Err("a strategy text needs key strategy".into());
+    if strategy.is_some() && key != KeyKind::Strategy && !shadow {
+        return Err("a strategy text needs key strategy or a shadow".into());
     }
-    let rekeyed = |keying| Workload {
-        config: workload.config.clone(),
-        broken: workload.broken,
-        scale: workload.scale,
-        keying,
+    if shadow && key != KeyKind::Hand {
+        return Err("a shadow runs beside key hand".into());
+    }
+    let strategic = || match strategy {
+        Some(text) => Strategic::new(&workload.config, workload.broken, text),
+        None => Strategic::shipped(&workload.config, workload.broken, keep),
     };
+    let shadowed = if shadow { Some(strategic()?) } else { None };
+    let run = (seed, budget, verify, workers, settings);
+    let ridge = matches!(workload.config, World::Ridge(_));
     let mut report = match (key, keep) {
-        (KeyKind::Hand, Keep::Portfolio) => {
-            campaign(workload, seed, budget, verify, workers, settings)?
+        (KeyKind::Hand, Keep::CapacityTwo) if ridge => {
+            return Err("the ridge family keeps portfolio only".into());
         }
-        (KeyKind::Hand, Keep::CapacityTwo) => campaign(
-            &rekeyed(Hand::<true>),
-            seed,
-            budget,
-            verify,
-            workers,
-            settings,
-        )?,
-        (KeyKind::Strategy, keep) => {
-            let keying = match strategy {
-                Some(text) => Strategic::new(&workload.config, workload.broken, text)?,
-                None => Strategic::shipped(&workload.config, workload.broken, keep)?,
-            };
-            let strategic = Workload {
-                config: workload.config.clone(),
-                broken: workload.broken,
-                scale: workload.scale,
-                keying,
-            };
+        (KeyKind::Hand, Keep::Portfolio) if ridge => {
+            hand_campaign(workload, ridge::Hand, shadowed, run)?
+        }
+        (KeyKind::Hand, Keep::Portfolio) => hand_campaign(workload, Hand::<false>, shadowed, run)?,
+        (KeyKind::Hand, Keep::CapacityTwo) => hand_campaign(workload, Hand::<true>, shadowed, run)?,
+        (KeyKind::Strategy, _) => {
+            let strategic = rekeyed(workload, strategic()?);
             let mut report = campaign(&strategic, seed, budget, verify, workers, settings)?;
             report["policy"] = serde_json::to_value(strategic.keying.compiled.policy_identifier())?;
             report
@@ -1350,6 +1598,7 @@ fn campaign<K: Keying>(
         },
     )?;
     let elapsed = started.elapsed().as_secs_f64();
+    let shadow = workload.keying.shadow()?;
     if verify {
         let replay = replay_campaign_checkpointed(workload, &stream.0, None, None)?;
         if replay != live {
@@ -1507,7 +1756,8 @@ fn campaign<K: Keying>(
     {
         return Err("chain pre-objective work differs from first-objective accounting".into());
     }
-    Ok(serde_json::json!({"seed":seed,"broken":workload.broken,
+    let (decision_stream_sha256, decision_stream_records) = decision_stream(&stream.0)?;
+    let mut out = serde_json::json!({"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
         "work_unit":workload.config.work_unit(),
         "mixture_policy":report.mixture_policy,
@@ -1523,9 +1773,14 @@ fn campaign<K: Keying>(
         "first_objective_work":first_objective_work,"parent_draws":parent_draws,"skipped_draws":skipped_draws,
         "success":first_objective_work.is_some_and(|w|w<=budget),
         "elapsed_seconds":elapsed,"stream_bytes":stream.0.len(),"stream_sha256":report.stream_sha256,
+        "decision_stream_sha256":decision_stream_sha256,"decision_stream_records":decision_stream_records,
         "resident_memory_bytes":report.resident_memory_bytes,"history_memory_bytes":report.history_memory_bytes,
         "evidence":report.archive.evidence,
-        "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify}))
+        "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify});
+    if let Some(shadow) = shadow {
+        out["shadow"] = serde_json::to_value(shadow)?;
+    }
+    Ok(out)
 }
 
 fn campaign_config<K: Keying>(
@@ -1564,13 +1819,14 @@ fn telemetry_now() -> std::time::Instant {
     std::time::Instant::now()
 }
 
-impl searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot {
+impl<L: Lane> searcher::search::snapshot_codec::CheckpointSnapshot for Snapshot<L> {
     type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
     fn checkpoint_image_charge(
         &self,
         budget: &mut searcher::search::checkpoint::image::ImageBudget,
     ) -> Result<(), Box<dyn std::error::Error>> {
         budget.reserve(std::mem::size_of::<Self>())?;
+        budget.reserve(self.lane.heap_bytes())?;
         budget.array::<u8>(self.payload.capacity())
     }
     fn freeze_checkpoint(&self) -> Result<Self, Box<dyn std::error::Error>> {
@@ -1603,6 +1859,7 @@ mod tests {
         Snapshot {
             state,
             payload: Vec::new(),
+            lane: (),
         }
     }
     use searcher::search::campaign::{
@@ -2246,6 +2503,7 @@ mod tests {
                 Keep::Portfolio,
                 crate::KeyKind::Hand,
                 None,
+                false,
                 test_seed(),
                 2000,
                 true,
@@ -2261,6 +2519,7 @@ mod tests {
                 Keep::Portfolio,
                 crate::KeyKind::Hand,
                 None,
+                false,
                 test_seed(),
                 2000,
                 true,
@@ -2287,6 +2546,7 @@ mod tests {
             Keep::Portfolio,
             crate::KeyKind::Hand,
             None,
+            false,
             test_seed(),
             40,
             true,
@@ -2318,6 +2578,7 @@ mod tests {
                 keep,
                 crate::KeyKind::Hand,
                 None,
+                false,
                 test_seed(),
                 2000,
                 true,
