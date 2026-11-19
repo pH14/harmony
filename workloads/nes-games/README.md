@@ -155,8 +155,10 @@ goal, and a game has at most 128 `sometimes` declarations.
 
 `NesWorkload<G, M>` is the `Workload` implementation for every such game, with
 `NesTarget<G, M>` as its target. An action stops at the first frame the
-strategy rejects or that meets the goal, and the target replays the hold cut
-to that frame, so the endpoint is the stopping frame. The target reports an
+strategy rejects or that meets the goal, so the endpoint is the stopping frame.
+The target replays the hold cut to that frame only when a snapshot or the next
+action needs the machine there, and checks that the replay reaches the same
+work RAM, so a terminal stop runs its chord once. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
 the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it
