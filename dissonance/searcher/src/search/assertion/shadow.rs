@@ -51,6 +51,7 @@ pub struct Disagreements {
     pub progress: usize,
     pub preference: usize,
     pub preference_count: bool,
+    pub capacity: bool,
 }
 
 impl Disagreements {
@@ -62,6 +63,7 @@ impl Disagreements {
             + self.progress
             + self.preference
             + usize::from(self.preference_count)
+            + usize::from(self.capacity)
     }
 }
 
@@ -136,6 +138,7 @@ impl<H: ArchiveKey + Debug> ShadowTable<H> {
         let pairs = &counts.pairs;
         let mut disagreements = Disagreements {
             preference_count: H::preferences() != compiled.shape().preferences,
+            capacity: H::capacity() != compiled.shape().capacity,
             ..Disagreements::default()
         };
         let mut examples = Vec::new();
@@ -212,15 +215,15 @@ impl<H: ArchiveKey + Debug> ShadowTable<H> {
                 .take(4)
                 .map(|fault| format!("progress: {fault:?}")),
         );
-        let mut by_slot: BTreeMap<(u32, u64, u32), Vec<(H, AssertionKey)>> = BTreeMap::new();
+        let mut by_cell: BTreeMap<Cell, Vec<(H, AssertionKey)>> = BTreeMap::new();
         for (hand, key) in &keyed {
-            by_slot
-                .entry((key.progress, key.place.get(), key.identity))
+            by_cell
+                .entry((key.progress, key.place.get()))
                 .or_default()
                 .push((*hand, *key));
         }
         let preferences = compiled.shape().preferences.max(H::preferences());
-        for held in by_slot.values_mut() {
+        for held in by_cell.values_mut() {
             for preference in 0..preferences {
                 let faults = adjacent_disagreements(
                     held,

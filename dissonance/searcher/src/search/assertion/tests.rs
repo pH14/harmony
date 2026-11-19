@@ -1175,6 +1175,9 @@ impl ArchiveKey for Banded {
     fn identity(self) -> u8 {
         self.band
     }
+    fn capacity() -> usize {
+        1
+    }
     fn complete(self, parent: Option<(Self, &())>) -> Self {
         let Some((parent, ())) = parent else {
             return self;
@@ -1261,4 +1264,102 @@ fn the_shadow_threads_the_accumulator_and_the_hand_lineage_through_a_restore() {
     assert_eq!(report.keyed_states, 7);
     assert_eq!(report.lineage_changes, 4);
     assert_ne!(raw.report(&compiled).unwrap().disagreements.total(), 0);
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+struct Hurried {
+    room: u8,
+    lives: u8,
+    time: u16,
+}
+
+impl ArchiveKey for Hurried {
+    type Place = u8;
+    type Progress = u8;
+    type Identity = u8;
+    type Lineage = ();
+    fn place(self) -> u8 {
+        self.room
+    }
+    fn progress(self) -> u8 {
+        0
+    }
+    fn identity(self) -> u8 {
+        self.lives
+    }
+    fn capacity() -> usize {
+        1
+    }
+    fn preferences() -> usize {
+        1
+    }
+    fn preference_cmp(self, _: usize, other: Self) -> Ordering {
+        other.time.cmp(&self.time)
+    }
+    fn complete(self, _: Option<(Self, &())>) -> Self {
+        self
+    }
+    fn record(_: &mut (), _: Self) {}
+}
+
+fn shadow_of(strategy: &str, states: &[Walk]) -> ShadowReport {
+    let compiled = Compiled::parse(strategy, &catalog()).unwrap();
+    let table = ShadowTable::default();
+    for state in states {
+        let key = compiled
+            .observe(&record(*state), &mut Accumulator::default())
+            .key;
+        let hand = Hurried {
+            room: state.room,
+            lives: state.lives,
+            time: state.time,
+        };
+        table.count(Some(hand), key, false);
+    }
+    table.report(&compiled).unwrap()
+}
+
+#[test]
+fn a_preference_disagreement_between_identities_of_one_cell_is_a_fault() {
+    let states = [(3, 10), (5, 20)].map(|(lives, time)| Walk {
+        lives,
+        time,
+        ..Walk::default()
+    });
+    let strategy = |prefer: &str| {
+        format!(
+            "capacity = 1\nspread = \"'position.room'\"\nidentity = \"lives\"\nprefer = [[\"time: {prefer}\"]]\n"
+        )
+    };
+    let agreeing = shadow_of(&strategy("less"), &states);
+    assert_eq!(agreeing.disagreements.total(), 0, "{:?}", agreeing.examples);
+    let opposed = shadow_of(&strategy("more"), &states);
+    assert_eq!(
+        (opposed.disagreements.cell, opposed.disagreements.slot),
+        (0, 0)
+    );
+    assert_eq!(
+        opposed.disagreements.preference, 1,
+        "{:?}",
+        opposed.examples
+    );
+}
+
+#[test]
+fn a_capacity_that_differs_from_the_hand_key_is_a_fault() {
+    let states = [Walk {
+        lives: 3,
+        ..Walk::default()
+    }];
+    let strategy = |capacity: usize| {
+        format!(
+            "capacity = {capacity}\nspread = \"'position.room'\"\nidentity = \"lives\"\nprefer = [[\"time: less\"]]\n"
+        )
+    };
+    let same = shadow_of(&strategy(1), &states);
+    assert_eq!(same.disagreements.total(), 0, "{:?}", same.disagreements);
+    let wider = shadow_of(&strategy(2), &states);
+    assert_eq!(wider.disagreements.total(), 1, "{:?}", wider.disagreements);
 }

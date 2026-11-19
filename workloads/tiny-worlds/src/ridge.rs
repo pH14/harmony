@@ -344,6 +344,7 @@ mod tests {
             assert_eq!(shadow["disagreements"][field], 0, "{field}: {shadow}");
         }
         assert_eq!(shadow["disagreements"]["preference_count"], false);
+        assert_eq!(shadow["disagreements"]["capacity"], false);
         assert_eq!(shadow["unknown_restores"], 0);
         assert!(shadow["lineage_changes"].as_u64().unwrap() > 0, "{shadow}");
         assert_eq!(shadow["tiers"].as_array().unwrap().len(), 3, "{shadow}");

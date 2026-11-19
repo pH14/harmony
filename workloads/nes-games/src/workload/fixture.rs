@@ -251,6 +251,9 @@ impl crate::search::archive::ArchiveKey for LedgeKey {
     fn identity(self) -> u8 {
         self.band
     }
+    fn capacity() -> usize {
+        1
+    }
     fn complete(self, parent: Option<(Self, &())>) -> Self {
         let Some((parent, ())) = parent else {
             return self;
@@ -287,7 +290,7 @@ impl Game for Stairs {
 
     const NAME: &'static str = "stairs";
     const STRATEGY: &'static str = r#"
-capacity = 1
+capacity = 2
 goal = "room >= 9"
 spread = "room"
 identity = ["highest(x, room)", "dwell"]
