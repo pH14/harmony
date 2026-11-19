@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod arcade;
+#[cfg(test)]
+mod fixture;
+pub mod shadow;
 pub mod target;
 
 #[cfg(unix)]
@@ -19,6 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
+pub use shadow::{Shadow, ShadowHook, ShadowToken};
 pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
@@ -781,6 +785,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize {
         std::mem::size_of::<Self::Snapshot>()
             .saturating_add(snapshot.emulator_state.memory_charge())
+            .saturating_add(snapshot.accumulator.heap_bytes())
     }
 
     fn new_target(&self) -> Result<NesTarget<G, M>, String> {

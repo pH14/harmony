@@ -611,7 +611,7 @@ catalog names:
 | --- | --- |
 | `capacity` | Entries a slot keeps under each preference (default 2). |
 | `tier` | Progress as a tuple; tuples order lexicographically. |
-| `[[stage]]` | Progress as a staged plan: `name`, `goal`, `objective`, `step`, `latch`, `carry`, with the same locate rules as `plan::locate`. A goal that names a numeric `sometimes` declaration defaults its objective to the gap (negated for the less-than forms) stepped by the left unit. |
+| `[[stage]]` | Progress as a staged plan: `name`, `goal`, `objective`, `step`, `latch`, with the same locate rules as `plan::locate`. A goal that names a numeric `sometimes` declaration defaults its objective to the gap (negated for the less-than forms) stepped by the left unit. |
 | `spread` | The place, as a tuple. |
 | `identity` | The slot identity, as a tuple. |
 | `prefer` | Up to two preference lists of `expression: more` or `expression: less`. |
@@ -625,10 +625,16 @@ catalog names:
 Expressions have integers, `none`, names (quote a name with spaces as
 `'name'`), tuples, arithmetic (division and remainder take a literal divisor),
 comparisons, `and`/`or`/`not`, `if … then … else …`, and the functions `min`,
-`max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`. The lineage
-aggregates `highest`, `ever`, `count`, `last` and `first` (each with an
-optional `since` argument that resets it) read a value along the parent chain;
-a strategy holds at most eight.
+`max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`.
+
+Two lineage features read along the parent chain, and both are Antithesis's.
+The aggregate `highest(x)` is the Antithesis watermark: the largest value of
+`x` on the path so far. A stage's `latch` is the Antithesis satisfied
+`sometimes` kept as a checkpoint: once a path's key is past a latched stage,
+later keys on that path skip the stage's goal. The second argument of
+`highest(x, s)` is ours: the maximum restarts whenever `s` differs from the
+parent's value, which expresses a band that resets on a warp. A strategy holds
+at most eight aggregates.
 
 **Compilation.** `Compiled::new` checks every name against the catalog, runs
 interval analysis from the declared ranges, and packs each tuple into an
@@ -662,13 +668,12 @@ bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
 padding), `identity` (32 bits), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
 its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
-stage latch and carry state live in an `Accumulator` that the front end keeps
-beside its state and `Compiled::observe` advances in place; a strategy without
-them `is_pure` and needs only `Compiled::key`. The accumulator holds the stage
+the latched stage live in an `Accumulator` that the front end keeps beside its
+state and `Compiled::observe` advances in place; a strategy without them
+`is_pure` and needs only `Compiled::key`. The accumulator holds the stage
 inline and boxes only the values the strategy declares, two per aggregate and
-the objective when a stage carries or an aggregate reads it, so it is 24
-bytes and allocates nothing for a strategy without aggregates or carried
-stages. Capacity and preference count come
+the stage objective when an aggregate reads it, so it is 24 bytes and
+allocates nothing for a strategy without aggregates. Capacity and preference count come
 from the strategy, so `Archive` and the campaign take them as a `KeyShape`
 from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 `ArchiveKey::preferences`.
@@ -718,6 +723,25 @@ the last frame of every action.
 **Front ends.** `Compiled::observe` advances the accumulator and returns the
 key, the index of the first `reject` line that holds, and whether the `goal`
 holds.
+
+**Shadow keys.** `assertion/shadow.rs` compares a hand `ArchiveKey` with a
+strategy over the same states. A `ShadowCursor` lives beside a front end's
+state and travels with its snapshots: `observe` advances its accumulator and
+keeps the compiled key, and `pair` completes the hand key against the previous
+completed key with `ArchiveKey::complete` (once per arrival), records its
+lineage, and counts the pair in a `ShadowTable`. `ShadowTable::report` returns
+the `ShadowReport`: absent mismatches, cells and slots that split or join
+between the two keys, progress and preference orders that disagree between
+adjacent keys, a preference count or capacity mismatch, unknown restores,
+arrivals the front end never paired (`unobserved`), and how many hand keys the
+lineage changed. Preferences are compared among all the keys of a cell, across
+identities, since the selector ranks a cell's holders across its slots
+(`cell_best`) as well as within each slot. The comparison reads the preference
+orders alone, without the archive's cost and id tie-breaks, so two keys that
+pick the same holder through a tie-break still count a disagreement; it can
+report a false disagreement but never a false agreement. The cursor records a
+lineage at every arrival and the archive at admitted entries, so the two agree
+for a hand key whose `complete` reads only the parent key.
 `workloads/tiny-worlds` keys every world from a strategy file. An emulated
 program's workload lowers each target to a decoder and a declaration list and
 runs every such target through one `Workload` implementation.

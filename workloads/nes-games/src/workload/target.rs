@@ -90,6 +90,7 @@ where
         budget: &mut searcher::search::checkpoint::image::ImageBudget,
     ) -> Result<(), Box<dyn Error>> {
         budget.reserve(std::mem::size_of::<Self>())?;
+        budget.reserve(self.accumulator.heap_bytes())?;
         budget.array::<u8>(self.emulator_state.capacity())
     }
     fn freeze_checkpoint(&self) -> Result<Self, Box<dyn Error>> {
@@ -774,4 +775,83 @@ pub(crate) fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], Mach
     machine.read(0, WRAM_SIZE as u32)?.try_into().map_err(|_| {
         MachineError::Backend("the system RAM window has an invalid length".to_owned())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        search::{
+            campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry},
+            snapshot_codec::{read_checkpoint, write_checkpoint},
+        },
+        workload::{
+            SNAPSHOT_CHECKPOINT_FORMAT,
+            fixture::{LEFT, Ledge, RIGHT, Spot, Stepper, WARP},
+        },
+    };
+
+    type Ledged = NesTarget<Ledge, Stepper>;
+
+    fn ledged() -> Ledged {
+        let lowered = Arc::new(Lowered::new(Ledge, Ledge::STRATEGY).unwrap());
+        assert!(!lowered.compiled.is_pure());
+        NesTarget::from_machine(lowered, Stepper::default()).unwrap()
+    }
+
+    fn walk(target: &mut Ledged, chords: &[(u8, u8)]) -> Vec<Option<AssertionKey>> {
+        chords
+            .iter()
+            .map(|&(buttons, frames)| {
+                target.apply(&ButtonChord::new(buttons, frames));
+                assert_eq!(target.exit_kind(), ExitKind::Ok);
+                target.observation().key
+            })
+            .collect()
+    }
+
+    const PAST_THE_LEDGE: [(u8, u8); 2] = [(RIGHT, 4), (LEFT, 3)];
+    const ON: [(u8, u8); 4] = [(LEFT, 1), (RIGHT, 1), (WARP, 1), (RIGHT, 2)];
+
+    #[test]
+    fn a_restore_brings_back_the_accumulator_so_the_keys_after_it_repeat() {
+        let mut target = ledged();
+        walk(&mut target, &PAST_THE_LEDGE);
+        let snapshot = target.snapshot().unwrap();
+        let first = walk(&mut target, &ON);
+        let view = target.lowered.compiled.view(first[0].unwrap());
+        assert_eq!(
+            (view.stage.as_deref(), view.identity),
+            (Some("beyond"), vec![4])
+        );
+        target.restore(&snapshot).unwrap();
+        assert_eq!(walk(&mut target, &ON), first);
+    }
+
+    #[test]
+    fn the_snapshot_checkpoint_round_trips_the_accumulator() {
+        let mut target = ledged();
+        walk(&mut target, &PAST_THE_LEDGE);
+        let snapshot = target.snapshot().unwrap();
+        assert!(snapshot.accumulator.heap_bytes() > 0);
+        let mut bytes = Vec::new();
+        write_checkpoint(
+            &SnapshotCheckpoint {
+                format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                entries: vec![SnapshotCheckpointEntry {
+                    id: 7,
+                    snapshot: snapshot.clone(),
+                }],
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        let read: SnapshotCheckpoint<NesSnapshot<Spot>> =
+            read_checkpoint(&mut bytes.as_slice(), SNAPSHOT_CHECKPOINT_FORMAT).unwrap();
+        let decoded = &read.entries[0].snapshot;
+        assert_eq!(decoded, &snapshot);
+        let first = walk(&mut target, &ON);
+        target.restore(decoded).unwrap();
+        assert_eq!(walk(&mut target, &ON), first);
+    }
 }
