@@ -753,7 +753,11 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
         let offer = (!target.observation().stops())
             .then(|| game.lowered.game.moves(&target.observation().state).offer)
             .flatten();
-        let resolved = if let Some(asked) = asked_chord(drawn, offer.as_ref(), previous.as_ref()) {
+        let asked = asked_chord(drawn, offer.as_ref(), previous.as_ref());
+        if asked.is_some() && chooser.is_none() && !chord::is_ask(drawn) {
+            break;
+        }
+        let resolved = if let Some(asked) = asked {
             let chooser = chooser.as_mut().ok_or_else(|| {
                 format!("{} drew a chord for a job without a choice plan", G::NAME)
             })?;

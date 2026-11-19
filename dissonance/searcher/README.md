@@ -583,9 +583,9 @@ acts on the job's first ask at an undeclared site, and hold and the profile
 apply at every undeclared site as above. The rate is static
 data from the workload, as Hegel's rule weights are fixed at declaration:
 nothing updates it from results, and redrawing or inheriting a profile leaves
-it as declared. A site without one uses the profile. A NES game declares one
-for a move offered beside the chord tree, so the move keeps its own rate while
-the chord sites keep the profile that reproduces the chord draw. The
+it as declared. A site without one uses the profile. A workload can declare
+one for a move it offers beside its chord sites, so the move keeps its own
+rate while the chord sites keep the profile that reproduces the chord draw. The
 coordinator reads the declared rates from `InputPolicy::choice_sites` once,
 every plan carries them (`ChoicePlan::declared`, and `Chooser::contrary` gives
 the rate a site uses), and the catalog records each with its site. A campaign

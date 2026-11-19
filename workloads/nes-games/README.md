@@ -289,7 +289,10 @@ each edit and hold with the shares of the `change_one_control` draw the other
 games keep. That profile is the default policy, `with_choice_policy` sets
 another, and the evaluator's `choices` request field passes an arm's policy
 through. The chord draw policy is `chord_tree_v1`. A job without a plan, a
-continuation, replays recorded chords and never meets an unresolved one. An
+shrink candidate or a continuation, replays recorded chords and never meets an
+unresolved one. It ends before a recorded move answer that the state it
+reaches does not offer, so a shrink candidate holding one does not hold and a
+continuation's tail is cut there. An
 unresolved chord matches no archived chord, so the searcher's skip of a
 suffix whose every prefix is archived does not apply to these games.
 
