@@ -1797,6 +1797,19 @@ mod tests {
     }
 
     #[test]
+    fn a_heal_inside_a_held_cut_runs_at_once_and_the_cut_heals_again_when_it_closes() {
+        let mut sup = Supervisor::new(1).with_heal(Some(4));
+        let windows = [
+            (0, ProcessAction::RunHook(1), 10, 80),
+            (0, ProcessAction::RunHook(4), 30, 40),
+        ];
+        assert_eq!(sup.poll(&standing(15, &windows), &[]), [Action::RunHook(1)]);
+        assert_eq!(sup.poll(&standing(35, &windows), &[]), [Action::RunHook(4)]);
+        assert_eq!(sup.poll(&standing(45, &windows), &[]), []);
+        assert_eq!(sup.poll(&standing(85, &windows), &[]), [Action::HealCuts]);
+    }
+
+    #[test]
     fn hooks_without_a_heal_hook_never_heal() {
         let mut sup = Supervisor::new(1);
         let windows = [(0, ProcessAction::RunHook(2), 10, 20)];

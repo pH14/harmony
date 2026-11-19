@@ -199,7 +199,9 @@ instrumented target.
 ## Actions
 
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
-10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
+10.24 seconds, and the next action starts when that duration ends
+([`target`](src/target.rs)). Each action's window lasts its duration, except a
+`Hook`'s, which can outlast it, as described below. The
 search draws one duration per suffix from the adaptive duration policy, and
 every action in the suffix takes it. Half of those draws repeat the parent's
 last duration while jobs from the parent still keep states, so a lineage keeps
@@ -239,7 +241,7 @@ timing:
 | `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
-| `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
+| `Hook(id, ticks)` | the supervisor runs that hook once when its window opens; the window lasts the action's duration times 1, 2, 4 or 8, set by the top two bits of the action's `choice`, so it can overlap the actions after it; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
 | `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
 
@@ -250,6 +252,29 @@ the action's duration, which the adaptive duration policy draws. The package
 installs a kill as a process restart window over the whole action window, and
 a power loss as a power-loss window plus a restart window over the same span.
 Two adjacent kills of one node join into one longer hold.
+
+A network cut is the exception: it can stay in force while later actions run.
+Clients commonly give up on a request after tens of seconds, such as rqlite's
+30-second forward timeout. A cut shorter than such a timeout delays the reply,
+and only a longer one makes the client retry. A `Hook` window therefore lasts
+up to eight action durations, at most 81.92 seconds, while the timeline still
+advances by each action's own duration. A cut stays in force while any cut
+window is open. A drawn heal hook lifts every cut at once. When the last cut
+window closes, the supervisor heals as before.
+
+This follows Antithesis's documented fault model
+(https://antithesis.com/docs/environment/fault_injection/fault_types/):
+- each fault is a window that expires on its own;
+- faults are scheduled independently of one another and can overlap;
+- a restore fault ends every network fault at once.
+
+The parts that are ours:
+- the window is the action's duration times 2^j, with j from 0 through 3;
+- j comes from the top two bits of `choice`;
+- the longest window is 81.92 seconds.
+
+The hold is part of the action through `choice`, so a search that redraws
+retained actions redraws their holds with them.
 
 Each drawn job also takes a draw profile from its mutation seed, as in swarm
 testing. The profile keeps each offered fault kind with probability one half,

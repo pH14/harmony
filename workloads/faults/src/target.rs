@@ -17,6 +17,7 @@ use crate::guest::GuestChoices;
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
+const HOOK_HOLD_CHOICE_SHIFT: u32 = 62;
 const NOMINAL_COVERAGE_QUANTUM: NonZeroU16 = NonZeroU16::new(1024).unwrap();
 const NS_SHIFT: u32 = 24;
 const JSON_EVENT_ID: u32 = 0;
@@ -492,6 +493,14 @@ fn restart_end(start: u64, horizon: u64) -> u64 {
     start.saturating_add((horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS))
 }
 
+fn hook_hold_steps(choice: u64) -> u64 {
+    1 << (choice >> HOOK_HOLD_CHOICE_SHIFT)
+}
+
+fn hook_end(start: u64, horizon: u64, choice: u64) -> u64 {
+    start.saturating_add(horizon.saturating_mul(hook_hold_steps(choice)))
+}
+
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
     StandingWindow {
         class: DecisionClass::Process.as_u16(),
@@ -613,7 +622,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultOperation::Hook(id, _) => ActionDelta {
             standing: vec![standing(
                 process_target(0, &Fault::RunHook(id)),
-                (start, end),
+                (start, hook_end(start, horizon, action.choice)),
             )],
         },
         FaultOperation::Clock {
@@ -2035,6 +2044,103 @@ mod tests {
         assert_eq!(
             decode_process_target(&fault.target),
             Some((0, Fault::RunHook(9)))
+        );
+    }
+
+    fn hook_with_hold(id: u32, duration: u16, hold_bits: u64) -> FaultAction {
+        FaultAction::from(FaultOperation::Hook(id, ticks(duration)))
+            .with_choice((hold_bits << HOOK_HOLD_CHOICE_SHIFT) | 0x1234)
+    }
+
+    fn hook_spans(actions: &[FaultAction]) -> Vec<(u32, u64, u64)> {
+        standing_windows(WINDOWS, actions)
+            .unwrap()
+            .into_iter()
+            .filter_map(|fault| match decode_process_target(&fault.target) {
+                Some((0, Fault::RunHook(id))) => Some((id, fault.start, fault.end)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cut_hook_stays_in_force_over_the_waits_after_it() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        for (bits, steps) in [(0_u64, 1_u64), (1, 2), (2, 4), (3, 8)] {
+            let mut actions = vec![hook_with_hold(1, 50, bits)];
+            actions.extend([wait; 8]);
+            let covered = usize::try_from(steps).unwrap() - 1;
+            let (start, _) = WINDOWS.window(&actions, 0).unwrap();
+            let (_, last_covered) = WINDOWS.window(&actions, covered).unwrap();
+            assert_eq!(hook_spans(&actions), [(1, start, last_covered)]);
+            assert_eq!(last_covered, start + steps * 50 * TICK);
+            assert_eq!(WINDOWS.window(&actions, 1).unwrap().0, start + 50 * TICK);
+        }
+    }
+
+    #[test]
+    fn the_longest_cut_lasts_eight_of_the_longest_actions() {
+        let spans = hook_spans(&[hook_with_hold(1, 1024, 3)]);
+        assert_eq!(spans.len(), 1);
+        let (_, start, end) = spans[0];
+        assert_eq!(end - start, 8 * 1024 * TICK);
+        assert_eq!(end - start, 81_920_000_000);
+    }
+
+    #[test]
+    fn a_heal_drawn_inside_a_held_cut_opens_at_its_own_step() {
+        let actions = [
+            hook_with_hold(1, 50, 3),
+            FaultOperation::Wait(ticks(50)).into(),
+            hook_with_hold(4, 50, 0),
+        ];
+        let heal = WINDOWS.window(&actions, 2).unwrap();
+        assert_eq!(
+            hook_spans(&actions),
+            [(1, ROOT, ROOT + 8 * 50 * TICK), (4, heal.0, heal.1)]
+        );
+        assert!(ROOT < heal.0 && heal.1 < ROOT + 8 * 50 * TICK);
+    }
+
+    #[test]
+    fn consecutive_held_cuts_overlap() {
+        let actions = [hook_with_hold(1, 50, 1), hook_with_hold(2, 50, 1)];
+        assert_eq!(
+            hook_spans(&actions),
+            [
+                (1, ROOT, ROOT + 100 * TICK),
+                (2, ROOT + 50 * TICK, ROOT + 150 * TICK),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recorded_hook_replays_with_its_hold() {
+        let actions = [
+            hook_with_hold(1, 64, 2),
+            FaultOperation::Kill(0, ticks(64)).into(),
+            hook_with_hold(3, 64, 1),
+        ];
+        let recorded =
+            crate::package::parse_recorded_input(&serde_json::to_string(&actions).unwrap())
+                .unwrap()
+                .actions;
+        assert_eq!(recorded, actions);
+        assert_eq!(
+            standing_windows(WINDOWS, &recorded),
+            standing_windows(WINDOWS, &actions)
+        );
+        assert_eq!(hook_spans(&recorded)[0], (1, ROOT, ROOT + 4 * 64 * TICK));
+        let mut other = actions;
+        other[0] = hook_with_hold(1, 64, 0);
+        assert_ne!(hook_spans(&actions), hook_spans(&other));
+        assert_eq!(
+            fault_policy::decode_windows(
+                &fault_policy::encode_windows(&standing_windows(WINDOWS, &actions).unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            standing_windows(WINDOWS, &actions).unwrap()
         );
     }
 
