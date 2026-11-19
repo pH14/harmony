@@ -1538,7 +1538,10 @@ pub fn root_jobs<K: Keying>(
     if job_budget == 0 {
         return Err("root jobs need a job budget".into());
     }
-    let policy = if workload.choice_sites(&()).is_empty() {
+    let sites = workload.choice_sites(&());
+    ChoiceSite::validate_all(&sites)?;
+    let declared = ChoiceSite::declared_contrary(&sites);
+    let policy = if sites.is_empty() {
         None
     } else {
         Some(workload.choice_policy(&()).validate()?)
@@ -1560,6 +1563,7 @@ pub fn root_jobs<K: Keying>(
                     .untried_first
                     .then(|| u32::try_from(jobs).unwrap_or(u32::MAX)),
                 Vec::new(),
+                declared.clone(),
             ))
         });
         let mut reached = false;

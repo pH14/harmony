@@ -205,3 +205,12 @@ operations = ["shift followed by interrupt-frame capture", "multiply followed by
 claim = "execute"
 layers = ["guest-kernel-pin"]
 disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory. SYSCALL ingress normalizes both saved flags and R11 before the first tick; interrupt ingress preserves arbitrary R11 data. The syscall probe explicitly plants AF=1."
+
+[[instruction]]
+id = "x86-translation-upgrade"
+arch = "x86_64"
+channel = "cached-translation"
+operations = ["stores after a fault-free write upgrade"]
+claim = "execute"
+layers = ["guest-kernel-pin"]
+disposition = "The Harmony guest invalidates the old translation whenever ptep_set_access_flags makes a present entry more permissive, so a store never takes a spurious page fault from a cached read-only entry that host activity may or may not have evicted. The probe caches read-only translations of reusable copy-on-write pages, upgrades them with MADV_POPULATE_WRITE, which takes no hardware fault, then stores to every page and returns its own minor-fault count for those stores, which must be zero."

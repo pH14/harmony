@@ -3,7 +3,7 @@
 use std::{cell::RefCell, fmt, ops::Range};
 
 #[cfg(unix)]
-use machine::quicknes::QuickNesMachine;
+use machine::quicknes::{QuickNesMachine, VideoFrame};
 use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -148,6 +148,36 @@ pub trait NesMemory {
     fn read_save_ram(&self) -> Result<Vec<u8>, MachineError>;
 
     fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError>;
+}
+
+#[cfg(unix)]
+pub trait FilmMachine {
+    fn set_video_capture(&mut self, enabled: bool);
+
+    fn set_audio_capture(&mut self, enabled: bool);
+
+    fn take_video_frame(&mut self) -> Option<VideoFrame>;
+
+    fn take_audio_samples(&mut self) -> Vec<i16>;
+}
+
+#[cfg(unix)]
+impl FilmMachine for QuickNesMachine {
+    fn set_video_capture(&mut self, enabled: bool) {
+        QuickNesMachine::set_video_capture(self, enabled);
+    }
+
+    fn set_audio_capture(&mut self, enabled: bool) {
+        QuickNesMachine::set_audio_capture(self, enabled);
+    }
+
+    fn take_video_frame(&mut self) -> Option<VideoFrame> {
+        QuickNesMachine::take_video_frame(self)
+    }
+
+    fn take_audio_samples(&mut self) -> Vec<i16> {
+        QuickNesMachine::take_audio_samples(self)
+    }
 }
 
 #[cfg(unix)]

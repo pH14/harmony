@@ -970,6 +970,7 @@ mod tests {
             7,
             None,
             Vec::new(),
+            Vec::new(),
         );
         let target = workload.new_target().unwrap();
         let resolved = workload

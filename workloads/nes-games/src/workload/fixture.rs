@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, ops::Range};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    ops::Range,
+};
 
 use machine::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
@@ -26,6 +29,8 @@ pub struct Stepper {
     next: u64,
     staged: Vec<ButtonChord>,
     frames: Vec<[u8; WRAM_SIZE]>,
+    video: Option<VecDeque<[u8; 2]>>,
+    audio: Option<Vec<i16>>,
     pub runs: usize,
     pub drift: u8,
 }
@@ -35,6 +40,18 @@ impl Stepper {
         let mut wram = [0; WRAM_SIZE];
         wram[..2].copy_from_slice(&self.ram);
         wram
+    }
+
+    fn frame(&mut self, buttons: u8) {
+        self.step(buttons);
+        self.ram[0] = self.ram[0].wrapping_add(self.drift);
+        self.frames.push(self.wram());
+        if let Some(video) = &mut self.video {
+            video.push_back(self.ram);
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.extend([0, 0]);
+        }
     }
 
     fn step(&mut self, buttons: u8) {
@@ -78,16 +95,27 @@ impl Machine for Stepper {
 
     fn run(
         &mut self,
-        _until: StopConditions,
+        until: StopConditions,
         _resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
         self.frames.clear();
         self.runs += 1;
+        if until.deadline.is_some() {
+            let Some(chord) = self.staged.first().copied() else {
+                return Ok(StopReason::Quiescent { vtime: Moment(0) });
+            };
+            self.frame(chord.buttons);
+            match chord.bounded_hold_frames() {
+                0 | 1 => {
+                    self.staged.remove(0);
+                }
+                hold => self.staged[0] = ButtonChord::new(chord.buttons, hold - 1),
+            }
+            return Ok(StopReason::Deadline { vtime: Moment(0) });
+        }
         for chord in std::mem::take(&mut self.staged) {
             for _ in 0..chord.bounded_hold_frames() {
-                self.step(chord.buttons);
-                self.ram[0] = self.ram[0].wrapping_add(self.drift);
-                self.frames.push(self.wram());
+                self.frame(chord.buttons);
             }
         }
         Ok(StopReason::Quiescent { vtime: Moment(0) })
@@ -171,6 +199,32 @@ impl NesMemory for Stepper {
 
     fn write_save_ram(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), MachineError> {
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl crate::nes_backend::FilmMachine for Stepper {
+    fn set_video_capture(&mut self, enabled: bool) {
+        self.video = enabled.then(VecDeque::new);
+    }
+
+    fn set_audio_capture(&mut self, enabled: bool) {
+        self.audio = enabled.then(Vec::new);
+    }
+
+    fn take_video_frame(&mut self) -> Option<machine::quicknes::VideoFrame> {
+        self.video
+            .as_mut()?
+            .pop_front()
+            .map(|[x, room]| machine::quicknes::VideoFrame {
+                width: 1,
+                height: 1,
+                rgb24: vec![x, room, 0],
+            })
+    }
+
+    fn take_audio_samples(&mut self) -> Vec<i16> {
+        self.audio.as_mut().map(std::mem::take).unwrap_or_default()
     }
 }
 

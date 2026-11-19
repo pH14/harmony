@@ -7,14 +7,16 @@ use std::{error::Error, sync::Arc};
 #[cfg(unix)]
 use machine::nes::MAX_HOLD_FRAMES;
 #[cfg(unix)]
-use machine::quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine};
+use machine::quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE};
 use machine::{
     Machine, MachineError, SnapId, StopConditions,
     nes::{self, ButtonChord, WRAM_SIZE},
 };
 use serde::{Deserialize, Serialize};
 
-use super::{Game, Lowered, Moves, Offer, Satisfied};
+use super::{Game, Lowered, Moves, Satisfied};
+#[cfg(unix)]
+use crate::nes_backend::FilmMachine;
 use crate::{
     nes_backend::{NesBackend, NesMemory},
     search::{
@@ -63,17 +65,71 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
     }
 }
 
-enum Played<S> {
+enum Walked<S> {
     Arrived {
         frames: u64,
         wram: [u8; WRAM_SIZE],
-        state: S,
+        observation: NesObservation<S>,
+        accumulator: Accumulator,
     },
     Overran {
         frames: u64,
         wram: [u8; WRAM_SIZE],
         state: S,
     },
+}
+
+fn walk_move<G: Game, E>(
+    lowered: &Lowered<G>,
+    mut mv: G::Move,
+    (frame_count, mut state): (u64, G::State),
+    accumulator: &Accumulator,
+    mut wram: [u8; WRAM_SIZE],
+    mut press: impl FnMut(ButtonChord) -> Result<(u64, [u8; WRAM_SIZE]), E>,
+    mut seen: impl FnMut(&G::State),
+) -> Result<Walked<G::State>, E> {
+    let bound = lowered.game.move_frames(mv);
+    let mut frames = 0_u64;
+    let mut arrival = None;
+    while let Some(step) = lowered.game.play(mv, &state) {
+        let (pressed, after) = press(step.chord)?;
+        frames = frames.saturating_add(pressed);
+        wram = after;
+        state = lowered.game.decode(Some(&state), &wram);
+        seen(&state);
+        if frames > bound {
+            return Ok(Walked::Overran {
+                frames,
+                wram,
+                state,
+            });
+        }
+        let mut advanced = accumulator.clone();
+        let observation = lowered.observe(
+            frame_count.saturating_add(frames),
+            state.clone(),
+            &mut advanced,
+        );
+        let stops = observation.stops();
+        arrival = Some((observation, advanced));
+        if stops {
+            break;
+        }
+        match step.rest {
+            Some(next) => mv = next,
+            None => break,
+        }
+    }
+    let (observation, accumulator) = arrival.unwrap_or_else(|| {
+        let mut advanced = accumulator.clone();
+        (lowered.observe(frame_count, state, &mut advanced), advanced)
+    });
+    Ok(Walked::Arrived {
+        frames,
+        wram,
+        observation,
+        accumulator,
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -265,85 +321,115 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         true
     }
 
-    fn play_forced(
+    fn play_move(
         &mut self,
-        mut mv: G::Move,
-        mut state: G::State,
-        mut wram: [u8; WRAM_SIZE],
-        records: &mut Vec<Record>,
-    ) -> Result<Played<G::State>, MachineError> {
-        let bound = self.lowered.game.move_frames(mv);
-        let mut frames = 0_u64;
-        while let Some(step) = self.lowered.game.play(mv, &state) {
-            let pressed = press(&mut self.machine, step.chord)?;
-            self.execution_work = self.execution_work.saturating_add(pressed);
-            frames = frames.saturating_add(pressed);
-            wram = read_wram(&self.machine)?;
-            state = self.lowered.game.decode(Some(&state), &wram);
-            if self.recording {
-                records.push(self.lowered.record(&state).0);
-            }
-            if frames > bound {
-                return Ok(Played::Overran {
-                    frames,
-                    wram,
-                    state,
-                });
-            }
-            match step.rest {
-                Some(next) => mv = next,
-                None => break,
-            }
-        }
-        Ok(Played::Arrived {
-            frames,
-            wram,
-            state,
-        })
-    }
-
-    fn apply_move(&mut self, offer: &Offer<G::Move>, action: &ButtonChord) {
-        let Some(mv) = offer.chosen(action) else {
-            return self.fail();
-        };
-        let start = self.current;
-        let departure = self.observation.clone();
+        mv: G::Move,
+        departure: NesObservation<G::State>,
+        wram: [u8; WRAM_SIZE],
+        accumulator: &mut Accumulator,
+        emitted: &mut Vec<ActionObservation<G::State>>,
+    ) -> Result<(u64, [u8; WRAM_SIZE]), MachineError> {
+        let lowered = Arc::clone(&self.lowered);
+        let recording = self.recording;
         let mut records = Vec::new();
-        let (frames, wram, state, overran) =
-            match self.play_forced(mv, departure.state.clone(), self.current_wram, &mut records) {
-                Ok(Played::Arrived {
-                    frames,
-                    wram,
-                    state,
-                }) => (frames, wram, state, false),
-                Ok(Played::Overran {
-                    frames,
-                    wram,
-                    state,
-                }) => (frames, wram, state, true),
-                Err(_) => return self.fail(),
-            };
-        let frame_count = departure.frame_count.saturating_add(frames);
-        let observation = if overran {
-            NesObservation {
-                frame_count,
-                state,
-                key: None,
-                overran: true,
-                ..departure
+        let machine = &mut self.machine;
+        let work = &mut self.execution_work;
+        let walked = walk_move(
+            &lowered,
+            mv,
+            (departure.frame_count, departure.state.clone()),
+            accumulator,
+            wram,
+            |chord| {
+                let pressed = press(machine, chord)?;
+                *work = work.saturating_add(pressed);
+                Ok((pressed, read_wram(machine)?))
+            },
+            |state| {
+                if recording {
+                    records.push(lowered.record(state).0);
+                }
+            },
+        )?;
+        let (frames, wram, observation) = match walked {
+            Walked::Arrived {
+                frames,
+                wram,
+                observation,
+                accumulator: advanced,
+            } => {
+                *accumulator = advanced;
+                (frames, wram, observation)
             }
-        } else {
-            self.lowered
-                .observe(frame_count, state, &mut self.accumulator)
+            Walked::Overran {
+                frames,
+                wram,
+                state,
+            } => (
+                frames,
+                wram,
+                NesObservation {
+                    frame_count: departure.frame_count.saturating_add(frames),
+                    state,
+                    key: None,
+                    overran: true,
+                    ..departure
+                },
+            ),
         };
-        self.observation = observation.clone();
-        self.action_observations = vec![ActionObservation {
+        emitted.push(ActionObservation {
             observation,
-            cost: frames,
+            cost: 0,
             records,
             choices: Vec::new(),
-        }];
+        });
+        Ok((frames, wram))
+    }
+
+    fn forced_after(&self, emitted: &[ActionObservation<G::State>]) -> Option<G::Move> {
+        let arrival = &emitted.last()?.observation;
+        if arrival.stops() {
+            return None;
+        }
+        self.lowered.game.moves(&arrival.state).forced
+    }
+
+    fn play_forced_after(
+        &mut self,
+        forced: Option<G::Move>,
+        wram: [u8; WRAM_SIZE],
+        accumulator: &mut Accumulator,
+        emitted: &mut Vec<ActionObservation<G::State>>,
+    ) -> Result<(u64, [u8; WRAM_SIZE]), MachineError> {
+        let (Some(mv), Some(departure)) =
+            (forced, emitted.last().map(|last| last.observation.clone()))
+        else {
+            return Ok((0, wram));
+        };
+        self.play_move(mv, departure, wram, accumulator, emitted)
+    }
+
+    fn store_action(
+        &mut self,
+        start: SnapId,
+        mut emitted: Vec<ActionObservation<G::State>>,
+        cost: u64,
+        accumulator: Accumulator,
+        wram: [u8; WRAM_SIZE],
+        stopped: Option<ButtonChord>,
+    ) {
+        let Some(last) = emitted.last_mut() else {
+            return self.fail();
+        };
+        last.cost = cost;
+        self.observation = last.observation.clone();
+        self.action_observations = emitted;
+        self.accumulator = accumulator;
         self.current_wram = wram;
+        if stopped.is_some() {
+            self.stopped = stopped;
+            return;
+        }
         let Ok(next) = self.machine.snapshot() else {
             return self.fail();
         };
@@ -354,13 +440,45 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         self.current = next;
     }
 
+    fn apply_move(&mut self, mv: G::Move) {
+        let start = self.current;
+        let mut accumulator = std::mem::take(&mut self.accumulator);
+        let mut emitted = Vec::new();
+        let departure = self.observation.clone();
+        let Ok((frames, wram)) = self.play_move(
+            mv,
+            departure,
+            self.current_wram,
+            &mut accumulator,
+            &mut emitted,
+        ) else {
+            return self.fail();
+        };
+        let forced = self.forced_after(&emitted);
+        let Ok((forced_frames, wram)) =
+            self.play_forced_after(forced, wram, &mut accumulator, &mut emitted)
+        else {
+            return self.fail();
+        };
+        self.store_action(
+            start,
+            emitted,
+            frames.saturating_add(forced_frames),
+            accumulator,
+            wram,
+            None,
+        );
+    }
+
     fn apply_internal(&mut self, action: &ButtonChord) {
         self.action_observations.clear();
         if self.failed || self.observation.stops() || !self.settle() {
             return;
         }
-        if let Some(offer) = self.lowered.game.moves(&self.observation.state).offer {
-            return self.apply_move(&offer, action);
+        if let Some(offer) = self.lowered.game.moves(&self.observation.state).offer
+            && let Some(mv) = offer.chosen(action)
+        {
+            return self.apply_move(mv);
         }
         let start = self.current;
         if self
@@ -407,7 +525,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             if !observation.stops() {
                 let moves = self.lowered.game.moves(&observation.state);
                 forced = moves.forced;
-                offered = moves.offer.is_some();
+                offered = moves.offer.is_some_and(|offer| offer.cuts());
             }
             let last =
                 offset + 1 == produced_frames || observation.stops() || forced.is_some() || offered;
@@ -455,69 +573,16 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                 return self.fail();
             }
         }
-        let mut current_wram = endpoint_wram;
-        let mut cost = u64::try_from(logical_frames).unwrap_or(u64::MAX);
-        if let Some(mv) = forced {
-            let Some(departure) = emitted.last().map(|last| last.observation.clone()) else {
-                return self.fail();
-            };
-            let (frames, wram, state, overran) =
-                match self.play_forced(mv, departure.state.clone(), endpoint_wram, &mut records) {
-                    Ok(Played::Arrived {
-                        frames,
-                        wram,
-                        state,
-                    }) => (frames, wram, state, false),
-                    Ok(Played::Overran {
-                        frames,
-                        wram,
-                        state,
-                    }) => (frames, wram, state, true),
-                    Err(_) => return self.fail(),
-                };
-            let frame_count = departure.frame_count.saturating_add(frames);
-            cost = cost.saturating_add(frames);
-            let observation = if overran {
-                NesObservation {
-                    frame_count,
-                    state,
-                    key: None,
-                    overran: true,
-                    ..departure
-                }
-            } else {
-                self.lowered.observe(frame_count, state, &mut accumulator)
-            };
-            let arrival = ActionObservation {
-                observation,
-                cost: 0,
-                records,
-                choices: Vec::new(),
-            };
-            emitted.push(arrival);
-            current_wram = wram;
-        }
-        if let Some(last) = emitted.last_mut() {
-            last.cost = cost;
-        }
-        self.action_observations = emitted;
-        if let Some(last) = self.action_observations.last() {
-            self.observation = last.observation.clone();
-        }
-        self.accumulator = accumulator;
-        self.current_wram = current_wram;
-        if deferred {
-            self.stopped = Some(cut);
-            return;
-        }
-        let Ok(next) = self.machine.snapshot() else {
+        let Ok((forced_frames, wram)) =
+            self.play_forced_after(forced, endpoint_wram, &mut accumulator, &mut emitted)
+        else {
             return self.fail();
         };
-        if start != self.genesis && self.machine.drop_snapshot(start).is_err() {
-            let _ = self.machine.drop_snapshot(next);
-            return self.fail();
-        }
-        self.current = next;
+        let cost = u64::try_from(logical_frames)
+            .unwrap_or(u64::MAX)
+            .saturating_add(forced_frames);
+        let stopped = deferred.then_some(cut);
+        self.store_action(start, emitted, cost, accumulator, wram, stopped);
     }
 }
 
@@ -571,7 +636,7 @@ fn run_setup<G: Game, M: Machine>(
 }
 
 #[cfg(unix)]
-impl<G: Game> NesTarget<G, QuickNesMachine> {
+impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
     pub fn render_input(
         &mut self,
         actions: &[ButtonChord],
@@ -592,8 +657,14 @@ impl<G: Game> NesTarget<G, QuickNesMachine> {
             let mut accumulator = self.genesis_accumulator.clone();
             let mut state = self.observation.state.clone();
             for action in actions {
-                let forced = match self.lowered.game.moves(&state).offer {
-                    Some(offer) => offer.chosen(action),
+                let chosen = self
+                    .lowered
+                    .game
+                    .moves(&state)
+                    .offer
+                    .and_then(|offer| offer.chosen(action));
+                let mut next = match chosen {
+                    Some(mv) => Some(mv),
                     None => self
                         .render_action(
                             *action,
@@ -605,36 +676,51 @@ impl<G: Game> NesTarget<G, QuickNesMachine> {
                         )?
                         .and_then(|moves| moves.forced),
                 };
-                if let Some(mut mv) = forced {
-                    let bound = self.lowered.game.move_frames(mv);
-                    let mut frames = 0_u64;
-                    while let Some(step) = self.lowered.game.play(mv, &state) {
-                        self.render_action(
-                            step.chord,
-                            None,
-                            video_output,
-                            audio_output,
-                            &mut metadata,
-                            &mut skip,
-                        )?;
-                        frames = frames.saturating_add(u64::from(step.chord.bounded_hold_frames()));
-                        state = self
-                            .lowered
-                            .game
-                            .decode(Some(&state), &read_wram(&self.machine)?);
-                        if frames > bound {
-                            return Err(format!(
-                                "{} forced move {mv:?} ran past its {bound} frames in the film",
-                                G::NAME
-                            )
-                            .into());
-                        }
-                        match step.rest {
-                            Some(next) => mv = next,
-                            None => break,
-                        }
+                let mut after_offer = chosen.is_some();
+                while let Some(mv) = next.take() {
+                    let lowered = Arc::clone(&self.lowered);
+                    let wram = read_wram(&self.machine)?;
+                    let walked = walk_move(
+                        &lowered,
+                        mv,
+                        (0, state.clone()),
+                        &accumulator,
+                        wram,
+                        |chord| -> Result<_, Box<dyn Error>> {
+                            self.render_action(
+                                chord,
+                                None,
+                                video_output,
+                                audio_output,
+                                &mut metadata,
+                                &mut skip,
+                            )?;
+                            Ok((
+                                u64::from(chord.bounded_hold_frames()),
+                                read_wram(&self.machine)?,
+                            ))
+                        },
+                        |_| {},
+                    )?;
+                    let Walked::Arrived {
+                        observation,
+                        accumulator: advanced,
+                        ..
+                    } = walked
+                    else {
+                        return Err(format!(
+                            "{} move {mv:?} ran past its {} frames in the film",
+                            G::NAME,
+                            lowered.game.move_frames(mv)
+                        )
+                        .into());
+                    };
+                    accumulator = advanced;
+                    state = observation.state.clone();
+                    if after_offer && !observation.stops() {
+                        next = lowered.game.moves(&state).forced;
                     }
-                    state = self.lowered.observe(0, state, &mut accumulator).state;
+                    after_offer = false;
                 }
             }
             let endpoint = state;
@@ -1037,5 +1123,857 @@ mod tests {
         let first = walk(&mut target, &ON);
         target.restore(decoded).unwrap();
         assert_eq!(walk(&mut target, &ON), first);
+    }
+}
+
+#[cfg(test)]
+mod moves {
+    use std::{collections::BTreeMap, ops::Range, sync::Arc};
+
+    use machine::{
+        Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
+        nes::{ButtonChord, WRAM_SIZE, actions_of},
+    };
+
+    use super::NesTarget;
+    use crate::search::assertion::Accumulator;
+    use crate::workload::fixture::{LEFT, Ledge as FixtureLedge, RIGHT, Spot, Stepper, WARP};
+    use crate::{
+        chord::{self, CHORD_SITES, ChordVocabulary},
+        nes_backend::{NesBackend, NesMemory},
+        search::{
+            archive::RetentionPolicy,
+            assertion::{Assertion, Declarations, Number},
+            campaign::TargetExecution,
+            choice::{CERTAIN, Choice, ChoicePlan, ChoiceSite},
+            rollout::RolloutStop,
+        },
+        target::{ExitKind, Target},
+        workload::{
+            EVERY_OPTION, Game, Lowered, Moves, NesRun, NesWorkload, Offer, Play, Satisfied, Step,
+            move_answer, move_chord,
+        },
+    };
+
+    #[derive(Default)]
+    struct Walker {
+        x: u8,
+        held: BTreeMap<u64, u8>,
+        next: u64,
+        staged: Vec<ButtonChord>,
+        frames: Vec<[u8; WRAM_SIZE]>,
+    }
+
+    impl Walker {
+        fn wram(&self) -> [u8; WRAM_SIZE] {
+            let mut wram = [0; WRAM_SIZE];
+            wram[0] = self.x;
+            wram
+        }
+    }
+
+    impl Machine for Walker {
+        type Portable = Vec<u8>;
+
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            self.next += 1;
+            self.held.insert(self.next, self.x);
+            Ok(SnapId(self.next))
+        }
+
+        fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.held.remove(&snap.0);
+            Ok(())
+        }
+
+        fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+            self.replay(snap)?;
+            self.staged = actions_of(env)?;
+            Ok(())
+        }
+
+        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.x = *self
+                .held
+                .get(&snap.0)
+                .ok_or(MachineError::UnknownSnapshot)?;
+            Ok(())
+        }
+
+        fn run(
+            &mut self,
+            _until: StopConditions,
+            _resolve: Option<&Answer>,
+        ) -> Result<StopReason, MachineError> {
+            self.frames.clear();
+            for chord in std::mem::take(&mut self.staged) {
+                for _ in 0..chord.bounded_hold_frames() {
+                    self.x = self.x.saturating_add(chord.buttons & 1);
+                    self.frames.push(self.wram());
+                }
+            }
+            Ok(StopReason::Quiescent { vtime: Moment(0) })
+        }
+
+        fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
+            self.wram()
+                .get(start..start + len as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or(MachineError::ReadOutOfBounds)
+        }
+
+        fn export(
+            &mut self,
+            snap: SnapId,
+            _base: Option<&Vec<u8>>,
+        ) -> Result<Vec<u8>, MachineError> {
+            self.held
+                .get(&snap.0)
+                .map(|x| vec![*x])
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+
+        fn import(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
+            self.next += 1;
+            self.held.insert(self.next, portable[0]);
+            Ok(SnapId(self.next))
+        }
+
+        fn portable_memory_charge(portable: &Vec<u8>) -> usize {
+            portable.len()
+        }
+
+        fn now(&self) -> Moment {
+            Moment(0)
+        }
+
+        fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+            &self.frames
+        }
+    }
+
+    impl NesBackend<Vec<u8>> for Walker {
+        fn export_nes(
+            &mut self,
+            snapshot: SnapId,
+            base: Option<&Vec<u8>>,
+        ) -> Result<Vec<u8>, MachineError> {
+            self.export(snapshot, base)
+        }
+
+        fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
+            self.import(portable)
+        }
+    }
+
+    impl NesMemory for Walker {
+        fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+            Ok(self.wram())
+        }
+
+        fn poke_wram(&mut self, _addr: usize, _byte: u8) -> Result<(), MachineError> {
+            Ok(())
+        }
+
+        fn capture_save_ram_per_frame(&mut self, _range: Range<usize>) {}
+
+        fn save_ram_frames(&self) -> &[u8] {
+            &[]
+        }
+
+        fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+            Ok(Vec::new())
+        }
+
+        fn write_save_ram(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), MachineError> {
+            Ok(())
+        }
+    }
+
+    const FAR_FROM: u8 = 10;
+
+    const STEPS: [(u16, Play<u8>); 3] = [(0, Play::Chord), (1, Play::Move(4)), (2, Play::Move(8))];
+
+    #[derive(Clone, Debug)]
+    struct Walk;
+
+    impl Game for Walk {
+        type State = u8;
+        type Move = u8;
+
+        const NAME: &'static str = "walk";
+        const STRATEGY: &'static str = "goal = \"never\"\ncapacity = 1\ntier = [\"x\"]\n";
+        const CHORDS: ChordVocabulary = ChordVocabulary {
+            held: &[0x00, 0x01],
+            tap: None,
+            short_hold: (2, 12),
+            long_hold: (48, 120),
+        };
+
+        fn setup(&self) -> Vec<ButtonChord> {
+            Vec::new()
+        }
+
+        fn genesis(&self, _state: &u8) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn decode(&self, _previous: Option<&u8>, ram: &[u8]) -> u8 {
+            ram[0]
+        }
+
+        fn declare(&self, x: &u8, out: &mut impl Declarations) {
+            out.declare(Assertion::Value {
+                name: "x",
+                value: Number::byte(*x),
+            });
+            out.declare(Assertion::Value {
+                name: "never",
+                value: Number::flag(false),
+            });
+        }
+
+        fn moves(&self, x: &u8) -> Moves<u8> {
+            Moves::offer(Offer {
+                site: 0,
+                default: 0,
+                options: &STEPS,
+                offered: if *x >= FAR_FROM { EVERY_OPTION } else { 0b011 },
+            })
+        }
+
+        fn move_sites(&self) -> Vec<ChoiceSite> {
+            vec![
+                ChoiceSite::new("step", ["chord", "4", "8"].map(str::to_owned))
+                    .with_contrary(CERTAIN / 4),
+            ]
+        }
+
+        fn play(&self, mv: u8, _state: &u8) -> Option<Step<u8>> {
+            (mv > 0).then(|| Step {
+                chord: ButtonChord::new(1, 1),
+                rest: (mv > 1).then(|| mv - 1),
+            })
+        }
+
+        fn move_frames(&self, mv: u8) -> u64 {
+            u64::from(mv)
+        }
+
+        fn answer_frames(_site: u16, label: u16) -> u64 {
+            4 << label.saturating_sub(1)
+        }
+    }
+
+    const LEDGE: u8 = 4;
+
+    const CLIMB: [(u16, Play<u8>); 2] = [(0, Play::Chord), (1, Play::Move(LEDGE))];
+
+    #[derive(Clone, Debug)]
+    struct Ledge;
+
+    impl Game for Ledge {
+        type State = u8;
+        type Move = u8;
+
+        const NAME: &'static str = "ledge";
+        const STRATEGY: &'static str = Walk::STRATEGY;
+        const CHORDS: ChordVocabulary = Walk::CHORDS;
+
+        fn setup(&self) -> Vec<ButtonChord> {
+            Vec::new()
+        }
+
+        fn genesis(&self, _state: &u8) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn decode(&self, _previous: Option<&u8>, ram: &[u8]) -> u8 {
+            ram[0]
+        }
+
+        fn declare(&self, x: &u8, out: &mut impl Declarations) {
+            Walk.declare(x, out);
+        }
+
+        fn moves(&self, x: &u8) -> Moves<u8> {
+            match *x {
+                x if x < LEDGE => Moves::offer(Offer {
+                    site: 0,
+                    default: 0,
+                    options: &CLIMB,
+                    offered: EVERY_OPTION,
+                }),
+                LEDGE => Moves::forced(3),
+                _ => Moves::none(),
+            }
+        }
+
+        fn move_sites(&self) -> Vec<ChoiceSite> {
+            vec![ChoiceSite::new("climb", ["chord", "4"].map(str::to_owned))]
+        }
+
+        fn play(&self, mv: u8, state: &u8) -> Option<Step<u8>> {
+            Walk.play(mv, state)
+        }
+
+        fn move_frames(&self, mv: u8) -> u64 {
+            u64::from(mv)
+        }
+
+        fn answer_frames(_site: u16, label: u16) -> u64 {
+            u64::from(label) * u64::from(LEDGE)
+        }
+    }
+
+    const PERCH: u8 = 3;
+
+    const HOPS: [(u16, Play<u8>); 2] = [(0, Play::Move(1)), (1, Play::Move(2))];
+
+    #[derive(Clone, Debug)]
+    struct Perch;
+
+    impl Game for Perch {
+        type State = u8;
+        type Move = u8;
+
+        const NAME: &'static str = "perch";
+        const STRATEGY: &'static str = Walk::STRATEGY;
+        const CHORDS: ChordVocabulary = Walk::CHORDS;
+
+        fn setup(&self) -> Vec<ButtonChord> {
+            Vec::new()
+        }
+
+        fn genesis(&self, _state: &u8) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn decode(&self, _previous: Option<&u8>, ram: &[u8]) -> u8 {
+            ram[0]
+        }
+
+        fn declare(&self, x: &u8, out: &mut impl Declarations) {
+            Walk.declare(x, out);
+        }
+
+        fn moves(&self, x: &u8) -> Moves<u8> {
+            if *x == PERCH {
+                Moves::offer(Offer {
+                    site: 0,
+                    default: 0,
+                    options: &HOPS,
+                    offered: EVERY_OPTION,
+                })
+            } else {
+                Moves::none()
+            }
+        }
+
+        fn move_sites(&self) -> Vec<ChoiceSite> {
+            vec![ChoiceSite::new("hop", ["1", "2"].map(str::to_owned))]
+        }
+
+        fn play(&self, mv: u8, state: &u8) -> Option<Step<u8>> {
+            Walk.play(mv, state)
+        }
+
+        fn move_frames(&self, mv: u8) -> u64 {
+            u64::from(mv)
+        }
+    }
+
+    fn perched(chord: ButtonChord) -> NesTarget<Perch, Walker> {
+        let lowered = Arc::new(Lowered::new(Perch, Perch::STRATEGY).expect("the perch compiles"));
+        let mut target =
+            NesTarget::from_power_on(lowered, Walker::default()).expect("a perch target");
+        target.apply(&chord);
+        assert!(!target.observation().stops());
+        assert_eq!(
+            (target.observation().frame_count, target.observation().state),
+            (3, PERCH)
+        );
+        assert_eq!(target.machine.wram()[0], PERCH);
+        target
+    }
+
+    fn arrivals(target: &NesTarget<Ledge, Walker>) -> Vec<(u64, u8, u64)> {
+        target
+            .last_action_observations()
+            .iter()
+            .map(|arrival| {
+                (
+                    arrival.observation.frame_count,
+                    arrival.observation.state,
+                    arrival.cost,
+                )
+            })
+            .collect()
+    }
+
+    const TRAIL: [u8; 10] = [
+        RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, RIGHT, LEFT, LEFT, LEFT, LEFT,
+    ];
+
+    const TRAIL_OPTIONS: [(u16, Play<usize>); 2] = [(0, Play::Chord), (1, Play::Move(0))];
+
+    const PLAIN: &str = "capacity = 1\ngoal = \"room >= 9\"\ntier = [\"x\"]\n";
+    const GOAL_INSIDE: &str = "capacity = 1\ngoal = \"x >= 6\"\ntier = [\"x\"]\n";
+    const REJECT_INSIDE: &str =
+        "capacity = 1\ngoal = \"room >= 9\"\nreject = \"x >= 6\"\ntier = [\"x\"]\n";
+    const GOAL_AFTER_A_PEAK: &str =
+        "capacity = 1\ngoal = \"highest(x >= 8) and x == 6 and room == 1\"\ntier = [\"x\"]\n";
+
+    #[derive(Clone, Debug)]
+    struct Trail;
+
+    impl Game for Trail {
+        type State = Spot;
+        type Move = usize;
+
+        const NAME: &'static str = "trail";
+        const STRATEGY: &'static str = PLAIN;
+        const CHORDS: ChordVocabulary = ChordVocabulary {
+            held: &[RIGHT, LEFT, WARP],
+            tap: None,
+            short_hold: (1, 2),
+            long_hold: (3, 8),
+        };
+
+        fn setup(&self) -> Vec<ButtonChord> {
+            Vec::new()
+        }
+
+        fn genesis(&self, _: &Spot) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn decode(&self, previous: Option<&Spot>, ram: &[u8]) -> Spot {
+            FixtureLedge.decode(previous, ram)
+        }
+
+        fn declare(&self, state: &Spot, out: &mut impl Declarations) {
+            FixtureLedge.declare(state, out);
+        }
+
+        fn moves(&self, spot: &Spot) -> Moves<usize> {
+            match (spot.room, spot.x) {
+                (0 | 1, x) if x < 6 => Moves::offer(Offer {
+                    site: 0,
+                    default: 0,
+                    options: &TRAIL_OPTIONS,
+                    offered: EVERY_OPTION,
+                }),
+                (2, _) => Moves::forced(0),
+                _ => Moves::none(),
+            }
+        }
+
+        fn move_sites(&self) -> Vec<ChoiceSite> {
+            vec![ChoiceSite::new(
+                "trail",
+                ["chord", "out and back"].map(str::to_owned),
+            )]
+        }
+
+        fn play(&self, at: usize, _: &Spot) -> Option<Step<usize>> {
+            TRAIL.get(at).map(|&buttons| Step {
+                chord: ButtonChord::new(buttons, 1),
+                rest: (at + 1 < TRAIL.len()).then_some(at + 1),
+            })
+        }
+
+        fn move_frames(&self, _: usize) -> u64 {
+            TRAIL.len() as u64
+        }
+
+        fn answer_frames(_site: u16, label: u16) -> u64 {
+            if label == 1 { TRAIL.len() as u64 } else { 1 }
+        }
+    }
+
+    fn trail(strategy: &str) -> NesTarget<Trail, Stepper> {
+        let lowered = Arc::new(Lowered::new(Trail, strategy).expect("the trail compiles"));
+        NesTarget::from_machine(lowered, Stepper::default()).expect("a trail target")
+    }
+
+    fn spot(target: &NesTarget<Trail, Stepper>) -> (u64, u8, u8) {
+        let observation = target.observation();
+        (
+            observation.frame_count,
+            observation.state.x,
+            observation.state.room,
+        )
+    }
+
+    fn costs(target: &NesTarget<Trail, Stepper>) -> Vec<u64> {
+        target
+            .last_action_observations()
+            .iter()
+            .map(|arrival| arrival.cost)
+            .collect()
+    }
+
+    fn folded(target: &NesTarget<Trail, Stepper>, before: &Accumulator, at: Spot) -> Accumulator {
+        let mut accumulator = before.clone();
+        let _ = target.lowered.observe(0, at, &mut accumulator);
+        accumulator
+    }
+
+    fn assert_stays(target: &mut NesTarget<Trail, Stepper>) {
+        let (observation, work) = (target.observation().clone(), target.execution_work());
+        target.apply(&ButtonChord::new(RIGHT, 1));
+        assert_eq!(target.observation(), &observation);
+        assert_eq!(target.execution_work(), work);
+        assert!(target.last_action_observations().is_empty());
+    }
+
+    fn walk_out_and_back() -> ButtonChord {
+        move_chord(0, 1).expect("a move chord")
+    }
+
+    fn target() -> NesTarget<Walk, Walker> {
+        let lowered = Arc::new(Lowered::new(Walk, Walk::STRATEGY).expect("the walk compiles"));
+        NesTarget::from_power_on(lowered, Walker::default()).expect("a walk target")
+    }
+
+    fn at(target: &NesTarget<Walk, Walker>) -> (u64, u8) {
+        (target.observation().frame_count, *target.state())
+    }
+
+    #[test]
+    fn a_chord_at_an_offer_beside_chords_plays_its_whole_hold_and_a_move_chord_its_move() {
+        let mut target = target();
+        target.apply(&ButtonChord::new(1, 6));
+        assert_eq!(at(&target), (6, 6));
+        target.apply(&move_chord(0, 1).expect("a move chord"));
+        assert_eq!(at(&target), (10, 10));
+        target.apply(&move_chord(0, 2).expect("a move chord"));
+        assert_eq!(at(&target), (18, 18));
+        target.apply(&ButtonChord::new(0, 3));
+        assert_eq!(at(&target), (21, 18));
+    }
+
+    #[test]
+    fn an_offered_move_that_ends_where_a_forced_move_starts_hands_off_as_a_chord_does() {
+        let lowered = Arc::new(Lowered::new(Ledge, Ledge::STRATEGY).expect("the ledge compiles"));
+        let mut by_move = NesTarget::from_power_on(Arc::clone(&lowered), Walker::default())
+            .expect("a ledge target");
+        by_move.apply(&move_chord(0, 1).expect("a move chord"));
+        assert_eq!(arrivals(&by_move), [(4, 4, 0), (7, 7, 7)]);
+        assert_eq!(by_move.execution_work(), 7);
+        let mut by_chord =
+            NesTarget::from_power_on(lowered, Walker::default()).expect("a ledge target");
+        by_chord.apply(&ButtonChord::new(1, 6));
+        assert_eq!(arrivals(&by_chord)[3..], [(4, 4, 0), (7, 7, 7)]);
+        assert_eq!(by_chord.execution_work(), by_move.execution_work() + 2);
+        assert_eq!(by_chord.observation(), by_move.observation());
+    }
+
+    #[test]
+    fn a_chord_cut_at_an_offer_replays_to_the_cut_frame_before_the_move_plays() {
+        let mut target = perched(ButtonChord::new(1, 6));
+        assert_eq!(target.execution_work(), 6);
+        target.apply(&move_chord(0, 1).expect("a move chord"));
+        assert_eq!(
+            (target.observation().frame_count, target.observation().state),
+            (5, 5)
+        );
+        assert_eq!(target.machine.wram()[0], 5);
+        assert_eq!(target.execution_work(), 8);
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn a_snapshot_after_a_chord_cut_at_an_offer_equals_the_snapshot_of_the_cut_chord() {
+        let mut cut = perched(ButtonChord::new(1, 6));
+        let mut exact = perched(ButtonChord::new(1, 3));
+        assert_eq!(
+            postcard::to_allocvec(&cut.snapshot().expect("a snapshot")).unwrap(),
+            postcard::to_allocvec(&exact.snapshot().expect("a snapshot")).unwrap()
+        );
+        assert_eq!(cut.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn an_offered_move_without_a_stop_walks_its_whole_trail() {
+        let mut target = trail(PLAIN);
+        let before = target.accumulator.clone();
+        target.apply(&walk_out_and_back());
+        assert_eq!(spot(&target), (10, 2, 0));
+        assert_eq!(costs(&target), [10]);
+        assert_eq!(
+            target.accumulator,
+            folded(&target, &before, Spot { x: 2, room: 0 })
+        );
+    }
+
+    #[test]
+    fn a_goal_inside_an_offered_move_ends_the_move_at_that_step() {
+        let mut target = trail(GOAL_INSIDE);
+        let before = target.accumulator.clone();
+        target.apply(&walk_out_and_back());
+        assert!(target.observation().goal);
+        assert_eq!(spot(&target), (6, 6, 0));
+        assert_eq!(costs(&target), [6]);
+        assert_eq!(target.execution_work(), 6);
+        assert_eq!(
+            target.accumulator,
+            folded(&target, &before, Spot { x: 6, room: 0 })
+        );
+        assert_stays(&mut target);
+    }
+
+    #[test]
+    fn a_reject_inside_an_offered_move_ends_the_move_at_that_step() {
+        let mut target = trail(REJECT_INSIDE);
+        let before = target.accumulator.clone();
+        target.apply(&walk_out_and_back());
+        assert!(target.observation().rejected.is_some());
+        assert_eq!(spot(&target), (6, 6, 0));
+        assert_eq!(costs(&target), [6]);
+        assert_eq!(target.execution_work(), 6);
+        assert_eq!(
+            target.accumulator,
+            folded(&target, &before, Spot { x: 6, room: 0 })
+        );
+        assert_stays(&mut target);
+    }
+
+    #[test]
+    fn a_goal_inside_a_forced_move_after_a_chord_ends_it_and_no_forced_move_follows() {
+        let mut target = trail(GOAL_INSIDE);
+        target.apply(&ButtonChord::new(WARP, 1));
+        assert_eq!(spot(&target), (1, 0, 1));
+        let before = target.accumulator.clone();
+        target.apply(&ButtonChord::new(WARP, 1));
+        assert!(target.observation().goal);
+        assert_eq!(spot(&target), (8, 6, 2));
+        assert_eq!(costs(&target), [0, 7]);
+        assert_eq!(target.execution_work(), 8);
+        let mut expected = before;
+        let _ = target
+            .lowered
+            .observe(0, Spot { x: 0, room: 2 }, &mut expected);
+        assert_eq!(
+            target.accumulator,
+            folded(&target, &expected, Spot { x: 6, room: 2 })
+        );
+        assert_stays(&mut target);
+    }
+
+    #[test]
+    fn a_step_is_judged_against_the_accumulator_at_the_move_departure() {
+        let mut climbed = trail(GOAL_AFTER_A_PEAK);
+        climbed.apply(&ButtonChord::new(RIGHT, 8));
+        climbed.apply(&ButtonChord::new(WARP, 1));
+        assert_eq!(spot(&climbed), (9, 0, 1));
+        assert!(!climbed.observation().goal);
+        let before = climbed.accumulator.clone();
+        climbed.apply(&walk_out_and_back());
+        assert!(climbed.observation().goal);
+        assert_eq!(spot(&climbed), (15, 6, 1));
+        assert_eq!(costs(&climbed), [6]);
+        assert_eq!(climbed.execution_work(), 15);
+        assert_eq!(
+            climbed.accumulator,
+            folded(&climbed, &before, Spot { x: 6, room: 1 })
+        );
+        assert_stays(&mut climbed);
+
+        let mut flat = trail(GOAL_AFTER_A_PEAK);
+        flat.apply(&ButtonChord::new(WARP, 1));
+        let before = flat.accumulator.clone();
+        flat.apply(&walk_out_and_back());
+        assert!(!flat.observation().goal);
+        assert_eq!(spot(&flat), (11, 2, 1));
+        assert_eq!(costs(&flat), [10]);
+        assert_eq!(
+            flat.accumulator,
+            folded(&flat, &before, Spot { x: 2, room: 1 })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_film_cuts_a_move_at_the_step_where_its_observation_stops() {
+        let film = |strategy: &str, actions: &[ButtonChord]| {
+            let mut target = trail(strategy);
+            let (mut video, mut audio) = (Vec::new(), Vec::new());
+            let (metadata, endpoint) = target
+                .render_input(actions, 0, 0, &mut video, &mut audio)
+                .expect("a film");
+            let last = video.chunks(3).last().map(<[u8]>::to_vec);
+            (metadata.frames, endpoint, last)
+        };
+        let out_and_back = [walk_out_and_back()];
+        let warps = [ButtonChord::new(WARP, 1), ButtonChord::new(WARP, 1)];
+        assert_eq!(
+            film(GOAL_INSIDE, &out_and_back),
+            (6, Spot { x: 6, room: 0 }, Some(vec![6, 0, 0]))
+        );
+        assert_eq!(
+            film(PLAIN, &out_and_back),
+            (10, Spot { x: 2, room: 0 }, Some(vec![2, 0, 0]))
+        );
+        assert_eq!(
+            film(GOAL_INSIDE, &warps),
+            (8, Spot { x: 6, room: 2 }, Some(vec![6, 2, 0]))
+        );
+    }
+
+    #[test]
+    fn a_move_chord_for_a_masked_label_is_not_played_as_its_move() {
+        let mut target = target();
+        target.apply(&move_chord(0, 2).expect("a move chord"));
+        assert_eq!(at(&target), (u64::from(super::MAX_HOLD_FRAMES), 0));
+    }
+
+    #[test]
+    fn a_job_asks_the_move_site_and_resolves_the_chord_tree_when_the_chord_is_taken() {
+        let workload = NesWorkload::with_machines(
+            Walk,
+            Walk::STRATEGY,
+            &[],
+            "walk",
+            "0",
+            Arc::new(|| Ok(Walker::default())),
+        )
+        .expect("a walk workload");
+        let mut target = workload.new_target().expect("a walk target");
+        let origin = target.snapshot().expect("a genesis snapshot");
+        let plan = ChoicePlan {
+            profile: Walk::CHORDS.reproducing_profile(),
+            redrawn: false,
+            seed: 11,
+            untried: None,
+            held: Vec::new(),
+            declared: ChoiceSite::declared_contrary(&workload.lowered().choice_sites()),
+        };
+        assert_eq!(plan.declared, [(CHORD_SITES, CERTAIN / 4)]);
+        let suffix = vec![chord::ask(None); 400];
+        let result = workload
+            .execute_job(
+                &NesRun,
+                &mut target,
+                &origin,
+                &[],
+                Satisfied::default(),
+                &suffix,
+                RetentionPolicy::Unprobed,
+                RolloutStop::new(false).with_choices(Some(plan)),
+            )
+            .expect("a job");
+        assert_eq!(result.actions.len(), suffix.len());
+        let mut x = 0_u8;
+        let mut moves = BTreeMap::new();
+        for action in &result.actions {
+            let records: Vec<_> = action
+                .observations
+                .iter()
+                .flat_map(|observation| observation.choices.iter())
+                .collect();
+            let offered: &[u16] = if x >= FAR_FROM { &[0, 1, 2] } else { &[0, 1] };
+            assert_eq!(records[0].site, CHORD_SITES);
+            assert_eq!(records[0].offered, offered);
+            match move_answer(&action.action) {
+                Some((0, label)) => {
+                    assert_eq!(records.len(), 1);
+                    assert_eq!(records[0].taken, Choice::Option(label));
+                    assert!(offered.contains(&label));
+                    *moves.entry(label).or_insert(0_u32) += 1;
+                }
+                Some(other) => panic!("{other:?}"),
+                None => {
+                    assert_eq!(records[0].taken, Choice::Default);
+                    assert!(records[1..].iter().all(|record| record.site < CHORD_SITES));
+                    assert!(Walk::CHORDS.held.contains(&action.action.buttons));
+                }
+            }
+            x = action
+                .observations
+                .last()
+                .expect("an arrival")
+                .observation
+                .state;
+        }
+        let taken: u32 = moves.values().sum();
+        assert!((60..140).contains(&taken), "{moves:?}");
+        assert_eq!(moves.keys().copied().collect::<Vec<_>>(), [1, 2]);
+    }
+
+    fn plain_job<G: Game<State = u8>>(game: G, suffix: &[ButtonChord]) -> Vec<(ButtonChord, u8)> {
+        let workload = NesWorkload::with_machines(
+            game,
+            G::STRATEGY,
+            &[],
+            "walk",
+            "0",
+            Arc::new(|| Ok(Walker::default())),
+        )
+        .expect("a walk workload");
+        let mut target = workload.new_target().expect("a walk target");
+        let origin = target.snapshot().expect("a genesis snapshot");
+        workload
+            .execute_job(
+                &NesRun,
+                &mut target,
+                &origin,
+                &[],
+                Satisfied::default(),
+                suffix,
+                RetentionPolicy::Unprobed,
+                RolloutStop::new(false),
+            )
+            .expect("a job without a plan")
+            .actions
+            .iter()
+            .map(|action| {
+                let x = action
+                    .observations
+                    .last()
+                    .expect("an arrival")
+                    .observation
+                    .state;
+                (action.action, x)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_continuation_tail_whose_move_meets_no_offer_is_cut_there() {
+        let climb = move_chord(0, 1).expect("a move chord");
+        assert_eq!(plain_job(Ledge, &[climb]), [(climb, LEDGE + 3)]);
+        assert_eq!(
+            plain_job(
+                Ledge,
+                &[ButtonChord::new(1, 8), climb, ButtonChord::new(1, 2)]
+            ),
+            [(ButtonChord::new(1, 8), LEDGE + 3)]
+        );
+    }
+
+    #[test]
+    fn a_shrink_candidate_whose_move_is_not_offered_ends_before_it() {
+        let far = move_chord(0, 2).expect("a move chord");
+        let witness = plain_job(Walk, &[ButtonChord::new(1, FAR_FROM), far]);
+        assert_eq!(
+            witness,
+            [
+                (ButtonChord::new(1, FAR_FROM), FAR_FROM),
+                (far, FAR_FROM + 8)
+            ]
+        );
+        assert!(plain_job(Walk, &[far]).is_empty());
+    }
+
+    #[test]
+    fn a_continuation_tail_whose_move_is_not_offered_is_cut_there() {
+        let far = move_chord(0, 2).expect("a move chord");
+        assert_eq!(
+            plain_job(Walk, &[ButtonChord::new(1, 3), far, ButtonChord::new(1, 4)]),
+            [(ButtonChord::new(1, 3), 3)]
+        );
     }
 }

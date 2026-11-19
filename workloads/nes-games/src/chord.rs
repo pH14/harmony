@@ -561,6 +561,7 @@ mod tests {
             seed,
             untried: None,
             held: Vec::new(),
+            declared: Vec::new(),
         });
         let mut records = Vec::new();
         let tree = shares(chords, previous, |previous| {
@@ -617,6 +618,7 @@ mod tests {
             seed: 3,
             untried: None,
             held: Vec::new(),
+            declared: Vec::new(),
         });
         let mut previous = None;
         for _ in 0..2_000 {

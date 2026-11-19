@@ -1480,6 +1480,20 @@ fn continuation_attempt<G: Workload + ?Sized>(
     (Some(energy), taken)
 }
 
+pub(crate) fn tail_cut<G: CampaignTypes + ?Sized>(
+    result: &CampaignJobResult<G>,
+    tail: usize,
+    stop_on_objective: bool,
+) -> bool {
+    result.hang.is_none()
+        && result.preparation_failure.is_none()
+        && result.actions.len() < tail
+        && result.actions.last().is_none_or(|action| {
+            !action.outcome.disposition.is_terminal()
+                && !(stop_on_objective && action.outcome.objective_reached)
+        })
+}
+
 fn continuation_reservation_matches<G: Workload + ?Sized>(
     taken: Option<&ContinuationReservation<G>>,
     energy: Option<u16>,
@@ -1859,6 +1873,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     candidate_incumbent: Option<(Input<G::Action>, ShrinkCost)>,
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
+    declared: Vec<(u16, u32)>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1870,7 +1885,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::with_shape(workload.key_shape());
         archive.max_entries = archive_entry_limit;
-        let choices = (!workload.choice_sites(run).is_empty()).then(|| workload.choice_policy(run));
+        let sites = workload.choice_sites(run);
+        let choices = (!sites.is_empty()).then(|| workload.choice_policy(run));
         if choices.is_some() {
             archive.enable_choices();
         }
@@ -1913,6 +1929,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             candidate_incumbent: None,
             shrink: None,
             choices,
+            declared: ChoiceSite::declared_contrary(&sites),
         }
     }
 
@@ -1945,6 +1962,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             mutation_seed,
             untried,
             held,
+            self.declared.clone(),
         ))
     }
 
@@ -2171,9 +2189,13 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             .rev()
             .find(|&position| resident(position).is_some());
         let mut current_parent = base.and_then(resident);
-        let mut pending_suffix = chain.actions[base.unwrap_or(0)..common].to_vec();
-        let mut pending_from = chain.action_costs[base.unwrap_or(0)];
-        let mut pending_certificates = vec![None; pending_suffix.len()];
+        let base = base.unwrap_or(0);
+        let mut pending_suffix = chain.actions[base..common].to_vec();
+        let mut pending_from = chain.action_costs[base];
+        let mut pending_certificates = chain.snapshots[base + 1..=common]
+            .iter()
+            .map(|snapshot| workload.candidate_replay_certificate(snapshot))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut previous_key = (!pending_suffix.is_empty()).then_some(chain.keys[common]);
         workload.reset(target);
         workload.restore(target, &chain.snapshots[common])?;
@@ -3371,9 +3393,11 @@ fn choice_policy<G: Workload + ?Sized>(
     workload: &G,
     run: &G::Run,
 ) -> Result<Option<ChoicePolicy>, Box<dyn Error>> {
-    if workload.choice_sites(run).is_empty() {
+    let sites = workload.choice_sites(run);
+    if sites.is_empty() {
         return Ok(None);
     }
+    ChoiceSite::validate_all(&sites)?;
     workload.choice_policy(run).validate().map(Some)
 }
 
@@ -6609,6 +6633,8 @@ where
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
                 core.finish_suffix_job(job.parent_id, suffix_limit);
+                let cut = job.selector.path == SelectorPath::Continuation
+                    && tail_cut(&result, suffix.len(), header.stop_rollout_on_objective);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
@@ -6707,6 +6733,7 @@ where
                         landed,
                         replaced,
                         new_cell_descendant,
+                        cut,
                         continuation_wave,
                     );
                     core.archive.add_continuation_execution_work(execution_work);
@@ -7063,7 +7090,7 @@ mod tests {
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
         run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
         schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective, with_coordinator_session,
+        stop_reservations_after_objective, tail_cut, with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -9918,6 +9945,41 @@ mod tests {
     }
 
     #[test]
+    fn a_continuation_ended_before_its_tail_without_a_stopping_action_is_cut() {
+        let result = |outcomes: &[Outcome]| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            hang: None,
+            actions: outcomes
+                .iter()
+                .map(|outcome| CampaignActionResult {
+                    action: TestAction::new(0x01, 4),
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: *outcome,
+                    candidate: None,
+                    cost: ShrinkCost::ZERO,
+                    bound: ShrinkCost::ZERO,
+                })
+                .collect(),
+        };
+        let runnable = Outcome::default();
+        let terminal = Outcome {
+            disposition: ExecutionDisposition::Terminal,
+            ..runnable
+        };
+        let objective = Outcome {
+            objective_reached: true,
+            ..runnable
+        };
+        assert!(tail_cut(&result(&[]), 3, false));
+        assert!(tail_cut(&result(&[runnable]), 3, false));
+        assert!(!tail_cut(&result(&[runnable; 3]), 3, false));
+        assert!(!tail_cut(&result(&[terminal]), 3, false));
+        assert!(tail_cut(&result(&[objective]), 3, false));
+        assert!(!tail_cut(&result(&[objective]), 3, true));
+    }
+
+    #[test]
     fn duration_credit_follows_the_action_that_created_novelty() {
         let (workload, _run, mut core, _target) = test_core();
         let tracked = TestAction::new(0x01, 4);
@@ -10703,6 +10765,62 @@ mod tests {
         );
         assert_eq!(core.archive.entries.len(), 1);
         assert_eq!(core.archive.input_index_nodes(), 1);
+    }
+
+    #[test]
+    fn a_certified_incumbent_rebuilt_after_a_rejected_chain_state_certifies_its_kept_prefix() {
+        let targets = Arc::new(LiveTargets::default());
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let mut core = CoordinatorCore::new(&workload, &(), 1_024, None);
+        core.enable_minimize(super::MinimizeConfig::default())
+            .unwrap();
+        let step = TestAction::new(1, 1);
+        let stay = TestAction::new(0, 1);
+        let tape = Input {
+            actions: vec![step, stay, stay, step, TestAction::new(1, 3)],
+        };
+        let shortcut = Input {
+            actions: vec![step, stay, stay, TestAction::new(2, 1), step],
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let result = (|| -> Result<_, Box<dyn Error>> {
+            targets
+                .objective_after_work
+                .store(7, std::sync::atomic::Ordering::SeqCst);
+            let mut target = workload.new_target()?;
+            core.bootstrap(&workload, &(), &mut target)?;
+            core.start_incumbent_chain()?;
+            core.adopt_tape(&workload, &(), &mut target, &tape, 0)?;
+            let chain = core.chain.as_ref().unwrap();
+            assert!(chain.entries[2].is_some());
+            assert!(chain.entries[3].is_none());
+            assert_eq!(core.incumbent_cost, Some(ShrinkCost::new(14, 0)));
+            targets
+                .objective_after_work
+                .store(2, std::sync::atomic::Ordering::SeqCst);
+            core.candidate_incumbent = Some((shortcut.clone(), ShrinkCost::new(10, 0)));
+            let mut target = workload.new_target()?;
+            core.accept_incumbent(&workload, &(), &mut target)
+        })();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        let record = result.unwrap().unwrap();
+        assert_eq!(record.rebuilt_from, 3);
+        assert_eq!(record.cost, ShrinkCost::new(10, 0));
+        assert_eq!(core.objective_witness, Some(shortcut));
+        let chain = core.chain.as_ref().unwrap();
+        let admitted = core.archive.index_of_id(chain.entries[4].unwrap()).unwrap();
+        let (replay, certificates) = core
+            .archive
+            .pinned_job_replay(admitted, core.archive.stable_id(0).unwrap())
+            .unwrap();
+        assert_eq!(replay, vec![step, stay, stay, TestAction::new(2, 1)]);
+        assert_eq!(
+            certificates,
+            vec![Some([1; 32]), Some([1; 32]), Some([1; 32]), Some([3; 32])]
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ use super::{
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, search_checkpoint_header, source_suffixes,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
-    with_coordinator_session, write_live_progress, write_search_checkpoint,
+    tail_cut, with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
@@ -1175,6 +1175,15 @@ where
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
         core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
+        let cut = match &pending_job.splice {
+            Some(CampaignSpliceRecord::Tail { tail_postcard, .. })
+                if pending_job.selector.path == SelectorPath::Continuation =>
+            {
+                let tail: Vec<G::Action> = postcard::from_bytes(tail_postcard)?;
+                tail_cut(&result, tail.len(), config.stop_rollout_on_objective)
+            }
+            _ => false,
+        };
         let (sequence, decisions, duration_admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
@@ -1237,6 +1246,7 @@ where
                 landed,
                 replaced,
                 new_cell_descendant,
+                cut,
                 pending_job.continuation_wave,
             );
             core.archive.add_continuation_execution_work(execution_work);
