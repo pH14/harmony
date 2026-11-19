@@ -180,6 +180,14 @@ restore reads it from the machine. The Consonance backend serves reads only
 after a run, so a Consonance snapshot keeps a 2 KiB copy, and the archive
 charges it. A compressed native snapshot stores about 1.8 KB.
 
+The archive's history memory also depends on the key and milestone types. The
+hand game's archive entry is 112 bytes, with a 20-byte `SmbArchiveKey` and
+6-byte `SmbMilestones`. The `smb-strategy` entry is 128 bytes, with a 28-byte
+`AssertionKey` and 16-byte `Satisfied`, so the milestones are the larger part
+of the difference. History compacts once it passes a quarter of the memory
+budget, so at equal decisions the strategy arm compacts about 5% earlier, and
+the two arms' decision streams are identical only up to that first compaction.
+
 ## Shrink
 
 `smb::shrink` holds the shrink hooks that `SmbGame`'s campaign traits and its
