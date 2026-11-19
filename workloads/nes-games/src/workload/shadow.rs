@@ -247,8 +247,12 @@ where
     H::Lineage: Send + Sync,
 {
     pub fn new(game: G) -> Result<Arc<Self>, Box<dyn Error>> {
+        Self::with_strategy(game, G::STRATEGY)
+    }
+
+    pub fn with_strategy(game: G, strategy: &str) -> Result<Arc<Self>, Box<dyn Error>> {
         Ok(Arc::new(Self {
-            lowered: Lowered::new(game, G::STRATEGY)?,
+            lowered: Lowered::new(game, strategy)?,
             table: ShadowTable::default(),
             saved: Mutex::default(),
         }))
@@ -456,5 +460,25 @@ mod tests {
         let report = shadow.report().unwrap();
         assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
         assert_eq!(report.keyed_states, 6);
+    }
+
+    #[test]
+    fn a_shadow_lowers_the_strategy_text_it_is_given() {
+        const FLAT: &str =
+            "capacity = 1\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = \"x\"\n";
+        let shipped = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let flat = Shadow::<Ledge, LedgeKey>::with_strategy(Ledge, FLAT).unwrap();
+        assert!(!shipped.lowered.compiled.is_pure());
+        assert!(flat.lowered.compiled.is_pure());
+        let policy = flat.report().unwrap().policy;
+        assert_eq!(
+            policy,
+            Lowered::new(Ledge, FLAT)
+                .unwrap()
+                .compiled
+                .policy_identifier()
+        );
+        assert_ne!(policy, shipped.report().unwrap().policy);
+        assert!(Shadow::<Ledge, LedgeKey>::with_strategy(Ledge, "capacity = 1").is_err());
     }
 }
