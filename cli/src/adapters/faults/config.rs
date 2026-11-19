@@ -537,6 +537,13 @@ mod tests {
             Config::default().key.strategy(),
             faults_workload::key::STRATEGY
         );
+        let absent: crate::config::Config =
+            toml::from_str("[workload]\npackage = \"faults\"\n").unwrap();
+        let empty: crate::config::Config =
+            toml::from_str("[workload]\npackage = \"faults\"\n[workload.options.key]\n").unwrap();
+        let absent = Config::from_shared(&absent).unwrap().key;
+        assert_eq!(Config::from_shared(&empty).unwrap().key, absent);
+        assert_eq!(absent, faults_workload::key::KeyRequest::default());
         let unknown: crate::config::Config = toml::from_str(
             "[workload]\npackage = \"faults\"\n[workload.options.key]\nhandkey = true\n",
         )
