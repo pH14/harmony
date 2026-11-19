@@ -131,9 +131,10 @@ mod runtime {
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
         REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EDGE_CROSSINGS,
         REG_EDGE_DIGEST, REG_EVENT_KILL_ARMED, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE,
-        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_HOOKS_FINISHED,
-        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS,
-        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
+        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_FAULT_FREE_CHECKS_FINISHED,
+        REG_FAULT_FREE_CHECKS_STARTED, REG_FAULTS_IN_FORCE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED,
+        REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RECOVERY_PENDING, REG_RESTARTS,
+        REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
     use harmony_supervisor::supervise::{Action, RemountCheck, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -154,7 +155,7 @@ mod runtime {
     use std::thread;
     use std::time::Duration;
 
-    const CATALOG: [Point; 26] = [
+    const CATALOG: [Point; 30] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),
         Point::state(REG_HOOKS_STARTED, "supervisor.hooks_started"),
@@ -190,6 +191,16 @@ mod runtime {
         Point::state(REG_EDGE_DIGEST, "supervisor.edge_digest"),
         Point::state(REG_EVENT_PARK_HELD, "supervisor.event_park_held"),
         Point::state(REG_EVENT_KILL_ARMED, "supervisor.event_kill_armed"),
+        Point::state(
+            REG_FAULT_FREE_CHECKS_STARTED,
+            "supervisor.fault_free_checks_started",
+        ),
+        Point::state(
+            REG_FAULT_FREE_CHECKS_FINISHED,
+            "supervisor.fault_free_checks_finished",
+        ),
+        Point::state(REG_FAULTS_IN_FORCE, "supervisor.faults_in_force"),
+        Point::state(REG_RECOVERY_PENDING, "supervisor.recovery_pending"),
     ];
 
     type GuestSdk = Sdk<DeviceTransport>;
@@ -215,6 +226,7 @@ mod runtime {
         child: Child,
         run: u64,
         start_generation: u64,
+        fault_free: bool,
     }
 
     struct RecoveryProbe {
@@ -847,13 +859,17 @@ mod runtime {
         supervisor.note_check_started();
         sdk.state_set(REG_CHECKS_STARTED, supervisor.counters().checks_started)
             .map_err(|error| format!("state_set({REG_CHECKS_STARTED}): {error}"))?;
+        let in_force = faults_in_force(supervisor, &runtime.hook_faults);
         let check = spawn_check(
             spec,
             argv,
             run,
             supervisor.disturbance_generation(),
-            faults_in_force(supervisor, &runtime.hook_faults),
+            in_force,
         )?;
+        if check.fault_free {
+            supervisor.note_fault_free_check_started();
+        }
         runtime.check = Some(check);
         log(tick, &format!("check {run} started"));
         Ok(())
@@ -885,6 +901,9 @@ mod runtime {
                 end_generation: supervisor.disturbance_generation(),
                 pid: u64::from(check.child.id()),
             });
+            if check.fault_free {
+                supervisor.note_fault_free_check_finished();
+            }
         } else {
             log(tick, &format!("check {run} exited {status}"));
         }
@@ -1117,6 +1136,8 @@ mod runtime {
                 .collect();
             process::reap_available_except(&tracked)
                 .map_err(|error| format!("reap descendants: {error}"))?;
+            let in_force = faults_in_force(supervisor, &runtime.hook_faults);
+            supervisor.set_fault_state(in_force, runtime.recovery.is_pending());
             for (register, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(register, value)
                     .map_err(|error| format!("state_set({register}): {error}"))?;
@@ -1723,6 +1744,7 @@ mod runtime {
             child,
             run,
             start_generation,
+            fault_free: !faults_in_force,
         })
     }
 

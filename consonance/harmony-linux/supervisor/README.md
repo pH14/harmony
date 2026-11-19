@@ -120,7 +120,13 @@ cached results without importing process-fault semantics. Each check also
 receives `HARMONY_FAULTS_IN_FORCE`: `1` when, at the check's start, a fault
 window is active, an injected fault is pending, a node is held down or a cut is
 unhealed, and `0` otherwise. This is the condition that holds the recovery
-clock, so a convergence check can wait for the same end of faults.
+clock, so a convergence check can wait for the same end of faults. Each tick
+the faults-in-force register publishes that condition and the recovery-pending
+register publishes whether a restarted workload has not yet passed its ready
+probe. The fault-free-checks-started and fault-free-checks-finished registers
+count the checks that started with `HARMONY_FAULTS_IN_FORCE=0` and the ones of
+those that exited successfully, so the host can tell how many checks in an
+execution ran the comparisons a check skips under faults.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges

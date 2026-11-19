@@ -11,11 +11,13 @@ pub use process_proto::registers::{
     EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_ARMED as REG_EVENT_KILL_ARMED,
     EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES, EVENT_KILL_SITE as REG_EVENT_KILL_SITE,
     EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES, EVENT_PARK_HELD as REG_EVENT_PARK_HELD,
-    EVENT_READY as REG_EVENT_READY, HOOKS_FINISHED as REG_HOOKS_FINISHED,
+    EVENT_READY as REG_EVENT_READY, FAULT_FREE_CHECKS_FINISHED as REG_FAULT_FREE_CHECKS_FINISHED,
+    FAULT_FREE_CHECKS_STARTED as REG_FAULT_FREE_CHECKS_STARTED,
+    FAULTS_IN_FORCE as REG_FAULTS_IN_FORCE, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
-    PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS, TICKS as REG_TICKS,
-    UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS, WORKLOAD_FINISHED as REG_WORKLOAD_FINISHED,
-    WORKLOAD_STARTED as REG_WORKLOAD_STARTED,
+    PENDING_FAULTS as REG_PENDING_FAULTS, RECOVERY_PENDING as REG_RECOVERY_PENDING,
+    RESTARTS as REG_RESTARTS, TICKS as REG_TICKS, UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS,
+    WORKLOAD_FINISHED as REG_WORKLOAD_FINISHED, WORKLOAD_STARTED as REG_WORKLOAD_STARTED,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -46,11 +48,15 @@ pub struct RegisterSnapshot {
     pub edge_digest: u64,
     pub event_park_held: u64,
     pub event_kill_armed: u64,
+    pub fault_free_checks_started: u64,
+    pub fault_free_checks_finished: u64,
+    pub faults_in_force: u64,
+    pub recovery_pending: u64,
 }
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 26] {
+    pub fn pairs(&self) -> [(u32, u64); 30] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -84,6 +90,16 @@ impl RegisterSnapshot {
             (REG_EDGE_DIGEST, self.edge_digest),
             (REG_EVENT_PARK_HELD, self.event_park_held),
             (REG_EVENT_KILL_ARMED, self.event_kill_armed),
+            (
+                REG_FAULT_FREE_CHECKS_STARTED,
+                self.fault_free_checks_started,
+            ),
+            (
+                REG_FAULT_FREE_CHECKS_FINISHED,
+                self.fault_free_checks_finished,
+            ),
+            (REG_FAULTS_IN_FORCE, self.faults_in_force),
+            (REG_RECOVERY_PENDING, self.recovery_pending),
         ]
     }
 }
@@ -161,6 +177,10 @@ mod tests {
                 (REG_EDGE_DIGEST, 0),
                 (REG_EVENT_PARK_HELD, 0),
                 (REG_EVENT_KILL_ARMED, 0),
+                (REG_FAULT_FREE_CHECKS_STARTED, 0),
+                (REG_FAULT_FREE_CHECKS_FINISHED, 0),
+                (REG_FAULTS_IN_FORCE, 0),
+                (REG_RECOVERY_PENDING, 0),
             ]
         );
     }

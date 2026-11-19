@@ -1224,6 +1224,14 @@ pub struct FaultObservations {
     pub parks: Vec<ParkLanding>,
     #[serde(default)]
     pub park_reads: Vec<ParkRead>,
+    #[serde(default)]
+    pub fault_free_checks_started: u64,
+    #[serde(default)]
+    pub fault_free_checks_finished: u64,
+    #[serde(default)]
+    pub faults_in_force: bool,
+    #[serde(default)]
+    pub recovery_pending: bool,
 }
 
 impl FaultObservations {
@@ -1268,6 +1276,10 @@ impl FaultObservations {
             infrastructure_failure: false,
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
+            fault_free_checks_started: value(reg::FAULT_FREE_CHECKS_STARTED),
+            fault_free_checks_finished: value(reg::FAULT_FREE_CHECKS_FINISHED),
+            faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
+            recovery_pending: value(reg::RECOVERY_PENDING) != 0,
         }
     }
 

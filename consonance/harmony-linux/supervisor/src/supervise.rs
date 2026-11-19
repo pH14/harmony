@@ -97,6 +97,10 @@ pub struct Counters {
     pub edge_crossings: u64,
     pub edge_digest: u64,
     pub event_park_held: u64,
+    pub fault_free_checks_started: u64,
+    pub fault_free_checks_finished: u64,
+    pub faults_in_force: u64,
+    pub recovery_pending: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -592,6 +596,21 @@ impl ProcessSupervisor {
         self.counters.checks_finished = self.counters.checks_finished.saturating_add(1);
     }
 
+    pub fn note_fault_free_check_started(&mut self) {
+        self.counters.fault_free_checks_started =
+            self.counters.fault_free_checks_started.saturating_add(1);
+    }
+
+    pub fn note_fault_free_check_finished(&mut self) {
+        self.counters.fault_free_checks_finished =
+            self.counters.fault_free_checks_finished.saturating_add(1);
+    }
+
+    pub fn set_fault_state(&mut self, faults_in_force: bool, recovery_pending: bool) {
+        self.counters.faults_in_force = u64::from(faults_in_force);
+        self.counters.recovery_pending = u64::from(recovery_pending);
+    }
+
     pub fn note_check_completed(&mut self, evidence: CheckEvidence) {
         self.counters.completed_check_run = evidence.run;
         self.counters.completed_check_start_generation = evidence.start_generation;
@@ -693,6 +712,10 @@ impl ProcessSupervisor {
             edge_crossings: self.counters.edge_crossings,
             edge_digest: self.counters.edge_digest,
             event_park_held: self.counters.event_park_held,
+            fault_free_checks_started: self.counters.fault_free_checks_started,
+            fault_free_checks_finished: self.counters.fault_free_checks_finished,
+            faults_in_force: self.counters.faults_in_force,
+            recovery_pending: self.counters.recovery_pending,
             event_kill_armed: self
                 .event_kill_armed
                 .iter()
@@ -1315,6 +1338,24 @@ mod tests {
         );
         let settled = [actions[0], actions[2]];
         assert_eq!(faulted.remount_check(&settled, 1), None);
+    }
+
+    #[test]
+    fn fault_free_checks_and_the_fault_state_reach_the_snapshot() {
+        let mut sup = Supervisor::new(1);
+        sup.note_fault_free_check_started();
+        sup.note_fault_free_check_started();
+        sup.note_fault_free_check_finished();
+        sup.set_fault_state(true, false);
+        let snapshot = sup.snapshot();
+        assert_eq!(snapshot.fault_free_checks_started, 2);
+        assert_eq!(snapshot.fault_free_checks_finished, 1);
+        assert_eq!(snapshot.faults_in_force, 1);
+        assert_eq!(snapshot.recovery_pending, 0);
+        sup.set_fault_state(false, true);
+        let snapshot = sup.snapshot();
+        assert_eq!(snapshot.faults_in_force, 0);
+        assert_eq!(snapshot.recovery_pending, 1);
     }
 
     #[test]
