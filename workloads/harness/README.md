@@ -342,6 +342,11 @@ base and `base-arm64` is `scratch` with `/out/harness/root` copied in.
 `targets/rqlite` follows this pattern. The arm64 guest kernel builds in the
 veth, bridge, netem and legacy iptables support that `harness-net` uses.
 
+An rqlite search at one worker ran about 1.1 executions a minute on an msr1
+Cortex-A720 core and 0.24 on a Cortex-A520 core with `ram_mib = 1536`, and 3
+on an Apple M1 Max under HVF with `ram_mib = 8192`. On x86-64 it ran about 2.8
+executions a minute on an ms02 E-core with `ram_mib = 1024`.
+
 ## NATS JetStream
 
 `targets/nats` runs three `nats-server` nodes at 10.77.0.1-3 (client port
