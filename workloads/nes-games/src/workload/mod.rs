@@ -238,8 +238,20 @@ impl<G: Game> Lowered<G> {
         state: G::State,
         accumulator: &mut Accumulator,
     ) -> NesObservation<G::State> {
+        self.observe_frame(frame_count, state, accumulator, true)
+    }
+
+    #[must_use]
+    pub fn observe_frame(
+        &self,
+        frame_count: u64,
+        state: G::State,
+        accumulator: &mut Accumulator,
+        action_end: bool,
+    ) -> NesObservation<G::State> {
         let mut record = Record::default();
         let satisfied = self.write_record(&state, &mut record);
+        record.set_action_end(action_end);
         let observed = self.compiled.observe(&record, accumulator);
         NesObservation {
             frame_count,

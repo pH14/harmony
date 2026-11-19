@@ -147,8 +147,12 @@ where
 
     pub fn advance_states(&self, states: &[G::State]) {
         self.0.moved(|threaded, position| {
-            for state in states {
-                position.state = threaded.arrive_state(state.clone(), &mut position.cursor);
+            for (index, state) in states.iter().enumerate() {
+                position.state = threaded.arrive_state(
+                    state.clone(),
+                    index + 1 == states.len(),
+                    &mut position.cursor,
+                );
             }
         });
     }
@@ -209,9 +213,16 @@ impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Threaded<G, H>
 where
     H::Lineage: Send + Sync,
 {
-    fn arrive_state(&self, state: G::State, cursor: &mut ShadowCursor<H>) -> G::State {
+    fn arrive_state(
+        &self,
+        state: G::State,
+        action_end: bool,
+        cursor: &mut ShadowCursor<H>,
+    ) -> G::State {
         let lowered = &self.shadow.lowered;
-        cursor.observe(&lowered.compiled, &lowered.record(&state).0);
+        let mut record = lowered.record(&state).0;
+        record.set_action_end(action_end);
+        cursor.observe(&lowered.compiled, &record);
         state
     }
 
@@ -219,14 +230,19 @@ where
         &self,
         previous: Option<&G::State>,
         ram: &[u8],
+        action_end: bool,
         cursor: &mut ShadowCursor<H>,
     ) -> G::State {
-        self.arrive_state(self.shadow.lowered.game.decode(previous, ram), cursor)
+        self.arrive_state(
+            self.shadow.lowered.game.decode(previous, ram),
+            action_end,
+            cursor,
+        )
     }
 
     fn begin_state(&self, state: G::State) -> Position<G::State, H> {
         let mut cursor = ShadowCursor::default();
-        let state = self.arrive_state(state, &mut cursor);
+        let state = self.arrive_state(state, true, &mut cursor);
         Position { state, cursor }
     }
 
@@ -288,8 +304,13 @@ where
 
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]) {
         self.moved(|threaded, position| {
-            for wram in frames {
-                position.state = threaded.arrive(Some(&position.state), wram, &mut position.cursor);
+            for (index, wram) in frames.iter().enumerate() {
+                position.state = threaded.arrive(
+                    Some(&position.state),
+                    wram,
+                    index + 1 == frames.len(),
+                    &mut position.cursor,
+                );
             }
         });
     }
@@ -309,7 +330,7 @@ where
         for wram in interior {
             position.state = game.decode(Some(&position.state), wram);
         }
-        position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
+        position.state = self.arrive(Some(&position.state), arrival, true, &mut position.cursor);
     }
 
     fn saved(&self) -> ShadowToken {

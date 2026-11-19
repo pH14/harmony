@@ -631,6 +631,15 @@ Expressions have integers, `none`, names (quote a name with spaces as
 comparisons, `and`/`or`/`not`, `if … then … else …`, and the functions `min`,
 `max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`.
 
+The name `action_end` is built in: no catalog declares it, the record holds it
+in its last slot, and it is 1 on the frame whose state the target keeps as the
+action's endpoint (the root state, the last frame of an action's input, a
+forced move's arrival, or a frame where the path stops) and 0 on every other
+frame. A latched stage whose goal includes `action_end` passes only on a kept
+state, as the hand plans latch from the parent key, so a value that crosses a
+threshold inside an action and ends below it does not pass the stage. A
+catalog holds at most one signal fewer than a record because of this slot.
+
 Two lineage features read along the parent chain, and both are Antithesis's.
 The aggregate `highest(x)` is the Antithesis watermark: the largest value of
 `x` on the path so far. A stage's `latch` is the Antithesis satisfied

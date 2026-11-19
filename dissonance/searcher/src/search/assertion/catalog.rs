@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::search::choice::ChoiceSite;
 
 pub const RECORD_SLOTS: usize = 96;
+pub const ACTION_END: &str = "action_end";
+pub(crate) const ACTION_END_SLOT: usize = RECORD_SLOTS - 1;
 pub const EACH_FIELDS: usize = 4;
 pub const NONE: i64 = i64::MIN;
 
@@ -397,12 +399,15 @@ impl Catalog {
                 slots: start..signals.len(),
             });
         }
-        if signals.len() > RECORD_SLOTS {
+        if signals.len() > ACTION_END_SLOT {
             return Err(format!(
-                "the catalog has {} signals and a record holds {RECORD_SLOTS}",
+                "the catalog has {} signals and a record holds {ACTION_END_SLOT}",
                 signals.len()
             )
             .into());
+        }
+        if signals.iter().any(|signal| signal.name == ACTION_END) {
+            return Err(format!("`{ACTION_END}` is built in and no game declares it").into());
         }
         if let Some(signal) = signals.iter().find(|signal| signal.min > signal.max) {
             return Err(format!("{} has an empty range", signal.name).into());
@@ -619,6 +624,10 @@ impl Record {
             .copy_from_slice(values);
         record.len = u8::try_from(values.len()).ok()?;
         Some(record)
+    }
+
+    pub fn set_action_end(&mut self, end: bool) {
+        self.values[ACTION_END_SLOT] = i64::from(end);
     }
 
     #[must_use]

@@ -253,7 +253,9 @@ Metroid implements `Game` in `metroid/game.rs`, and its `decode` reads work RAM
 followed by the cartridge RAM that holds equipment, missile capacity and energy
 tanks (`MEMORY_SIZE`). It still runs in its own `target` and `campaign`.
 `metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
-`metroid/plan.rs` with the same goals and latches, the place (area, map cell,
+`metroid/plan.rs` with the same goals and latches (an energy stage's goal reads
+`action_end`, because the plan latches from the parent key at the action's
+end), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
 and the two hand preferences. A route stage's objective is the last route index
 the path stood on within that stage, through `last` over the route index, or

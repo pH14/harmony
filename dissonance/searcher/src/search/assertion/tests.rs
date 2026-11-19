@@ -351,6 +351,48 @@ fn stages_climb_their_gap_and_latch() {
 }
 
 #[test]
+fn an_action_end_stage_latches_only_on_the_kept_frame() {
+    let catalog = catalog();
+    let stages = |goal: &str| {
+        Compiled::parse(
+            &format!(
+                r#"
+                [[stage]]
+                name = "energy"
+                goal = "{goal}"
+                latch = true
+                [[stage]]
+                name = "after"
+                goal = "false"
+                "#
+            ),
+            &catalog,
+        )
+        .unwrap()
+    };
+    let every_frame = stages("lives >= 5");
+    let action_end = stages("action_end and lives >= 5");
+    assert!(!every_frame.reads_action_end());
+    assert!(action_end.reads_action_end());
+    let action = [(3, false), (6, false), (4, true)];
+    let stage_after = |compiled: &Compiled| {
+        let mut accumulator = Accumulator::default();
+        let mut key = None;
+        for (lives, end) in action {
+            let mut frame = record(Walk {
+                lives,
+                ..Walk::default()
+            });
+            frame.set_action_end(end);
+            key = compiled.observe(&frame, &mut accumulator).key;
+        }
+        compiled.view(key.unwrap()).stage
+    };
+    assert_eq!(stage_after(&every_frame).as_deref(), Some("after"));
+    assert_eq!(stage_after(&action_end).as_deref(), Some("energy"));
+}
+
+#[test]
 fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
     let compiled = Compiled::parse(
         r#"

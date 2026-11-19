@@ -11,8 +11,8 @@ mod shadow;
 mod strategy;
 
 pub use catalog::{
-    Assertion, Catalog, Declarations, Declared, EACH_FIELDS, NONE, Number, RECORD_SLOTS, Record,
-    RecordWriter, Signal,
+    ACTION_END, Assertion, Catalog, Declarations, Declared, EACH_FIELDS, NONE, Number,
+    RECORD_SLOTS, Record, RecordWriter, Signal,
 };
 pub use checks::{Checker, Finding, THIN_TIER_STATES};
 pub use compile::{Accumulator, Compiled, KeyView, MAX_AGGREGATES, OBJECTIVE_WIDTH, Observed};

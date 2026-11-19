@@ -338,11 +338,35 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             if self.recording {
                 records.push(self.lowered.record(&state).0);
             }
-            let observation = self.lowered.observe(frame_count, state, &mut accumulator);
-            previous = observation.state.clone();
-            if !observation.stops() {
-                forced = self.lowered.game.moves(&observation.state).forced;
+            let forced_after = |observation: &NesObservation<G::State>| {
+                (!observation.stops())
+                    .then(|| self.lowered.game.moves(&observation.state).forced)
+                    .flatten()
+            };
+            let input_end = offset + 1 == produced_frames;
+            let saved = self
+                .lowered
+                .compiled
+                .reads_action_end()
+                .then(|| accumulator.clone());
+            let mut observation =
+                self.lowered
+                    .observe_frame(frame_count, state, &mut accumulator, input_end);
+            forced = forced_after(&observation);
+            if let Some(saved) = saved {
+                let end = observation.stops() || (input_end && forced.is_none());
+                if end != input_end {
+                    accumulator = saved;
+                    observation = self.lowered.observe_frame(
+                        frame_count,
+                        observation.state,
+                        &mut accumulator,
+                        end,
+                    );
+                    forced = forced_after(&observation);
+                }
             }
+            previous = observation.state.clone();
             let last = offset + 1 == produced_frames || observation.stops() || forced.is_some();
             if observation.key != prior_key || observation.stops() || last {
                 prior_key = observation.key;
