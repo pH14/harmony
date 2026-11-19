@@ -16,6 +16,7 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState, WorkRamCopy},
     smb::archive::{SmbArchiveKey, fold_frame},
     target::Target,
+    workload::{ShadowHook, ShadowToken},
 };
 
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
@@ -55,7 +56,20 @@ pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     frame_key: SmbArchiveKey,
     dead: bool,
     failed: bool,
+    #[serde(skip)]
+    shadow_token: SavedToken,
 }
+
+#[derive(Clone, Debug, Default)]
+struct SavedToken(Option<ShadowToken>);
+
+impl PartialEq for SavedToken {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SavedToken {}
 
 impl<P: SnapshotState> SmbSnapshot<P> {
     pub fn logical_identity(&self) -> Result<Self, MachineError> {
@@ -167,6 +181,7 @@ where
     action_observations: Vec<SmbObservations>,
     genesis_frame_key: SmbArchiveKey,
     frame_key: SmbArchiveKey,
+    shadow: Option<ShadowHook<SmbArchiveKey>>,
     stopped_at: Option<(SnapId, ButtonChord)>,
     dead: bool,
     failed: bool,
@@ -232,6 +247,7 @@ where
             observation,
             genesis_frame_key: frame_key,
             frame_key,
+            shadow: None,
             stopped_at: None,
             dead: false,
             failed: false,
@@ -276,6 +292,17 @@ where
     #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.observation.frame_count
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<SmbArchiveKey>) {
+        shadow.start(&self.wram());
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<SmbArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand);
+        }
     }
 
     #[must_use]
@@ -344,6 +371,10 @@ where
             if self.dead || victory || (until_control && smb_player_has_control(wram)) {
                 break;
             }
+        }
+        if let Some(shadow) = &self.shadow {
+            let executed = usize::try_from(executed_frames).unwrap_or(usize::MAX);
+            shadow.advance(&self.machine.frames()[..executed]);
         }
         if executed_frames < self.machine.frames().len() as u64 {
             let kept = u8::try_from(executed_frames).unwrap_or(1);
@@ -510,6 +541,9 @@ where
         self.observation = observation_from(&wram, frame_count, self.dead);
         self.action_observations = vec![self.observation.clone()];
         self.frame_key = fold_frame(None, &wram);
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&wram);
+        }
         self.snapshot()
             .ok_or_else(|| "failed to snapshot the restored state".into())
     }
@@ -553,6 +587,9 @@ where
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.frame_key = self.genesis_frame_key;
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&self.genesis_observation.wram);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -606,6 +643,7 @@ where
             return None;
         };
         self.snapshot_base = Some(emulator_state.clone());
+        let shadow_token = SavedToken(self.shadow.as_ref().map(ShadowHook::saved));
         let wram = self.wram();
         Some(SmbSnapshot {
             emulator_state,
@@ -615,6 +653,7 @@ where
             frame_key: self.frame_key,
             dead: self.dead,
             failed: self.failed,
+            shadow_token,
         })
     }
 
@@ -639,6 +678,9 @@ where
         self.failed = snapshot.failed;
         self.frame_key = snapshot.frame_key;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
+        if let Some(shadow) = &self.shadow {
+            shadow.restored(snapshot.shadow_token.0.as_ref(), &wram);
+        }
         Ok(())
     }
 }
@@ -1421,6 +1463,7 @@ mod tests {
                 dead: snapshot.dead,
                 failed: snapshot.failed,
                 frame_key: snapshot.frame_key,
+                shadow_token: super::SavedToken::default(),
             }
         };
         let (own, foreign, changed) = (native(b'a', 1), native(b'b', 1), native(b'a', 2));

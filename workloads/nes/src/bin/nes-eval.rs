@@ -195,7 +195,7 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
     })
 }
 
-const SHADOW_GAMES: &[&str] = &[];
+const SHADOW_GAMES: &[&str] = &["smb"];
 
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
@@ -250,41 +250,56 @@ fn main() -> Result<()> {
         let h = &request.core_sha256;
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
-            "smb" => evaluate_watching(
-                SmbGame::new(&rom, p, h, &execution_sha256)
+            "smb" => {
+                let route = request
+                    .smb_route
+                    .as_deref()
+                    .map(SmbRoute::from_identifier)
+                    .transpose()?
+                    .unwrap_or_default();
+                if request.shadow && route != SmbRoute::AllLevels {
+                    return Err(
+                        "the Super Mario Bros. shadow key follows the all-levels route".into(),
+                    );
+                }
+                let shadow = request
+                    .shadow
+                    .then(|| nes_games::workload::Shadow::new(nes_games::smb::game::SuperMarioBros))
+                    .transpose()?;
+                let game = SmbGame::new(&rom, p, h, &execution_sha256)
                     .with_root(
                         root_actions::<nes_games::smb::target::SmbInput>(
                             request.root_input.as_deref(),
                         )?
                         .unwrap_or_default(),
                     )
-                    .with_route(
-                        request
-                            .smb_route
-                            .as_deref()
-                            .map(SmbRoute::from_identifier)
-                            .transpose()?
-                            .unwrap_or_default(),
-                    ),
-                SmbCampaignRun {
-                    vocabulary: Default::default(),
-                    terminal: Some(
-                        request
-                            .smb_terminal
-                            .as_deref()
-                            .map(SmbTerminalPredicate::from_identifier)
-                            .transpose()?
-                            .unwrap_or_default(),
-                    ),
-                },
-                &rom,
-                &request,
-                &execution_sha256,
-                &out,
-                started,
-                "super-mario-bros",
-                <SmbGame>::memory_view,
-            ),
+                    .with_route(route);
+                evaluate_watching(
+                    match &shadow {
+                        Some(shadow) => game.with_shadow(shadow.hook()),
+                        None => game,
+                    },
+                    SmbCampaignRun {
+                        vocabulary: Default::default(),
+                        terminal: Some(
+                            request
+                                .smb_terminal
+                                .as_deref()
+                                .map(SmbTerminalPredicate::from_identifier)
+                                .transpose()?
+                                .unwrap_or_default(),
+                        ),
+                    },
+                    &rom,
+                    &request,
+                    &execution_sha256,
+                    &out,
+                    started,
+                    "super-mario-bros",
+                    <SmbGame>::memory_view,
+                )?;
+                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+            }
             "mm2" if request.whole_game => evaluate_watching(
                 Mm2Game::new_whole_game(
                     &rom,
