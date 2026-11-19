@@ -16,6 +16,7 @@ use nes_workload::{
     joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
+        MetroidStrategyGame,
         archive::MetroidArchiveKey,
         campaign::{MetroidCampaignRun, MetroidGame},
         game::Metroid,
@@ -240,6 +241,7 @@ fn main() -> Result<()> {
             | "joust"
             | "famidash-lucky-draw"
             | "smb-strategy"
+            | "metroid-strategy"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -258,7 +260,8 @@ fn main() -> Result<()> {
             | "punchout"
             | "ice-climbers"
             | "twin-dragons"
-            | "smb-strategy" => {}
+            | "smb-strategy"
+            | "metroid-strategy" => {}
             "smb" if request.shadow && !request.records => {}
             "metroid" if request.shadow && request.strategy.is_some() => {
                 return Err(
@@ -569,6 +572,21 @@ fn main() -> Result<()> {
                 started,
                 "super-mario-bros",
                 <SmbStrategyGame>::memory_view,
+            ),
+            "metroid-strategy" => evaluate_watching(
+                nes_workload::workload::configured(
+                    MetroidStrategyGame::new(Metroid, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "metroid",
+                <MetroidStrategyGame>::memory_view,
             ),
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(

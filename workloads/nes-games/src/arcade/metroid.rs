@@ -6,6 +6,7 @@ use crate::{
     metroid::{
         action::MetroidAction,
         campaign::{MetroidCampaignRun, MetroidGame},
+        game::Metroid,
         keying::MetroidKeying,
         target::{
             BCD_BORROW_HEALTH, GenesisDepth, MetroidMechanicalState, MetroidObservations,
@@ -14,6 +15,7 @@ use crate::{
     },
     nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
+    workload::Arcade,
 };
 use machine::nes::{ButtonChord, WRAM_SIZE};
 use serde::{Deserialize, Serialize};
@@ -183,5 +185,31 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static, K: MetroidKeying + Default> A
 
     fn emulator_state(snapshot: &MetroidSnapshot) -> &[u8] {
         snapshot.emulator_state()
+    }
+}
+
+impl Arcade for Metroid {
+    type View = View;
+    const MEMORY_BYTES: usize = MEMORY_BYTES;
+
+    fn mixture() -> DrawMixture {
+        DrawMixture::EnergySplice { scale: 6 }
+    }
+
+    fn view(state: &MetroidMechanicalState) -> View {
+        view(*state)
+    }
+
+    fn motion(state: &MetroidMechanicalState) -> [u16; 4] {
+        let state = *state;
+        if loading(state) || dead(state) {
+            return [HIDDEN, 0, 0, 0];
+        }
+        let (x, y) = position(state);
+        [u16::from(level(state)), x, y, 0]
+    }
+
+    fn cleared(state: &MetroidMechanicalState) -> u8 {
+        cleared(*state)
     }
 }

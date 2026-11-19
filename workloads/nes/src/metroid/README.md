@@ -294,6 +294,15 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+## Shared target
+
+`nes-eval` game `metroid-strategy` runs `MetroidStrategyGame`, the `Metroid`
+game on the shared `NesWorkload` target with no hand campaign, under
+`metroid.toml` or a request's strategy file, with records when asked. The ROM
+image gains cartridge RAM, as in the hand target, because the game declares a
+memory window there. Its live view reads the same `View` as the hand campaign,
+and its trail motion carries no facing, which the decoded state does not hold.
+
 ## Archive memory
 
 History compaction starts once the archive's history estimate passes a quarter
