@@ -1471,6 +1471,20 @@ fn continuation_attempt<G: Workload + ?Sized>(
     (Some(energy), taken)
 }
 
+pub(crate) fn tail_cut<G: CampaignTypes + ?Sized>(
+    result: &CampaignJobResult<G>,
+    tail: usize,
+    stop_on_objective: bool,
+) -> bool {
+    result.hang.is_none()
+        && result.preparation_failure.is_none()
+        && result.actions.len() < tail
+        && result.actions.last().is_none_or(|action| {
+            !action.outcome.disposition.is_terminal()
+                && !(stop_on_objective && action.outcome.objective_reached)
+        })
+}
+
 fn continuation_reservation_matches<G: Workload + ?Sized>(
     taken: Option<&ContinuationReservation<G>>,
     energy: Option<u16>,
@@ -1850,6 +1864,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     candidate_incumbent: Option<(Input<G::Action>, ShrinkCost)>,
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
+    declared: Vec<(u16, u32)>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1861,7 +1876,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::with_shape(workload.action_cost_fn(), workload.key_shape());
         archive.max_entries = archive_entry_limit;
-        let choices = (!workload.choice_sites(run).is_empty()).then(|| workload.choice_policy(run));
+        let sites = workload.choice_sites(run);
+        let choices = (!sites.is_empty()).then(|| workload.choice_policy(run));
         if choices.is_some() {
             archive.enable_choices();
         }
@@ -1904,6 +1920,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             candidate_incumbent: None,
             shrink: None,
             choices,
+            declared: ChoiceSite::declared_contrary(&sites),
         }
     }
 
@@ -1936,6 +1953,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             mutation_seed,
             untried,
             held,
+            self.declared.clone(),
         ))
     }
 
@@ -3311,9 +3329,11 @@ fn choice_policy<G: Workload + ?Sized>(
     workload: &G,
     run: &G::Run,
 ) -> Result<Option<ChoicePolicy>, Box<dyn Error>> {
-    if workload.choice_sites(run).is_empty() {
+    let sites = workload.choice_sites(run);
+    if sites.is_empty() {
         return Ok(None);
     }
+    ChoiceSite::validate_all(&sites)?;
     workload.choice_policy(run).validate().map(Some)
 }
 
@@ -6550,6 +6570,8 @@ where
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
                 core.finish_suffix_job(job.parent_id, suffix_limit);
+                let cut = job.selector.path == SelectorPath::Continuation
+                    && tail_cut(&result, suffix.len(), header.stop_rollout_on_objective);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
@@ -6648,6 +6670,7 @@ where
                         landed,
                         replaced,
                         new_cell_descendant,
+                        cut,
                         continuation_wave,
                     );
                     core.archive.add_continuation_execution_work(execution_work);
@@ -7004,7 +7027,7 @@ mod tests {
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
         run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
         schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective, with_coordinator_session,
+        stop_reservations_after_objective, tail_cut, with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -9856,6 +9879,41 @@ mod tests {
         )
         .expect("admit a job from the first entry");
         assert_eq!(origin_cost(&core, 3), Some(ShrinkCost::new(15, 6)));
+    }
+
+    #[test]
+    fn a_continuation_ended_before_its_tail_without_a_stopping_action_is_cut() {
+        let result = |outcomes: &[Outcome]| CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            hang: None,
+            actions: outcomes
+                .iter()
+                .map(|outcome| CampaignActionResult {
+                    action: TestAction::new(0x01, 4),
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: *outcome,
+                    candidate: None,
+                    cost: ShrinkCost::ZERO,
+                    bound: ShrinkCost::ZERO,
+                })
+                .collect(),
+        };
+        let runnable = Outcome::default();
+        let terminal = Outcome {
+            disposition: ExecutionDisposition::Terminal,
+            ..runnable
+        };
+        let objective = Outcome {
+            objective_reached: true,
+            ..runnable
+        };
+        assert!(tail_cut(&result(&[]), 3, false));
+        assert!(tail_cut(&result(&[runnable]), 3, false));
+        assert!(!tail_cut(&result(&[runnable; 3]), 3, false));
+        assert!(!tail_cut(&result(&[terminal]), 3, false));
+        assert!(tail_cut(&result(&[objective]), 3, false));
+        assert!(!tail_cut(&result(&[objective]), 3, true));
     }
 
     #[test]

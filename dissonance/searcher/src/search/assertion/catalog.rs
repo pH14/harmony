@@ -434,6 +434,7 @@ impl Catalog {
         if choices.len() > usize::from(u16::MAX) {
             return Err("the catalog declares more choice sites than a site id holds".into());
         }
+        ChoiceSite::validate_all(&choices)?;
         let mut names = BTreeMap::new();
         for site in &choices {
             if site.labels.is_empty() || site.labels.len() > usize::from(u16::MAX) {

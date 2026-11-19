@@ -8,19 +8,22 @@ use std::{
 
 use machine::nes::ButtonChord;
 use nes_games::{
-    chord::{ChordVocabulary, ask},
+    chord::{CHORD_SITES, ChordVocabulary, ask},
     donkey_kong::DonkeyKong,
-    famidash::Famidash,
+    famidash::{
+        Famidash,
+        lucky_draw::{LuckyDraw, WAIT_SITE, Wait},
+    },
     ice_climbers::IceClimbers,
     joust::Joust,
     pac_man::PacMan,
     punchout::PunchOut,
     search::{
-        choice::{ChoicePlan, Chooser},
+        choice::{CERTAIN, Choice, ChoicePlan, ChoiceProfile, ChoiceSite, Chooser},
         rand::RomuDuoJrRand,
     },
     twin_dragons::TwinDragons,
-    workload::Game,
+    workload::{Game, Offer, Play, move_answer},
     zelda::Zelda,
 };
 
@@ -29,6 +32,19 @@ const CHAIN_LENGTH: u64 = 10;
 const Z_LIMIT: f64 = 4.5;
 const PAIR_MINIMUM: u64 = 50;
 const NO_CHORD: u8 = 0xff;
+const MOVE_RATE: u32 = CERTAIN / 12;
+const MOVE_LABELS: [&str; 5] = ["chord", "1", "4", "16", "64"];
+const MOVE_OPTIONS: [(u16, Play<Wait>); 5] = [
+    (0, Play::Chord),
+    (1, Play::Move(Wait::Idle(1))),
+    (2, Play::Move(Wait::Idle(4))),
+    (3, Play::Move(Wait::Idle(16))),
+    (4, Play::Move(Wait::Idle(64))),
+];
+const MOVE_OFFERED: u64 = 0b11011;
+const MOVES_GAME: &str = "lucky-draw-moves";
+const MOVES_HELD_GAME: &str = "lucky-draw-moves-held";
+const UNTRIED_ORDINALS: u64 = 6;
 
 type Pair = (u8, u8);
 
@@ -45,6 +61,8 @@ struct Counts {
     chords: BTreeMap<u8, u64>,
     holds: BTreeMap<u8, u64>,
     chains: Vec<Chain>,
+    asks: u64,
+    moves: BTreeMap<u16, u64>,
 }
 
 impl Counts {
@@ -97,31 +115,140 @@ fn main_side(chords: &ChordVocabulary, seed: u64) -> Result<Counts, Box<dyn Erro
     Ok(counts)
 }
 
-fn branch_side(chords: &ChordVocabulary, seed: u64) -> Result<Counts, Box<dyn Error>> {
+fn move_offer() -> Offer<Wait> {
+    Offer {
+        site: WAIT_SITE,
+        default: 0,
+        options: &MOVE_OPTIONS,
+        offered: MOVE_OFFERED,
+    }
+}
+
+fn move_sites(chords: &ChordVocabulary) -> Vec<ChoiceSite> {
+    let mut sites = chords.sites();
+    sites.push(ChoiceSite::new("wait", MOVE_LABELS.map(str::to_owned)).with_contrary(MOVE_RATE));
+    sites
+}
+
+fn branch_side(
+    chords: &ChordVocabulary,
+    offer: Option<&Offer<Wait>>,
+    held: bool,
+    seed: u64,
+) -> Result<Counts, Box<dyn Error>> {
     let starts = starts(chords);
+    let declared = offer.map_or_else(Vec::new, |_| {
+        ChoiceSite::declared_contrary(&move_sites(chords))
+    });
     let mut seeds = RomuDuoJrRand::with_seed(seed);
     let mut counts = Counts::default();
     for chain in 0..CHAINS {
-        let mut chooser = Chooser::new(&ChoicePlan {
-            profile: chords.reproducing_profile(),
-            redrawn: false,
-            seed: seeds.next_u64(),
-            untried: None,
-            held: Vec::new(),
+        let reproducing = chords.reproducing_profile();
+        let mut chooser = Chooser::new(&if held {
+            ChoicePlan {
+                profile: ChoiceProfile::new(reproducing.contrary, CERTAIN / 2),
+                redrawn: false,
+                seed: seeds.next_u64(),
+                untried: Some((chain % UNTRIED_ORDINALS) as u32),
+                held: vec![(CHORD_SITES + WAIT_SITE, Choice::Option(1))],
+                declared: declared.clone(),
+            }
+        } else {
+            ChoicePlan {
+                profile: reproducing,
+                redrawn: false,
+                seed: seeds.next_u64(),
+                untried: None,
+                held: Vec::new(),
+                declared: declared.clone(),
+            }
         });
         let mut record = Chain::default();
         let parent = starts[(chain % starts.len() as u64) as usize];
         let mut previous = None;
         for step in 0..CHAIN_LENGTH as usize {
-            let asked = ask(previous.as_ref().or(parent.as_ref()));
-            let mut records = Vec::new();
-            let next = chords.resolve(&mut chooser, &asked, previous.as_ref(), &mut records)?;
+            let next = loop {
+                let asked = ask(previous.as_ref().or(parent.as_ref()));
+                let mut records = Vec::new();
+                let Some(offer) = offer else {
+                    break chords.resolve(&mut chooser, &asked, previous.as_ref(), &mut records)?;
+                };
+                counts.asks += 1;
+                let next = offer.resolve(
+                    chords,
+                    &mut chooser,
+                    &asked,
+                    previous.as_ref(),
+                    &mut records,
+                )?;
+                match move_answer(&next) {
+                    Some((_, label)) => *counts.moves.entry(label).or_default() += 1,
+                    None => break next,
+                }
+            };
             counts.add(&mut record, step, previous.or(parent), next);
             previous = Some(next);
         }
         counts.chains.push(record);
     }
     Ok(counts)
+}
+
+fn one_sample(
+    game: &str,
+    category: String,
+    (count, trials): (u64, u64),
+    expected: f64,
+    failures: &mut u64,
+) {
+    let share = count as f64 / trials as f64;
+    let z = if expected > 0.0 && expected < 1.0 {
+        (share - expected) / (expected * (1.0 - expected) / trials as f64).sqrt()
+    } else {
+        0.0
+    };
+    let pass = if expected == 0.0 {
+        count == 0
+    } else {
+        z.abs() <= Z_LIMIT
+    };
+    *failures += u64::from(!pass);
+    println!(
+        "{{\"game\":\"{game}\",\"measure\":\"move\",\"category\":\"{category}\",\"count\":{count},\"trials\":{trials},\"share\":{share:.6},\"expected\":{expected:.6},\"z\":{z:.3},\"pass\":{pass}}}"
+    );
+}
+
+fn compare_moves(game: &str, offer: &Offer<Wait>, counts: &Counts, failures: &mut u64) {
+    let moves: u64 = counts.moves.values().sum();
+    one_sample(
+        game,
+        "taken".to_owned(),
+        (moves, counts.asks),
+        f64::from(MOVE_RATE) / f64::from(CERTAIN),
+        failures,
+    );
+    let offered: Vec<u16> = offer
+        .labels()
+        .into_iter()
+        .filter(|label| matches!(offer.plays(*label), Some(Play::Move(_))))
+        .collect();
+    for (label, play) in offer.options {
+        if matches!(play, Play::Chord) {
+            continue;
+        }
+        let expected = if offered.contains(label) {
+            1.0 / offered.len() as f64
+        } else {
+            0.0
+        };
+        one_sample(
+            game,
+            format!("label{label}"),
+            (counts.moves.get(label).copied().unwrap_or(0), moves),
+            expected,
+            failures,
+        );
+    }
 }
 
 fn compare(
@@ -215,11 +342,23 @@ fn compare_pairs(
     );
 }
 
-fn check(game: &str, chords: &ChordVocabulary, seed: u64) -> Result<u64, Box<dyn Error>> {
-    let main = main_side(chords, seed)?;
-    let branch = branch_side(chords, seed ^ 0x9e37_79b9_7f4a_7c15)?;
-    let draws = (main.draws, branch.draws);
+fn check(
+    game: &str,
+    chords: &ChordVocabulary,
+    offer: Option<&Offer<Wait>>,
+    seed: u64,
+) -> Result<u64, Box<dyn Error>> {
+    let held = game == MOVES_HELD_GAME;
+    let branch = branch_side(chords, offer, held, seed ^ 0x9e37_79b9_7f4a_7c15)?;
     let mut failures = 0;
+    if let Some(offer) = offer {
+        compare_moves(game, offer, &branch, &mut failures);
+    }
+    if held {
+        return Ok(failures);
+    }
+    let main = main_side(chords, seed)?;
+    let draws = (main.draws, branch.draws);
     for bit in 0..8 {
         compare(
             game,
@@ -285,7 +424,7 @@ fn check(game: &str, chords: &ChordVocabulary, seed: u64) -> Result<u64, Box<dyn
     Ok(failures)
 }
 
-const GAMES: [&str; 8] = [
+const GAMES: [&str; 10] = [
     "joust",
     "famidash",
     "zelda",
@@ -294,6 +433,8 @@ const GAMES: [&str; 8] = [
     "pac-man",
     "punchout",
     "twin-dragons",
+    MOVES_GAME,
+    MOVES_HELD_GAME,
 ];
 
 fn vocabulary(game: &str) -> Result<ChordVocabulary, Box<dyn Error>> {
@@ -306,6 +447,7 @@ fn vocabulary(game: &str) -> Result<ChordVocabulary, Box<dyn Error>> {
         "pac-man" => PacMan::CHORDS,
         "punchout" => PunchOut::CHORDS,
         "twin-dragons" => TwinDragons::CHORDS,
+        MOVES_GAME | MOVES_HELD_GAME => LuckyDraw::CHORDS,
         other => return Err(format!("no chord vocabulary for {other}").into()),
     })
 }
@@ -321,7 +463,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut failures = 0;
     for game in games {
         let offset = GAMES.iter().position(|known| *known == game).unwrap_or(0) as u64;
-        failures += check(game, &vocabulary(game)?, seed.wrapping_add(offset))?;
+        let offer = [MOVES_GAME, MOVES_HELD_GAME]
+            .contains(&game)
+            .then(move_offer);
+        failures += check(
+            game,
+            &vocabulary(game)?,
+            offer.as_ref(),
+            seed.wrapping_add(offset),
+        )?;
     }
     println!(
         "{{\"failures\":{failures},\"z_limit\":{Z_LIMIT},\"draws_per_side\":{}}}",

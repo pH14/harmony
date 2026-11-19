@@ -574,6 +574,23 @@ many times in a row under a high hold deviates rarely and for long stretches.
 A label that means something different at each ask belongs to a site of its
 own, as in the `picks` tiny world.
 
+A site may declare its own CONTRARY (ours): `ChoiceSite::with_contrary` sets
+`contrary`, in the same units, for every call at that site. A declared rate
+is a per-ask probability (ours): each ask at the site draws a uniform offered
+label other than the default with that probability and otherwise answers the
+default, with no hold, no untried first and no weights. Untried first then
+acts on the job's first ask at an undeclared site, and hold and the profile
+apply at every undeclared site as above. The rate is static
+data from the workload, as Hegel's rule weights are fixed at declaration:
+nothing updates it from results, and redrawing or inheriting a profile leaves
+it as declared. A site without one uses the profile. A workload can declare
+one for a move it offers beside its chord sites, so the move keeps its own
+rate while the chord sites keep the profile that reproduces the chord draw. The
+coordinator reads the declared rates from `InputPolicy::choice_sites` once,
+every plan carries them (`ChoicePlan::declared`, and `Chooser::contrary` gives
+the rate a site uses), and the catalog records each with its site. A campaign
+whose site declares a rate above one does not start.
+
 A hold that has to span jobs must be visible in the state the archive keeps.
 A job's hold memory starts from its parent's last action only, and the parent
 is drawn by its key, so an answer repeated over several jobs survives only if
@@ -1168,7 +1185,10 @@ in every place.
 `ContinuationAccounting` rides every live progress line under `continuations`:
 `edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
 `replaced`, `opened_new_cell` and `useful` for what the replays did, where a
-useful landing is one whose entry later bred a retained child,
+useful landing is one whose entry later bred a retained child, `cut` for
+continuations whose workload ended the job before its tail ran out without a
+terminal action or a stopping objective, such as a replayed action the new
+parent's state does not offer,
 `gaining_dispatched` for edges dispatched on their gain alone, `longest_wave`,
 and `energy`, `reservations_drawn` and `reservations_taken` for the share.
 
