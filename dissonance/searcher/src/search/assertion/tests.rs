@@ -452,6 +452,48 @@ fn last_holds_the_latest_value_that_is_not_none_and_resets_since_a_signal_change
 }
 
 #[test]
+fn an_aggregate_in_a_stage_objective_reads_the_parent_objective() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "climb"
+        objective = "if last(objective >= 5) == 1 then 9 else 'position.x'"
+        goal = "'items.key'"
+        [[stage]]
+        name = "after"
+        goal = "false"
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let objectives: Vec<_> = [3, 6, 2, 1]
+        .into_iter()
+        .map(|x| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    x,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            compiled.view(observed.key.unwrap()).progress
+        })
+        .collect();
+    assert_eq!(objectives, [vec![3], vec![6], vec![9], vec![9]]);
+    let error = Compiled::parse(
+        "[[stage]]\nobjective = \"objective + 1\"\ngoal = \"false\"",
+        &catalog(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("`objective` is not in the catalog"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_last_route_objective_follows_the_route_back_and_is_carried_off_it() {
     let compiled = Compiled::parse(
         r#"

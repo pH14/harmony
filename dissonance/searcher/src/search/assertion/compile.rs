@@ -550,6 +550,14 @@ impl Compiler<'_> {
             ops.push(Op::Local(0));
             return Ok(locals[0]);
         }
+        if name == "objective" && self.in_aggregate {
+            ops.push(Op::Local(0));
+            return Ok(Span {
+                lo: -(1 << 40),
+                hi: 1 << 40,
+                none: false,
+            });
+        }
         if let Some(slot) = self.catalog.slot(name) {
             let signal = &self.catalog.signals()[slot];
             ops.push(Op::Load(u8::try_from(slot)?));

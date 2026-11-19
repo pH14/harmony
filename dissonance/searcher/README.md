@@ -642,6 +642,10 @@ second argument is optional as for `highest`, and each observed frame folds in
 the same way. It carries a position along a route: with `x` the route index of
 the current cell, the objective stays at the last route cell while the path is
 off the route and follows the path back when it returns to an earlier cell.
+Inside an aggregate on any line, `objective` is the first value of the parent's
+stage objective, because the accumulator folds a frame before its stage is
+located; a stage objective that carries a value only within its own stage
+puts its stage index in that first value and compares the parent's against it.
 
 **Compilation.** `Compiled::new` checks every name against the catalog, runs
 interval analysis from the declared ranges, and packs each tuple into an
