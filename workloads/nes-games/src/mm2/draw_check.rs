@@ -9,7 +9,7 @@ use super::{
     game::WEAPON_SITE,
 };
 use crate::{
-    chord::CHORD_SITES,
+    chord::{CHORD_SITES, HOLD_FRAMES_SITE},
     search::{
         assertion::{RecordedAction, RecordedJobs},
         choice::{Choice, ChoiceRecord},
@@ -68,6 +68,51 @@ fn ask_of(action: &RecordedAction<ButtonChord>) -> Ask {
         }),
         weapon_record: record.is_some(),
     }
+}
+
+#[derive(Default)]
+struct Cuts {
+    chords: u64,
+    first: u64,
+}
+
+fn drawn_chord(
+    action: &RecordedAction<ButtonChord>,
+    first: bool,
+    last: bool,
+    cuts: &mut Cuts,
+) -> Result<ButtonChord, String> {
+    if move_answer(&action.action).is_some() {
+        return Ok(action.action);
+    }
+    let Some(record) = action
+        .choices
+        .iter()
+        .rev()
+        .find(|record| record.site == HOLD_FRAMES_SITE)
+    else {
+        return Ok(action.action);
+    };
+    let drawn = u8::try_from(record.resolved).map_err(|error| error.to_string())?;
+    let executed = action.action.hold_frames;
+    if executed == drawn {
+        return Ok(action.action);
+    }
+    if executed > drawn {
+        return Err(format!(
+            "job {} recorded a hold of {executed} frames, longer than its drawn hold of {drawn}",
+            action.sequence
+        ));
+    }
+    if !last {
+        return Err(format!(
+            "job {} recorded a hold cut to {executed} of {drawn} frames before its last action",
+            action.sequence
+        ));
+    }
+    cuts.chords += 1;
+    cuts.first += u64::from(first);
+    Ok(ButtonChord::new(action.action.buttons, drawn))
 }
 
 fn played(chord: ButtonChord) -> Drawn {
@@ -179,7 +224,7 @@ fn upper_quantile(p: f64) -> f64 {
     high
 }
 
-fn compare<I>(recorded: I, seed: u64) -> usize
+fn compare<I>(recorded: I, seed: u64) -> Result<usize, String>
 where
     I: IntoIterator<Item = Vec<RecordedAction<ButtonChord>>>,
 {
@@ -187,6 +232,7 @@ where
     let (mut strategy, mut hand) = (Side::default(), Side::default());
     let (mut asks, mut untargeted, mut actions, mut jobs) = (0_u64, 0_u64, 0_u64, 0_usize);
     let (mut replayed_jobs, mut replayed_actions, mut mixed_jobs) = (0_usize, 0_u64, 0_usize);
+    let mut cuts = Cuts::default();
     for job in recorded {
         let drawn = job
             .iter()
@@ -206,13 +252,14 @@ where
         let mut strategy_job = Vec::with_capacity(job.len());
         let mut hand_job = Vec::with_capacity(job.len());
         let mut previous = context.map(Mm2Action::Chord);
-        for action in &job {
+        for (index, action) in job.iter().enumerate() {
             let ask = ask_of(action);
             actions += 1;
             asks += u64::from(ask.weapon_record);
             untargeted += u64::from(ask.targets.is_empty());
             let targeted = !ask.targets.is_empty();
-            let strategy_drawn = played(action.action);
+            let chord = drawn_chord(action, index == 0, index + 1 == job.len(), &mut cuts)?;
+            let strategy_drawn = played(chord);
             strategy_job.push((strategy_drawn, targeted));
             let drawn = hand_draw(&mut rand, previous.as_ref());
             hand_job.push((hand_drawn(drawn, &ask.targets), targeted));
@@ -268,9 +315,10 @@ where
         );
     }
     println!(
-        "{{\"jobs\":{jobs},\"actions\":{actions},\"weapon_asks\":{asks},\"untargeted_actions\":{untargeted},\"judged\":{k},\"z_limit\":{limit:.3},\"failures\":{failures},\"replayed_jobs\":{replayed_jobs},\"replayed_actions\":{replayed_actions},\"mixed_jobs\":{mixed_jobs}}}"
+        "{{\"jobs\":{jobs},\"actions\":{actions},\"weapon_asks\":{asks},\"untargeted_actions\":{untargeted},\"judged\":{k},\"z_limit\":{limit:.3},\"failures\":{failures},\"replayed_jobs\":{replayed_jobs},\"replayed_actions\":{replayed_actions},\"mixed_jobs\":{mixed_jobs},\"cut_chords\":{},\"cut_first_chords\":{}}}",
+        cuts.chords, cuts.first
     );
-    failures
+    Ok(failures)
 }
 
 #[test]
@@ -283,12 +331,13 @@ fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
         .expect("a seed");
     let bytes = std::fs::read(path).expect("records");
     let (_, recorded) = RecordedJobs::<ButtonChord>::from_bytes(&bytes).expect("decode");
-    let failures = compare(recorded.map(|job| job.expect("decode")), seed);
+    let failures = compare(recorded.map(|job| job.expect("decode")), seed).expect("cut chords");
     assert_eq!(failures, 0);
 }
 
 fn synthetic(
     fresh: impl Fn(&mut RomuDuoJrRand, Option<&Mm2Action>) -> ButtonChord,
+    executed: impl Fn(usize, ButtonChord) -> ButtonChord,
 ) -> Vec<Vec<RecordedAction<ButtonChord>>> {
     let mut rand = RomuDuoJrRand::with_seed(0x5eed);
     let skewed = ButtonChord::new(0x83, 9);
@@ -297,7 +346,7 @@ fn synthetic(
             let drawn = sequence % 2 == 0;
             let mut previous: Option<Mm2Action> = None;
             (0..3)
-                .map(|_| {
+                .map(|position| {
                     let context = match previous {
                         Some(Mm2Action::Chord(chord)) => Some(chord),
                         _ => None,
@@ -305,9 +354,18 @@ fn synthetic(
                     let (action, choices) = if drawn {
                         let chord = fresh(&mut rand, previous.as_ref());
                         previous = Some(Mm2Action::Chord(chord));
+                        let hold = u16::from(chord.hold_frames);
                         (
-                            chord,
-                            vec![ChoiceRecord::new(0, vec![0, 1], 0, Choice::Default)],
+                            executed(position, chord),
+                            vec![
+                                ChoiceRecord::new(0, vec![0, 1], 0, Choice::Default),
+                                ChoiceRecord::new(
+                                    HOLD_FRAMES_SITE,
+                                    vec![hold],
+                                    hold,
+                                    Choice::Default,
+                                ),
+                            ],
                         )
                     } else {
                         (skewed, Vec::new())
@@ -335,9 +393,71 @@ fn hand_chord(rand: &mut RomuDuoJrRand, previous: Option<&Mm2Action>) -> ButtonC
     }
 }
 
+fn as_drawn(_: usize, chord: ButtonChord) -> ButtonChord {
+    chord
+}
+
+fn cut_last(position: usize, chord: ButtonChord) -> ButtonChord {
+    if position == 2 {
+        ButtonChord::new(chord.buttons, 1 + chord.hold_frames / 3)
+    } else {
+        chord
+    }
+}
+
+fn read_as_executed(
+    jobs: Vec<Vec<RecordedAction<ButtonChord>>>,
+) -> Vec<Vec<RecordedAction<ButtonChord>>> {
+    jobs.into_iter()
+        .map(|job| {
+            job.into_iter()
+                .map(|mut action| {
+                    for record in &mut action.choices {
+                        if record.site == HOLD_FRAMES_SITE {
+                            record.resolved = u16::from(action.action.hold_frames);
+                        }
+                    }
+                    action
+                })
+                .collect()
+        })
+        .collect()
+}
+
 #[test]
 fn replayed_tails_are_left_out_and_fresh_draws_like_the_hand_pass() {
-    assert_eq!(compare(synthetic(hand_chord), 0x6d32), 0);
+    assert_eq!(compare(synthetic(hand_chord, as_drawn), 0x6d32), Ok(0));
+}
+
+#[test]
+fn last_actions_cut_short_pass_on_their_drawn_holds_and_fail_on_their_executed_holds() {
+    let jobs = synthetic(hand_chord, cut_last);
+    assert_eq!(compare(jobs.clone(), 0x6d32), Ok(0));
+    assert!(compare(read_as_executed(jobs), 0x6d32).expect("no cut chords") > 0);
+}
+
+#[test]
+fn a_recorded_hold_longer_than_its_draw_fails_the_check() {
+    let longer = |position: usize, chord: ButtonChord| {
+        if position == 2 {
+            ButtonChord::new(chord.buttons, chord.hold_frames + 1)
+        } else {
+            chord
+        }
+    };
+    assert!(compare(synthetic(hand_chord, longer), 0x6d32).is_err());
+}
+
+#[test]
+fn a_hold_cut_before_the_last_action_fails_the_check() {
+    let cut_first = |position: usize, chord: ButtonChord| {
+        if position == 0 {
+            ButtonChord::new(chord.buttons, 1)
+        } else {
+            chord
+        }
+    };
+    assert!(compare(synthetic(hand_chord, cut_first), 0x6d32).is_err());
 }
 
 #[test]
@@ -349,7 +469,7 @@ fn fresh_draws_skewed_from_the_hand_draw_fail() {
             hand_chord(rand, previous)
         }
     };
-    assert!(compare(synthetic(skewed), 0x6d32) > 0);
+    assert!(compare(synthetic(skewed, as_drawn), 0x6d32).expect("no cut chords") > 0);
 }
 
 #[test]
