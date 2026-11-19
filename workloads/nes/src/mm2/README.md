@@ -136,7 +136,14 @@ bytes, against 29 for the hand key and its 3-byte milestones. Archive history co
 `memory_mib`, so the strategy arm compacts after fewer entries than the hand
 arm, and the two arms' search decisions differ from the first compaction on.
 An outcome that decides a choice for this workload is therefore scored on
-`mm2-strategy`. A preference packs into 32 bits, which holds the three lowest
+`mm2-strategy`. The archive charges each resident snapshot its struct size, its
+compressed QuickNES state and a 32-byte allocation header, and the strategy
+adds its accumulator's heap, which is empty for this strategy. The struct is 240
+bytes for the strategy and 96 for the hand. Along the Wily 5 root tape the
+compressed state averages 8,126 bytes, so a strategy snapshot is charged 8,398
+bytes against 8,254, and the same 1.5 GiB budget holds about 1.7% fewer
+resident snapshots: 191,785 against 195,131 if snapshots held the whole budget.
+A preference packs into 32 bits, which holds the three lowest
 weapon energies and health at a byte each. The full sorted energies would need
 12 lanes and do not fit.
 
