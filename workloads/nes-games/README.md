@@ -442,8 +442,11 @@ has no forced moves.
 ### Metroid
 
 Metroid implements `Game` in `metroid/game.rs`, and its `decode` reads work RAM
-followed by the cartridge RAM that holds equipment, missile capacity and energy
-tanks (`MEMORY_SIZE`). It still runs in its own `target` and `campaign`.
+followed by one memory window, the cartridge RAM from energy tanks at `0x6877`
+through the enemy type table at `0x6b52` that holds equipment, missile
+capacity, boss status and the mini-boss slots. It is the range the hand target
+captures on every frame (`CARTRIDGE_FRAME_RANGE`), so both decode each frame
+from the same bytes. It still runs in its own `target` and `campaign`.
 `metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
 `metroid/plan.rs` with the same goals and latches (an energy stage's goal reads
 `action_end`, because the plan latches from the parent key at the action's

@@ -2,23 +2,26 @@
 
 use std::sync::OnceLock;
 
-use machine::nes::{ButtonChord, WRAM_SIZE};
+use machine::nes::{ButtonChord, SAVE_RAM_BASE, WRAM_SIZE};
 
 use crate::{
     chord::ChordVocabulary,
     metroid::{
         archive::CHORDS,
         target::{
-            MAX_ENERGY_TANKS, MetroidMechanicalState, MetroidTerminalPolicy,
-            STARTING_HEALTH_TENTHS, decode_state, follow_frame, health_cap, power_on_walk,
+            CARTRIDGE_FRAME_RANGE, CARTRIDGE_RAM_SIZE, MAX_ENERGY_TANKS, MetroidMechanicalState,
+            MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state, follow_frame, health_cap,
+            power_on_walk,
         },
     },
     search::assertion::{Assertion, Declarations, Number},
     workload::{Game, Moves, Never, Step},
 };
 
-pub const CARTRIDGE_RAM_SIZE: usize = 0x2000;
-pub const MEMORY_SIZE: usize = WRAM_SIZE + CARTRIDGE_RAM_SIZE;
+const CARTRIDGE_WINDOW: (u64, u32) = (
+    SAVE_RAM_BASE + CARTRIDGE_FRAME_RANGE.start as u64,
+    (CARTRIDGE_FRAME_RANGE.end - CARTRIDGE_FRAME_RANGE.start) as u32,
+);
 
 const MAX_HEALTH: i64 = 16_665;
 const MORPH_BALL: u8 = 0x10;
@@ -125,12 +128,14 @@ fn balance_table() -> &'static [Ratio] {
     })
 }
 
-fn decode_memory(ram: &[u8]) -> MetroidMechanicalState {
-    let mut memory = [0; MEMORY_SIZE];
-    let length = ram.len().min(MEMORY_SIZE);
-    memory[..length].copy_from_slice(&ram[..length]);
-    let (wram, cartridge) = memory.split_at(WRAM_SIZE);
-    decode_state(wram, cartridge).unwrap_or_default()
+fn decode_memory(frame: &[u8]) -> MetroidMechanicalState {
+    let mut wram = [0; WRAM_SIZE];
+    let mut cartridge = [0; CARTRIDGE_RAM_SIZE];
+    let (work, window) = frame.split_at(frame.len().min(WRAM_SIZE));
+    wram[..work.len()].copy_from_slice(work);
+    let window = &window[..window.len().min(CARTRIDGE_FRAME_RANGE.len())];
+    cartridge[CARTRIDGE_FRAME_RANGE.start..][..window.len()].copy_from_slice(window);
+    decode_state(&wram, &cartridge).unwrap_or_default()
 }
 
 impl Game for Metroid {
@@ -140,6 +145,7 @@ impl Game for Metroid {
     const NAME: &'static str = "metroid";
     const STRATEGY: &'static str = include_str!("metroid.toml");
     const CHORDS: ChordVocabulary = CHORDS;
+    const MEMORY_WINDOWS: &'static [(u64, u32)] = &[CARTRIDGE_WINDOW];
 
     fn setup(&self) -> Vec<ButtonChord> {
         power_on_walk()
@@ -233,7 +239,7 @@ mod tests {
     use crate::{
         metroid::plan::{self, PLAN},
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
-        workload::Lowered,
+        workload::{Lowered, target::windowed},
     };
 
     struct Path {
@@ -346,6 +352,24 @@ mod tests {
             if matches!(PLAN[stage].objective, plan::Objective::Route(_)) {
                 assert!(*count > 0, "{}", PLAN[stage].name);
             }
+        }
+    }
+
+    #[test]
+    fn a_frame_of_work_ram_and_the_cartridge_window_decodes_as_the_whole_cartridge_ram() {
+        let mut rand = RomuDuoJrRand::with_seed(0x7769_6e64_6f77);
+        for _ in 0..200 {
+            let mut wram = [0_u8; WRAM_SIZE];
+            let mut cartridge = [0_u8; CARTRIDGE_RAM_SIZE];
+            for byte in wram.iter_mut().chain(cartridge.iter_mut()) {
+                *byte = rand.next_u64().to_le_bytes()[0];
+            }
+            let frame = windowed::<Metroid>(&wram, &cartridge, 0);
+            assert_eq!(frame.len(), WRAM_SIZE + CARTRIDGE_FRAME_RANGE.len());
+            assert_eq!(
+                Metroid.decode(None, None, &frame),
+                decode_state(&wram, &cartridge).unwrap()
+            );
         }
     }
 }

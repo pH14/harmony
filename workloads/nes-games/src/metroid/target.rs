@@ -293,8 +293,8 @@ fn drive_target_action<E: From<MachineError>>(
 
 const MISSILE_TANK_STEP: u8 = 5;
 pub const MAX_ENERGY_TANKS: u8 = 6;
-const CARTRIDGE_RAM_SIZE: usize = 8192;
-const CARTRIDGE_FRAME_RANGE: std::ops::Range<usize> =
+pub(crate) const CARTRIDGE_RAM_SIZE: usize = 8192;
+pub(crate) const CARTRIDGE_FRAME_RANGE: std::ops::Range<usize> =
     ENERGY_TANKS..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
 
 pub fn health_cap(energy_tanks: u8) -> u32 {
