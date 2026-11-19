@@ -4864,6 +4864,7 @@ mod tests {
             }));
         });
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4914,6 +4915,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -4963,6 +4965,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let error = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5004,6 +5007,7 @@ mod tests {
             .unwrap(),
         );
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5033,6 +5037,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5075,6 +5080,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5101,6 +5107,7 @@ mod tests {
         let before = capture_hash_calls();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5573,6 +5580,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let keyframe = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &keyframe,
@@ -5608,6 +5616,7 @@ mod tests {
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5672,6 +5681,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5736,6 +5746,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5788,6 +5799,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -7090,6 +7102,7 @@ mod tests {
                 );
             }
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &keyframe,

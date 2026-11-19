@@ -774,6 +774,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
         };
         let mut report = Report::new(
@@ -917,6 +918,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
         };
         let mut report = Report::new(
@@ -996,6 +998,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
         };
         let mut report = Report::new(
