@@ -411,7 +411,10 @@ pub fn run_prepared(
             .and_then(|options| package::replay(&artifacts, &manifest.actions, repeat, &options))
             .and_then(|report| {
                 manifest.pin_outcome(&report)?;
-                Ok(report_code(&report))
+                match super::investigate::repeat_disagreement(&report.replays) {
+                    Some(disagreement) => Err(disagreement.into()),
+                    None => Ok(report_code(&report)),
+                }
             });
         return finish(&out, &mut manifest, result);
     }

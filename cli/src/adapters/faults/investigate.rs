@@ -62,7 +62,47 @@ pub(super) fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bo
     expected.state_hash_encoding != StateHashEncoding::Unavailable
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash
-        && expected.state_hash_encoding == actual.state_hash_encoding
+        && same_end_evidence(expected, actual)
+}
+
+pub(super) fn repeat_disagreement(replays: &[ReplaySummary]) -> Option<String> {
+    let (first, rest) = replays.split_first()?;
+    let identity = first.state_hash_encoding != StateHashEncoding::Unavailable;
+    let differing: Vec<&ReplaySummary> = rest
+        .iter()
+        .filter(|repeat| {
+            if identity {
+                !equivalent(first, repeat)
+            } else {
+                !same_end_evidence(first, repeat)
+            }
+        })
+        .collect();
+    if differing.is_empty() {
+        return None;
+    }
+    let ending = |repeat: &ReplaySummary| {
+        if repeat.state_hash.is_empty() {
+            format!("repeat {} (state digest unavailable)", repeat.run)
+        } else {
+            format!("repeat {} at {}", repeat.run, repeat.state_hash)
+        }
+    };
+    let mut message = format!(
+        "{} of {} repeats ended differently from the first: {}",
+        differing.len(),
+        replays.len(),
+        ending(first)
+    );
+    for repeat in differing {
+        message.push_str("; ");
+        message.push_str(&ending(repeat));
+    }
+    Some(message)
+}
+
+fn same_end_evidence(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
+    expected.state_hash_encoding == actual.state_hash_encoding
         && expected.bug == actual.bug
         && expected.stop == actual.stop
         && expected.violations == actual.violations
@@ -627,6 +667,62 @@ mod tests {
         actual.run = 2;
         actual.guest_horizons = 1;
         assert!(equivalent(&expected, &actual));
+    }
+
+    fn repeats(digests: &[Option<[u8; 32]>]) -> Vec<ReplaySummary> {
+        use faults_workload::target::FaultObservations;
+        digests
+            .iter()
+            .enumerate()
+            .map(|(index, digest)| {
+                let mut summary =
+                    ReplaySummary::from_observation(&FaultObservations::default(), *digest, 0, 0);
+                summary.run = (index + 1) as u32;
+                summary.guest_horizons = index as u64;
+                summary
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agreeing_repeats_pass() {
+        assert_eq!(repeat_disagreement(&[]), None);
+        assert_eq!(repeat_disagreement(&repeats(&[Some([7; 32])])), None);
+        assert_eq!(
+            repeat_disagreement(&repeats(&[Some([7; 32]), Some([7; 32]), Some([7; 32])])),
+            None
+        );
+    }
+
+    #[test]
+    fn differing_repeat_digests_name_each_repeat_and_digest() {
+        let replays = repeats(&[Some([7; 32]), Some([7; 32]), Some([8; 32]), Some([9; 32])]);
+        let message = repeat_disagreement(&replays).expect("digests differ");
+        assert!(message.starts_with("2 of 4 repeats ended differently from the first"));
+        assert!(message.contains(&format!("repeat 1 at {}", replays[0].state_hash)));
+        assert!(message.contains(&format!("repeat 3 at {}", replays[2].state_hash)));
+        assert!(message.contains(&format!("repeat 4 at {}", replays[3].state_hash)));
+        assert!(!message.contains("repeat 2 "));
+    }
+
+    #[test]
+    fn differing_repeat_evidence_fails_with_equal_digests() {
+        let mut replays = repeats(&[Some([7; 32]), Some([7; 32])]);
+        replays[1].violations = vec!["linearizable".into()];
+        let message = repeat_disagreement(&replays).expect("evidence differs");
+        assert!(message.contains("repeat 2 at"), "{message}");
+    }
+
+    #[test]
+    fn unavailable_identity_compares_the_remaining_evidence() {
+        let mut replays = repeats(&[None, None]);
+        assert_eq!(repeat_disagreement(&replays), None);
+        replays[1].actions_applied = 3;
+        let message = repeat_disagreement(&replays).expect("evidence differs");
+        assert!(
+            message.contains("repeat 2 (state digest unavailable)"),
+            "{message}"
+        );
     }
 
     fn saved_replay_record(path: &std::path::Path, digests: &[Option<[u8; 32]>], status: &str) {
