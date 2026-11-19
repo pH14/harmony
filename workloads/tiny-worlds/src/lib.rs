@@ -25,6 +25,7 @@ pub mod worlds;
 use worlds::{State, World};
 
 pub const STAGE_PLACES: u16 = 1024;
+pub const ARCHIVE_FORMAT: &str = "tiny-world-archive-v1";
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SearchSettings {
@@ -142,11 +143,11 @@ use searcher::search::{
         Accumulator, AssertionKey, Compiled, ShadowCursor, ShadowReport, ShadowTable, Strategy,
     },
     campaign::{
-        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignConfig,
-        CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamHeader,
-        CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution,
-        WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
-        run_campaign_checkpointed_with_options,
+        ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
+        CampaignAdmissionDecision, CampaignConfig, CampaignExecutionOptions, CampaignJobResult,
+        CampaignOrigin, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation,
+        InputPolicy, Reporting, TargetExecution, WorkloadPolicies, postcard_value_sha256,
+        replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
     },
     choice::{ChoicePlan, ChoicePolicy, ChoiceSite, Chooser},
     rand::RomuDuoJrRand,
@@ -282,9 +283,17 @@ pub struct Evidence {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fork_first: Vec<Option<u64>>,
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TinyArchive;
+
+impl ArchiveFormatName for TinyArchive {
+    const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: ArchiveKey")]
 pub struct ArchiveReport<K = Key> {
+    pub format: ArchiveFormat<TinyArchive>,
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<ArchiveEntryReport<u8, K, bool>>,
     pub evidence: Evidence,
@@ -692,10 +701,10 @@ impl<K: Keying> CampaignTypes for Workload<K> {
 }
 impl<K: Keying> Reporting for Workload<K> {
     fn stream_format(&self) -> &'static str {
-        "tiny-world-v1"
+        "tiny-world-v2"
     }
     fn checkpoint_format(&self) -> &'static str {
-        "tiny-world-checkpoint-v2"
+        "tiny-world-checkpoint-v3"
     }
     fn write_evidence_checkpoint(
         evidence: &Evidence,
@@ -753,6 +762,7 @@ impl<K: Keying> Reporting for Workload<K> {
         state: ArchiveReportState<Self>,
     ) -> ArchiveReport<K::Key> {
         ArchiveReport {
+            format: ArchiveFormat::default(),
             entries: state.entries,
             evidence: evidence.clone(),
             selector: state.selector,
@@ -1902,6 +1912,42 @@ fn test_seed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_archive_in_another_format_is_refused_with_both_names() {
+        let report = ArchiveReport::<AssertionKey> {
+            format: ArchiveFormat::default(),
+            entries: Vec::new(),
+            evidence: Evidence::default(),
+            selector: Default::default(),
+        };
+        let mut value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["format"], ARCHIVE_FORMAT);
+        assert_eq!(
+            serde_json::from_value::<ArchiveReport<AssertionKey>>(value.clone()).unwrap(),
+            report
+        );
+        value["format"] = "tiny-world-archive-v0".into();
+        let refused = serde_json::from_value::<ArchiveReport<AssertionKey>>(value.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive format is tiny-world-archive-v0; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
+        value.as_object_mut().unwrap().remove("format");
+        let refused = serde_json::from_value::<ArchiveReport<AssertionKey>>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive names no format; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
+    }
 
     fn snap(state: State) -> Snapshot {
         Snapshot {

@@ -1319,7 +1319,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "snapshot checkpoint format is not recognized"
+            format!(
+                "snapshot checkpoint format is metroid-quicknes-snapshot-checkpoint-v12; this build reads {SNAPSHOT_CHECKPOINT_FORMAT}"
+            )
         );
     }
 

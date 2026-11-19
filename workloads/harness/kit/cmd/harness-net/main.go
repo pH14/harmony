@@ -74,8 +74,12 @@ func namespace(i int) string { return fmt.Sprintf("hn%d", i) }
 
 func address(i int) string { return fmt.Sprintf("%s.%d", subnet, i) }
 
-func run(argv ...string) error {
-	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+func run(argv ...string) error { return runInput("", argv...) }
+
+func runInput(input string, argv ...string) error {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -86,9 +90,11 @@ func exists(argv ...string) bool {
 	return exec.Command(argv[0], argv[1:]...).Run() == nil
 }
 
-func inNode(i int, argv ...string) error {
-	return run(append([]string{"ip", "netns", "exec", namespace(i)}, argv...)...)
+var nodeCommand = func(i int, input string, argv ...string) error {
+	return runInput(input, append([]string{"ip", "netns", "exec", namespace(i)}, argv...)...)
 }
+
+func inNode(i int, argv ...string) error { return nodeCommand(i, "", argv...) }
 
 func setup(n int) error {
 	if !exists("ip", "link", "show", bridge) {
@@ -163,24 +169,26 @@ func execIn(index string, argv []string) error {
 	return syscall.Exec(ip, append([]string{"ip", "netns", "exec", namespace(i)}, argv...), os.Environ())
 }
 
-func cut(n int, side func(int) bool) error {
-	if err := clearRules(n); err != nil {
-		return err
-	}
-	for i := 1; i <= n; i++ {
-		for j := 1; j <= n; j++ {
-			if side(i) == side(j) {
-				continue
-			}
-			if err := inNode(i, "iptables", "-A", chain, "-s", address(j), "-j", "DROP"); err != nil {
-				return err
-			}
-			if err := inNode(i, "iptables", "-A", chain, "-d", address(j), "-j", "DROP"); err != nil {
-				return err
-			}
+func restoreInput(i, n int, side func(int) bool) string {
+	var b strings.Builder
+	b.WriteString("*filter\n:" + chain + " - [0:0]\n")
+	for j := 1; j <= n; j++ {
+		if side(i) == side(j) {
+			continue
 		}
+		fmt.Fprintf(&b, "-A %s -s %s -j DROP\n", chain, address(j))
+		fmt.Fprintf(&b, "-A %s -d %s -j DROP\n", chain, address(j))
 	}
-	return nil
+	b.WriteString("COMMIT\n")
+	return b.String()
+}
+
+func cut(n int, side func(int) bool) error {
+	var errs []error
+	for i := 1; i <= n; i++ {
+		errs = append(errs, nodeCommand(i, restoreInput(i, n, side), "iptables-restore", "--noflush"))
+	}
+	return errors.Join(errs...)
 }
 
 func partition() error {
