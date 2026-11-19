@@ -223,11 +223,14 @@ table or splice copies one, is resolved as a chord. Films decode each frame from
 search does, so a state that counts frames, such as Lucky Draw's `menu_wait`,
 ends a film where it ends the run. `action_choices` reports a move chord's
 answer, so a job's first ask at that site can hold its parent's last answer.
-A move chord costs the archive the frames its answer plays before any forced
-move it leads to, as the game's `Game::answer_frames` gives them (one unless
-the game says otherwise): Lucky Draw's idle wait costs its frames and its start
-the press and the start wait, the level being a forced move. Two routes that
-wait the same frames cost the same, so the older entry keeps its cell. The
+A move chord's planned cost (`chord_time`) is the frames its answer plays
+before any forced move it leads to, as the game's `Game::answer_frames` gives
+them (one unless the game says otherwise): Lucky Draw's idle wait plans its
+frames and its start the press and the start wait, the level being a forced
+move. The archive and the shrink objective charge the recorded cost instead,
+every frame the move and the forced moves after it play, so Lucky Draw's start
+also costs its level. Two routes that wait the same frames cost the same, so
+the older entry keeps its cell. The
 records header's catalog names the chord sites and the game's move sites
 (`Lowered::records_catalog`), and `nes-rekey` checks records against it.
 
