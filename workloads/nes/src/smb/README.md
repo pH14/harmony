@@ -188,6 +188,16 @@ of the difference. History compacts once it passes a quarter of the memory
 budget, so at equal decisions the strategy arm compacts about 5% earlier, and
 the two arms' decision streams are identical only up to that first compaction.
 
+The struct size also enters each resident snapshot's charge, which is its
+`size_of` plus the compressed state. The hand `SmbSnapshot` is 80 bytes. The
+strategy's `NesSnapshot<SmbState>` is 160 bytes, mostly its 96-byte
+`NesObservation<SmbState>`, and it is also charged its accumulator's 32 heap
+bytes. Over the 5,576 action endpoints of one 8-world victory tape the mean
+compressed state is 1,925.6 bytes, so a snapshot charges 2,005.6 bytes in the
+hand arm and 2,117.6 in the strategy arm. Each GiB of snapshot budget therefore
+holds about 535,400 hand snapshots against 507,100 strategy snapshots, 5.3%
+fewer, and the strategy arm evicts sooner.
+
 ## Shrink
 
 `smb::shrink` holds the shrink hooks that `SmbGame`'s campaign traits and its
