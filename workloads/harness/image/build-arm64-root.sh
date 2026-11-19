@@ -4,6 +4,7 @@ set -eux
 
 : "${MUSL_URL:?}" "${MUSL_SHA256:?}" "${BUSYBOX_URL:?}" "${BUSYBOX_SHA256:?}"
 : "${IPROUTE2_URL:?}" "${IPROUTE2_SHA256:?}" "${IPTABLES_URL:?}" "${IPTABLES_SHA256:?}"
+: "${E2FSPROGS_URL:?}" "${E2FSPROGS_SHA256:?}"
 
 src=/build/harness-src
 musl=/opt/harmony-musl
@@ -29,6 +30,7 @@ fetch musl "$MUSL_URL" "$MUSL_SHA256"
 fetch busybox "$BUSYBOX_URL" "$BUSYBOX_SHA256"
 fetch iproute2 "$IPROUTE2_URL" "$IPROUTE2_SHA256"
 fetch iptables "$IPTABLES_URL" "$IPTABLES_SHA256"
+fetch e2fsprogs "$E2FSPROGS_URL" "$E2FSPROGS_SHA256"
 
 patch -d "$src/musl" --batch -p1 <"/build/harness-image/musl/0001-aarch64-harmony-lse-only-atomics.patch"
 (
@@ -69,7 +71,16 @@ chmod 0755 "$cc_musl"
     install -m 0755 iptables/xtables-legacy-multi "$root/sbin/xtables-legacy-multi"
 )
 
-for tool in ip tc iptables iptables-save iptables-restore; do
+(
+    cd "$src/e2fsprogs"
+    PKG_CONFIG=false CC="$cc_musl" ./configure \
+        --disable-nls --disable-debugfs --disable-imager --disable-resizer \
+        --disable-defrag --disable-uuidd --disable-fuse2fs --without-libarchive
+    make -j"$jobs" libs
+    make -C misc mke2fs
+)
+
+for tool in ip tc iptables iptables-save iptables-restore mke2fs mkfs.ext4; do
     rm -f "$root/bin/$tool" "$root/sbin/$tool" "$root/usr/bin/$tool" "$root/usr/sbin/$tool"
 done
 install -m 0755 "$src/iproute2/ip/ip" "$root/sbin/ip"
@@ -77,6 +88,8 @@ install -m 0755 "$src/iproute2/tc/tc" "$root/sbin/tc"
 for tool in iptables iptables-save iptables-restore; do
     ln -s xtables-legacy-multi "$root/sbin/$tool"
 done
+install -m 0755 "$src/e2fsprogs/misc/mke2fs" "$root/sbin/mke2fs"
+ln -s mke2fs "$root/sbin/mkfs.ext4"
 
 make -C /build/fault-runtime CC="$cc_musl" \
     CORE_DIR=/build/libvoidstar BUILD_DIR="$src/libvoidstar" all
@@ -92,7 +105,7 @@ ln -s ../run "$root/var/run"
 printf 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/false\n' >"$root/etc/passwd"
 printf 'root:x:0:\nnogroup:x:65534:\n' >"$root/etc/group"
 printf '127.0.0.1 localhost\n::1 localhost\n' >"$root/etc/hosts"
-for license in musl:COPYRIGHT busybox:LICENSE iproute2:COPYING iptables:COPYING; do
+for license in musl:COPYRIGHT busybox:LICENSE iproute2:COPYING iptables:COPYING e2fsprogs:NOTICE; do
     mkdir -p "$root/licenses"
     cp "$src/${license%%:*}/${license#*:}" "$root/licenses/${license%%:*}.txt"
 done
@@ -100,5 +113,6 @@ done
 "$root/sbin/ip" -V
 "$root/sbin/tc" -V
 "$root/sbin/iptables" -V
+"$root/sbin/mkfs.ext4" -V
 "$root/bin/busybox" true
 rm -rf "$src"

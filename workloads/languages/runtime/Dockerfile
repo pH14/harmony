@@ -14,6 +14,8 @@ ARG IPROUTE2_URL=https://cdn.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.
 ARG IPROUTE2_SHA256=6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
 ARG IPTABLES_URL=https://www.netfilter.org/projects/iptables/files/iptables-1.8.11.tar.xz
 ARG IPTABLES_SHA256=d87303d55ef8c92bcad4dd3f978b26d272013642b029425775f5bad1009fe7b2
+ARG E2FSPROGS_URL=https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.3/e2fsprogs-1.47.3.tar.xz
+ARG E2FSPROGS_SHA256=857e6ef800feaa2bb4578fbc810214be5d3c88b072ea53c5384733a965737329
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends bison bzip2 ca-certificates curl flex gcc \
         libc6-dev linux-libc-dev make binutils patch pkg-config xz-utils \
@@ -26,6 +28,7 @@ RUN MUSL_URL="${MUSL_URL}" MUSL_SHA256="${MUSL_SHA256}" \
     BUSYBOX_URL="${BUSYBOX_URL}" BUSYBOX_SHA256="${BUSYBOX_SHA256}" \
     IPROUTE2_URL="${IPROUTE2_URL}" IPROUTE2_SHA256="${IPROUTE2_SHA256}" \
     IPTABLES_URL="${IPTABLES_URL}" IPTABLES_SHA256="${IPTABLES_SHA256}" \
+    E2FSPROGS_URL="${E2FSPROGS_URL}" E2FSPROGS_SHA256="${E2FSPROGS_SHA256}" \
     sh /build/harness-image/build-arm64-root.sh \
     && cp -a /opt/harmony-musl /out/harness/musl
 

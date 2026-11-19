@@ -321,7 +321,7 @@ of a Debian base. On arm64 the shared runtime image
 
 | path | contents |
 |---|---|
-| `/out/harness/root` | a root filesystem: musl's loader at `/lib/ld-musl-aarch64.so.1`, BusyBox, iproute2 `ip` and `tc`, legacy `iptables` with built-in extensions, a musl `libvoidstar.so` and minimal `/etc` files |
+| `/out/harness/root` | a root filesystem: musl's loader at `/lib/ld-musl-aarch64.so.1`, BusyBox, iproute2 `ip` and `tc`, legacy `iptables` with built-in extensions, e2fsprogs `mkfs.ext4` for node disks, a musl `libvoidstar.so` and minimal `/etc` files |
 | `/out/harness/musl` | the musl toolchain, installed at `/opt/harmony-musl`, with `bin/harmony-cc` |
 
 `image/build-arm64-root.sh` builds both from pinned sources. musl carries the
