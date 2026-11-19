@@ -570,15 +570,6 @@ pub struct NesArchiveReport {
 type NesActionResult<G, M> = CampaignActionResult<NesWorkload<G, M>>;
 type NesJobResult<G, M> = CampaignJobResult<NesWorkload<G, M>>;
 
-pub fn played_time<G: Game>(offer: Option<&Offer<G::Move>>, action: &ButtonChord) -> u64 {
-    offer
-        .and_then(|offer| offer.played(action).ok())
-        .map_or_else(
-            || chord_time::<G>(action),
-            |played| chord_time::<G>(&played),
-        )
-}
-
 pub fn chord_time<G: Game>(action: &ButtonChord) -> u64 {
     move_answer(action).map_or_else(
         || u64::from(action.bounded_hold_frames()),

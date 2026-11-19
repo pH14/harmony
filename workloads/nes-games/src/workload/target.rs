@@ -14,7 +14,7 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{Game, Lowered, Moves, Offer, Satisfied, played_time};
+use super::{Game, Lowered, Moves, Offer, Satisfied};
 use crate::{
     nes_backend::{NesBackend, NesMemory},
     search::{
@@ -137,7 +137,6 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
-    offer_cost: Option<u64>,
     recording: bool,
 }
 
@@ -168,7 +167,6 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
-            offer_cost: None,
             recording: false,
         })
     }
@@ -195,11 +193,6 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     pub fn record_frames(&mut self, recording: bool) {
         self.recording = recording;
-    }
-
-    #[must_use]
-    pub fn offer_cost(&self) -> Option<u64> {
-        self.offer_cost
     }
 
     #[must_use]
@@ -363,12 +356,10 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     fn apply_internal(&mut self, action: &ButtonChord) {
         self.action_observations.clear();
-        self.offer_cost = None;
         if self.failed || self.observation.stops() || !self.settle() {
             return;
         }
         if let Some(offer) = self.lowered.game.moves(&self.observation.state).offer {
-            self.offer_cost = Some(played_time::<G>(Some(&offer), action));
             return self.apply_move(&offer, action);
         }
         let start = self.current;

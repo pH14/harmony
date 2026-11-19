@@ -217,7 +217,7 @@ mod tests {
     use super::*;
     use crate::{
         famidash::game::{GAME_STATE_PLAYING, Gameplay},
-        workload::{Lowered, chord_time, move_answer, move_chord, played_time},
+        workload::{Lowered, chord_time, move_answer, move_chord},
     };
 
     fn menu(menu_wait: u32) -> LuckyDrawState {
@@ -323,10 +323,6 @@ mod tests {
         assert_eq!(offer.played(&wait).unwrap(), wait);
         let unoffered = offer.played(&move_chord(WAIT_SITE, 40).unwrap()).unwrap();
         assert_eq!(move_answer(&unoffered), Some((WAIT_SITE, WAIT_ONE)));
-        let held = ButtonChord::new(A_BUTTON, 9);
-        assert_eq!(played_time::<LuckyDraw>(Some(&offer), &held), 1);
-        assert_eq!(played_time::<LuckyDraw>(Some(&offer), &wait), 64);
-        assert_eq!(played_time::<LuckyDraw>(None, &held), 9);
     }
 
     #[test]

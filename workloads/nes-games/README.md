@@ -217,8 +217,8 @@ pressed chord has (`move_chord`, `move_answer`). The target plays the chosen
 move like a forced move, keeping the record of each state it decodes. A chord
 at an offer that names no offered label, as after shrink, plays the default and
 is stored as the default's move chord (`Offer::played`); a supplied tape keeps
-the chord, and the target costs it as the move it plays (`played_time`, which
-the workload's `shrink_cost` reads for an action played at an offer only). A move chord where no offer stands, as when a
+the chord, and the target records the frames of the move it plays as the
+action's cost, which `action_cost` and the default `shrink_cost` read. A move chord where no offer stands, as when a
 table or splice copies one, is resolved as a chord. Films decode each frame from the state before it, as the
 search does, so a state that counts frames, such as Lucky Draw's `menu_wait`,
 ends a film where it ends the run. `action_choices` reports a move chord's
