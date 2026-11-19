@@ -12,7 +12,7 @@ use crate::assertion::{AssertionKind, AssertionOutcome};
 
 const TABLE_SEED: u64 = 0x5eed_fa17;
 const TABLE_STATES: usize = 64;
-const TABLE_NODES: [u16; 3] = [1, 3, 8];
+const TABLE_NODES: [u16; 4] = [1, 3, 8, 10];
 const TABLE: &str = include_str!("strategy-keys.json");
 
 fn below(rand: &mut RomuDuoJrRand, bound: u64) -> u64 {
@@ -72,9 +72,45 @@ fn sample(seed: u64, nodes: u16, states: usize) -> Vec<FaultObservations> {
 
 #[test]
 fn a_bundle_past_the_strategy_widths_fails_to_compile() {
-    let error = FaultKeys::new(STRATEGY, 9).unwrap_err().to_string();
+    assert!(FaultKeys::new(STRATEGY, 10).is_ok());
+    let error = FaultKeys::new(STRATEGY, 11).unwrap_err().to_string();
     assert!(error.contains("key field holds"), "{error}");
-    assert!(FaultKeys::new(STRATEGY, 30).is_err());
+    let error = FaultKeys::new(STRATEGY, 30).unwrap_err().to_string();
+    assert!(error.contains("alive and event.ready"), "{error}");
+    assert!(error.contains("at most 29 nodes"), "{error}");
+}
+
+#[test]
+fn the_node_limit_follows_the_mask_lanes_the_strategy_reads() {
+    let running =
+        "\n[define]\nhooks_running = \"min(max(hooks.started - hooks.finished, 0), 8)\"\n";
+    let unmasked = format!(
+        "capacity = 1\nspread = [\"min(hooks.finished, 2)\", \"hooks_running\"]\n{running}"
+    );
+    for nodes in [30, crate::bundle::MAX_NODES] {
+        let keys = FaultKeys::new(&unmasked, nodes).unwrap();
+        let observations = FaultObservations {
+            alive: u64::MAX,
+            event_ready: u64::MAX,
+            hooks_started: 1,
+            ..FaultObservations::default()
+        };
+        let context = keys.context(keys.key(&observations).unwrap());
+        assert_eq!(context.place.get(), 1 << 4);
+        assert_eq!(keys.context_event_ready(context), 0);
+    }
+    let ready = format!("capacity = 1\nspread = [\"event.ready\", \"hooks_running\"]\n{running}");
+    let keys = FaultKeys::new(&ready, 59).unwrap();
+    let observations = FaultObservations {
+        event_ready: u64::MAX,
+        hooks_started: 1,
+        ..FaultObservations::default()
+    };
+    let context = keys.context(keys.key(&observations).unwrap());
+    assert_eq!(keys.context_event_ready(context), (1 << 59) - 1);
+    let error = FaultKeys::new(&ready, 60).unwrap_err().to_string();
+    assert!(error.contains("lane event.ready and"), "{error}");
+    assert!(error.contains("at most 59 nodes"), "{error}");
 }
 
 #[test]
@@ -272,20 +308,39 @@ fn liveness_is_the_holder_identity_inside_one_place() {
     assert_eq!(survived.place(), lost_a_node.place());
 }
 
+fn edges(keys: &FaultKeys, edge_digest: u64) -> AssertionKey {
+    key(
+        keys,
+        &FaultObservations {
+            edge_crossings: 3,
+            edge_digest,
+            ..endpoint(&[1], 2, 0b11)
+        },
+    )
+}
+
 #[test]
 fn edge_bucket_coverage_separates_identities_inside_one_place() {
     let keys = shipped();
-    let before = key(&keys, &endpoint(&[1], 2, 0b11));
-    let crossed = key(
-        &keys,
-        &FaultObservations {
-            edge_crossings: 3,
-            edge_digest: 0x5eed << 48,
-            ..endpoint(&[1], 2, 0b11)
-        },
-    );
-    assert_eq!(before.place(), crossed.place());
-    assert_ne!(before.identity(), crossed.identity());
+    let before = edges(&keys, 0);
+    for kept in [1 << 16, 0x5eed << 16, 1 << 63] {
+        let crossed = edges(&keys, kept);
+        assert_eq!(before.place(), crossed.place());
+        assert_ne!(before.identity(), crossed.identity(), "{kept:#x}");
+    }
+}
+
+#[test]
+fn edge_digests_differing_only_below_the_kept_bits_share_an_identity() {
+    let keys = shipped();
+    let kept = 0x5eed_u64 << 40;
+    for dropped in [1, 0x5eed, 0xffff] {
+        assert_eq!(
+            edges(&keys, kept),
+            edges(&keys, kept | dropped),
+            "{dropped:#x}"
+        );
+    }
 }
 
 #[test]

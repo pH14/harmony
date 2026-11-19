@@ -15,7 +15,7 @@ pub const DECLARATIONS: usize = 18;
 
 const WIDE: i64 = (1 << 62) - 1;
 const COUNT: i64 = u16::MAX as i64;
-const CONTEXT_NODES: u16 = 29;
+const CONTEXT_FLAGS: u16 = 5;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +119,29 @@ impl ContextLanes {
             workload_running: lane(&spread, "workload_running"),
         })
     }
+
+    fn masks(&self) -> Vec<&'static str> {
+        [("alive", self.alive), ("event.ready", self.event_ready)]
+            .into_iter()
+            .filter_map(|(name, lane)| lane.map(|_| name))
+            .collect()
+    }
+
+    fn check(&self, nodes: u16) -> Result<(), Box<dyn Error>> {
+        let masks = self.masks();
+        let Some(count) = u16::try_from(masks.len()).ok().filter(|count| *count > 0) else {
+            return Ok(());
+        };
+        let limit = (64 - CONTEXT_FLAGS) / count;
+        if nodes > limit {
+            return Err(format!(
+                "the duration context packs the node mask lane {} and {CONTEXT_FLAGS} flags into 64 bits, so this strategy holds at most {limit} nodes, not {nodes}",
+                masks.join(" and ")
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 pub struct FaultKeys {
@@ -140,14 +163,10 @@ impl Debug for FaultKeys {
 
 impl FaultKeys {
     pub fn new(strategy: &str, nodes: u16) -> Result<Self, Box<dyn Error>> {
-        if nodes > CONTEXT_NODES {
-            return Err(format!(
-                "the duration context packs two node masks into 64 bits, so a strategy key holds at most {CONTEXT_NODES} nodes"
-            )
-            .into());
-        }
-        let catalog = Catalog::from_assertions(declare(&FaultObservations::default(), nodes))?;
         let parsed = Strategy::parse(strategy)?;
+        let lanes = ContextLanes::find(&parsed)?;
+        lanes.check(nodes)?;
+        let catalog = Catalog::from_assertions(declare(&FaultObservations::default(), nodes))?;
         if !parsed.stage.is_empty() {
             return Err("the faults strategy gives a tier, not stages".into());
         }
@@ -162,7 +181,7 @@ impl FaultKeys {
             );
         }
         Ok(Self {
-            lanes: ContextLanes::find(&parsed)?,
+            lanes,
             compiled,
             catalog,
             nodes,
@@ -208,11 +227,17 @@ impl FaultKeys {
         };
         let place = |index| lane(&view.place, index);
         let mask = self.mask();
-        let width = u32::from(self.nodes);
+        let width = |index: Option<usize>| index.map_or(0, |_| u32::from(self.nodes));
         let fields = [
             (u64::from(place(self.lanes.hooks_running) > 0), 1),
-            (lane(&view.identity, self.lanes.alive) & mask, width),
-            (place(self.lanes.event_ready) & mask, width),
+            (
+                lane(&view.identity, self.lanes.alive) & mask,
+                width(self.lanes.alive),
+            ),
+            (
+                place(self.lanes.event_ready) & mask,
+                width(self.lanes.event_ready),
+            ),
             (u64::from(place(self.lanes.kill_fires) > 0), 1),
             (u64::from(place(self.lanes.park_fires) > 0), 1),
             (u64::from(place(self.lanes.checks_finished) > 0), 1),
@@ -229,6 +254,9 @@ impl FaultKeys {
 
     #[must_use]
     pub fn context_event_ready(&self, context: AssertionKey) -> u64 {
+        if self.lanes.event_ready.is_none() {
+            return 0;
+        }
         (context.place.get() >> 4) & self.mask()
     }
 }

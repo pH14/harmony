@@ -1465,7 +1465,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v20`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v21`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same

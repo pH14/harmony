@@ -1054,25 +1054,51 @@ The shipped strategy's tier is the passed count. Its place is the
 passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
 event park on any node, and an event kill armed on any node. Liveness and the
-edge digest are the holder identity inside the place. The place must fit 64
-bits and the identity 32, so the set digest keeps 36 bits and the edge digest
-24, and the shipped strategy fails to compile for a bundle of more than 8
-nodes. A strategy for a larger bundle drops or coarsens place lanes. The
-selector's tiers rank states by the passed count and draw most parents from
-the states that passed the most. Places inside a tier rank by their draw
-counts.
+edge digest are the holder identity inside the place. The selector's tiers
+rank states by the passed count and draw most parents from the states that
+passed the most. Places inside a tier rank by their draw counts.
+
+The place and the identity are each a 64-bit product of their lanes' ranges,
+so the shipped strategy keeps these widths:
+
+| Value | Kept | Saturates at |
+|---|---|---|
+| `sometimes.set` | top 34 bits of the 128-bit digest | not applicable |
+| `edges` | top 48 bits of the 64-bit edge digest | not applicable |
+| `sometimes.count`, `always.violated` | exact | 65,535 |
+| lifecycle counters | exact | 2^62 − 1 |
+| lifecycle place lanes | exact | 8 |
+
+Two distinct passed sets share a place, and two distinct edge digests share
+an identity, when their kept bits agree. Among n distinct values of a w-bit
+fingerprint the expected number of colliding pairs is about n^2 / 2^(w+1):
+about 0.07 for 50,000 passed sets at 34 bits, and about 4 in a million for
+50,000 edge digests at 48 bits.
+
+The node count has these limits:
+
+| Limit | Nodes | Checked by |
+|---|---|---|
+| platform supervisor | 64 | `FaultVocabulary` |
+| duration context, strategy reads `alive` and `event.ready` | 29 | `FaultKeys::new` |
+| duration context, strategy reads one of them | 59 | `FaultKeys::new` |
+| duration context, strategy reads neither | the supervisor's 64 | `FaultKeys::new` |
+| shipped strategy's place width | 10 | the strategy compile |
+
+A strategy for a bundle of more than 10 nodes drops or coarsens place lanes.
 
 The duration context is a function of the parent key alone, because replay
 validates the recorded context. It is read from the key's lanes named
 `hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
 `checks_finished`, `workload_running` and the identity lane `alive`; a
-strategy without one of them leaves that part of the context zero. A strategy
+strategy without one of them leaves that part of the context zero, and packs
+no bits for a node mask it does not read. A strategy
 with stages, a reject line or aggregates is refused, because the workload
 keeps no accumulator and draws its tier directly.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
-duration context the shipped strategy gives 64 sampled states for each of 1, 3
-and 8 nodes, and a test checks that the strategy still gives them.
+duration context the shipped strategy gives 64 sampled states for each of 1,
+3, 8 and 10 nodes, and a test checks that the strategy still gives them.
 
 `workload.options.key.strategy` in a search config replaces the shipped
 strategy text. The key table accepts no other field.
