@@ -204,7 +204,12 @@ impl Game for PunchOut {
         }
     }
 
-    fn decode(&self, _previous: Option<&PunchOutState>, ram: &[u8]) -> PunchOutState {
+    fn decode(
+        &self,
+        _: Option<&PunchOutState>,
+        _previous: Option<&PunchOutState>,
+        ram: &[u8],
+    ) -> PunchOutState {
         let digit = |address| byte(ram, address).min(9);
         PunchOutState {
             mode: byte(ram, MODE),
@@ -316,7 +321,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> PunchOutState {
-        PunchOut.decode(None, wram)
+        PunchOut.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<PunchOut> {

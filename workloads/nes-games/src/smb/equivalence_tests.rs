@@ -112,7 +112,7 @@ struct Chain {
 impl Chain {
     fn genesis(lowered: &Lowered<SuperMarioBros>, route: SmbRoute, wram: &[u8; WRAM_SIZE]) -> Self {
         let key = hand_key(route, wram).complete(None);
-        let state = lowered.game.decode(None, wram);
+        let state = lowered.game.decode(None, None, wram);
         let mut accumulator = Accumulator::default();
         let _ = lowered.observe(0, state, &mut accumulator);
         Self {
@@ -160,7 +160,7 @@ fn step(
     let raw = hand_key(route, wram);
     let hand = raw.complete(Some((chain.frame, &())));
     chain.frame = hand;
-    let state = lowered.game.decode(Some(&chain.state), wram);
+    let state = lowered.game.decode(None, Some(&chain.state), wram);
     chain.state = state;
     let bucket = smb_camera_pixels(wram) / 16;
     let hand_stops =

@@ -124,6 +124,7 @@ impl<H> ShadowHook<H> {
 }
 
 struct Position<S, H: ArchiveKey> {
+    kept: S,
     state: S,
     cursor: ShadowCursor<H>,
 }
@@ -131,6 +132,7 @@ struct Position<S, H: ArchiveKey> {
 impl<S: Clone, H: ArchiveKey> Clone for Position<S, H> {
     fn clone(&self) -> Self {
         Self {
+            kept: self.kept.clone(),
             state: self.state.clone(),
             cursor: self.cursor.clone(),
         }
@@ -169,13 +171,14 @@ where
 {
     fn arrive(
         &self,
+        parent: Option<&G::State>,
         previous: Option<&G::State>,
         ram: &[u8],
         ends: impl FnOnce(&G::State, &Moves<G::Move>) -> bool,
         cursor: &mut ShadowCursor<H>,
     ) -> (G::State, bool, bool) {
         let lowered = &self.shadow.lowered;
-        let state = lowered.game.decode(previous, ram);
+        let state = lowered.game.decode(parent, previous, ram);
         let moves = lowered.game.moves(&state);
         let mut record = lowered.record(&state).0;
         let ends = cursor.observe_ending(&lowered.compiled, &mut record, ends(&state, &moves));
@@ -185,8 +188,12 @@ where
 
     fn begin(&self, ram: &[u8]) -> Position<G::State, H> {
         let mut cursor = ShadowCursor::default();
-        let (state, ..) = self.arrive(None, ram, |_, _| true, &mut cursor);
-        Position { state, cursor }
+        let (state, ..) = self.arrive(None, None, ram, |_, _| true, &mut cursor);
+        Position {
+            kept: state.clone(),
+            state,
+            cursor,
+        }
     }
 }
 
@@ -222,9 +229,11 @@ where
         let Some(position) = current.position.as_mut() else {
             return;
         };
+        let parent = position.kept.clone();
         for (index, wram) in frames.iter().enumerate() {
             let last_frame = index + 1 == frames.len();
             let (state, ends, departs) = self.arrive(
+                Some(&parent),
                 Some(&position.state),
                 wram,
                 |_, moves| moves.ends_input(last_frame),
@@ -235,6 +244,9 @@ where
                 current.departed = departs;
                 break;
             }
+        }
+        if !current.departed {
+            position.kept = position.state.clone();
         }
     }
 
@@ -250,6 +262,7 @@ where
         let Some(position) = current.position.as_mut().filter(|_| departed) else {
             return;
         };
+        let parent = std::mem::replace(&mut position.kept, position.state.clone());
         let Some(mut mv) = game.moves(&position.state).forced else {
             return;
         };
@@ -260,6 +273,7 @@ where
             };
             let mut cursor = departure.clone();
             let (state, ends, _) = self.arrive(
+                Some(&parent),
                 Some(&position.state),
                 wram,
                 |state, moves| {
@@ -270,7 +284,11 @@ where
                 },
                 &mut cursor,
             );
-            *position = Position { state, cursor };
+            *position = Position {
+                kept: state.clone(),
+                state,
+                cursor,
+            };
             match step.rest {
                 Some(next) if !ends => mv = next,
                 _ => break,
@@ -459,7 +477,7 @@ mod tests {
         }
 
         fn key(&mut self) -> Option<LedgeKey> {
-            let spot = Ledge.decode(None, &read_wram(&self.machine).unwrap());
+            let spot = Ledge.decode(None, None, &read_wram(&self.machine).unwrap());
             self.hook.observe(Some(LedgeKey::raw(spot)))
         }
 
@@ -813,7 +831,7 @@ mod tests {
             let departure = self.press(buttons, hold);
             self.hook.advance(self.machine.frames());
             if Stairs
-                .moves(&Stairs.decode(None, &departure))
+                .moves(&Stairs.decode(None, None, &departure))
                 .forced
                 .is_some()
             {
@@ -950,6 +968,7 @@ mod tests {
         fn apply(&mut self, buttons: u8, hold: u8) {
             let chord = ButtonChord::new(buttons, hold);
             let start = self.live.observation().frame_count;
+            let parent = self.live.observation().state;
             self.live.apply(&chord);
             let emitted = self.live.last_action_observations().to_vec();
             let arrival = emitted.last().unwrap().observation.clone();
@@ -969,7 +988,7 @@ mod tests {
                 let mut steps = Vec::new();
                 while let Some(step) = next.and_then(|mv| self.game.play(mv, &state)) {
                     let wram = *self.press(step.chord).last().unwrap();
-                    state = self.game.decode(Some(&state), &wram);
+                    state = self.game.decode(Some(&parent), Some(&state), &wram);
                     steps.push(wram);
                     next = step.rest;
                 }
@@ -1240,6 +1259,18 @@ mod tests {
                 "goal = \"x == 8 and not action_end\"\nidentity = \"highest(action_end and x == 8)\"",
                 &[(RIGHT, 6), (RIGHT, 1)],
                 &[(8, false), (9, false)],
+            ),
+            (
+                "lineage read from the kept state an input started from",
+                "goal = \"departed == 1\"\nidentity = [\"x\", \"departed\"]",
+                &[(RIGHT, 3), (RIGHT, 1)],
+                &[(3, false), (4, false)],
+            ),
+            (
+                "lineage of a forced move read from its input's kept state",
+                "goal = \"departed == 6\"\nidentity = [\"x\", \"departed\"]",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(7, false), (8, false)],
             ),
             (
                 "revoked stop at a forced move's departure",

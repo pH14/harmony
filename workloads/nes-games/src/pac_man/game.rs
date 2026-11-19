@@ -232,7 +232,12 @@ impl Game for PacMan {
         }
     }
 
-    fn decode(&self, previous: Option<&PacManState>, ram: &[u8]) -> PacManState {
+    fn decode(
+        &self,
+        _parent: Option<&PacManState>,
+        previous: Option<&PacManState>,
+        ram: &[u8],
+    ) -> PacManState {
         let mut score = 0u32;
         for digit in (0..SCORE_DIGITS).rev() {
             score = score * 10 + u32::from(byte(ram, SCORE + digit).min(9));
@@ -354,7 +359,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> PacManState {
-        PacMan.decode(None, wram)
+        PacMan.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<PacMan> {
@@ -471,26 +476,26 @@ mod tests {
         let play = decode(&wram);
         wram[DOTS_LEFT] = 0;
         wram[MODE] = MODE_MAZE_CLEAR;
-        let entered = PacMan.decode(Some(&play), &wram);
+        let entered = PacMan.decode(None, Some(&play), &wram);
         assert_eq!(entered.repeat_clears, 1);
-        let held = PacMan.decode(Some(&entered), &wram);
+        let held = PacMan.decode(None, Some(&entered), &wram);
         assert_eq!(held.repeat_clears, 1);
         assert_eq!(decode(&wram).repeat_clears, 0);
         wram[DOTS_LEFT] = DOTS;
         wram[MODE] = MODE_PLAY;
-        let next = PacMan.decode(Some(&held), &wram);
+        let next = PacMan.decode(None, Some(&held), &wram);
         assert_eq!(next.repeat_clears, 1);
         assert_eq!(next.mazes_cleared(), FINAL_LEVEL + 1);
         wram[DOTS_LEFT] = 0;
         wram[MODE] = MODE_MAZE_CLEAR;
-        let again = PacMan.decode(Some(&next), &wram);
+        let again = PacMan.decode(None, Some(&next), &wram);
         assert_eq!(again.repeat_clears, 2);
         assert_eq!(again.mazes_cleared(), FINAL_LEVEL + 2);
         let mut early = playing_wram();
         early[LEVEL] = FINAL_LEVEL - 1;
         let before = decode(&early);
         early[MODE] = MODE_MAZE_CLEAR;
-        assert_eq!(PacMan.decode(Some(&before), &early).repeat_clears, 0);
+        assert_eq!(PacMan.decode(None, Some(&before), &early).repeat_clears, 0);
     }
 
     #[test]

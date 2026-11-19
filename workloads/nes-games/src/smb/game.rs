@@ -180,7 +180,7 @@ impl Game for SuperMarioBros {
         }
     }
 
-    fn decode(&self, previous: Option<&SmbState>, ram: &[u8]) -> SmbState {
+    fn decode(&self, _parent: Option<&SmbState>, previous: Option<&SmbState>, ram: &[u8]) -> SmbState {
         let wram = wram(ram);
         let loading = smb_area_is_loading(&wram);
         let area = ROOM_IDENTITY_BYTES.map(|offset| wram[offset]);
@@ -325,19 +325,19 @@ mod tests {
     #[test]
     fn the_level_follows_the_area_and_a_warp_starts_new_epochs() {
         let game = SuperMarioBros;
-        let castle = game.decode(None, &ram([3, 5], 4_000, 0, 3));
-        let next = game.decode(Some(&castle), &ram([3, 5], 4_000, 1, 0));
+        let castle = game.decode(None, None, &ram([3, 5], 4_000, 0, 3));
+        let next = game.decode(None, Some(&castle), &ram([3, 5], 4_000, 1, 0));
         assert_eq!((next.world, next.level), (0, 3));
         assert_eq!((next.level_epoch, next.room_epoch), (0, 0));
-        let loaded = game.decode(Some(&next), &ram([1, 0], 0, 1, 0));
+        let loaded = game.decode(None, Some(&next), &ram([1, 0], 0, 1, 0));
         assert_eq!((loaded.world, loaded.level), (1, 0));
         assert_eq!((loaded.level_epoch, loaded.room_epoch), (1, 1));
-        let ahead = game.decode(Some(&loaded), &ram([1, 0], 1_000, 1, 0));
-        let bonus = game.decode(Some(&ahead), &ram([0, 2], 0, 1, 0));
+        let ahead = game.decode(None, Some(&loaded), &ram([1, 0], 1_000, 1, 0));
+        let bonus = game.decode(None, Some(&ahead), &ram([0, 2], 0, 1, 0));
         assert_eq!((bonus.level_epoch, bonus.room_epoch), (1, 2));
-        let back = game.decode(Some(&ahead), &ram([1, 0], 1_000 - 16 * 16, 1, 0));
+        let back = game.decode(None, Some(&ahead), &ram([1, 0], 1_000 - 16 * 16, 1, 0));
         assert_eq!((back.level_epoch, back.room_epoch), (1, 1));
-        let warped = game.decode(Some(&ahead), &ram([1, 0], 1_000 - 17 * 16, 1, 0));
+        let warped = game.decode(None, Some(&ahead), &ram([1, 0], 1_000 - 17 * 16, 1, 0));
         assert_eq!((warped.level_epoch, warped.room_epoch), (2, 2));
     }
 }

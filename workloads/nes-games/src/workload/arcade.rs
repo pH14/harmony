@@ -35,7 +35,7 @@ fn decode<G: Arcade>(memory: &[u8]) -> Result<G::State, Box<dyn Error>> {
         )
         .into());
     }
-    Ok(G::default().decode(None, memory))
+    Ok(G::default().decode(None, None, memory))
 }
 
 impl<G: Arcade, M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for NesWorkload<G, M> {
@@ -82,7 +82,7 @@ impl<G: Arcade, M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Nes
     }
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
-        G::motion(&G::default().decode(None, wram))
+        G::motion(&G::default().decode(None, None, wram))
     }
 
     fn memory_cleared(memory: &[u8]) -> u8 {
