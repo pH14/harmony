@@ -156,7 +156,8 @@ fn a_tier_spread_and_preference_pack_in_order() {
         compiled.shape(),
         KeyShape {
             capacity: 1,
-            preferences: 1
+            preferences: 1,
+            ties_above: 0
         }
     );
     let key = |state: Walk| compiled.key(&record(state)).unwrap();
@@ -638,6 +639,80 @@ fn an_aggregate_reads_the_held_objective_of_the_parent_stage() {
         })
         .collect();
     assert_eq!(stages, [Some("reach".to_owned()), Some("after".to_owned())]);
+}
+
+#[test]
+fn a_preference_list_ending_in_above_breaks_its_ties_by_the_list_above() {
+    let order = |text: &str, preference, left: (u8, u16), right: (u8, u16)| {
+        let compiled = Compiled::parse(text, &catalog()).unwrap();
+        let key = |(lives, time)| {
+            compiled
+                .key(&record(Walk {
+                    lives,
+                    time,
+                    ..Walk::default()
+                }))
+                .unwrap()
+        };
+        compiled
+            .shape()
+            .preference_cmp(key(left), preference, key(right))
+    };
+    let above = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\", \"above\"]]";
+    let plain = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\"]]";
+    assert_eq!(order(above, 1, (3, 9), (3, 5)), Ordering::Greater);
+    assert_eq!(order(above, 1, (4, 1), (3, 9)), Ordering::Greater);
+    assert_eq!(order(above, 1, (3, 9), (3, 9)), Ordering::Equal);
+    assert_eq!(order(above, 0, (3, 9), (3, 5)), Ordering::Greater);
+    assert_eq!(order(plain, 1, (3, 9), (3, 5)), Ordering::Equal);
+    let marks = |text: &str| {
+        Compiled::parse(text, &catalog())
+            .unwrap()
+            .shape()
+            .ties_above
+    };
+    assert_eq!((marks(above), marks(plain)), (0b10, 0));
+    let full =
+        "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\"]]";
+    let full_above = "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"above\"]]";
+    assert_eq!((marks(full), marks(full_above)), (0, 0b10));
+    let key = |text: &str, time| {
+        Compiled::parse(text, &catalog())
+            .unwrap()
+            .key(&record(Walk {
+                time,
+                ..Walk::default()
+            }))
+            .unwrap()
+            .prefer[1]
+    };
+    assert_eq!(key(full, u16::MAX), key(full_above, u16::MAX));
+    assert!(key(full, u16::MAX) >= 1 << 31);
+    for (text, message) in [
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\", \"above\"]]",
+            "no list above",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\"], [\"above\", \"lives: more\"]]",
+            "needs `: more` or `: less`",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"lives: more\"]]",
+            "has 42949672960 values and its key field holds 4294967296",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"lives: more\", \"above\"]]",
+            "has 42949672960 values and its key field holds 4294967296",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"above\"]]\n[[stage]]\ngoal = \"items >= 1\"\nprefer = [[\"lives: more\"], [\"time: more\"]]\n[[stage]]\ngoal = \"false\"",
+            "keeps the shared `above` marks",
+        ),
+    ] {
+        let error = Compiled::parse(text, &catalog()).unwrap_err().to_string();
+        assert!(error.contains(message), "{text}: {error}");
+    }
 }
 
 #[test]
@@ -1371,7 +1446,8 @@ fn every_archive_preference_comparison_is_at_a_listed_site() {
             function = rest.split(['(', '<']).next().unwrap_or(rest);
             continue;
         }
-        if line.contains("preference_cmp(") {
+        let compares = line.contains("preference_cmp(") || line.contains("preference_order(");
+        if compares && !matches!(function, "preference_cmp" | "preference_order") {
             sites.push(function);
         }
     }

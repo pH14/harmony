@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub mod image;
 pub(crate) mod publisher;
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v20";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v21";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedCheckpoint {
@@ -1052,7 +1052,7 @@ mod tests {
             .expect("another format is refused");
         assert_eq!(
             refused.to_string(),
-            "search checkpoint format is dissonance-search-checkpoint-v9; this build reads dissonance-search-checkpoint-v20"
+            "search checkpoint format is dissonance-search-checkpoint-v9; this build reads dissonance-search-checkpoint-v21"
         );
         fs::remove_dir_all(&directory).expect("remove the directory");
     }

@@ -19,6 +19,7 @@ use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY};
 pub const MAX_AGGREGATES: usize = 8;
 pub const OBJECTIVE_WIDTH: usize = 4;
 const STACK: usize = 32;
+const ABOVE: &str = "above";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Cmp {
@@ -240,6 +241,7 @@ struct LineSet {
     spread: Tuple,
     identity: Tuple,
     prefer: Vec<Tuple>,
+    above: Vec<bool>,
     scope: Option<Tuple>,
     across: Tuple,
 }
@@ -1092,7 +1094,7 @@ impl Compiler<'_> {
             (None, Some(fallback)) => fallback.identity.clone(),
             (None, None) => Tuple::empty(),
         };
-        let prefer = match (&lines.prefer, fallback) {
+        let (prefer, above) = match (&lines.prefer, fallback) {
             (Some(prefer), _) => {
                 if prefer.len() > MAX_PREFERENCES {
                     return Err(format!(
@@ -1100,13 +1102,31 @@ impl Compiler<'_> {
                     )
                     .into());
                 }
-                prefer
-                    .iter()
-                    .map(|list| self.preference(list, u128::from(u32::MAX) + 1, "prefer"))
-                    .collect::<Result<_, _>>()?
+                let mut tuples = Vec::new();
+                let mut above = Vec::new();
+                for (index, list) in prefer.iter().enumerate() {
+                    let (last, terms) =
+                        list.split_last()
+                            .map_or((false, &list[..]), |(last, rest)| {
+                                if last.trim() == ABOVE {
+                                    (true, rest)
+                                } else {
+                                    (false, &list[..])
+                                }
+                            });
+                    if last && index == 0 {
+                        return Err(format!(
+                            "the first `prefer` list has no list above for `{ABOVE}`"
+                        )
+                        .into());
+                    }
+                    tuples.push(self.preference(terms, u128::from(u32::MAX) + 1, "prefer")?);
+                    above.push(last);
+                }
+                (tuples, above)
             }
-            (None, Some(fallback)) => fallback.prefer.clone(),
-            (None, None) => Vec::new(),
+            (None, Some(fallback)) => (fallback.prefer.clone(), fallback.above.clone()),
+            (None, None) => (Vec::new(), Vec::new()),
         };
         let scope = match (&lines.prefer_scope, fallback) {
             (Some(scope), _) => {
@@ -1128,6 +1148,7 @@ impl Compiler<'_> {
             spread,
             identity,
             prefer,
+            above,
             scope,
             across,
         })
@@ -1215,6 +1236,14 @@ impl Compiler<'_> {
             && set.prefer.len() != shared.prefer.len()
         {
             return Err("a stage keeps the shared number of preference lists".into());
+        }
+        if let Some(set) = &stage_set
+            && set.above != shared.above
+        {
+            return Err(format!(
+                "a stage keeps the shared `{ABOVE}` marks of its preference lists"
+            )
+            .into());
         }
         Ok(Stage {
             name: lines.name.clone().unwrap_or_else(|| goal_text.to_owned()),
@@ -1437,6 +1466,12 @@ impl Compiled {
             shape: KeyShape {
                 capacity: strategy.capacity.unwrap_or(MAX_ENTRIES_PER_KEY),
                 preferences: lines.prefer.len(),
+                ties_above: lines
+                    .above
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, above)| **above)
+                    .fold(0, |marks, (index, _)| marks | 1 << index),
             },
             signals: catalog.signals().len(),
             tables,

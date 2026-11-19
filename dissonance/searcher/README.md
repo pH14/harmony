@@ -336,7 +336,7 @@ an identity. A slot keeps the top `capacity()` entries under each preference,
 and its contents are the union of those sets. A candidate enters when it
 reaches that set under any one preference; an entry leaves when it holds a
 place under none. One entry can hold a place under several preferences and is
-stored once. The stream header carries `preference_portfolio`, and a recording whose
+stored once. The stream header carries `preference_portfolio` (`preference_portfolio_v1` with the preference count and capacity, or `preference_portfolio_v2` with the `ties_above` marks added for a shape that has any), and a recording whose
 portfolio differs from the compiled key is rejected. `selector.portfolio`
 reports the preference count, holders held under one preference and under
 several, replacements per preference, and admissions that improved
@@ -676,7 +676,7 @@ catalog names:
 | `[[stage]]` | Progress as a staged plan: `name`, `goal`, `objective`, `step`, `latch`, with the same locate rules as `plan::locate`. A goal that names a numeric `sometimes` declaration defaults its objective to the gap (negated for the less-than forms) stepped by the left unit. |
 | `spread` | The place, as a tuple. |
 | `identity` | The slot identity, as a tuple. |
-| `prefer` | Up to two preference lists of `expression: more` or `expression: less`. |
+| `prefer` | Up to two preference lists of `expression: more` or `expression: less`. A list after the first that ends in `"above"` breaks its ties by the lists above it, so it orders as one comparison that continues with the earlier lists' terms. It exists because such a comparison does not fit in one key field: the list's own terms plus the earlier lists' terms need more bits than a field holds. The mark is the strategy's, carried in `KeyShape::ties_above`, so every list holds 2^32 values. A list that needs more, a first list that ends in `"above"`, or a stage whose lists are marked differently from the shared lists, fails to compile. |
 | `prefer_scope`, `prefer_across` | Two keys whose scope values differ compare by the across list instead of `prefer`. |
 | `absent` | A condition under which the state gets no key. |
 | `reject` | Named conditions; the first that holds is reported by index. |
@@ -763,7 +763,10 @@ bits, held as `Wide` at 4-byte alignment so a 12-byte cell and a 16-byte
 position carry no padding), `identity` (64 bits, so a slot is 24 bytes with 4
 bytes of padding), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
-its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
+its field fails to compile with the line's name. Each `prefer` value holds 32
+bits. `AssertionKey::preference_cmp` compares one field; the archive compares
+through `KeyShape::preference_cmp`, which continues a tie on a list marked in
+`ties_above` with the list above, and a tie on all lists keeps the incumbent. The key has `Lineage = ()`. Aggregates and
 the latched stage live in an `Accumulator` that the front end keeps beside its
 state and `Compiled::observe` advances in place; a strategy without them
 `is_pure` and needs only `Compiled::key`. The accumulator holds the stage
@@ -1498,7 +1501,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v20`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v21`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same
