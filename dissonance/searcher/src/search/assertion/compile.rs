@@ -1559,6 +1559,30 @@ impl Compiled {
     }
 
     #[must_use]
+    pub fn observe_ending(
+        &self,
+        record: &mut Record,
+        accumulator: &mut Accumulator,
+        ends: bool,
+    ) -> Observed {
+        record.set_action_end(ends);
+        if ends {
+            return self.observe(record, accumulator);
+        }
+        let saved = self.reads_action_end.then(|| accumulator.clone());
+        let first = self.observe(record, accumulator);
+        if !first.goal && first.rejected.is_none() {
+            return first;
+        }
+        record.set_action_end(true);
+        let Some(saved) = saved else {
+            return first;
+        };
+        *accumulator = saved;
+        self.observe(record, accumulator)
+    }
+
+    #[must_use]
     pub fn observe(&self, record: &Record, accumulator: &mut Accumulator) -> Observed {
         let mut stack = [0; STACK];
         let mut next = self.held(accumulator);

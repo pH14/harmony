@@ -984,7 +984,12 @@ fn written(header: &RecordsHeader, actions: &[RecordedAction<u8>]) -> (Vec<u8>, 
 
 #[test]
 fn records_round_trip_through_the_delta_encoding() {
-    let (genesis, _, actions) = walk_recording();
+    let (genesis, _, mut actions) = walk_recording();
+    for action in &mut actions {
+        if let Some(last) = action.frames.last_mut() {
+            last.set_action_end(true);
+        }
+    }
     let header = walk_header(genesis);
     let (bytes, size) = written(&header, &actions);
     assert_eq!(size.jobs, 2);

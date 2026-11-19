@@ -9,10 +9,10 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::catalog::{Catalog, RECORD_SLOTS, Record};
+use super::catalog::{ACTION_END_SLOT, Catalog, RECORD_SLOTS, Record};
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v5";
+pub const RECORDS_FORMAT: &str = "assertion-records-v6";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -68,13 +68,18 @@ impl<A: Clone> Encoded<A> {
             .iter()
             .map(|record| {
                 let values = record.values();
-                let changed = values
+                let mut changed: Vec<(u8, i64)> = values
                     .iter()
                     .enumerate()
                     .filter(|(slot, value)| previous[*slot] != **value)
                     .map(|(slot, value)| (u8::try_from(slot).unwrap_or(u8::MAX), *value))
                     .collect();
                 previous[..values.len()].copy_from_slice(values);
+                let action_end = record.slots()[ACTION_END_SLOT];
+                if previous[ACTION_END_SLOT] != action_end {
+                    changed.push((u8::try_from(ACTION_END_SLOT).unwrap_or(u8::MAX), action_end));
+                    previous[ACTION_END_SLOT] = action_end;
+                }
                 changed
             })
             .collect();
@@ -99,14 +104,16 @@ impl<A> Encoded<A> {
         let mut frames = Vec::with_capacity(self.changes.len());
         for changed in self.changes {
             for (slot, value) in changed {
+                let slot = usize::from(slot);
                 *values
-                    .get_mut(usize::from(slot))
-                    .filter(|_| usize::from(slot) < width)
+                    .get_mut(slot)
+                    .filter(|_| slot < width || slot == ACTION_END_SLOT)
                     .ok_or("a recorded change names a slot outside the record")? = value;
             }
-            frames.push(
-                Record::from_values(&values[..width]).ok_or("record exceeds the slot limit")?,
-            );
+            let mut frame =
+                Record::from_values(&values[..width]).ok_or("record exceeds the slot limit")?;
+            frame.set_action_end(values[ACTION_END_SLOT] != 0);
+            frames.push(frame);
         }
         Ok(RecordedAction {
             sequence,

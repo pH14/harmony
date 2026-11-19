@@ -221,6 +221,19 @@ impl<M> Moves<M> {
     {
         self.forced.is_some() || self.offer.is_some_and(|offer| offer.cuts())
     }
+
+    #[must_use]
+    pub fn ends_input(&self, last_frame: bool) -> bool
+    where
+        M: Copy,
+    {
+        self.forced.is_none() && (last_frame || self.offer.is_some_and(|offer| offer.cuts()))
+    }
+
+    #[must_use]
+    pub fn ends_move(&self, last_step: bool) -> bool {
+        self.forced.is_none() && last_step
+    }
 }
 
 const MOVE_HOLD: u8 = u8::MAX;
@@ -403,6 +416,18 @@ impl<G: Game> Lowered<G> {
         (record, satisfied)
     }
 
+    #[must_use]
+    pub fn genesis_record(&self, state: &G::State) -> Record {
+        self.frame_record(state, true)
+    }
+
+    #[must_use]
+    pub fn frame_record(&self, state: &G::State, action_end: bool) -> Record {
+        let mut record = self.record(state).0;
+        record.set_action_end(action_end);
+        record
+    }
+
     fn write_record(&self, state: &G::State, record: &mut Record) -> Satisfied {
         let mut frame = Frame {
             record: record.writer(),
@@ -427,6 +452,29 @@ impl<G: Game> Lowered<G> {
         accumulator: &mut Accumulator,
     ) -> NesObservation<G::State> {
         self.observe_frame(frame_count, state, accumulator, true)
+    }
+
+    #[must_use]
+    pub fn observe_ending(
+        &self,
+        frame_count: u64,
+        state: G::State,
+        accumulator: &mut Accumulator,
+        ends: bool,
+    ) -> (NesObservation<G::State>, Record) {
+        let mut record = Record::default();
+        let satisfied = self.write_record(&state, &mut record);
+        let observed = self.compiled.observe_ending(&mut record, accumulator, ends);
+        let observation = NesObservation {
+            frame_count,
+            state,
+            key: observed.key,
+            rejected: observed.rejected,
+            goal: observed.goal,
+            satisfied,
+            overran: false,
+        };
+        (observation, record)
     }
 
     #[must_use]
@@ -523,7 +571,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             policy: self.lowered.compiled.policy_identifier().to_owned(),
             strategy: self.lowered.strategy.clone(),
             catalog: self.lowered.records_catalog()?,
-            genesis: self.lowered.record(&target.observation().state).0,
+            genesis: self.lowered.genesis_record(&target.observation().state),
         };
         let writer = RecordsWriter::create(path, &header)?;
         self.records = Some(Arc::new(Records {

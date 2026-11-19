@@ -693,7 +693,15 @@ The name `action_end` is built in: no catalog declares it, the record holds it
 in its last slot, and it is 1 on the frame whose state the target keeps as the
 action's endpoint (the root state, the last frame of an action's input, a cut
 at an offer, a move's arrival, or a frame where the path stops) and 0 on every
-other frame. A latched stage whose goal includes `action_end` passes only on a kept
+other frame. `Compiled::observe_ending` is the one rule for a frame the target
+did not already know ends the action: it observes the frame with 0, and when
+that observation reaches a goal or a rejection the frame becomes the action's
+endpoint and is observed again with 1 from the accumulator before it, which
+gives the final key even when the second observation no longer stops. A
+strategy that does not read `action_end` keeps its first observation. The
+target writes the decided flag into each recorded frame, the assertion records
+format is `assertion-records-v6` for that slot, and `Rekeying` reads the
+recorded flag instead of deciding it again. A latched stage whose goal includes `action_end` passes only on a kept
 state, as the hand plans latch from the parent key, so a value that crosses a
 threshold inside an action and ends below it does not pass the stage. A
 catalog holds at most one signal fewer than a record because of this slot.

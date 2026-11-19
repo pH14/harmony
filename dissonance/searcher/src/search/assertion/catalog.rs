@@ -407,7 +407,7 @@ impl Catalog {
             .into());
         }
         if signals.iter().any(|signal| signal.name == ACTION_END) {
-            return Err(format!("`{ACTION_END}` is built in and no game declares it").into());
+            return Err(format!("`{ACTION_END}` is built in and no workload declares it").into());
         }
         if let Some(signal) = signals.iter().find(|signal| signal.min > signal.max) {
             return Err(format!("{} has an empty range", signal.name).into());
@@ -629,6 +629,11 @@ impl Record {
 
     pub fn set_action_end(&mut self, end: bool) {
         self.values[ACTION_END_SLOT] = i64::from(end);
+    }
+
+    #[must_use]
+    pub fn action_end(&self) -> bool {
+        self.values[ACTION_END_SLOT] != 0
     }
 
     #[must_use]

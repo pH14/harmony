@@ -10,7 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{Accumulator, AssertionKey, Compiled, KeyView, Record};
+use super::{Accumulator, AssertionKey, Compiled, KeyView, Observed, Record};
 use crate::search::archive::ArchiveKey;
 
 type Pairs<H> = BTreeMap<(Option<H>, Option<AssertionKey>), u64>;
@@ -348,6 +348,16 @@ impl<H: ArchiveKey + Debug> ShadowCursor<H> {
         self.arrive(compiled, record, None)
     }
 
+    pub fn observe_ending(
+        &mut self,
+        compiled: &Compiled,
+        record: &mut Record,
+        ends: bool,
+    ) -> Option<AssertionKey> {
+        let observed = compiled.observe_ending(record, &mut self.accumulator, ends);
+        self.settle(&observed, observed.goal)
+    }
+
     pub fn observe_with_objective(
         &mut self,
         compiled: &Compiled,
@@ -364,7 +374,10 @@ impl<H: ArchiveKey + Debug> ShadowCursor<H> {
         objective: Option<bool>,
     ) -> Option<AssertionKey> {
         let observed = compiled.observe(record, &mut self.accumulator);
-        let objective = objective.unwrap_or(observed.goal);
+        self.settle(&observed, objective.unwrap_or(observed.goal))
+    }
+
+    fn settle(&mut self, observed: &Observed, objective: bool) -> Option<AssertionKey> {
         self.key = observed
             .key
             .filter(|_| objective || observed.rejected.is_none());

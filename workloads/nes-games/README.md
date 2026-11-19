@@ -348,15 +348,15 @@ are rebuilt by replay when a run resumes from them under another.
 A strategy with `highest` or a latched stage keys a frame from its path, so the
 target advances the accumulator at every observed frame, `NesSnapshot` and the
 snapshot checkpoint carry it, and a restore puts it back; the frames inside a
-forced move are decoded but not observed. The target sets the record's
-`action_end` on the genesis, a restored state, the frame that ends an action
-(its last input frame, a cut at an offer, or a stop) and each step of a move,
-and clears it on the other frames, including the departure of a forced move.
-When the strategy reads `action_end`, a frame whose end is known only after its
-observation is observed again from the accumulator before it, so a strategy
-that does not read it is observed once per frame as before. `Rekeying` marks
-the last recorded frame of each action, and the shadow lane marks the last
-frame of each action and the arrival of a forced move. `workload/shadow.rs` compares a
+forced move are decoded but not observed. The genesis and a restored state have
+`action_end` set. On every other frame the target, the film replay and the
+shadow lane take the flag from the same two places: `Moves::ends_input` and
+`Moves::ends_move` say whether the state ends the action by position (the last
+input frame or an offer cut, or the last step of a move, and never a state with
+a forced move left to play), and `Compiled::observe_ending` makes a frame whose
+observation stops the action's endpoint, where the target cuts the input. The
+target records the decided flag with each frame, so `Rekeying` reads it from
+the records. `workload/shadow.rs` compares a
 hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy and
 `hook` gives the hand target a `ShadowHook`, which it calls with the genesis
 RAM (`start`), the frames of each action up to the departure of a forced move
