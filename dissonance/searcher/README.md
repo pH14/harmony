@@ -707,9 +707,11 @@ film renders no more of that action. A move is one action: the target's move
 walker observes every step from the accumulator at the move's departure, its
 middle steps are interior frames observed with 0, and a middle step ends the
 move only when that observation stops. The target writes the decided flag into
-each recorded frame and into the genesis record of the records header, the
-assertion records format is `assertion-records-v6` for that slot, a records
-file of an earlier format is refused by its format string, and `Rekeying` reads
+each recorded frame and into the genesis record of the records header. The
+header also lists the memory windows, as address and length pairs, that the
+workload read beside work RAM to decode each frame, empty for a game that reads
+work RAM alone. The assertion records format is `assertion-records-v7`, a
+records file of an earlier format is refused by its format string, and `Rekeying` reads
 the recorded flags instead of deciding them again. A latched stage whose goal
 includes `action_end` passes only on a kept state, as the hand plans latch from
 the parent key, so a value that crosses a threshold inside an action and ends

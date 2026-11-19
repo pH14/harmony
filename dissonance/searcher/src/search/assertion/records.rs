@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::catalog::{ACTION_END_SLOT, Catalog, RECORD_SLOTS, Record};
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v6";
+pub const RECORDS_FORMAT: &str = "assertion-records-v7";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -27,6 +27,7 @@ pub struct RecordsHeader {
     pub policy: String,
     pub strategy: String,
     pub catalog: Catalog,
+    pub memory_windows: Vec<(u64, u32)>,
     pub genesis: Record,
 }
 

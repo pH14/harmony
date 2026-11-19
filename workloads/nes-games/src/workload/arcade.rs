@@ -5,7 +5,7 @@ use std::error::Error;
 use machine::nes::WRAM_SIZE;
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::{ActionObservation, Game, NesRun, NesSnapshot, NesWorkload};
+use super::{ActionObservation, Game, NesRun, NesSnapshot, NesWorkload, target::windowed};
 use crate::{
     arcade::{ArcadeGame, Machines},
     nes_backend::{NesBackend, NesMemory},
@@ -35,7 +35,12 @@ fn decode<G: Arcade>(memory: &[u8]) -> Result<G::State, Box<dyn Error>> {
         )
         .into());
     }
-    Ok(G::default().decode(None, None, memory))
+    if G::MEMORY_WINDOWS.is_empty() {
+        return Ok(G::default().decode(None, None, memory));
+    }
+    let (wram, save_ram) = memory.split_at(WRAM_SIZE);
+    let frame = windowed::<G>(wram, save_ram, 0);
+    Ok(G::default().decode(None, None, &frame))
 }
 
 impl<G: Arcade, M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for NesWorkload<G, M> {

@@ -961,7 +961,7 @@ mod tests {
             self.hand.frames().to_vec()
         }
 
-        fn resync(&mut self, wram: &[u8; WRAM_SIZE]) {
+        fn resync(&mut self, wram: &[u8]) {
             self.at = self.hand.import(&wram[..2].to_vec()).unwrap();
         }
 
@@ -994,7 +994,7 @@ mod tests {
                 }
                 self.hook.forced(&steps);
             }
-            let wram = *self.live.wram();
+            let wram = self.live.frame().to_vec();
             self.resync(&wram);
             self.hook.observe(arrival.key);
             self.shadow_keys.push(self.hook.key());

@@ -1271,6 +1271,7 @@ fn walk_header(genesis: Record) -> RecordsHeader {
         policy: "walk".to_owned(),
         strategy: "spread = \"position\"".to_owned(),
         catalog: catalog(),
+        memory_windows: vec![(0x6877, 7)],
         genesis,
     }
 }
@@ -1330,7 +1331,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
     let (genesis, _, _) = walk_recording();
     let header = walk_header(genesis);
     let earlier = postcard::to_allocvec(&(
-        "assertion-records-v5",
+        "assertion-records-v6",
         &header.stream,
         &header.policy,
         &header.strategy,
@@ -1344,7 +1345,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
         .to_string();
     assert_eq!(
         error,
-        format!("records format assertion-records-v5 is not {RECORDS_FORMAT}")
+        format!("records format assertion-records-v6 is not {RECORDS_FORMAT}")
     );
 }
 

@@ -2,7 +2,7 @@
 
 #[cfg(unix)]
 use std::io::Write;
-use std::{error::Error, sync::Arc};
+use std::{error::Error, ops::Range, sync::Arc};
 
 #[cfg(unix)]
 use machine::nes::MAX_HOLD_FRAMES;
@@ -10,7 +10,7 @@ use machine::nes::MAX_HOLD_FRAMES;
 use machine::quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE};
 use machine::{
     Machine, MachineError, SnapId, StopConditions,
-    nes::{self, ButtonChord, WRAM_SIZE},
+    nes::{self, ButtonChord, SAVE_RAM_BASE, WRAM_SIZE},
 };
 use serde::{Deserialize, Serialize};
 
@@ -65,21 +65,21 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
     }
 }
 
-type Played<M> = (u64, [u8; WRAM_SIZE], Option<M>);
+type Played<M> = (u64, Vec<u8>, Option<M>);
 
 type Tracked<'a, S> = (&'a S, &'a mut Accumulator, &'a mut NesObservation<S>);
 
 enum Walked<S, M> {
     Arrived {
         frames: u64,
-        wram: [u8; WRAM_SIZE],
+        frame: Vec<u8>,
         observation: NesObservation<S>,
         accumulator: Accumulator,
         forced: Option<M>,
     },
     Overran {
         frames: u64,
-        wram: [u8; WRAM_SIZE],
+        frame: Vec<u8>,
         state: S,
     },
 }
@@ -89,8 +89,8 @@ fn walk_move<G: Game, E>(
     (mut mv, offered): (G::Move, bool),
     (frame_count, parent, mut state): (u64, &G::State, G::State),
     accumulator: &Accumulator,
-    mut wram: [u8; WRAM_SIZE],
-    mut press: impl FnMut(ButtonChord) -> Result<(u64, [u8; WRAM_SIZE]), E>,
+    mut frame: Vec<u8>,
+    mut press: impl FnMut(ButtonChord) -> Result<(u64, Vec<u8>), E>,
     mut seen: impl FnMut(Record),
 ) -> Result<Walked<G::State, G::Move>, E> {
     let bound = lowered.game.move_frames(mv);
@@ -99,13 +99,13 @@ fn walk_move<G: Game, E>(
     while let Some(step) = lowered.game.play(mv, &state) {
         let (pressed, after) = press(step.chord)?;
         frames = frames.saturating_add(pressed);
-        wram = after;
-        state = lowered.game.decode(Some(parent), Some(&state), &wram);
+        frame = after;
+        state = lowered.game.decode(Some(parent), Some(&state), &frame);
         if frames > bound {
             seen(lowered.frame_record(&state, true));
             return Ok(Walked::Overran {
                 frames,
-                wram,
+                frame,
                 state,
             });
         }
@@ -136,7 +136,7 @@ fn walk_move<G: Game, E>(
     });
     Ok(Walked::Arrived {
         frames,
-        wram,
+        frame,
         observation: framed.observation,
         accumulator,
         forced: framed.forced,
@@ -198,8 +198,8 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     current: SnapId,
     stopped: Option<ButtonChord>,
     genesis_observation: NesObservation<G::State>,
-    genesis_wram: [u8; WRAM_SIZE],
-    current_wram: [u8; WRAM_SIZE],
+    genesis_frame: Vec<u8>,
+    current_frame: Vec<u8>,
     genesis_accumulator: Accumulator,
     accumulator: Accumulator,
     observation: NesObservation<G::State>,
@@ -210,10 +210,13 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     recording: bool,
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
     pub fn from_machine(lowered: Arc<Lowered<G>>, mut machine: M) -> Result<Self, MachineError> {
-        let wram = read_wram(&machine)?;
-        let state = lowered.game.decode(None, None, &wram);
+        if let Some(span) = save_ram_span(G::MEMORY_WINDOWS) {
+            machine.capture_save_ram_per_frame(span);
+        }
+        let frame = read_frame::<G, M>(&machine)?;
+        let state = lowered.game.decode(None, None, &frame);
         lowered
             .game
             .genesis(&state)
@@ -228,8 +231,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             current: genesis,
             stopped: None,
             genesis_observation: observation.clone(),
-            genesis_wram: wram,
-            current_wram: wram,
+            genesis_frame: frame.clone(),
+            current_frame: frame,
             genesis_accumulator: accumulator.clone(),
             accumulator,
             observation: observation.clone(),
@@ -257,8 +260,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
     }
 
     #[must_use]
-    pub fn wram(&self) -> &[u8; WRAM_SIZE] {
-        &self.current_wram
+    pub fn frame(&self) -> &[u8] {
+        &self.current_frame
     }
 
     pub fn record_frames(&mut self, recording: bool) {
@@ -278,15 +281,15 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         self.machine
             .restore_nes(state)
             .map_err(|error| error.to_string())?;
-        let wram = read_wram(&self.machine)?;
-        let decoded = self.lowered.game.decode(None, None, &wram);
+        let frame = read_frame::<G, M>(&self.machine)?;
+        let decoded = self.lowered.game.decode(None, None, &frame);
         let next = self.machine.snapshot()?;
         if self.current != self.genesis {
             self.machine.drop_snapshot(self.current)?;
         }
         self.current = next;
         self.stopped = None;
-        self.current_wram = wram;
+        self.current_frame = frame;
         self.failed = false;
         self.snapshot_base = None;
         self.accumulator = Accumulator::default();
@@ -317,7 +320,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                     | machine::StopReason::SnapshotPoint { .. })
             )
             && self.machine.frames().len() == usize::from(chord.bounded_hold_frames())
-            && read_wram(&self.machine).ok() == Some(self.current_wram);
+            && read_frame::<G, M>(&self.machine).ok().as_ref() == Some(&self.current_frame);
         if !replayed {
             self.fail();
             return false;
@@ -340,7 +343,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         parent: &G::State,
         mv: (G::Move, bool),
         departure: NesObservation<G::State>,
-        wram: [u8; WRAM_SIZE],
+        frame: Vec<u8>,
         accumulator: &mut Accumulator,
         emitted: &mut Vec<ActionObservation<G::State>>,
     ) -> Result<Played<G::Move>, MachineError> {
@@ -354,11 +357,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             mv,
             (departure.frame_count, parent, departure.state.clone()),
             accumulator,
-            wram,
+            frame,
             |chord| {
                 let pressed = press(machine, chord)?;
                 *work = work.saturating_add(pressed);
-                Ok((pressed, read_wram(machine)?))
+                Ok((pressed, read_frame::<G, M>(machine)?))
             },
             |record| {
                 if recording {
@@ -366,24 +369,24 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                 }
             },
         )?;
-        let (frames, wram, observation, forced) = match walked {
+        let (frames, frame, observation, forced) = match walked {
             Walked::Arrived {
                 frames,
-                wram,
+                frame,
                 observation,
                 accumulator: advanced,
                 forced,
             } => {
                 *accumulator = advanced;
-                (frames, wram, observation, forced)
+                (frames, frame, observation, forced)
             }
             Walked::Overran {
                 frames,
-                wram,
+                frame,
                 state,
             } => (
                 frames,
-                wram,
+                frame,
                 NesObservation {
                     frame_count: departure.frame_count.saturating_add(frames),
                     state,
@@ -400,25 +403,25 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             records,
             choices: Vec::new(),
         });
-        Ok((frames, wram, forced))
+        Ok((frames, frame, forced))
     }
 
     fn play_forced_after(
         &mut self,
         parent: &G::State,
         forced: Option<G::Move>,
-        wram: [u8; WRAM_SIZE],
+        frame: Vec<u8>,
         accumulator: &mut Accumulator,
         emitted: &mut Vec<ActionObservation<G::State>>,
-    ) -> Result<(u64, [u8; WRAM_SIZE]), MachineError> {
+    ) -> Result<(u64, Vec<u8>), MachineError> {
         let (Some(mv), Some(departure)) =
             (forced, emitted.last().map(|last| last.observation.clone()))
         else {
-            return Ok((0, wram));
+            return Ok((0, frame));
         };
-        let (frames, wram, _) =
-            self.play_move(parent, (mv, false), departure, wram, accumulator, emitted)?;
-        Ok((frames, wram))
+        let (frames, frame, _) =
+            self.play_move(parent, (mv, false), departure, frame, accumulator, emitted)?;
+        Ok((frames, frame))
     }
 
     fn store_action(
@@ -427,7 +430,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         mut emitted: Vec<ActionObservation<G::State>>,
         cost: u64,
         accumulator: Accumulator,
-        wram: [u8; WRAM_SIZE],
+        frame: Vec<u8>,
         stopped: Option<ButtonChord>,
     ) {
         let Some(last) = emitted.last_mut() else {
@@ -437,7 +440,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         self.observation = last.observation.clone();
         self.action_observations = emitted;
         self.accumulator = accumulator;
-        self.current_wram = wram;
+        self.current_frame = frame;
         if stopped.is_some() {
             self.stopped = stopped;
             return;
@@ -458,18 +461,18 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let mut emitted = Vec::new();
         let departure = self.observation.clone();
         let parent = departure.state.clone();
-        let Ok((frames, wram, forced)) = self.play_move(
+        let Ok((frames, frame, forced)) = self.play_move(
             &parent,
             (mv, true),
             departure,
-            self.current_wram,
+            self.current_frame.clone(),
             &mut accumulator,
             &mut emitted,
         ) else {
             return self.fail();
         };
-        let Ok((forced_frames, wram)) =
-            self.play_forced_after(&parent, forced, wram, &mut accumulator, &mut emitted)
+        let Ok((forced_frames, frame)) =
+            self.play_forced_after(&parent, forced, frame, &mut accumulator, &mut emitted)
         else {
             return self.fail();
         };
@@ -478,7 +481,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             emitted,
             frames.saturating_add(forced_frames),
             accumulator,
-            wram,
+            frame,
             None,
         );
     }
@@ -524,11 +527,14 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let mut records = Vec::new();
         let mut logical_frames = produced_frames;
         let mut forced = None;
-        for (offset, wram) in self.machine.frames().iter().enumerate() {
+        let Ok(played) = played_frames::<G, M>(&self.machine) else {
+            return self.fail();
+        };
+        for (offset, frame) in played.into_iter().enumerate() {
             let state = self
                 .lowered
                 .game
-                .decode(Some(&parent), Some(&previous), wram);
+                .decode(Some(&parent), Some(&previous), &frame);
             let frame_count = self
                 .observation
                 .frame_count
@@ -557,11 +563,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             }
             if last {
                 logical_frames = offset + 1;
-                endpoint = Some(*wram);
+                endpoint = Some(frame);
                 break;
             }
         }
-        let Some(endpoint_wram) = endpoint else {
+        let Some(endpoint_frame) = endpoint else {
             return self.fail();
         };
         let Ok(hold) = u8::try_from(logical_frames) else {
@@ -580,21 +586,21 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
                 return self.fail();
             }
             let replay = self.machine.run(StopConditions::default(), None);
-            let replayed_wram = read_wram(&self.machine);
+            let replayed_frame = read_frame::<G, M>(&self.machine);
             if !matches!(
                 replay,
                 Ok(machine::StopReason::Quiescent { .. }
                     | machine::StopReason::SnapshotPoint { .. })
             ) || self.machine.frames().len() != logical_frames
-                || replayed_wram.as_ref().ok() != Some(&endpoint_wram)
+                || replayed_frame.as_ref().ok() != Some(&endpoint_frame)
             {
                 return self.fail();
             }
         }
-        let Ok((forced_frames, wram)) = self.play_forced_after(
+        let Ok((forced_frames, frame)) = self.play_forced_after(
             &parent,
             forced,
-            endpoint_wram,
+            endpoint_frame,
             &mut accumulator,
             &mut emitted,
         ) else {
@@ -604,11 +610,9 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             .unwrap_or(u64::MAX)
             .saturating_add(forced_frames);
         let stopped = deferred.then_some(cut);
-        self.store_action(start, emitted, cost, accumulator, wram, stopped);
+        self.store_action(start, emitted, cost, accumulator, frame, stopped);
     }
-}
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
     pub fn from_power_on(lowered: Arc<Lowered<G>>, mut machine: M) -> Result<Self, MachineError> {
         run_setup::<G, M>(&mut machine, &lowered.game.setup())?;
         for (address, value) in lowered.game.setup_pokes() {
@@ -658,7 +662,7 @@ fn run_setup<G: Game, M: Machine>(
 }
 
 #[cfg(unix)]
-impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory + FilmMachine> NesTarget<G, M> {
     pub fn render_input(
         &mut self,
         actions: &[ButtonChord],
@@ -719,13 +723,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                 };
                 while let Some((mv, offered)) = next.take() {
                     let lowered = Arc::clone(&self.lowered);
-                    let wram = read_wram(&self.machine)?;
+                    let frame = read_frame::<G, M>(&self.machine)?;
                     let walked = walk_move(
                         &lowered,
                         (mv, offered),
                         (0, &parent, tracked.state.clone()),
                         &accumulator,
-                        wram,
+                        frame,
                         |chord| -> Result<_, Box<dyn Error>> {
                             self.render_action(
                                 chord,
@@ -737,7 +741,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                             )?;
                             Ok((
                                 u64::from(chord.bounded_hold_frames()),
-                                read_wram(&self.machine)?,
+                                read_frame::<G, M>(&self.machine)?,
                             ))
                         },
                         |_| {},
@@ -882,7 +886,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         let decoded = self.lowered.game.decode(
             Some(parent),
             Some(&tracked.state),
-            &read_wram(&self.machine)?,
+            &read_frame::<G, M>(&self.machine)?,
         );
         let framed = self
             .lowered
@@ -910,7 +914,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
     }
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Target for NesTarget<G, M> {
     type Action = ButtonChord;
     type Observations = NesObservation<G::State>;
     type Snapshot = NesSnapshot<G::State>;
@@ -930,7 +934,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         self.stopped = None;
         self.failed = failed;
         self.snapshot_base = None;
-        self.current_wram = self.genesis_wram;
+        self.current_frame.clone_from(&self.genesis_frame);
         self.accumulator = self.genesis_accumulator.clone();
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone().into()];
@@ -989,12 +993,12 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
             .machine
             .import_nes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
-        let restored_wram = match self
+        let restored_frame = match self
             .machine
             .replay(imported)
-            .and_then(|()| read_wram(&self.machine))
+            .and_then(|()| read_frame::<G, M>(&self.machine))
         {
-            Ok(wram) => wram,
+            Ok(frame) => frame,
             Err(error) => {
                 self.failed = true;
                 let _ = self.machine.drop_snapshot(imported);
@@ -1011,7 +1015,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         self.current = imported;
         self.stopped = None;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
-        self.current_wram = restored_wram;
+        self.current_frame = restored_frame;
         self.accumulator = snapshot.accumulator.clone();
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone().into()];
@@ -1035,6 +1039,76 @@ pub(crate) fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], Mach
     })
 }
 
+fn window_length(length: u32) -> usize {
+    usize::try_from(length).unwrap_or(usize::MAX)
+}
+
+fn save_ram_offset(address: u64) -> usize {
+    usize::try_from(address.saturating_sub(SAVE_RAM_BASE)).unwrap_or(usize::MAX)
+}
+
+fn save_ram_span(windows: &[(u64, u32)]) -> Option<Range<usize>> {
+    let start = windows.iter().map(|(address, _)| *address).min()?;
+    let end = windows
+        .iter()
+        .map(|(address, length)| address.saturating_add(u64::from(*length)))
+        .max()?;
+    Some(save_ram_offset(start)..save_ram_offset(end))
+}
+
+pub(crate) fn zero_frame<G: Game>() -> Vec<u8> {
+    let windows = G::MEMORY_WINDOWS
+        .iter()
+        .map(|(_, length)| window_length(*length))
+        .fold(0_usize, usize::saturating_add);
+    vec![0; WRAM_SIZE.saturating_add(windows)]
+}
+
+pub(crate) fn windowed<G: Game>(wram: &[u8], save_ram: &[u8], from: usize) -> Vec<u8> {
+    let mut frame = wram.to_vec();
+    for (address, length) in G::MEMORY_WINDOWS {
+        let length = window_length(*length);
+        let start = save_ram_offset(*address).saturating_sub(from);
+        let window = save_ram.get(start..).unwrap_or_default();
+        let kept = window.len().min(length);
+        frame.extend_from_slice(&window[..kept]);
+        frame.resize(frame.len() + (length - kept), 0);
+    }
+    frame
+}
+
+pub(crate) fn read_frame<G: Game, M: Machine>(machine: &M) -> Result<Vec<u8>, MachineError> {
+    let mut frame = read_wram(machine)?.to_vec();
+    for (address, length) in G::MEMORY_WINDOWS {
+        frame.extend(machine.read(*address, *length)?);
+    }
+    Ok(frame)
+}
+
+fn played_frames<G: Game, M: Machine + NesMemory>(
+    machine: &M,
+) -> Result<Vec<Vec<u8>>, MachineError> {
+    let wram = machine.frames();
+    let Some(span) = save_ram_span(G::MEMORY_WINDOWS) else {
+        return Ok(wram.iter().map(|frame| frame.to_vec()).collect());
+    };
+    let captured = machine.save_ram_frames();
+    if span.is_empty() || captured.len() != wram.len() * span.len() {
+        return Err(MachineError::Backend(format!(
+            "{} captured {} bytes of save RAM for {} frames of {} bytes",
+            G::NAME,
+            captured.len(),
+            wram.len(),
+            span.len()
+        )));
+    }
+    Ok(wram
+        .iter()
+        .zip(captured.chunks_exact(span.len()))
+        .map(|(wram, save_ram)| windowed::<G>(wram, save_ram, span.start))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,7 +1119,7 @@ mod tests {
         },
         workload::{
             SNAPSHOT_CHECKPOINT_FORMAT,
-            fixture::{LEFT, Ledge, RIGHT, Spot, Stepper, WARP},
+            fixture::{Cellar, LEFT, Ledge, RIGHT, Spot, Stepper, WARP},
         },
     };
 
@@ -1078,6 +1152,81 @@ mod tests {
         assert!(target.observation().stops());
         assert_eq!(target.observation().frame_count, 9);
         target
+    }
+
+    #[test]
+    fn a_game_with_memory_windows_decodes_each_frame_from_save_ram_as_work_ram_would() {
+        let lowered = Arc::new(Lowered::new(Cellar, Cellar::STRATEGY).unwrap());
+        let mut cellar = NesTarget::from_machine(lowered, Stepper::default()).unwrap();
+        let mut ledge = ledged();
+        cellar.record_frames(true);
+        ledge.record_frames(true);
+        assert_eq!(cellar.frame().len(), WRAM_SIZE + 2);
+        assert_eq!(ledge.frame().len(), WRAM_SIZE);
+        let chords = [
+            (RIGHT, 4),
+            (LEFT, 3),
+            (WARP, 4),
+            (RIGHT, 2),
+            (WARP, 4),
+            (WARP, 4),
+        ];
+        for (buttons, frames) in chords {
+            let chord = ButtonChord::new(buttons, frames);
+            cellar.apply(&chord);
+            ledge.apply(&chord);
+            assert_eq!(cellar.exit_kind(), ExitKind::Ok);
+            assert_eq!(
+                cellar.last_action_observations(),
+                ledge.last_action_observations()
+            );
+            assert_eq!(&cellar.frame()[..WRAM_SIZE], ledge.frame());
+            let snapshot = cellar.snapshot().unwrap();
+            cellar.restore(&snapshot).unwrap();
+            assert_eq!(cellar.observation(), ledge.observation());
+        }
+        assert_eq!(cellar.state(), &Spot { x: 0, room: 9 });
+        assert!(cellar.observation().stops());
+    }
+
+    #[test]
+    fn a_memory_window_outside_save_ram_is_refused() {
+        #[derive(Clone, Copy, Debug, Default)]
+        struct Outside;
+        impl Game for Outside {
+            type State = Spot;
+            type Move = crate::workload::Never;
+            const NAME: &'static str = "outside";
+            const STRATEGY: &'static str = Ledge::STRATEGY;
+            const CHORDS: crate::chord::ChordVocabulary = Ledge::CHORDS;
+            const MEMORY_WINDOWS: &'static [(u64, u32)] = &[(0x7fff, 2)];
+            fn setup(&self) -> Vec<ButtonChord> {
+                Vec::new()
+            }
+            fn genesis(&self, _: &Spot) -> Result<(), String> {
+                Ok(())
+            }
+            fn decode(&self, _: Option<&Spot>, _: Option<&Spot>, frame: &[u8]) -> Spot {
+                Cellar.decode(None, None, frame)
+            }
+            fn declare(&self, state: &Spot, out: &mut impl crate::search::assertion::Declarations) {
+                Ledge.declare(state, out);
+            }
+            fn moves(&self, _: &Spot) -> crate::workload::Moves<Self::Move> {
+                crate::workload::Moves::none()
+            }
+            fn play(&self, mv: Self::Move, _: &Spot) -> Option<crate::workload::Step<Self::Move>> {
+                match mv {}
+            }
+            fn move_frames(&self, mv: Self::Move) -> u64 {
+                match mv {}
+            }
+        }
+        let error = Lowered::new(Outside, Outside::STRATEGY).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "outside memory window 0x7fff+2 is not inside save RAM"
+        );
     }
 
     #[test]

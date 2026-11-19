@@ -127,7 +127,7 @@ Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
 written this way. The other games have their own `target`, `archive` and
 `campaign` modules. A game implements `Game`:
 
-- `decode` turns work RAM into the game's `State`, given two earlier states:
+- `decode` turns a frame into the game's `State`, given two earlier states:
   the parent, the kept state the current action started from (none at the
   genesis), and the previous frame's state. Lineage, a value carried from one
   kept state to the next, belongs in `decode` and reads the parent, so every
@@ -154,6 +154,12 @@ written this way. The other games have their own `target`, `archive` and
   start does not resume here; Famidash names its side, level and goal.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
+- `MEMORY_WINDOWS` names the save RAM a game reads beside work RAM, as CPU
+  address and length pairs inside `0x6000..0x8000`, and is empty by default.
+  A frame is work RAM followed by each window's bytes in declared order, so a
+  game with no windows decodes work RAM alone. The target captures the save
+  RAM span the windows cover on every frame it runs, and the records header
+  lists the windows.
 - `moves` declares a forced move on a state, a transition the game scripts
   rather than a search decision, or an `Offer`: a choice site the searcher
   answers, its default label, what each label plays (`Play::Move`, a game
@@ -169,7 +175,7 @@ written this way. The other games have their own `target`, `archive` and
   run once per machine, `genesis` checks where they arrive, and Famidash's
   level poke is not controller input.
 
-`Lowered` builds the catalog from the declarations of a decoded all-zero RAM,
+`Lowered` builds the catalog from the declarations of a decoded all-zero frame,
 compiles the strategy, and turns a state into a `NesObservation`: its
 `AssertionKey`, the `reject` line that holds, whether the goal holds, and the
 bitmask of the `sometimes` declarations that hold. The strategy must name a
@@ -180,7 +186,7 @@ goal, and a game has at most 128 `sometimes` declarations.
 strategy rejects or that meets the goal, so the endpoint is the stopping frame.
 The target replays the hold cut to that frame only when a snapshot or the next
 action needs the machine there, and checks that the replay reaches the same
-work RAM, so a terminal stop runs its chord once. The target reports an
+frame, so a terminal stop runs its chord once. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
 the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it

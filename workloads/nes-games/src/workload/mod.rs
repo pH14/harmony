@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
+use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, SAVE_RAM_BASE, SAVE_RAM_SIZE};
 #[cfg(unix)]
 use machine::quicknes::QuickNesMachine;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -289,6 +289,7 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
     const NAME: &'static str;
     const STRATEGY: &'static str;
     const CHORDS: ChordVocabulary;
+    const MEMORY_WINDOWS: &'static [(u64, u32)] = &[];
 
     fn setup(&self) -> Vec<ButtonChord>;
     fn setup_pokes(&self) -> Vec<(usize, u8)> {
@@ -391,7 +392,18 @@ impl<G: Game> Lowered<G> {
             )
             .into());
         }
-        let declared = declared(&game, &game.decode(None, None, &[0; WRAM_SIZE]));
+        if let Some((address, length)) = G::MEMORY_WINDOWS.iter().find(|(address, length)| {
+            *length == 0
+                || *address < SAVE_RAM_BASE
+                || address.saturating_add(u64::from(*length)) > SAVE_RAM_BASE + SAVE_RAM_SIZE
+        }) {
+            return Err(format!(
+                "{} memory window {address:#06x}+{length} is not inside save RAM",
+                G::NAME
+            )
+            .into());
+        }
+        let declared = declared(&game, &game.decode(None, None, &target::zero_frame::<G>()));
         let sometimes: Vec<String> = declared
             .iter()
             .filter(|assertion| assertion.is_sometimes())
@@ -516,6 +528,7 @@ impl<G: Game> Lowered<G> {
             policy: self.compiled.policy_identifier().to_owned(),
             strategy: self.strategy.clone(),
             catalog: self.records_catalog()?,
+            memory_windows: G::MEMORY_WINDOWS.to_vec(),
             genesis: self.genesis_record(genesis),
         })
     }
@@ -617,7 +630,11 @@ impl<G: Game> NesWorkload<G, QuickNesMachine> {
         core_sha256: &str,
         execution_sha256: &str,
     ) -> Result<Self, Box<dyn Error>> {
-        let target_rom = rom.to_vec();
+        let target_rom = if G::MEMORY_WINDOWS.is_empty() {
+            rom.to_vec()
+        } else {
+            machine::nes::with_cartridge_ram(rom)?
+        };
         let target_core = core_path.to_path_buf();
         let target_sha256 = core_sha256.to_owned();
         let target_execution = execution_sha256.to_owned();
@@ -746,7 +763,7 @@ pub fn chord_time<G: Game>(action: &ButtonChord) -> u64 {
     )
 }
 
-fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>>>(
+fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     aggregate: &mut Satisfied,
     target: &NesTarget<G, M>,
 ) {
@@ -758,7 +775,7 @@ fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>>>(
     }
 }
 
-fn outcome<G: Game, M: NesBackend<Vec<u8>>>(target: &NesTarget<G, M>) -> Outcome {
+fn outcome<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(target: &NesTarget<G, M>) -> Outcome {
     let observation = target.observation();
     if target.exit_kind() != ExitKind::Ok {
         return Outcome {
@@ -915,7 +932,7 @@ fn watermark<S>(observations: &[ActionObservation<S>]) -> Option<u32> {
         .max()
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>>> CampaignTypes for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for NesWorkload<G, M> {
     type JobObservation = ();
     type Target = NesTarget<G, M>;
     type Action = ButtonChord;
@@ -962,7 +979,7 @@ fn violations(evidence: &NesEvidence) -> serde_json::Value {
         .collect()
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>>> Reporting for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M> {
     fn diagnostics(evidence: &NesEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "named_progress": named_progress(evidence),
@@ -1060,7 +1077,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Reporting for NesWorkload<G, M> {
     }
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>>> InputPolicy for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for NesWorkload<G, M> {
     fn policies(&self, _run: &NesRun) -> WorkloadPolicies {
         [
             (GAME_FIELD, G::NAME.to_owned()),

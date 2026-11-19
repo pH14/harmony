@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{Machine, MachineError, Reproducer, StopConditions};
 
 pub const WRAM_SIZE: usize = 2 * 1024;
+pub const SAVE_RAM_BASE: u64 = 0x6000;
+pub const SAVE_RAM_SIZE: u64 = 0x2000;
 pub const MAX_HOLD_FRAMES: u8 = 120;
 pub(crate) const STATE_MAGIC: &[u8; 8] = b"HQNESST3";
 pub const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 64 + 8;
