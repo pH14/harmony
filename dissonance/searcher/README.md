@@ -634,7 +634,7 @@ The aggregate `highest(x)` is the Antithesis watermark: the largest value of
 later keys on that path skip the stage's goal. The second argument of
 `highest(x, s)` is ours: the maximum restarts whenever `s` differs from the
 parent's value, which expresses a band that resets on a warp. A strategy holds
-at most eight aggregates.
+at most eight distinct aggregates, and identical ones share a slot.
 
 **Compilation.** `Compiled::new` checks every name against the catalog, runs
 interval analysis from the declared ranges, and packs each tuple into an
