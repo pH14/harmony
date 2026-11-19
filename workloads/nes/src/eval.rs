@@ -92,6 +92,8 @@ pub struct Request {
     #[serde(default)]
     pub records: bool,
     #[serde(default)]
+    pub shadow: bool,
+    #[serde(default)]
     pub keep_stream: bool,
     #[serde(default)]
     pub choices: Option<searcher::search::choice::ChoicePolicy>,
