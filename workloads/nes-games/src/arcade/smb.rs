@@ -10,6 +10,7 @@ use crate::{
             SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignRun, SmbGame,
             SmbTerminalPredicate, quicknes_identity,
         },
+        game::{SmbState, SuperMarioBros},
         target::{
             ROOM_IDENTITY_BYTES, SmbObservations, SmbSnapshot, SmbTarget, smb_is_playing,
             smb_is_victory, smb_mechanical_state_from_wram, smb_player_position, smb_world_cleared,
@@ -20,6 +21,7 @@ use machine::nes::WRAM_SIZE;
 use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
+use crate::workload::Arcade;
 
 const LEVEL_COUNT: u16 = 32;
 const AREA_SLOTS: u16 = 128;
@@ -181,6 +183,55 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for SmbGame<M> {
 
     fn emulator_state(snapshot: &SmbSnapshot) -> &[u8] {
         snapshot.emulator_state()
+    }
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub struct StrategyView {
+    column: u16,
+    health: u8,
+    level: u8,
+    goal: bool,
+    loading: bool,
+    cleared: u8,
+}
+
+impl Arcade for SuperMarioBros {
+    type View = StrategyView;
+
+    fn mixture() -> DrawMixture {
+        DrawMixture::EnergySplice { scale: 6 }
+    }
+
+    fn view(state: &SmbState) -> StrategyView {
+        StrategyView {
+            column: state.progress,
+            health: u8::from(!state.dead),
+            level: state.level_index(),
+            goal: state.victory,
+            loading: !state.playing,
+            cleared: Self::cleared(state),
+        }
+    }
+
+    fn motion(state: &SmbState) -> [u16; 4] {
+        if !state.playing || state.dead {
+            return [HIDDEN, 0, 0, 0];
+        }
+        [
+            u16::from(state.level_index()),
+            state.progress,
+            u16::from(state.y_bucket),
+            0,
+        ]
+    }
+
+    fn cleared(state: &SmbState) -> u8 {
+        if state.victory {
+            LEVEL_COUNT as u8
+        } else {
+            state.level_index()
+        }
     }
 }
 

@@ -24,6 +24,7 @@ use nes_workload::{
     punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
     smb::{
+        SmbStrategyGame,
         campaign::{SmbCampaignRun, SmbGame, SmbTerminalPredicate},
         plan::SmbRoute,
     },
@@ -224,7 +225,7 @@ fn main() -> Result<()> {
                 return Err("STB evaluation takes only an ai option".into());
             }
             "twin-dragons" | "castlevania" | "punchout" | "zelda" | "donkey-kong"
-            | "ice-climbers" | "pac-man" | "joust"
+            | "ice-climbers" | "pac-man" | "joust" | "smb-strategy"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -235,7 +236,7 @@ fn main() -> Result<()> {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
             "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
-            | "ice-climbers" | "twin-dragons" => {}
+            | "ice-climbers" | "twin-dragons" | "smb-strategy" => {}
             "smb" if request.shadow && !request.records => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
@@ -486,6 +487,27 @@ fn main() -> Result<()> {
                 started,
                 "pac-man",
                 <PacManWorkload>::memory_view,
+            ),
+            "smb-strategy" => evaluate_watching(
+                nes_workload::workload::configured(
+                    SmbStrategyGame::new(
+                        nes_games::smb::game::SuperMarioBros,
+                        &rom,
+                        p,
+                        h,
+                        &execution_sha256,
+                    )?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "super-mario-bros",
+                <SmbStrategyGame>::memory_view,
             ),
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(
