@@ -16,6 +16,19 @@ async function startReplay(page) {
   assert.equal(start.search, 'Resume Search', 'Starting a replay leaves the search paused while the history is open');
   return start;
 }
+async function replayFromStart(page) {
+  await page.evaluate(() => {
+    const scrub = document.querySelector('#scrub');
+    scrub.value = 0;
+    scrub.dispatchEvent(new Event('input', {bubbles: true}));
+    scrub.dispatchEvent(new Event('change', {bubbles: true}));
+  });
+  await page.waitForFunction(() => document.querySelector('#frame-label').textContent.startsWith('FRAME 0 ') && document.querySelector('#play').dataset.state === 'play', null, {timeout: 15000});
+  assert.equal(Number(await page.locator('#scrub').inputValue()), 0, 'Scrubbing to the start shows frame 0');
+  const start = await startReplay(page);
+  assert.equal(start.from, 0, 'The replay starts from frame 0');
+  assert.ok(start.to - start.from >= MIN_REPLAY_FRAMES, `The replay runs at least ${MIN_REPLAY_FRAMES} frames: ${JSON.stringify(start)}`);
+}
 async function stillDuring(page, ms) {
   await page.waitForTimeout(150);
   const samples = await page.evaluate(async (ms) => {
@@ -75,7 +88,7 @@ try {
           if (data.type === 'batch')
             for (const point of data.points)
               if (point.retained !== null && point.frame >= minFrames && !point.observation.loading && point.observation.health > 0)
-                (window.tdRetained ??= new Map()).set(point.observation.level, {...point.observation, id: point.retained});
+                (window.tdRetained ??= new Map()).set(point.observation.level, point.observation);
         });
       }
     };
@@ -87,31 +100,20 @@ try {
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'The automatic preview leaves the search running');
   await growing(page, await paths(page));
 
-  const tried = [];
-  for (let unopened = 0, short = 0; ;) {
-    await page.waitForFunction((tried) => {
-      const o = window.tdRetained?.get(Number(document.querySelector('#map').dataset.map));
-      return o && !tried.includes(String(o.id));
-    }, tried, {timeout: 60000});
+  for (let attempt = 0; ; attempt++) {
+    await page.waitForFunction(() => window.tdRetained?.has(Number(document.querySelector('#map').dataset.map)), null, {timeout: 60000});
     const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
     const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
       .then((point) => page.mouse.click(point.x, point.y))
       .then(() => page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 15000}))
       .then(() => true, () => false);
-    if (!opened) {
-      assert.ok(++unopened < 3, 'Clicking a retained cell on the live map opens the inspector');
-      continue;
-    }
-    await page.waitForFunction(() => !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
-    assert.equal(await page.locator('#play').getAttribute('data-state'), 'play');
-    assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
-    const replay = await startReplay(page);
-    if (replay.to - replay.from >= MIN_REPLAY_FRAMES) break;
-    tried.push(String(o.id), await page.locator('#film-title').getAttribute('data-state-id'));
-    assert.ok(++short < 5, `A retained history replays at least ${MIN_REPLAY_FRAMES} frames from where Replay starts: ${JSON.stringify(tried)}`);
-    await page.locator('#close-inspector').click();
-    await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
+    if (opened) break;
+    assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
   }
+  await page.waitForFunction(() => !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
+  assert.equal(await page.locator('#play').getAttribute('data-state'), 'play');
+  assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
+  await replayFromStart(page);
   await stillDuring(page, 400);
   assert.ok(Number(await page.locator('#scrub').inputValue()) > 0, 'The replay advances while the search waits');
 
@@ -138,7 +140,7 @@ try {
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'A finished replay leaves the search paused while the history is open');
 
   await page.locator('#speed').selectOption('1');
-  await startReplay(page);
+  await replayFromStart(page);
   await stillDuring(page, 300);
   await page.locator('#pause').click();
   await page.locator('#pause').click();

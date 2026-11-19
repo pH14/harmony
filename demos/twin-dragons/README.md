@@ -1258,8 +1258,8 @@ Famidash and Tobu Tobu Girl without taking control.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a history is open, advances during the
 automatic replay pick and resumes when the history closes. It opens a
-retained history whose replay runs at least 300 frames from where Replay
-starts, the level entry, so the replay outlasts its sampling.
+retained history of at least 300 frames and replays it from frame 0, so the
+replay outlasts its sampling.
 `CHROME_CHANNEL=chrome` uses an installed Chrome, and
 `DEMO_URL` targets another server.
 
