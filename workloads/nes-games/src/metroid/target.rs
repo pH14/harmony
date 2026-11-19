@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     action::{FIRE_WAIT_FRAMES, FireMissiles, MetroidAction, MetroidReading},
+    archive::{MetroidArchiveKey, archive_key},
+    game::Metroid,
     progress::{BossDefeats, TourianEvents},
 };
 #[cfg(unix)]
@@ -18,6 +20,7 @@ use crate::nes_backend::unpack_quicknes_state;
 use crate::{
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
+    workload::{ShadowToken, StateHook},
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -463,6 +466,8 @@ pub struct MetroidSnapshot {
     emulator_state: Vec<u8>,
     observation: MetroidObservations,
     failed: bool,
+    #[serde(skip)]
+    token: Option<ShadowToken>,
 }
 
 impl MetroidSnapshot {
@@ -484,6 +489,7 @@ impl MetroidSnapshot {
                 dead: false,
             },
             failed: false,
+            token: None,
         }
     }
 
@@ -564,6 +570,8 @@ pub struct MetroidTarget<M: NesBackend<Vec<u8>> + NesMemory> {
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
     terminal_policy: MetroidTerminalPolicy,
+    shadow: Option<StateHook<Metroid, MetroidArchiveKey>>,
+    shadow_states: Vec<MetroidMechanicalState>,
 }
 
 #[cfg(unix)]
@@ -842,6 +850,8 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
             genesis_prefix,
             execution_work: 0,
             terminal_policy: MetroidTerminalPolicy::default(),
+            shadow: None,
+            shadow_states: Vec::new(),
         })
     }
 
@@ -857,6 +867,33 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
+    }
+
+    pub fn set_shadow(&mut self, shadow: StateHook<Metroid, MetroidArchiveKey>) {
+        shadow.start_state(&self.observation.decoded);
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<MetroidArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand);
+        }
+    }
+
+    pub fn shadow_current(&self) {
+        if self.exit_kind() != ExitKind::Ok {
+            return;
+        }
+        if self.is_dead() {
+            self.shadow(None);
+        } else {
+            self.shadow(Some(self.hand_key()));
+        }
+    }
+
+    #[must_use]
+    pub fn hand_key(&self) -> MetroidArchiveKey {
+        archive_key(self.mechanical_state()).with_boss_health_seen(self.boss_health_seen())
     }
 
     #[must_use]
@@ -952,6 +989,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
         self.current_wram = wram;
         self.observation = observation;
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start_state(&decoded);
+        }
         self.snapshot()
             .ok_or_else(|| "failed to snapshot the restored state".into())
     }
@@ -990,6 +1030,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
             &self.observation,
             self.current_wram,
             self.terminal_policy,
+            self.shadow.is_some().then_some(&mut self.shadow_states),
         ) {
             Ok((observations, wram)) => {
                 if let Some(last) = observations.last() {
@@ -1029,10 +1070,14 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
         self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start_state(&self.observation.decoded);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
+        self.shadow_states.clear();
         match action {
             MetroidAction::Chord(chord) => self.apply_chord(chord),
             MetroidAction::FireMissiles(_) => {
@@ -1042,6 +1087,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
                     Ok((!self.failed && !self.is_dead()).then(|| self.reading()))
                 });
             }
+        }
+        if let Some(shadow) = &self.shadow {
+            shadow.advance_states(&self.shadow_states);
         }
     }
 
@@ -1078,6 +1126,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
             emulator_state,
             observation: self.observation.clone(),
             failed: self.failed,
+            token: self.shadow.as_ref().map(StateHook::saved),
         })
     }
 
@@ -1094,6 +1143,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for MetroidTarget<M> {
         self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
+        if let Some(shadow) = &self.shadow {
+            shadow.restored_state(snapshot.token.as_ref(), &self.observation.decoded);
+        }
         Ok(())
     }
 }
@@ -1124,6 +1176,7 @@ fn decode_action_observations(
     initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
     policy: MetroidTerminalPolicy,
+    mut states: Option<&mut Vec<MetroidMechanicalState>>,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
     if cartridge_frames.len() != frames.len() * CARTRIDGE_FRAME_RANGE.len() {
         return Err(MachineError::Backend(
@@ -1146,6 +1199,9 @@ fn decode_action_observations(
             .copy_from_slice(frame_bytes);
         let boss_defeats = decode_boss_defeats(&frame_cartridge)?;
         let state = follow_frame(decode_state(wram, &frame_cartridge)?, prior_state);
+        if let Some(states) = states.as_deref_mut() {
+            states.push(state);
+        }
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         if state.area != prior_state.area {
@@ -1376,6 +1432,7 @@ mod observation_tests {
             initial,
             prior_wram,
             policy,
+            None,
         )
     }
 
@@ -1758,6 +1815,7 @@ mod observation_tests {
             &initial,
             ridley,
             MetroidTerminalPolicy::Legacy,
+            None,
         )
         .unwrap();
         let last = observations.last().unwrap();
@@ -1805,6 +1863,7 @@ mod observation_tests {
             &initial,
             fight,
             MetroidTerminalPolicy::Legacy,
+            None,
         )
         .unwrap();
         assert_eq!(observations.len(), 1);
@@ -1822,6 +1881,7 @@ mod observation_tests {
                 &initial,
                 fight,
                 MetroidTerminalPolicy::Legacy,
+                None,
             )
             .is_err()
         );
