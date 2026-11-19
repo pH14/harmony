@@ -865,6 +865,22 @@ mod tests {
     }
 
     #[test]
+    fn an_action_observation_keeps_its_cost_through_postcard() {
+        let target = stopped_at_the_goal();
+        let observations = target.last_action_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.cost)
+                .sum::<u64>(),
+            1
+        );
+        let received: Vec<ActionObservation<Spot>> =
+            postcard::from_bytes(&postcard::to_allocvec(observations).unwrap()).unwrap();
+        assert_eq!(received, observations);
+    }
+
+    #[test]
     fn a_terminal_stop_runs_its_chord_once() {
         let mut target = ledged();
         walk(&mut target, &NEAR_THE_GOAL);

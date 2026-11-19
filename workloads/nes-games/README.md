@@ -164,6 +164,11 @@ the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it
 covers when the workload keeps records. The cost is serialized with the
 observation, so a browser worker's job outcome carries it; the records are not.
+The serialized cost is part of each job's `result_sha256`, and so of
+`stream_sha256`. A binary built before the cost was serialized gives other
+values of both for the same decisions, so a comparison against such a binary
+reads `decision_stream_sha256`, `decision_stream_records`, executions and
+frames emulated, never `stream_sha256`.
 `NesWorkload`'s `action_cost` sums the observations' costs, so the archive and
 the records file charge an action the frames it ran. An action a stop cuts
 short costs the frames up to the stop, while its planned cost
