@@ -290,8 +290,9 @@ Assertion ids are the messages.
 
 `harness-net` gives each node its own network namespace so faults can cut
 links between nodes while the driver and check, in the root namespace, still
-reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
-`iptables`) and the container capabilities to create namespaces.
+reach every node. It needs `ip`, `tc`, `iptables` and `iptables-restore`
+(Debian `iproute2` and `iptables`) and the container capabilities to create
+namespaces.
 
 | subcommand | effect |
 |---|---|
@@ -302,8 +303,11 @@ reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
 | `delay` | adds netem delay, log-uniform 1 to 500 ms, to one random node's `eth0` |
 | `heal` | flushes every `HARNESS` chain and removes netem |
 
-`partition` and `isolate` replace the previous cut. Every subcommand can be
-run again. A target calls `harness-net setup N` from its setup script, starts
+`partition` and `isolate` replace the previous cut. Each node's `HARNESS` chain
+is replaced by one `iptables-restore --noflush` that declares the chain, which
+empties it, and appends the new rules in the same commit, so a link that both
+cuts drop never opens during the replace. Every subcommand can be run again.
+A target calls `harness-net setup N` from its setup script, starts
 each node through `harness-net exec I`, binds and advertises 10.77.0.I and
 declares the four fault subcommands as bundle hooks, with `heal` naming the
 hook that lifts the other three:
