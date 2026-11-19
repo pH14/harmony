@@ -1850,6 +1850,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     candidate_incumbent: Option<(Input<G::Action>, ShrinkCost)>,
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
+    declared: Vec<(u16, u32)>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1861,7 +1862,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::with_shape(workload.action_cost_fn(), workload.key_shape());
         archive.max_entries = archive_entry_limit;
-        let choices = (!workload.choice_sites(run).is_empty()).then(|| workload.choice_policy(run));
+        let sites = workload.choice_sites(run);
+        let choices = (!sites.is_empty()).then(|| workload.choice_policy(run));
         if choices.is_some() {
             archive.enable_choices();
         }
@@ -1904,6 +1906,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             candidate_incumbent: None,
             shrink: None,
             choices,
+            declared: ChoiceSite::declared_contrary(&sites),
         }
     }
 
@@ -1936,6 +1939,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             mutation_seed,
             untried,
             held,
+            self.declared.clone(),
         ))
     }
 
@@ -3311,9 +3315,11 @@ fn choice_policy<G: Workload + ?Sized>(
     workload: &G,
     run: &G::Run,
 ) -> Result<Option<ChoicePolicy>, Box<dyn Error>> {
-    if workload.choice_sites(run).is_empty() {
+    let sites = workload.choice_sites(run);
+    if sites.is_empty() {
         return Ok(None);
     }
+    ChoiceSite::validate_all(&sites)?;
     workload.choice_policy(run).validate().map(Some)
 }
 

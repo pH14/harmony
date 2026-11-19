@@ -142,9 +142,14 @@ written this way. The other games have their own `target`, `archive` and
   compiled against the catalog the declarations form.
 - `moves` declares a forced move on a state, a transition the game scripts
   rather than a search decision, or an `Offer`: a choice site the searcher
-  answers, its default label and the move each label plays. `move_sites`
-  names those sites and their labels. `play` gives the move's next chord and
-  what follows it, and `move_frames` bounds its frames. Famidash's level
+  answers, its default label, what each label plays (`Play::Move`, a game
+  move, or `Play::Chord`, the chord tree's chord) and the bit mask `offered`
+  of the labels this state offers. `move_sites` names those sites and their
+  labels, and a site may declare its own deviation rate
+  (`ChoiceSite::with_contrary`). `play` gives the move's next chord and
+  what follows it, and `move_frames` bounds its frames. A move ends at a step
+  boundary, so a game whose goal or reject can hold for one frame inside a
+  multi-frame step must play one-frame steps there. Famidash's level
   advance and Lucky Draw's in-level play are the forced moves, and Lucky
   Draw's `wait` the one offer. The setup tapes stay before the genesis, because they
   run once per machine, `genesis` checks where they arrive, and Famidash's
@@ -198,27 +203,73 @@ action as a doomed terminal and reports the `always` violation
 archive report and the diagnostics, so the input and the run's identity
 replay the job.
 
-An action also stops at the first frame whose state makes an offer, and the
-next action from that state is the move, so the target replays the hold cut to
-that frame at once. The workload asks the offer's site
-through `Chooser::choose` and stores the answer as a move chord: the label in
-`buttons` and 255 minus the game's site index in `hold_frames`, a hold no
-pressed chord has (`move_chord`, `move_answer`). The target plays the chosen
-move like a forced move, keeping the record of each state it decodes. A chord
-at an offer that names no offered label, as after shrink, plays the default and
-is stored as the default's move chord (`Offer::played`); a supplied tape keeps
-the chord, and the target costs it as the move it plays (`played_time`, which
-the workload's `shrink_cost` reads for an action played at an offer only). A move chord where no offer stands, as when a
-table or splice copies one, is resolved as a chord. Films decode each frame from the state before it, as the
-search does, so a state that counts frames, such as Lucky Draw's `menu_wait`,
-ends a film where it ends the run. `action_choices` reports a move chord's
-answer, so a job's first ask at that site can hold its parent's last answer.
+An action also stops at the first frame whose state makes an offer of moves
+only, and the next action from that state is the move, so the target replays the
+hold cut to that frame at once. An offer that offers a
+`Play::Chord` option, a move beside chords, stops no action: it is asked at the
+start of each action from a state that makes it, so a game can offer a move at
+every state of play. Either way the workload asks the offer's site through `Chooser::choose` with the offered
+labels (`Offer::resolve`). A move answer is stored as a move chord: the label
+in `buttons` and 255 minus the game's site index in `hold_frames`, a hold no
+pressed chord has (`move_chord`, `move_answer`). A chord answer goes on to
+`ChordVocabulary::resolve` exactly as at a state without an offer, and the
+action is the chord it resolves. The chord option is the default, so a job
+takes a move at the move site's rate, which the site declares beside its labels
+(ours) when it should not be the job profile's CONTRARY (the searcher README's
+driver choices). The target plays a chosen move like a forced move, keeping the record
+of each state it decodes, and plays a chord as at a state without an offer.
+A chosen move whose arrival declares a forced move hands off to it as a chord
+does: the target plays the forced move in the same action, reports both
+arrivals, and adds the forced frames to the action's cost, and films do the
+same.
+
+A move ends at the first step where the strategy's observation stops. After
+each step of a forced or chosen move the target decodes the state and observes
+it from the accumulator as it stood when the move departed, so a goal or
+reject that reads `highest(...)` or a stage latch sees the move's earlier
+steps only through that state. If the observation reaches a goal or a reject,
+that step is the move's arrival: the accumulator advances there, the action
+reports that observation, the records file keeps the steps up to it, and the
+action's cost is the frames pressed up to that step. A move that stops this way
+hands off to no forced move. A step that does not stop leaves the accumulator
+and the key as they were. Films cut a move at the same step.
+
+`offered` is a bit mask over the `options` slice, bit i for `options[i]`, so an
+offer holds at most 64 options (`MAX_OFFER_OPTIONS`; `Lowered::new` refuses a
+move site with more labels), `EVERY_OPTION` offers them all, and the default is
+offered whatever its bit. Only the offered labels reach the chooser, as
+Bombadil's action generators return the actions valid in each state
+(`generator.when`): an unoffered label is never taken, untried first walks the
+offered labels only, and a record's `offered` list holds the offered labels
+only. A game gives an unavailable move no label at that state rather than a
+label that plays nothing.
+
+An action at an offer plays one option (`Offer::chosen`, `Offer::played`): a
+move chord that names an offered move of this site plays that move, an ordinary
+chord plays the chord option when one is offered, and anything else plays the
+default. So at an offer of moves only, a chord or a move chord for an unoffered
+label, as after shrink, plays the default and is stored as the default's move
+chord; a supplied tape keeps the chord, and the target costs it as the move it
+plays (`played_time`, which the workload's `shrink_cost` reads for an action
+that plays a move only). At an offer beside chords, a move chord for an
+unoffered label plays as where no offer stands: a job resolves it as a chord,
+and the target, which has no chooser, presses it as it is. A move chord where
+no offer stands, as when a table or splice copies one, is resolved as a chord.
+Films decode each frame from the state before it, as the search does, so a
+state that counts frames, such as Lucky Draw's `menu_wait`, ends a film where
+it ends the run. `action_choices` reports a move chord's answer, so a job's
+first ask at that site can hold its parent's last answer.
+
 A move chord costs the archive the frames its answer plays before any forced
 move it leads to, as the game's `Game::answer_frames` gives them (one unless
 the game says otherwise): Lucky Draw's idle wait costs its frames and its start
 the press and the start wait, the level being a forced move. Two routes that
-wait the same frames cost the same, so the older entry keeps its cell. The
-records header's catalog names the chord sites and the game's move sites
+wait the same frames cost the same, so the older entry keeps its cell. The cost
+is fixed per label: a move whose frames depend on the state, such as a weapon
+switch that walks a menu, costs the archive its label's `answer_frames`
+whatever it ran, while the records file carries the frames it ran. Costing the
+archive from the record is later work. The records header's catalog names the
+chord sites and the game's move sites with their declared rates
 (`Lowered::records_catalog`), and `nes-rekey` checks records against it.
 
 Chords are choices too (ours). `sample_alphabet` draws an unresolved chord
@@ -256,7 +307,17 @@ under 50 pooled, and a table fails above Wilson-Hilferty z 4.5. Run it for one
 game with
 `cargo run --release --example chord_equivalence -- 7 joust`, or with no game
 name for every game in its `GAMES` list; a game joins the check by an arm in
-its `vocabulary` match.
+its `vocabulary` match. `lucky-draw-moves` checks a move beside chords: the
+tree side asks Lucky Draw's chords through an offer of the chord option, the
+default, and four idle waits, the second masked off, at the site's declared
+rate of 1/12. A taken move is counted and the step asks again, so every chain
+still holds ten chords. The check adds a one-sample z test of the share of asks
+that take a move against the declared rate and of each offered wait's share of
+the moves against an equal share, and fails if the masked wait is ever taken.
+`lucky-draw-moves-held` asks the same offer under a profile with hold 1/2,
+untried first on, and a hold memory that starts on a move, and checks only the
+move shares, since a declared site ignores hold and untried first while the
+chord sites do not.
 
 `with_records` hands the run's records to the searcher's `RecordsWriter`: the
 target keeps the record of every frame it decodes while recording, each

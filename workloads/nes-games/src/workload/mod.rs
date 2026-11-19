@@ -74,44 +74,111 @@ const TERMINAL_IDENTIFIER: &str = "strategy_goal_or_reject_v1";
 pub enum Never {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Play<M> {
+    Chord,
+    Move(M),
+}
+
+pub const MAX_OFFER_OPTIONS: usize = 64;
+
+pub const EVERY_OPTION: u64 = u64::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Offer<M: 'static> {
     pub site: u16,
     pub default: u16,
-    pub options: &'static [(u16, M)],
+    pub options: &'static [(u16, Play<M>)],
+    pub offered: u64,
 }
 
 impl<M: Copy> Offer<M> {
-    #[must_use]
-    pub fn labels(&self) -> Vec<u16> {
-        self.options.iter().map(|(label, _)| *label).collect()
-    }
-
-    fn option(&self, action: &ButtonChord) -> Option<&(u16, M)> {
-        let label = match move_answer(action) {
-            Some((site, label)) if site == self.site => label,
-            _ => self.default,
-        };
+    fn offered_options(&self) -> impl Iterator<Item = &(u16, Play<M>)> {
         self.options
             .iter()
-            .find(|(offered, _)| *offered == label)
-            .or_else(|| {
-                self.options
-                    .iter()
-                    .find(|(offered, _)| *offered == self.default)
+            .enumerate()
+            .filter(|(index, (label, _))| {
+                *label == self.default
+                    || (*index < MAX_OFFER_OPTIONS && (self.offered >> index) & 1 == 1)
             })
-            .or_else(|| self.options.first())
+            .map(|(_, option)| option)
+    }
+
+    #[must_use]
+    pub fn labels(&self) -> Vec<u16> {
+        self.offered_options().map(|(label, _)| *label).collect()
+    }
+
+    #[must_use]
+    pub fn plays(&self, label: u16) -> Option<Play<M>> {
+        self.offered_options()
+            .find(|(offered, _)| *offered == label)
+            .map(|(_, play)| *play)
+    }
+
+    #[must_use]
+    pub fn cuts(&self) -> bool {
+        !self
+            .offered_options()
+            .any(|(_, play)| matches!(play, Play::Chord))
+    }
+
+    fn option(&self, action: &ButtonChord) -> Option<(u16, Play<M>)> {
+        let answer = move_answer(action);
+        answer
+            .filter(|(site, _)| *site == self.site)
+            .and_then(|(_, label)| {
+                self.plays(label)
+                    .filter(|play| matches!(play, Play::Move(_)))
+                    .map(|play| (label, play))
+            })
+            .or_else(|| {
+                answer
+                    .is_none()
+                    .then(|| {
+                        self.offered_options()
+                            .find(|(_, play)| matches!(play, Play::Chord))
+                            .copied()
+                    })
+                    .flatten()
+            })
+            .or_else(|| self.plays(self.default).map(|play| (self.default, play)))
+            .or_else(|| self.offered_options().next().copied())
     }
 
     #[must_use]
     pub fn chosen(&self, action: &ButtonChord) -> Option<M> {
-        self.option(action).map(|(_, mv)| *mv)
+        match self.option(action) {
+            Some((_, Play::Move(mv))) => Some(mv),
+            Some((_, Play::Chord)) | None => None,
+        }
     }
 
     pub fn played(&self, action: &ButtonChord) -> Result<ButtonChord, Box<dyn Error>> {
-        let label = self
-            .option(action)
-            .map_or(self.default, |(label, _)| *label);
-        move_chord(self.site, label)
+        match self.option(action) {
+            Some((label, Play::Move(_))) => move_chord(self.site, label),
+            Some((_, Play::Chord)) | None => Ok(*action),
+        }
+    }
+
+    pub fn resolve(
+        &self,
+        chords: &ChordVocabulary,
+        chooser: &mut Chooser,
+        asked: &ButtonChord,
+        previous: Option<&ButtonChord>,
+        records: &mut Vec<ChoiceRecord>,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        let site = CHORD_SITES + self.site;
+        let labels = self.labels();
+        let taken = chooser.choose(site, &labels, self.default);
+        let record = ChoiceRecord::new(site, labels, self.default, taken);
+        let label = record.resolved;
+        records.push(record);
+        if matches!(self.plays(label), Some(Play::Chord)) {
+            chords.resolve(chooser, asked, previous, records)
+        } else {
+            move_chord(self.site, label)
+        }
     }
 }
 
@@ -147,8 +214,11 @@ impl<M> Moves<M> {
     }
 
     #[must_use]
-    pub fn cuts(&self) -> bool {
-        self.forced.is_some() || self.offer.is_some()
+    pub fn cuts(&self) -> bool
+    where
+        M: Copy,
+    {
+        self.forced.is_some() || self.offer.is_some_and(|offer| offer.cuts())
     }
 }
 
@@ -274,6 +344,19 @@ impl<G: Game> Lowered<G> {
     }
 
     pub fn new(game: G, strategy: &str) -> Result<Self, Box<dyn Error>> {
+        if let Some(site) = game
+            .move_sites()
+            .into_iter()
+            .find(|site| site.labels.len() > MAX_OFFER_OPTIONS)
+        {
+            return Err(format!(
+                "{} move site {} declares {} labels and an offer masks {MAX_OFFER_OPTIONS}",
+                G::NAME,
+                site.name,
+                site.labels.len()
+            )
+            .into());
+        }
         let declared = declared(&game, &game.decode(None, &[0; WRAM_SIZE]));
         let sometimes: Vec<String> = declared
             .iter()
@@ -620,14 +703,15 @@ fn outcome<G: Game, M: NesBackend<Vec<u8>>>(target: &NesTarget<G, M>) -> Outcome
     }
 }
 
-fn asked_chord(
+fn asked_chord<M: Copy>(
     drawn: &ButtonChord,
-    offered: bool,
+    offer: Option<&Offer<M>>,
     previous: Option<&ButtonChord>,
 ) -> Option<ButtonChord> {
     if chord::is_ask(drawn) {
         Some(*drawn)
-    } else if !offered && move_answer(drawn).is_some() {
+    } else if move_answer(drawn).is_some() && offer.and_then(|offer| offer.chosen(drawn)).is_none()
+    {
         Some(chord::ask(previous))
     } else {
         None
@@ -669,23 +753,13 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
         let offer = (!target.observation().stops())
             .then(|| game.lowered.game.moves(&target.observation().state).offer)
             .flatten();
-        let resolved = if let Some(asked) = asked_chord(drawn, offer.is_some(), previous.as_ref()) {
+        let resolved = if let Some(asked) = asked_chord(drawn, offer.as_ref(), previous.as_ref()) {
             let chooser = chooser.as_mut().ok_or_else(|| {
                 format!("{} drew a chord for a job without a choice plan", G::NAME)
             })?;
             match offer {
                 Some(offer) => {
-                    let site = CHORD_SITES + offer.site;
-                    let labels = offer.labels();
-                    let record = ChoiceRecord::new(
-                        site,
-                        labels.clone(),
-                        offer.default,
-                        chooser.choose(site, &labels, offer.default),
-                    );
-                    let chord = move_chord(offer.site, record.resolved)?;
-                    choices.push(record);
-                    chord
+                    offer.resolve(&G::CHORDS, chooser, &asked, previous.as_ref(), &mut choices)?
                 }
                 None => G::CHORDS.resolve(chooser, &asked, previous.as_ref(), &mut choices)?,
             }
@@ -1265,19 +1339,198 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::search::choice::{CERTAIN, ChoicePlan, ChoiceProfile};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Jump {
+        Short,
+        Long,
+        Far,
+    }
+
+    const JUMPS: [(u16, Play<Jump>); 4] = [
+        (0, Play::Chord),
+        (1, Play::Move(Jump::Short)),
+        (2, Play::Move(Jump::Long)),
+        (3, Play::Move(Jump::Far)),
+    ];
+
+    const WAITS: [(u16, Play<Jump>); 2] =
+        [(1, Play::Move(Jump::Short)), (7, Play::Move(Jump::Far))];
+
+    const SMALL: ChordVocabulary = ChordVocabulary {
+        held: &[0x00, 0x01, 0x80, 0x81],
+        tap: None,
+        short_hold: (2, 12),
+        long_hold: (48, 120),
+    };
+
+    fn jumps(offered: u64) -> Offer<Jump> {
+        Offer {
+            site: 0,
+            default: 0,
+            options: &JUMPS,
+            offered,
+        }
+    }
+
+    fn waits() -> Offer<Jump> {
+        Offer {
+            site: 0,
+            default: 1,
+            options: &WAITS,
+            offered: EVERY_OPTION,
+        }
+    }
+
+    fn chooser(seed: u64, contrary: u32, untried: Option<u32>) -> Chooser {
+        Chooser::new(&ChoicePlan {
+            profile: SMALL.reproducing_profile(),
+            redrawn: false,
+            seed,
+            untried,
+            held: Vec::new(),
+            declared: vec![(CHORD_SITES, contrary)],
+        })
+    }
+
+    fn undeclared(seed: u64, untried: Option<u32>) -> Chooser {
+        Chooser::new(&ChoicePlan {
+            profile: ChoiceProfile::new(0, 0),
+            redrawn: false,
+            seed,
+            untried,
+            held: Vec::new(),
+            declared: Vec::new(),
+        })
+    }
+
+    fn resolve(offer: &Offer<Jump>, chooser: &mut Chooser) -> (ButtonChord, Vec<ChoiceRecord>) {
+        let previous = ButtonChord::new(0x81, 30);
+        let mut records = Vec::new();
+        let action = offer
+            .resolve(
+                &SMALL,
+                chooser,
+                &chord::ask(Some(&previous)),
+                Some(&previous),
+                &mut records,
+            )
+            .expect("resolve");
+        (action, records)
+    }
 
     #[test]
     fn a_move_chord_away_from_its_offer_is_resolved_as_a_chord() {
         let previous = ButtonChord::new(0x40, 12);
         let wait = move_chord(0, 7).expect("a move chord");
-        let asked = asked_chord(&wait, false, Some(&previous)).expect("resolved as a chord");
+        let asked = asked_chord::<Jump>(&wait, None, Some(&previous)).expect("resolved as a chord");
         assert!(chord::is_ask(&asked));
         assert_eq!(asked.buttons, previous.buttons);
-        assert_eq!(asked_chord(&wait, true, Some(&previous)), None);
-        assert_eq!(asked_chord(&previous, false, None), None);
+        assert_eq!(asked_chord(&wait, Some(&waits()), Some(&previous)), None);
+        assert_eq!(asked_chord::<Jump>(&previous, None, None), None);
         let drawn = chord::ask(Some(&previous));
-        assert_eq!(asked_chord(&drawn, true, None), Some(drawn));
+        assert_eq!(asked_chord(&drawn, Some(&waits()), None), Some(drawn));
+        let far = move_chord(0, 3).expect("a move chord");
+        assert_eq!(asked_chord(&far, Some(&jumps(EVERY_OPTION)), None), None);
+        let long = move_chord(0, 2).expect("a move chord");
+        assert!(
+            asked_chord(&long, Some(&jumps(0b1011)), None).is_some_and(|ask| chord::is_ask(&ask))
+        );
+    }
+
+    #[test]
+    fn an_offer_beside_chords_plays_a_chord_as_itself_and_a_move_chord_as_its_move() {
+        let offer = jumps(0b1011);
+        let held = ButtonChord::new(0x81, 9);
+        let far = move_chord(0, 3).expect("a move chord");
+        assert_eq!(
+            (offer.chosen(&held), offer.played(&held).ok()),
+            (None, Some(held))
+        );
+        assert_eq!(
+            (offer.chosen(&far), offer.played(&far).ok()),
+            (Some(Jump::Far), Some(far))
+        );
+        assert_eq!(offer.chosen(&move_chord(0, 2).expect("a move chord")), None);
+        assert_eq!(offer.chosen(&move_chord(1, 3).expect("a move chord")), None);
+        assert_eq!(offer.labels(), [0, 1, 3]);
+        assert_eq!(jumps(0b1010).labels(), [0, 1, 3]);
+        assert!(!offer.cuts() && !Moves::offer(offer).cuts());
+        assert!(waits().cuts() && Moves::offer(waits()).cuts());
+        assert!(Moves::<Jump>::forced(Jump::Short).cuts() && !Moves::<Jump>::none().cuts());
+        assert_eq!(waits().chosen(&held), Some(Jump::Short));
+        assert_eq!(waits().played(&held).ok(), move_chord(0, 1).ok());
+    }
+
+    #[test]
+    fn an_unoffered_label_is_never_taken_and_untried_first_skips_it() {
+        let taken = |offer: Offer<Jump>| {
+            let mut taken = BTreeMap::new();
+            for seed in 0..4_000 {
+                let (action, records) = resolve(&offer, &mut chooser(seed, CERTAIN, None));
+                let (_, label) = move_answer(&action).expect("a certain rate takes a move");
+                *taken.entry(label).or_insert(0_u32) += 1;
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].offered, offer.labels());
+            }
+            taken.into_keys().collect::<Vec<u16>>()
+        };
+        let untried = |offer: Offer<Jump>| -> Vec<Option<u16>> {
+            (0..4)
+                .map(|ordinal| {
+                    let (action, _) = resolve(&offer, &mut undeclared(5, Some(ordinal)));
+                    move_answer(&action).map(|(_, label)| label)
+                })
+                .collect()
+        };
+        assert_eq!(taken(jumps(0b1011)), [1, 3]);
+        assert_eq!(untried(jumps(0b1011)), [None, Some(1), Some(3), None]);
+        assert_eq!(taken(jumps(EVERY_OPTION)), [1, 2, 3]);
+        assert_eq!(
+            untried(jumps(EVERY_OPTION)),
+            [None, Some(1), Some(2), Some(3)]
+        );
+    }
+
+    #[test]
+    fn the_chord_option_resolves_the_chord_tree_as_without_an_offer() {
+        for seed in 0..500 {
+            let (action, records) = resolve(&jumps(EVERY_OPTION), &mut chooser(seed, 0, None));
+            let previous = ButtonChord::new(0x81, 30);
+            let mut alone = Vec::new();
+            let without = SMALL
+                .resolve(
+                    &mut chooser(seed, 0, None),
+                    &chord::ask(Some(&previous)),
+                    Some(&previous),
+                    &mut alone,
+                )
+                .expect("resolve");
+            assert_eq!(action, without);
+            assert_eq!(records[0].site, CHORD_SITES);
+            assert_eq!(records[0].taken, Choice::Default);
+            assert_eq!(records[1..], alone[..]);
+        }
+    }
+
+    #[test]
+    fn a_declared_rate_sets_the_share_of_moves_beside_chords() {
+        let mut moves = 0_u32;
+        for job in 0..2_400 {
+            let mut chooser = chooser(job, CERTAIN / 12, None);
+            for _ in 0..10 {
+                let (action, records) = resolve(&jumps(EVERY_OPTION), &mut chooser);
+                match move_answer(&action) {
+                    Some(_) => moves += 1,
+                    None => assert!(records.len() > 1),
+                }
+            }
+        }
+        assert!((1_807..2_193).contains(&moves), "{moves}");
     }
 
     #[test]
