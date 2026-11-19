@@ -70,14 +70,16 @@ own input rather than a second search. A run that `nes-eval` gave a `strategy` f
 to `strategy.toml` in the run directory, is filmed with `--strategy` naming that file, and `film.json`
 records its hash as `identity.strategy_sha256`.
 
-A witness's `snapshot_sha256` hashes the endpoint snapshot's `snapshot_identity_sha256`, which
-serializes the snapshot after `SnapshotState::logical_identity`. For a packed QuickNES state that
+A witness's `snapshot_sha256` is the endpoint snapshot's `endpoint_identity_sha256`, which
+serializes the snapshot after `SnapshotState::endpoint_identity`. For a packed QuickNES state that
 identity zeroes the prepared execution hash in the `HQNESST3` header and keeps everything else:
 the core state, the core hash and revision, the observation, the accumulator and the failure flag.
 The execution hash covers every image loaded into the process, `nes-eval` and `nes-film` included,
-so it differs between any two binaries; restoring a state still requires it to match the running
-machine. `nes-eval` writes `result.json` with format `nes-eval-result-v2`, and a native `nes-film`
-refuses any other format. Castlevania's endpoint still hashes its serialized snapshot. The Super Tilt Bro
+so it differs between any two binaries. Archive digests and saved-state reuse use
+`SnapshotState::logical_identity` instead, which keeps the execution hash, so a matching archive
+digest still means the state restores in this execution, and restoring a state still requires the
+hash to match the running machine. `nes-eval` writes `result.json` with format
+`nes-eval-result-v2`, and a native `nes-film` refuses any other format. The Super Tilt Bro
 campaign result digest covers the complete job result, including preparation
 failures and retained QuickNES snapshots. Replay therefore detects a latent
 endpoint-state change even when its decoded game observations and archive key

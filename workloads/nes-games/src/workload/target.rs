@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Game, Lowered, Satisfied};
 use crate::{
-    nes_backend::{NesBackend, NesMemory, SnapshotState},
+    nes_backend::{NesBackend, NesMemory},
     search::assertion::{Accumulator, AssertionKey, Record},
     target::{ExitKind, Target},
 };
@@ -81,15 +81,8 @@ pub struct NesSnapshot<S> {
 }
 
 impl<S: Clone + Serialize> NesSnapshot<S> {
-    pub fn logical_identity(&self) -> Result<Self, MachineError> {
-        Ok(Self {
-            emulator_state: SnapshotState::logical_identity(&self.emulator_state)?,
-            ..self.clone()
-        })
-    }
-
-    pub fn snapshot_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
-        crate::search::campaign::postcard_value_sha256(&self.logical_identity()?)
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
     }
 }
 

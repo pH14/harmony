@@ -196,17 +196,8 @@ pub struct StbSnapshot {
 }
 
 impl StbSnapshot {
-    pub fn logical_identity(&self) -> Result<Self, MachineError> {
-        Ok(Self {
-            emulator_state: crate::nes_backend::SnapshotState::logical_identity(
-                &self.emulator_state,
-            )?,
-            ..self.clone()
-        })
-    }
-
-    pub fn snapshot_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
-        crate::search::campaign::postcard_value_sha256(&self.logical_identity()?)
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
     }
 
     #[must_use]

@@ -26,6 +26,20 @@ pub trait SnapshotState:
     fn logical_identity(&self) -> Result<Self, MachineError> {
         Ok(self.clone())
     }
+
+    fn endpoint_identity(&self) -> Result<Self, MachineError> {
+        self.logical_identity()
+    }
+}
+
+pub fn endpoint_identity_sha256<T: Clone + Serialize, P: SnapshotState>(
+    snapshot: &T,
+    emulator_state: impl FnOnce(&mut T) -> &mut P,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut identity = snapshot.clone();
+    let state = emulator_state(&mut identity);
+    *state = state.endpoint_identity()?;
+    crate::search::campaign::postcard_value_sha256(&identity)
 }
 
 pub trait WorkRamCopy:
@@ -77,7 +91,7 @@ impl SnapshotState for Vec<u8> {
         budget.array::<u8>(self.capacity())
     }
 
-    fn logical_identity(&self) -> Result<Self, MachineError> {
+    fn endpoint_identity(&self) -> Result<Self, MachineError> {
         let mut identity = self.clone();
         if let Ok((_, header_len)) = packed_preamble(self)
             && let Some(header) = identity

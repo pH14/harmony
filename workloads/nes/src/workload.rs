@@ -39,7 +39,7 @@ pub fn configured<G: Game>(
 
 impl<S: Clone + Serialize> EndpointIdentity for NesSnapshot<S> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        self.snapshot_identity_sha256()
+        self.endpoint_identity_sha256()
     }
 }
 
