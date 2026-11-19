@@ -687,7 +687,8 @@ catalog names:
 Expressions have integers, `none`, names (quote a name with spaces as
 `'name'`), tuples, arithmetic (division and remainder take a literal divisor),
 comparisons, `and`/`or`/`not`, `if … then … else …`, and the functions `min`,
-`max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`.
+`max`, `step(x, n)`, `popcount`, `in`, `index`, `bucket`, and `len(t)`, the
+number of entries in table `t`.
 
 The name `action_end` is built in: no catalog declares it, the record holds it
 in its last slot, and it is 1 on the root state and on the last frame of each

@@ -846,6 +846,17 @@ impl Compiler<'_> {
                     none: span.none,
                 })
             }
+            "len" => {
+                arity(1..=1)?;
+                let (_, entries) = self.table(&args[0])?;
+                let len = i64::try_from(entries.len())?;
+                ops.push(Op::Const(len));
+                Ok(Span {
+                    lo: len,
+                    hi: len,
+                    none: false,
+                })
+            }
             "in" | "index" | "bucket" => {
                 arity(2..=2)?;
                 let (table, entries) = self.table(&args[1])?;
@@ -1362,7 +1373,8 @@ fn outside_cell(expr: &Expr, cell: &BTreeSet<String>) -> Option<String> {
         }
         Expr::Call(function, args) => args.iter().enumerate().find_map(|(index, arg)| match arg {
             Expr::Name(_)
-                if index == 1 && ["in", "index", "bucket"].contains(&function.as_str()) =>
+                if (index == 1 && ["in", "index", "bucket"].contains(&function.as_str()))
+                    || function == "len" =>
             {
                 None
             }

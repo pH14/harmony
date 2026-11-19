@@ -613,6 +613,41 @@ fn a_stage_scoped_route_objective_is_carried_only_from_a_parent_in_the_same_stag
 }
 
 #[test]
+fn a_route_stage_ends_at_the_last_cell_of_its_table_by_len() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "route"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "objective + 1 >= len(route)"
+        latch = true
+        [[stage]]
+        name = "after"
+        goal = "false"
+        [table]
+        route = [1, 2, 3]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let stages: Vec<_> = [2, 0, 3, 0]
+        .into_iter()
+        .map(|room| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            compiled.view(observed.key.unwrap()).stage.unwrap()
+        })
+        .collect();
+    assert_eq!(stages, ["route", "route", "after", "after"]);
+}
+
+#[test]
 fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
     let width = |text: &str| {
         let compiled = Compiled::parse(text, &catalog()).unwrap();
@@ -866,6 +901,7 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
             "[[stage]]\ngoal = \"last(lives, stage) > 0\"",
             "only in a stage's objective",
         ),
+        (r#"spread = "len(lives)""#, "no table is named"),
         ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
