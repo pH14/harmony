@@ -97,7 +97,10 @@ the same key through assertions as the `MegaMan2` `Game`, with the strategy in
 hand target's per-frame context (fall run, dying run, enemy damage, boss
 intro frames, arrival) in its state. A transition is a forced `Drive` move
 whose steps are the hand target's menu chords, so `NesTarget` plays the same
-award wait, stage-select walk, cursor path and arrival wait. The tier is the
+award wait, stage-select walk, cursor path and arrival wait. Its award, settle
+and walk idles are multi-frame steps of up to 120 frames, and the decoded
+`dead` is sticky, so a death first read inside one of those steps stops the
+move at the step's end. The tier is the
 preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
 inside 64 bits. The hand target finishes the current chord before a stage
 transition, while the strategy target cuts it at the transition frame, so a
