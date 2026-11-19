@@ -87,8 +87,10 @@ try {
         this.addEventListener('message', ({data}) => {
           if (data.type === 'batch')
             for (const point of data.points)
-              if (point.retained !== null && point.frame >= minFrames && !point.observation.loading && point.observation.health > 0)
-                (window.tdRetained ??= new Map()).set(point.observation.level, {...point.observation, id: String(point.retained)});
+              if (point.retained !== null && point.frame >= minFrames && !point.observation.loading && point.observation.health > 0) {
+                (window.tdRetained ??= new Map()).set(point.observation.level, point.observation);
+                (window.tdLongIds ??= new Set()).add(String(point.retained));
+              }
         });
       }
     };
@@ -100,10 +102,9 @@ try {
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'The automatic preview leaves the search running');
   await growing(page, await paths(page));
 
-  let chosen;
   for (let attempt = 0; ; attempt++) {
     await page.waitForFunction(() => window.tdRetained?.has(Number(document.querySelector('#map').dataset.map)), null, {timeout: 60000});
-    const o = chosen = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
+    const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
     const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
       .then((point) => page.mouse.click(point.x, point.y))
       .then(() => page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 15000}))
@@ -112,9 +113,11 @@ try {
     assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
   }
   await page.waitForFunction(() => !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
-  if (await page.locator('#film-title').getAttribute('data-state-id') !== chosen.id) {
-    await page.locator(`#state-list [data-state-id="${chosen.id}"]`).click();
-    await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓', chosen.id);
+  if (!await page.evaluate(() => window.tdLongIds.has(document.querySelector('#film-title').dataset.stateId))) {
+    const id = await page.evaluate(() => [...document.querySelectorAll('#state-list [data-state-id]')].map((button) => button.dataset.stateId).find((id) => window.tdLongIds.has(id)));
+    assert.ok(id, `The opened cell lists a retained history of at least ${MIN_REPLAY_FRAMES} frames`);
+    await page.locator(`#state-list [data-state-id="${id}"]`).click();
+    await page.waitForFunction((id) => document.querySelector('#film-title').dataset.stateId === id && !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓', id);
   }
   assert.equal(await page.locator('#play').getAttribute('data-state'), 'play');
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
