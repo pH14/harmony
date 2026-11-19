@@ -479,7 +479,7 @@ impl Keying for Strategic {
             &mut lane.accumulator,
         );
         lane.arrival = match observed.key {
-            _ if observed.rejected.is_some() && !observed.goal => Arrival::Rejected,
+            _ if observed.rejected.is_some() && !world.goal(state) => Arrival::Rejected,
             Some(key) => Arrival::Keyed(key),
             None => Arrival::Absent,
         };
@@ -585,8 +585,11 @@ where
     type Lane = ShadowLane<K::Lane, K::Key>;
     fn arrive(&self, world: &World, state: State, broken: bool, lane: &mut Self::Lane) {
         self.hand.arrive(world, state, broken, &mut lane.hand);
-        lane.cursor
-            .observe(&self.compiled, &assertions::record(world, state, broken));
+        lane.cursor.observe_with_objective(
+            &self.compiled,
+            &assertions::record(world, state, broken),
+            world.goal(state),
+        );
         let raw = if self.hand.rejected(world, state, broken, &lane.hand) {
             None
         } else {

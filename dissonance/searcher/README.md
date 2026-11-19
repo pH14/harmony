@@ -729,7 +729,9 @@ strategy over the same states. A `ShadowCursor` lives beside a front end's
 state and travels with its snapshots: `observe` advances its accumulator and
 keeps the compiled key, or no key for a record that a `reject` line matches and
 that is not a goal, since a strategy front end ends the path there as doomed
-and archives nothing, and `pair` completes the hand key against the previous
+and archives nothing. `observe` takes the goal from the strategy's `goal` line;
+`observe_with_objective` takes it from a front end whose objective is its own,
+as a tiny world's is. `pair` completes the hand key against the previous
 completed key with `ArchiveKey::complete` (once per arrival), records its
 lineage, and counts the pair in a `ShadowTable`. `ShadowTable::report` returns
 the `ShadowReport`:

@@ -385,12 +385,15 @@ every reset and after every transition, snapshots carry it, and a restore puts
 it back, so a state reached from a snapshot keys as it would on the path that
 made the snapshot. The strategy's lane is its `Accumulator` and the key
 `Compiled::observe` gave, or that its `reject` line matched a state that is not
-a goal. A rejected state ends its path as doomed (`Keying::rejected`), as in
-`NesTarget`, so the archive never keys it; a hand key's lane is empty, since
-the campaign completes a hand key against its parent with
-`ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying, and
-its lane adds a searcher `ShadowCursor`: at each arrival the cursor observes
-the state's record under the strategy, takes no hand key where the hand keying
+the world's goal. The world's goal (`World::goal`) is the one goal signal: the
+campaign's objective, the rejection rule and the shadow all read it, whatever
+the strategy's own `goal` line says. A rejected state ends its path as doomed
+(`Keying::rejected`), as in `NesTarget`, so the archive never keys it; a hand
+key's lane is empty, since the campaign completes a hand key against its parent
+with `ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying,
+and its lane adds a searcher `ShadowCursor`: at each arrival the cursor
+observes the state's record under the strategy with the world's goal as its
+objective (`observe_with_objective`), takes no hand key where the hand keying
 ends the path, completes the raw hand key against the previous one and counts
 the pair in a `ShadowTable`. The report's `shadow` is the table's
 `ShadowReport`, taken after the run and before verification replays it.
@@ -505,8 +508,10 @@ the shadow reports no disagreement while the lineage changes hand keys. With a
 `reject` line prepended to the strategy, it also checks that a strategy run
 ends its paths at the rejected state with the decision stream of a hand keying
 that ends them there, that the shadow agrees on that state, and that it counts
-an `absent` disagreement where only one side ends the path. A goal that a
-`reject` line also matches keeps its key in the strategy and in the shadow.
+an `absent` disagreement where only one side ends the path. With `reject =
+"goal"` and no `goal` line, the world's goal keeps its key in the strategy and
+in the shadow, and the strategy run gives the shipped strategy's decision
+stream.
 
 ## Twelve picks
 
