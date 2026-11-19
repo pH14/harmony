@@ -5,6 +5,8 @@ use std::num::NonZeroU64;
 
 use searcher::search::{archive::ArchiveKey, rand::RomuDuoJrRand};
 
+use serde::{Deserialize, Serialize};
+
 use super::*;
 use crate::{
     assertion::{AssertionKind, AssertionOutcome},
@@ -12,6 +14,10 @@ use crate::{
 };
 
 const STATES: usize = 20_000;
+const TABLE_SEED: u64 = 0x5eed_fa17;
+const TABLE_STATES: usize = 64;
+const TABLE_NODES: [u16; 3] = [1, 3, 8];
+const TABLE: &str = include_str!("strategy-keys.json");
 
 fn below(rand: &mut RomuDuoJrRand, bound: u64) -> u64 {
     rand.below_u64(NonZeroU64::new(bound).unwrap())
@@ -60,10 +66,10 @@ fn observation(rand: &mut RomuDuoJrRand, nodes: u16, edges: &[u64]) -> FaultObse
     observations
 }
 
-fn sample(seed: u64, nodes: u16) -> Vec<FaultObservations> {
+fn sample(seed: u64, nodes: u16, states: usize) -> Vec<FaultObservations> {
     let mut rand = RomuDuoJrRand::with_seed(seed);
     let edges: Vec<u64> = (0..64).map(|_| rand.next_u64()).collect();
-    (0..STATES)
+    (0..states)
         .map(|_| observation(&mut rand, nodes, &edges))
         .collect()
 }
@@ -73,7 +79,7 @@ fn the_strategy_key_agrees_with_the_hand_key_on_random_states() {
     for nodes in [1, 3, 8] {
         let keys = FaultKeys::new(STRATEGY, nodes).expect("the shipped strategy compiles");
         let shadow = Shadow::default();
-        for observations in sample(u64::from(nodes) * 7919, nodes) {
+        for observations in sample(u64::from(nodes) * 7919, nodes, STATES) {
             shadow.observe(&keys, archive_key(&observations), &observations);
         }
         let report = shadow.report(&keys).unwrap();
@@ -91,7 +97,7 @@ fn the_duration_context_partitions_and_orders_parents_as_the_hand_context_does()
     for nodes in [1, 3, 8] {
         let keys = FaultKeys::new(STRATEGY, nodes).unwrap();
         let mut pairs = BTreeSet::new();
-        for observations in sample(u64::from(nodes) * 104_729, nodes) {
+        for observations in sample(u64::from(nodes) * 104_729, nodes, STATES) {
             let hand = FaultArchiveKey::duration_context(&keys, archive_key(&observations));
             let strategy = AssertionKey::duration_context(&keys, keys.key(&observations).unwrap());
             assert_eq!(
@@ -188,4 +194,92 @@ fn a_shadow_needs_the_hand_key() {
     assert!(request(true, false).validate().is_ok());
     assert!(request(false, false).validate().is_ok());
     assert!(request(false, true).validate().is_err());
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct TableRow {
+    nodes: u16,
+    index: usize,
+    key: AssertionKey,
+    context: AssertionKey,
+    event_ready: u64,
+}
+
+fn table_rows(nodes: u16) -> Vec<TableRow> {
+    let keys = FaultKeys::new(STRATEGY, nodes).unwrap();
+    sample(TABLE_SEED, nodes, TABLE_STATES)
+        .iter()
+        .enumerate()
+        .map(|(index, observations)| {
+            let key = keys
+                .key(observations)
+                .expect("the shipped strategy keys every state");
+            let context = keys.context(key);
+            TableRow {
+                nodes,
+                index,
+                key,
+                context,
+                event_ready: keys.context_event_ready(context),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn the_strategy_key_table_agrees_with_the_hand_key() {
+    let mut lines = Vec::new();
+    for nodes in TABLE_NODES {
+        let keys = FaultKeys::new(STRATEGY, nodes).unwrap();
+        let states = sample(TABLE_SEED, nodes, TABLE_STATES);
+        let shadow = Shadow::default();
+        let mut contexts = BTreeSet::new();
+        for observations in &states {
+            let hand = archive_key(observations);
+            shadow.observe(&keys, hand, observations);
+            let hand_context = FaultArchiveKey::duration_context(&keys, hand);
+            let context = keys.context(keys.key(observations).unwrap());
+            assert_eq!(
+                FaultArchiveKey::event_ready(&keys, hand_context),
+                keys.context_event_ready(context)
+            );
+            contexts.insert((hand_context, context));
+        }
+        let report = shadow.report(&keys).unwrap();
+        assert_eq!(report.states, TABLE_STATES as u64);
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!(report.hand_cells, report.strategy_cells);
+        assert_eq!(report.hand_slots, report.strategy_slots);
+        let mut forward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        let mut backward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+        for (hand, strategy) in &contexts {
+            forward.entry(*hand).or_default().insert(*strategy);
+            backward.entry(*strategy).or_default().insert(*hand);
+        }
+        assert!(forward.values().all(|strategies| strategies.len() == 1));
+        assert!(backward.values().all(|hands| hands.len() == 1));
+        let ordered: Vec<_> = contexts.iter().map(|(_, strategy)| *strategy).collect();
+        assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
+        for row in table_rows(nodes) {
+            lines.push(serde_json::to_string(&row).unwrap());
+        }
+    }
+    let table = format!("[\n{}\n]\n", lines.join(",\n"));
+    if std::env::var_os("HARMONY_WRITE_KEY_TABLE").is_some() {
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/key/strategy-keys.json"),
+            &table,
+        )
+        .unwrap();
+    } else {
+        assert_eq!(table, TABLE);
+    }
+}
+
+#[test]
+fn the_shipped_strategy_keys_the_table_states_as_recorded() {
+    let recorded: Vec<TableRow> = serde_json::from_str(TABLE).unwrap();
+    assert_eq!(recorded.len(), TABLE_NODES.len() * TABLE_STATES);
+    let computed: Vec<TableRow> = TABLE_NODES.into_iter().flat_map(table_rows).collect();
+    assert_eq!(computed, recorded);
 }

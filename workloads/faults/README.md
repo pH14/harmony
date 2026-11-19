@@ -1071,6 +1071,12 @@ strategy without one of them leaves that part of the context zero. A strategy
 with stages, a reject line or aggregates is refused, because the workload
 keeps no accumulator and draws its tier directly.
 
+[`strategy-keys.json`](src/key/strategy-keys.json) records the key and
+duration context the shipped strategy gives 64 sampled states for each of 1, 3
+and 8 nodes, and a test checks that the strategy still gives them. Setting
+`HARMONY_WRITE_KEY_TABLE=1` while running the `key::tests` tests rewrites the
+table.
+
 `workload.options.key` in a search config chooses the key: `strategy` replaces
 the shipped strategy text, `hand = true` searches with `FaultArchiveKey`, and
 `shadow = true` beside `hand` also computes the strategy key on every state.
