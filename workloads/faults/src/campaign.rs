@@ -1003,7 +1003,7 @@ impl TargetExecution for FaultWorkload {
         crate::consonance::thread_work_telemetry()
     }
 
-    fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&FaultAction) -> u64 {
         action_cost
     }
 
@@ -1140,7 +1140,12 @@ impl TargetExecution for FaultWorkload {
 }
 
 impl Evaluation for FaultWorkload {
-    fn shrink_cost(&self, action: &FaultAction, _target: &FaultTarget) -> ShrinkCost {
+    fn shrink_cost(
+        &self,
+        action: &FaultAction,
+        _target: &FaultTarget,
+        _observations: &[FaultObservations],
+    ) -> ShrinkCost {
         fault_cost(action)
     }
     fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {

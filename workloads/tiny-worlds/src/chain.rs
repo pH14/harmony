@@ -58,7 +58,8 @@ impl LocalState {
             | WorldState::Targets(_)
             | WorldState::Fork(_)
             | WorldState::Picks(_)
-            | WorldState::Ridge(_) => {
+            | WorldState::Ridge(_)
+            | WorldState::Stairs(_) => {
                 unreachable!("validated non-nested, non-graph stage")
             }
         }
@@ -109,9 +110,10 @@ impl Config {
                     | World::Fork(_)
                     | World::Picks(_)
                     | World::Ridge(_)
+                    | World::Stairs(_)
             ) {
                 return Err(
-                    "graph, crossing, passive-clock, targets, fork, picks and ridge stages are unsupported"
+                    "graph, crossing, passive-clock, targets, fork, picks, ridge and stairs stages are unsupported"
                         .into(),
                 );
             }

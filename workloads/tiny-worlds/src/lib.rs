@@ -18,6 +18,7 @@ pub mod picks;
 pub mod resource;
 pub mod ridge;
 pub mod route;
+pub mod stairs;
 pub mod targets;
 pub mod trap;
 pub mod worlds;
@@ -864,8 +865,8 @@ impl<K: Keying> TargetExecution for Workload<K> {
     fn execution_work(&self, target: &Target<K::Lane>) -> u64 {
         target.work
     }
-    fn action_cost_fn(&self) -> fn(&u8) -> u64 {
-        self.config.action_cost_fn()
+    fn planned_cost_fn(&self) -> fn(&u8) -> u64 {
+        self.config.planned_cost_fn()
     }
     fn snapshot_memory_charge(snapshot: &Snapshot<K::Lane>) -> usize {
         std::mem::size_of::<Snapshot<K::Lane>>()
@@ -883,8 +884,8 @@ impl<K: Keying> TargetExecution for Workload<K> {
         {
             return Err("unavailable passive-clock duration".into());
         }
-        let cost = (self.action_cost_fn())(action);
         let before = target.state;
+        let cost = self.config.step_work(before, *action);
         self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
         self.keying
@@ -1006,6 +1007,12 @@ impl<K: Keying> Evaluation for Workload<K> {
     fn is_doomed(&self, target: &Target<K::Lane>) -> bool {
         self.keying
             .rejected(&self.config, target.state, self.broken, &target.lane)
+    }
+    fn action_cost(&self, action: &u8, observations: &[Observation]) -> u64 {
+        observations.last().map_or_else(
+            || (self.config.planned_cost_fn())(action),
+            |observation| self.config.step_work(observation.before, *action),
+        )
     }
     fn current_key(&self, target: &Target<K::Lane>) -> Result<K::Key, Box<dyn Error>> {
         self.keying
@@ -1265,7 +1272,8 @@ impl<K: Keying> Evaluation for Workload<K> {
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_))
                 | (World::Picks(_), State::Picks(_), State::Picks(_))
-                | (World::Ridge(_), State::Ridge(_), State::Ridge(_)) => {}
+                | (World::Ridge(_), State::Ridge(_), State::Ridge(_))
+                | (World::Stairs(_), State::Stairs(_), State::Stairs(_)) => {}
                 (World::Fork(w), State::Fork(_), State::Fork(after)) => {
                     e.fork_first.resize(3, None);
                     let reached = [
@@ -1816,6 +1824,9 @@ fn campaign<K: Keying>(
         "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify});
     if let Some(shadow) = shadow {
         out["shadow"] = serde_json::to_value(shadow)?;
+    }
+    if let World::Stairs(w) = &workload.config {
+        out["stairs"] = w.report(&report.archive.entries);
     }
     Ok(out)
 }
@@ -2375,7 +2386,7 @@ mod tests {
         };
         for fast_first in [false, true] {
             for broken in [false, true] {
-                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                let mut archive = Archive::<u8, Key, bool, State>::new();
                 for fast in [fast_first, !fast_first] {
                     let suffix = if fast { vec![1, 1, 1, 1] } else { vec![0, 0] };
                     let state = suffix.iter().fold(w.initial(), |s, &a| w.step(s, a));
@@ -2384,6 +2395,7 @@ mod tests {
                             None,
                             suffix.len() as u64,
                             ArchiveCandidate {
+                                cost: suffix.len() as u64,
                                 suffix,
                                 key: w.key(state, broken),
                                 milestones: false,
@@ -2421,7 +2433,7 @@ mod tests {
         };
         for order in [[10_u16, 5_u16], [5_u16, 10_u16]] {
             for broken in [false, true] {
-                let mut archive = Archive::<u8, Key, bool, State>::new(|_| 1);
+                let mut archive = Archive::<u8, Key, bool, State>::new();
                 for history in order {
                     let input: Vec<u8> = (0..4).map(|bit| ((history >> bit) & 1) as u8).collect();
                     let state = input.iter().fold(maze.initial(), |s, &a| maze.step(s, a));
@@ -2431,6 +2443,7 @@ mod tests {
                             None,
                             0,
                             ArchiveCandidate {
+                                cost: input.len() as u64,
                                 suffix: input,
                                 key: maze.key(state, broken),
                                 milestones: false,

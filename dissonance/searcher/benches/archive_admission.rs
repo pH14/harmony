@@ -47,11 +47,12 @@ fn candidate<const P: usize>(
         suffix: vec![action; length],
         key,
         milestones: (),
+        cost: length as u64,
     }
 }
 
 fn populated<const P: usize>() -> BenchArchive<P> {
-    let mut archive = BenchArchive::<P>::new(|_| 1);
+    let mut archive = BenchArchive::<P>::new();
     for preference in 0..P.max(1) {
         for rank in 0..2 {
             let mut scores = [0; 4];
@@ -137,6 +138,8 @@ fn reporting(c: &mut Criterion) {
                     milestones: vec![1; 16],
                     snapshot_identity_sha256: None,
                     selector: None,
+                    shrink_total: None,
+                    cost_total: None,
                 })
                 .collect(),
         };
@@ -162,6 +165,7 @@ fn pending_suffix_admission(c: &mut Criterion) {
                                 suffix: black_box(pending_suffix.as_slice()),
                                 key: Key([0; 4]),
                                 milestones: (),
+                                cost: length as u64,
                             },
                             (),
                         )
@@ -201,7 +205,7 @@ impl<const N: usize> ArchiveKey for LineageKey<N> {
 }
 
 fn rejected_lineage<const N: usize>(c: &mut Criterion) {
-    let mut archive = Archive::<u64, LineageKey<N>, (), ()>::new(|_| 1);
+    let mut archive = Archive::<u64, LineageKey<N>, (), ()>::new();
     let parent = archive
         .insert(
             None,
@@ -210,6 +214,7 @@ fn rejected_lineage<const N: usize>(c: &mut Criterion) {
                 suffix: vec![1],
                 key: LineageKey(10),
                 milestones: (),
+                cost: 1,
             },
             (),
         )
@@ -226,6 +231,7 @@ fn rejected_lineage<const N: usize>(c: &mut Criterion) {
                             suffix: [2].as_slice(),
                             key: LineageKey(0),
                             milestones: (),
+                            cost: 1,
                         },
                         (),
                     )

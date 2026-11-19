@@ -10,7 +10,6 @@ use std::{
 use machine::nes::ButtonChord;
 use nes_games::workload::{
     Game, Lowered, NesSnapshot, RECORDS_FILE, REPLAY_RECORDS_FILE, SNAPSHOT_CHECKPOINT_FORMAT,
-    chord_time,
 };
 use nes_workload::{famidash::Famidash, joust::Joust, zelda::Zelda};
 use searcher::search::{
@@ -93,12 +92,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
         strategy: &keyed.compiled,
         entry_limit,
     }
-    .run(
-        &recording.header.genesis,
-        &jobs,
-        &recording.actions,
-        chord_time::<G>,
-    )?;
+    .run(&recording.header.genesis, &jobs, &recording.actions)?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;
     let mut report = json!({
         "recorded_policy": recording.header.policy,

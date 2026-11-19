@@ -497,13 +497,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
         } else {
             None
         };
+        let cost = game.shrink_cost(action, target, &observations);
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
             outcome,
             candidate,
-            cost: game.shrink_cost(action, target),
+            cost,
             bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
@@ -767,7 +768,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for Mm2Game<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
-    fn action_cost_fn(&self) -> fn(&Mm2Action) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Mm2Action) -> u64 {
         Mm2Action::planned_frames
     }
 

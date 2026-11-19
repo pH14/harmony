@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn frozen_area_span_lands_same_area_warps_in_the_room_that_covers_the_page() {
-        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new();
         let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
                       parent: Option<usize>,
                       actions: usize,
@@ -463,6 +463,7 @@ mod tests {
                         suffix: vec![1_u8; suffix_len],
                         key,
                         milestones: (),
+                        cost: suffix_len as u64,
                     },
                     (),
                 )
@@ -490,7 +491,7 @@ mod tests {
 
     #[test]
     fn a_rejected_boundary_carries_its_room_to_the_next_boundary() {
-        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new();
         let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
                       parent: Option<usize>,
                       previous: Option<SmbArchiveKey>,
@@ -505,6 +506,7 @@ mod tests {
                         suffix: vec![1_u8; actions],
                         key,
                         milestones: (),
+                        cost: actions as u64,
                     },
                     (),
                 )
@@ -624,7 +626,7 @@ mod tests {
 
     #[test]
     fn a_slower_state_on_the_loop_path_is_held_beside_faster_states_off_it() {
-        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new();
         let mut held = |parent: Option<usize>, suffix: u8, key| {
             archive
                 .insert(
@@ -634,6 +636,7 @@ mod tests {
                         suffix: vec![suffix],
                         key,
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )

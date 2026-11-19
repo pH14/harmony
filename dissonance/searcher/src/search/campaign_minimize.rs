@@ -169,7 +169,7 @@ pub(crate) fn selectable<G: Workload + ?Sized>(
     }
     incumbent.is_none_or(|incumbent| {
         archive
-            .entry_origin_cost(index)
+            .entry_shrink_total(index)
             .zip(archive.entry_remaining_bound(index))
             .is_some_and(|(cost, bound)| cost + bound < incumbent)
     })
@@ -412,7 +412,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             let Some(index) = self.archive.index_of_id(id) else {
                 continue;
             };
-            let Some(cost) = self.archive.entry_origin_cost(index) else {
+            let Some(cost) = self.archive.entry_shrink_total(index) else {
                 continue;
             };
             if !selectable::<G>(&self.archive, self.root, Some(incumbent), index) {

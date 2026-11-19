@@ -592,7 +592,7 @@ pub trait TargetExecution: CampaignTypes {
     fn telemetry(&self, _target: &Self::Target) -> TargetCounters {
         TargetCounters::new()
     }
-    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
+    fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     fn snapshot_retention() -> Option<Box<dyn SnapshotRetention<Self::Snapshot>>> {
         None
@@ -736,9 +736,18 @@ pub trait Evaluation: TargetExecution {
     fn is_doomed(&self, _target: &Self::Target) -> bool {
         false
     }
-    fn shrink_cost(&self, action: &Self::Action, target: &Self::Target) -> ShrinkCost {
+    fn action_cost(&self, action: &Self::Action, observations: &[Self::Observations]) -> u64 {
+        let _ = observations;
+        (self.planned_cost_fn())(action)
+    }
+    fn shrink_cost(
+        &self,
+        action: &Self::Action,
+        target: &Self::Target,
+        observations: &[Self::Observations],
+    ) -> ShrinkCost {
         let _ = target;
-        ShrinkCost::new((self.action_cost_fn())(action), 0)
+        ShrinkCost::new(self.action_cost(action, observations), 0)
     }
     fn remaining_cost_bound(&self, run: &Self::Run, target: &Self::Target) -> ShrinkCost {
         let _ = (run, target);
@@ -1874,7 +1883,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         archive_entry_limit: usize,
         memory_budget_mib: Option<usize>,
     ) -> Self {
-        let mut archive = Archive::with_shape(workload.action_cost_fn(), workload.key_shape());
+        let mut archive = Archive::with_shape(workload.key_shape());
         archive.max_entries = archive_entry_limit;
         let sites = workload.choice_sites(run);
         let choices = (!sites.is_empty()).then(|| workload.choice_policy(run));
@@ -1981,7 +1990,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         {
             return Err("a minimize ordinary length must be between 1 and 64 actions".into());
         }
-        self.archive.set_rank_by_origin_cost(true)?;
+        self.archive.set_rank_by_shrink_total(true)?;
         self.minimize = true;
         self.shrink = Some(minimize::ShrinkState::new(config));
         Ok(())
@@ -1996,8 +2005,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         };
         let start = self
             .archive
-            .entry_origin_cost(parent_index)
-            .ok_or("campaign job parent has no origin cost")?;
+            .entry_shrink_total(parent_index)
+            .ok_or("campaign job parent has no shrink total")?;
         Ok(Some(JobCeiling { start, ceiling }))
     }
 
@@ -2182,6 +2191,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let mut current_parent = base.and_then(resident);
         let base = base.unwrap_or(0);
         let mut pending_suffix = chain.actions[base..common].to_vec();
+        let mut pending_from = chain.action_costs[base];
         let mut pending_certificates = chain.snapshots[base + 1..=common]
             .iter()
             .map(|snapshot| workload.candidate_replay_certificate(snapshot))
@@ -2191,6 +2201,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload.restore(target, &chain.snapshots[common])?;
         let started = workload.execution_work(target);
         let mut cost = chain.costs[common];
+        let mut spent = chain.action_costs[common];
         let mut milestones = chain.milestones[common];
         let mut lineage = chain.lineages[common].clone();
         let mut decisions = Vec::new();
@@ -2200,7 +2211,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             let last = common + offset + 1 == input.len();
             let captured = workload.apply_action_and_snapshot(target, action, &mut milestones)?;
             workload.verify_integrity()?;
-            cost = cost + workload.shrink_cost(action, target);
+            let observations = workload.rollout_observations(target);
+            cost = cost + workload.shrink_cost(action, target, &observations);
+            spent = spent.saturating_add(workload.action_cost(action, &observations));
             let outcome = crate::search::rollout::classify(workload, run, target)?;
             if outcome.objective_reached {
                 if !last && expected.is_some() {
@@ -2208,7 +2221,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         "an accepted incumbent reached its objective early on replay".into(),
                     );
                 }
-                chain.push_goal(*action, cost);
+                chain.push_goal(*action, cost, spent);
                 reached = true;
                 break;
             }
@@ -2237,6 +2250,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 chain.push(
                     *action,
                     cost,
+                    spent,
                     State {
                         snapshot: Arc::new(snapshot),
                         key,
@@ -2256,6 +2270,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     suffix: pending_suffix.as_slice(),
                     key: completed,
                     milestones,
+                    cost: spent - pending_from,
                 },
                 snapshot.clone(),
                 Some(&pending_certificates),
@@ -2275,6 +2290,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     });
                     current_parent = Some(id);
                     pending_suffix.clear();
+                    pending_from = spent;
                     pending_certificates.clear();
                     previous_key = None;
                     Some(stable)
@@ -2289,6 +2305,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             chain.push(
                 *action,
                 cost,
+                spent,
                 State {
                     snapshot: Arc::new(snapshot),
                     key,
@@ -2503,6 +2520,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     suffix: Vec::new(),
                     key: genesis_key,
                     milestones: G::Milestones::default(),
+                    cost: 0,
                 },
                 genesis_snapshot,
             )?
@@ -2550,6 +2568,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 suffix: Vec::new(),
                 key,
                 milestones: G::Milestones::default(),
+                cost: 0,
             },
             snapshot.clone(),
         )?;
@@ -2657,7 +2676,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 }
                 ancestor = source_entries[ancestor_index].parent_id;
             }
-            let (parent_input_len, parent_id) = match parent {
+            let (parent_input_len, parent_id, source_base) = match parent {
                 Some((ancestor_index, new_id)) => {
                     let parent_input = &source_entries[ancestor_index].input.actions;
                     if entry.input.actions.get(..parent_input.len())
@@ -2668,11 +2687,16 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     if ancestor_index != index_of[&entry.parent_id.unwrap_or(u64::MAX)] {
                         counts.rerooted = counts.rerooted.saturating_add(1);
                     }
-                    (parent_input.len(), new_id)
+                    let base = &source_entries[ancestor_index];
+                    (
+                        parent_input.len(),
+                        new_id,
+                        (base.shrink_total, base.cost_total),
+                    )
                 }
                 None => {
                     counts.rerooted = counts.rerooted.saturating_add(1);
-                    (0, genesis_id)
+                    (0, genesis_id, (Some(ShrinkCost::ZERO), Some(0)))
                 }
             };
             let parent_entry = &self.archive.entries[parent_id];
@@ -2689,8 +2713,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .transpose()?
                 .flatten();
             let mut replay_certificates = vec![None; suffix.len()];
-            let reconstructed = if checkpoint_snapshot.is_none() || checkpoint_certificate.is_some()
-            {
+            let mut spent = 0_u64;
+            let mut shrink = ShrinkCost::ZERO;
+            let replayed = checkpoint_snapshot.is_none() || checkpoint_certificate.is_some();
+            let reconstructed = if replayed {
                 workload.restore(
                     target,
                     parent_entry
@@ -2703,6 +2729,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 for (index, action) in suffix.iter().enumerate() {
                     captured_endpoint =
                         workload.apply_action_and_snapshot(target, action, &mut milestones)?;
+                    let observations = workload.rollout_observations(target);
+                    spent = spent.saturating_add(workload.action_cost(action, &observations));
+                    shrink = shrink + workload.shrink_cost(action, target, &observations);
                     if crate::search::rollout::classify(workload, run, target)?
                         .disposition
                         .is_terminal()
@@ -2778,12 +2807,35 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             {
                 return Err("imported endpoint differs from its source entry digest".into());
             }
+            if !replayed {
+                let (Some(total), Some(base), Some(cost_total), Some(cost_base)) = (
+                    entry.shrink_total,
+                    source_base.0,
+                    entry.cost_total,
+                    source_base.1,
+                ) else {
+                    return Err(
+                        "a checkpointed import without replay needs the source's shrink and cost totals"
+                            .into(),
+                    );
+                };
+                let (primary, secondary) = total.saving_over(base);
+                shrink = ShrinkCost::new(primary, secondary);
+                spent = cost_total.checked_sub(cost_base).ok_or(
+                    "a source entry's cost total is below that of the entry it is imported under",
+                )?;
+            }
             workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = workload.current_key(target)?;
             let inserted_before = self.archive.entries.len();
+            let shrink_total = self
+                .archive
+                .entry_shrink_total(parent_id)
+                .ok_or("whole-tree import parent has no shrink total")?
+                + shrink;
             match self
                 .archive
-                .insert_after_certified(
+                .insert_after_costed(
                     Some(parent_id),
                     None,
                     0,
@@ -2791,9 +2843,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         suffix,
                         key,
                         milestones,
+                        cost: spent,
                     },
                     snapshot,
                     Some(replay_certificates.as_slice()),
+                    shrink_total,
                 )?
                 .0
             {
@@ -2882,6 +2936,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut pending_cost = ShrinkCost::ZERO;
+        let mut pending_spent = 0_u64;
         let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
@@ -2905,6 +2960,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .flatten();
             pending_suffix.push(action.action);
             pending_cost = pending_cost + action.cost;
+            pending_spent = pending_spent
+                .saturating_add(workload.action_cost(&action.action, &action.observations));
             pending_certificates.push(certificate);
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
@@ -2935,8 +2992,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 if self.minimize {
                     let cost = self
                         .archive
-                        .entry_origin_cost(current_parent)
-                        .ok_or("campaign job parent has no origin cost")?
+                        .entry_shrink_total(current_parent)
+                        .ok_or("campaign job parent has no shrink total")?
                         + pending_cost;
                     if self.incumbent_cost.is_none_or(|incumbent| cost < incumbent) {
                         let mut input = self
@@ -2962,8 +3019,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 if let Some(incumbent) = self.incumbent_cost
                     && self
                         .archive
-                        .entry_origin_cost(current_parent)
-                        .ok_or("campaign job parent has no origin cost")?
+                        .entry_shrink_total(current_parent)
+                        .ok_or("campaign job parent has no shrink total")?
                         + pending_cost
                         + action.bound
                         >= incumbent
@@ -2991,10 +3048,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     return Err("certified campaign path lacks an action-prefix certificate".into());
                 }
                 let retained_before = self.archive.retained;
-                let origin_cost = self
+                let shrink_total = self
                     .archive
-                    .entry_origin_cost(current_parent)
-                    .ok_or("campaign job parent has no origin cost")?
+                    .entry_shrink_total(current_parent)
+                    .ok_or("campaign job parent has no shrink total")?
                     + pending_cost;
                 let (admitted, key) = self.archive.insert_after_costed(
                     Some(current_parent),
@@ -3004,10 +3061,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         suffix: pending_suffix.as_slice(),
                         key: completed,
                         milestones: action.milestones,
+                        cost: pending_spent,
                     },
                     candidate.snapshot,
                     Some(&pending_certificates),
-                    origin_cost,
+                    shrink_total,
                 )?;
                 left_place |= key.place() != parent_place;
                 match admitted {
@@ -3024,6 +3082,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         current_parent = id;
                         pending_suffix.clear();
                         pending_cost = ShrinkCost::ZERO;
+                        pending_spent = 0;
                         pending_certificates.clear();
                         previous_key = None;
                     }
@@ -3037,6 +3096,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         current_parent = id;
                         pending_suffix.clear();
                         pending_cost = ShrinkCost::ZERO;
+                        pending_spent = 0;
                         pending_certificates.clear();
                         previous_key = None;
                     }
@@ -5061,14 +5121,13 @@ fn restore_search_checkpoint<G: Workload>(
     core.minimize = config.minimize.is_some();
     core.shrink = config.minimize.map(minimize::ShrinkState::new);
     core.restore_state(state)?;
-    if archive.ranks_by_origin_cost() != config.minimize.is_some() {
+    if archive.ranks_by_shrink_total() != config.minimize.is_some() {
         return Err("search checkpoint archive ranking differs from the campaign".into());
     }
     core.archive = archive;
     core.archive.set_snapshot_retention(G::snapshot_retention());
     let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
-    core.archive
-        .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;
+    core.archive.restore_runtime(Some(charge), snapshots)?;
     if changes.contains_key(PREFERENCE_PORTFOLIO_FIELD)
         || changes.contains_key(PREFERENCE_POLICY_FIELD)
     {
@@ -5783,7 +5842,7 @@ where
     {
         return Err("campaign replay choice policy does not match the recorded stream".into());
     }
-    let action_cost = workload.action_cost_fn();
+    let planned_cost = workload.planned_cost_fn();
     if let Some(checkpoint) = origin_checkpoint {
         if header.origin_kind == ORIGIN_ARCHIVE {
             validate_archive_checkpoint(workload, checkpoint)?;
@@ -6496,7 +6555,7 @@ where
                 let finish = replay
                     .iter()
                     .chain(&suffix)
-                    .map(action_cost)
+                    .map(planned_cost)
                     .fold(planned_start, u64::saturating_add);
                 if last_admitted.is_some_and(|last| last >= (finish, replay_job_slot)) {
                     return Err(format!(
@@ -7669,7 +7728,7 @@ mod tests {
                 .then_some([target.value; 32])
             }))
         }
-        fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+        fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64 {
             test_action_cost
         }
 
@@ -7907,7 +7966,7 @@ mod tests {
             })
         }
 
-        fn shrink_cost(&self, action: &TestAction) -> ShrinkCost {
+        fn shrink_cost(&self, action: &TestAction, _: &[()]) -> ShrinkCost {
             ShrinkCost::new(test_action_cost(action), 0)
         }
 
@@ -9830,9 +9889,9 @@ mod tests {
     }
 
     #[test]
-    fn admission_sums_step_costs_into_origin_cost() {
+    fn admission_sums_step_costs_into_shrink_total() {
         let (workload, _run, mut core, _target) = test_core();
-        assert!(!core.archive.ranks_by_origin_cost());
+        assert!(!core.archive.ranks_by_shrink_total());
         let step = |key: Option<u8>, cost: ShrinkCost| CampaignActionResult::<TestWorkload> {
             action: TestAction::new(key.unwrap_or(0x10), 1),
             observations: Vec::new(),
@@ -9869,20 +9928,20 @@ mod tests {
                 CampaignAdmissionDecision::Retained { id: 2 },
             ]
         );
-        let origin_cost = |core: &CoordinatorCore<TestWorkload>, id| {
+        let shrink_total = |core: &CoordinatorCore<TestWorkload>, id| {
             core.archive
-                .entry_origin_cost(core.archive.index_of_id(id).expect("resident entry"))
+                .entry_shrink_total(core.archive.index_of_id(id).expect("resident entry"))
         };
-        assert_eq!(origin_cost(&core, 0), Some(ShrinkCost::ZERO));
-        assert_eq!(origin_cost(&core, 1), Some(ShrinkCost::new(5, 6)));
-        assert_eq!(origin_cost(&core, 2), Some(ShrinkCost::new(9, 8)));
+        assert_eq!(shrink_total(&core, 0), Some(ShrinkCost::ZERO));
+        assert_eq!(shrink_total(&core, 1), Some(ShrinkCost::new(5, 6)));
+        assert_eq!(shrink_total(&core, 2), Some(ShrinkCost::new(9, 8)));
         core.admit_job(
             &workload,
             1,
             job(vec![step(Some(3), ShrinkCost::new(10, 0))]),
         )
         .expect("admit a job from the first entry");
-        assert_eq!(origin_cost(&core, 3), Some(ShrinkCost::new(15, 6)));
+        assert_eq!(shrink_total(&core, 3), Some(ShrinkCost::new(15, 6)));
     }
 
     #[test]
@@ -10148,6 +10207,8 @@ mod tests {
                 milestones: (),
                 snapshot_identity_sha256: None,
                 selector: None,
+                shrink_total: None,
+                cost_total: None,
             };
         let source = TestArchiveReport {
             entries: vec![
@@ -10216,6 +10277,8 @@ mod tests {
                         milestones: (),
                         snapshot_identity_sha256: None,
                         selector: None,
+                        shrink_total: None,
+                        cost_total: None,
                     },
                     ArchiveEntryReport {
                         id: 1,
@@ -10230,6 +10293,8 @@ mod tests {
                             workload.snapshot_identity_sha256(&6).unwrap(),
                         ),
                         selector: None,
+                        shrink_total: None,
+                        cost_total: None,
                     },
                 ],
                 marker: 0,
@@ -10295,6 +10360,8 @@ mod tests {
                     milestones: (),
                     snapshot_identity_sha256: None,
                     selector: None,
+                    shrink_total: None,
+                    cost_total: None,
                 },
                 ArchiveEntryReport {
                     id: 1,
@@ -10307,6 +10374,8 @@ mod tests {
                     milestones: (),
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
                     selector: None,
+                    shrink_total: None,
+                    cost_total: None,
                 },
             ],
             marker: 0,
@@ -10400,6 +10469,201 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpointed_import_without_replay_takes_its_source_costs() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let source = |shrink_total, cost_total| TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: None,
+                    selector: None,
+                    shrink_total: Some(ShrinkCost::ZERO),
+                    cost_total: Some(0),
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: vec![
+                            TestAction::new(1, 1),
+                            TestAction::new(2, 1),
+                            TestAction::new(3, 1),
+                        ],
+                    },
+                    key: TestKey(6),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
+                    selector: None,
+                    shrink_total,
+                    cost_total,
+                },
+            ],
+            marker: 0,
+        };
+        let checkpoint = SnapshotCheckpoint {
+            format: workload.checkpoint_format().to_owned(),
+            entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 6 }],
+        };
+        let import = |source: &TestArchiveReport| {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            core.import_tree(&workload, &(), &mut target, source, Some(&checkpoint))
+                .map(|counts| (core, counts))
+        };
+        let (core, counts) = import(&source(Some(ShrinkCost::new(0, 64)), Some(320))).unwrap();
+        assert_eq!((counts.imported, counts.checkpointed), (1, 1));
+        let child = core.archive.index_of_id(1).unwrap();
+        assert_eq!(
+            core.archive.entry_shrink_total(child),
+            Some(ShrinkCost::new(0, 64))
+        );
+        assert_eq!(core.archive.entry_cost_total(child), Some(320));
+        assert_eq!(core.archive.entry_cost_in_group(child), Some(320));
+        for (shrink_total, cost_total) in [(None, Some(320)), (Some(ShrinkCost::new(0, 64)), None)]
+        {
+            let error = import(&source(shrink_total, cost_total))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                error.contains("needs the source's shrink and cost totals"),
+                "{error}"
+            );
+        }
+        let mut below = source(Some(ShrinkCost::new(0, 64)), Some(320));
+        below.entries[0].cost_total = Some(321);
+        let error = import(&below).err().unwrap().to_string();
+        assert!(error.contains("cost total is below"), "{error}");
+    }
+
+    #[test]
+    fn a_checkpointed_import_charges_its_own_path_after_its_parent_is_displaced() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let build = || {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.bootstrap(&workload, &(), &mut TestTarget::default())
+                .unwrap();
+            let mut insert = |parent, action: TestAction, value| {
+                core.archive
+                    .insert(
+                        Some(parent),
+                        1,
+                        crate::search::archive::ArchiveCandidate {
+                            suffix: vec![action],
+                            key: TestKey(value),
+                            milestones: (),
+                            cost: test_action_cost(&action),
+                        },
+                        value,
+                    )
+                    .unwrap()
+                    .unwrap()
+            };
+            let slow = insert(0, TestAction::new(1, 3), 1);
+            let child = insert(slow, TestAction::new(2, 1), 3);
+            insert(0, TestAction::new(1, 1), 1);
+            insert(0, TestAction::new(1, 2), 1);
+            assert!(!core.archive.active[slow]);
+            assert!(core.archive.active[child]);
+            assert_eq!(core.archive.entry_cost_total(child), Some(8));
+            let ids = (
+                core.archive.stable_id(slow).unwrap(),
+                core.archive.stable_id(child).unwrap(),
+            );
+            (core, ids)
+        };
+        let report = |mut core: CoordinatorCore<TestWorkload>, child_id| {
+            let mut entries = core.archive.take_entry_reports_and_snapshots().0;
+            for entry in &mut entries {
+                if entry.id == child_id {
+                    entry.snapshot_identity_sha256 =
+                        Some(workload.snapshot_identity_sha256(&3).unwrap());
+                }
+            }
+            TestArchiveReport { entries, marker: 0 }
+        };
+        let (core, (slow_id, child_id)) = build();
+        let displaced = report(core, child_id);
+        let (mut core, _) = build();
+        core.archive.compact_history_for_final_report().unwrap();
+        let saved = crate::search::archive::saved_state_entries(
+            core.archive.saved_state_records().unwrap(),
+        )
+        .unwrap();
+        let compacted = report(core, child_id);
+        assert!(displaced.entries.iter().any(|entry| entry.id == slow_id));
+        assert!(compacted.entries.iter().all(|entry| entry.id != slow_id));
+        let checkpoint = SnapshotCheckpoint {
+            format: workload.checkpoint_format().to_owned(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: child_id,
+                snapshot: 3,
+            }],
+        };
+        for (source, rerooted) in [(&displaced, 0), (&compacted, 1)] {
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let counts = core
+                .import_tree(&workload, &(), &mut target, source, Some(&checkpoint))
+                .unwrap();
+            assert_eq!((counts.checkpointed, counts.rerooted), (1, rerooted));
+            let imported = core
+                .archive
+                .entries
+                .iter()
+                .position(|entry| entry.key == TestKey(3));
+            assert_eq!(
+                imported.and_then(|id| core.archive.entry_cost_total(id)),
+                Some(8)
+            );
+            assert_eq!(
+                imported.and_then(|id| core.archive.entry_cost_in_group(id)),
+                Some(8)
+            );
+        }
+        assert_eq!(
+            saved
+                .iter()
+                .find(|entry| entry.id == child_id)
+                .and_then(|entry| entry.cost_total),
+            Some(8)
+        );
+        let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+        let mut target = TestTarget::default();
+        let counts = core
+            .import_entries(
+                &workload,
+                &(),
+                &mut target,
+                &saved,
+                &std::collections::BTreeMap::from([(child_id, 3)]),
+            )
+            .unwrap();
+        assert_eq!(counts.checkpointed, 1);
+        let imported = core
+            .archive
+            .entries
+            .iter()
+            .position(|entry| entry.key == TestKey(3));
+        assert_eq!(
+            imported.and_then(|id| core.archive.entry_cost_total(id)),
+            Some(8)
+        );
+    }
+
+    #[test]
     fn whole_tree_import_rejects_mismatched_source_snapshot_without_checkpoint() {
         let workload = TestWorkload {
             bootstrap_objective: false,
@@ -10416,6 +10680,8 @@ mod tests {
                     milestones: (),
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&0).unwrap()),
                     selector: None,
+                    shrink_total: None,
+                    cost_total: None,
                 },
                 ArchiveEntryReport {
                     id: 1,
@@ -10428,6 +10694,8 @@ mod tests {
                     milestones: (),
                     snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&3).unwrap()),
                     selector: None,
+                    shrink_total: None,
+                    cost_total: None,
                 },
             ],
             marker: 9,

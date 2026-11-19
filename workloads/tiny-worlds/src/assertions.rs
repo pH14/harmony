@@ -313,6 +313,7 @@ fn family(world: &World) -> &'static str {
         World::Fork(_) => "fork",
         World::Picks(_) => "picks",
         World::Ridge(_) => "ridge",
+        World::Stairs(_) => "stairs",
     }
 }
 
