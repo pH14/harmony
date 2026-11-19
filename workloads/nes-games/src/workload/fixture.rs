@@ -26,6 +26,8 @@ pub struct Stepper {
     next: u64,
     staged: Vec<ButtonChord>,
     frames: Vec<[u8; WRAM_SIZE]>,
+    pub runs: usize,
+    pub drift: u8,
 }
 
 impl Stepper {
@@ -80,9 +82,11 @@ impl Machine for Stepper {
         _resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
         self.frames.clear();
+        self.runs += 1;
         for chord in std::mem::take(&mut self.staged) {
             for _ in 0..chord.bounded_hold_frames() {
                 self.step(chord.buttons);
+                self.ram[0] = self.ram[0].wrapping_add(self.drift);
                 self.frames.push(self.wram());
             }
         }

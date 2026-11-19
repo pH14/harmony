@@ -122,6 +122,7 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     machine: M,
     genesis: SnapId,
     current: SnapId,
+    stopped: Option<ButtonChord>,
     genesis_observation: NesObservation<G::State>,
     genesis_wram: [u8; WRAM_SIZE],
     current_wram: [u8; WRAM_SIZE],
@@ -151,6 +152,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             machine,
             genesis,
             current: genesis,
+            stopped: None,
             genesis_observation: observation.clone(),
             genesis_wram: wram,
             current_wram: wram,
@@ -209,6 +211,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             self.machine.drop_snapshot(self.current)?;
         }
         self.current = next;
+        self.stopped = None;
         self.current_wram = wram;
         self.failed = false;
         self.snapshot_base = None;
@@ -223,6 +226,39 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     fn fail(&mut self) {
         self.failed = true;
+    }
+
+    fn settle(&mut self) -> bool {
+        let Some(chord) = self.stopped.take() else {
+            return true;
+        };
+        let replayed = self.machine.replay(self.current).is_ok()
+            && self
+                .machine
+                .branch(self.current, &nes::reproducer(std::slice::from_ref(&chord)))
+                .is_ok()
+            && matches!(
+                self.machine.run(StopConditions::default(), None),
+                Ok(machine::StopReason::Quiescent { .. }
+                    | machine::StopReason::SnapshotPoint { .. })
+            )
+            && self.machine.frames().len() == usize::from(chord.bounded_hold_frames())
+            && read_wram(&self.machine).ok() == Some(self.current_wram);
+        if !replayed {
+            self.fail();
+            return false;
+        }
+        let Ok(next) = self.machine.snapshot() else {
+            self.fail();
+            return false;
+        };
+        if self.current != self.genesis && self.machine.drop_snapshot(self.current).is_err() {
+            let _ = self.machine.drop_snapshot(next);
+            self.fail();
+            return false;
+        }
+        self.current = next;
+        true
     }
 
     fn play_forced(
@@ -260,7 +296,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     fn apply_internal(&mut self, action: &ButtonChord) {
         self.action_observations.clear();
-        if self.failed || self.observation.stops() {
+        if self.failed || self.observation.stops() || !self.settle() {
             return;
         }
         let start = self.current;
@@ -325,20 +361,16 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let Some(endpoint_wram) = endpoint else {
             return self.fail();
         };
-        if logical_frames < produced_frames {
-            let Ok(hold) = u8::try_from(logical_frames) else {
-                return self.fail();
-            };
+        let Ok(hold) = u8::try_from(logical_frames) else {
+            return self.fail();
+        };
+        let cut = ButtonChord::new(action.buttons, hold);
+        let deferred = logical_frames < produced_frames && forced.is_none();
+        if logical_frames < produced_frames && !deferred {
             if self.machine.replay(start).is_err()
                 || self
                     .machine
-                    .branch(
-                        start,
-                        &nes::reproducer(std::slice::from_ref(&ButtonChord::new(
-                            action.buttons,
-                            hold,
-                        ))),
-                    )
+                    .branch(start, &nes::reproducer(std::slice::from_ref(&cut)))
                     .is_err()
             {
                 return self.fail();
@@ -408,6 +440,10 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         }
         self.accumulator = accumulator;
         self.current_wram = current_wram;
+        if deferred {
+            self.stopped = Some(cut);
+            return;
+        }
         let Ok(next) = self.machine.snapshot() else {
             return self.fail();
         };
@@ -677,6 +713,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
         if self.machine.replay(self.genesis).is_err() {
             failed = true;
         }
+        self.stopped = None;
         self.failed = failed;
         self.snapshot_base = None;
         self.current_wram = self.genesis_wram;
@@ -714,7 +751,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
     }
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
-        if self.failed {
+        if self.failed || !self.settle() {
             return None;
         }
         let Ok(emulator_state) = self
@@ -758,6 +795,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Target for NesTarget<G, M> {
             return Err(error.to_string().into());
         }
         self.current = imported;
+        self.stopped = None;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
         self.current_wram = restored_wram;
         self.accumulator = snapshot.accumulator.clone();
@@ -817,6 +855,47 @@ mod tests {
     }
 
     const PAST_THE_LEDGE: [(u8, u8); 2] = [(RIGHT, 4), (LEFT, 3)];
+    const NEAR_THE_GOAL: [(u8, u8); 2] = [(WARP, 4), (WARP, 4)];
+
+    fn stopped_at_the_goal() -> Ledged {
+        let mut target = ledged();
+        walk(&mut target, &NEAR_THE_GOAL);
+        target.apply(&ButtonChord::new(WARP, 4));
+        assert!(target.observation().stops());
+        assert_eq!(target.observation().frame_count, 9);
+        target
+    }
+
+    #[test]
+    fn a_terminal_stop_runs_its_chord_once() {
+        let mut target = ledged();
+        walk(&mut target, &NEAR_THE_GOAL);
+        let runs = target.machine.runs;
+        target.apply(&ButtonChord::new(WARP, 4));
+        assert!(target.observation().stops());
+        assert_eq!(target.machine.runs, runs + 1);
+    }
+
+    #[test]
+    fn a_snapshot_after_a_stop_equals_the_snapshot_of_the_cut_chord() {
+        let mut stopped = stopped_at_the_goal();
+        let mut cut = ledged();
+        walk(&mut cut, &NEAR_THE_GOAL);
+        cut.apply(&ButtonChord::new(WARP, 1));
+        assert_eq!(
+            postcard::to_allocvec(&stopped.snapshot().unwrap()).unwrap(),
+            postcard::to_allocvec(&cut.snapshot().unwrap()).unwrap()
+        );
+        assert_eq!(stopped.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn a_snapshot_fails_when_the_replay_of_a_stop_reaches_other_work_ram() {
+        let mut target = stopped_at_the_goal();
+        target.machine.drift = 1;
+        assert!(target.snapshot().is_none());
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+    }
     const ON: [(u8, u8); 4] = [(LEFT, 1), (RIGHT, 1), (WARP, 1), (RIGHT, 2)];
 
     #[test]
