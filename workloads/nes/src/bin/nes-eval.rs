@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use nes_games::arcade::{ArcadeGame, famidash};
+use nes_games::{
+    arcade::{ArcadeGame, famidash},
+    workload::Shadow,
+};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     donkey_kong::{DonkeyKong, DonkeyKongWorkload},
@@ -13,7 +16,9 @@ use nes_workload::{
     joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
+        archive::MetroidArchiveKey,
         campaign::{MetroidCampaignRun, MetroidGame},
+        game::Metroid,
         keying::StrategyKeying,
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
@@ -196,7 +201,7 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
     })
 }
 
-const SHADOW_GAMES: &[&str] = &[];
+const SHADOW_GAMES: &[&str] = &["metroid"];
 
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
@@ -237,6 +242,11 @@ fn main() -> Result<()> {
             }
             "joust" | "zelda" | "famidash" | "donkey-kong" | "pac-man" | "punchout"
             | "ice-climbers" | "twin-dragons" => {}
+            "metroid" if request.shadow && request.strategy.is_some() => {
+                return Err(
+                    "a Metroid shadow keys the hand campaign, which takes no strategy".into(),
+                );
+            }
             "metroid" if request.records => {
                 return Err(
                     "Metroid keys a strategy inside its own campaign and keeps no records".into(),
@@ -349,17 +359,28 @@ fn main() -> Result<()> {
                         "metroid",
                         <MetroidGame>::memory_view,
                     ),
-                    None => evaluate_watching(
-                        game,
-                        MetroidCampaignRun,
-                        &rom,
-                        &request,
-                        &execution_sha256,
-                        &out,
-                        started,
-                        "metroid",
-                        <MetroidGame>::memory_view,
-                    ),
+                    None => {
+                        let shadow = request
+                            .shadow
+                            .then(|| Shadow::<Metroid, MetroidArchiveKey>::new(Metroid))
+                            .transpose()?;
+                        let game = match &shadow {
+                            Some(shadow) => game.with_shadow(shadow.state_hook()),
+                            None => game,
+                        };
+                        evaluate_watching(
+                            game,
+                            MetroidCampaignRun,
+                            &rom,
+                            &request,
+                            &execution_sha256,
+                            &out,
+                            started,
+                            "metroid",
+                            <MetroidGame>::memory_view,
+                        )?;
+                        nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+                    }
                 }
             }
             "stb" => {

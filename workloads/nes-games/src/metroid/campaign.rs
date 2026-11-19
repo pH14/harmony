@@ -17,11 +17,12 @@ use crate::{
     metroid::{
         action::MetroidAction,
         archive::{
-            DURATION_IDENTIFIER, MetroidArchiveReport, MetroidMilestoneInputs,
+            DURATION_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport, MetroidMilestoneInputs,
             MetroidMilestoneTimes, MetroidMilestones, MetroidProgressWatermark,
             REPLACEMENT_IDENTIFIER, merge_milestones, merge_progress_watermark, milestone_key,
             milestones, progress_watermark,
         },
+        game::Metroid,
         keying::{MetroidKeying, RouteKeying},
         progress::{FirstSeen, NamedProgress},
         target::{
@@ -42,6 +43,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
+    workload::StateHook,
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
@@ -71,6 +73,7 @@ pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying = Ro
     terminal_policy: MetroidTerminalPolicy,
     depth: GenesisDepth,
     keying: K,
+    shadow: Option<StateHook<Metroid, MetroidArchiveKey>>,
 }
 
 #[cfg(unix)]
@@ -141,6 +144,14 @@ impl MetroidGame<QuickNesMachine> {
     }
 }
 
+impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M, RouteKeying> {
+    #[must_use]
+    pub fn with_shadow(mut self, shadow: StateHook<Metroid, MetroidArchiveKey>) -> Self {
+        self.shadow = Some(shadow);
+        self
+    }
+}
+
 impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> MetroidGame<M, K> {
     #[must_use]
     pub fn with_machines(
@@ -176,6 +187,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> MetroidGame<M, K> {
             terminal_policy: MetroidTerminalPolicy::default(),
             depth,
             keying: K::default(),
+            shadow: None,
         }
     }
 
@@ -191,6 +203,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> MetroidGame<M, K> {
             terminal_policy: self.terminal_policy,
             depth: self.depth,
             keying,
+            shadow: None,
         }
     }
 
@@ -498,6 +511,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying>(
         } else {
             None
         };
+        target.shadow_current();
         actions.push(CampaignActionResult {
             action: *action,
             observations,
@@ -816,7 +830,13 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> TargetExecution for M
     fn new_target(&self) -> Result<MetroidTarget<M>, String> {
         let machine = (self.machines)().map_err(|error| error.to_string())?;
         MetroidTarget::from_machine(machine, &self.prefix, self.depth)
-            .map(|target| target.with_terminal_policy(self.terminal_policy))
+            .map(|target| {
+                let mut target = target.with_terminal_policy(self.terminal_policy);
+                if let Some(shadow) = &self.shadow {
+                    target.set_shadow(shadow.clone());
+                }
+                target
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -844,6 +864,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> TargetExecution for M
     ) -> Result<(), Box<dyn Error>> {
         let (genesis_items, genesis_tanks) = target.genesis_holdings();
         target.apply(action);
+        target.shadow_current();
         merge_action_milestones(aggregate, target, genesis_items, genesis_tanks);
         Ok(())
     }
@@ -868,6 +889,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> TargetExecution for M
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
+            target.shadow_current();
             if self.execution_disposition(target).is_terminal() {
                 break;
             }
@@ -909,6 +931,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> Evaluation for Metroi
     }
 
     fn current_key(&self, target: &MetroidTarget<M>) -> Result<K::Key, Box<dyn Error>> {
+        target.shadow_current();
         Ok(self
             .keying
             .key(target.mechanical_state(), target.boss_health_seen()))

@@ -271,6 +271,10 @@ Tests in `metroid/game.rs` check that the strategy's stage and objective equal
 `metroid/archive.rs` checks the second line against the hand balance order.
 `StrategyKeying` keys the campaign by a strategy without aggregates, by default
 `metroid/position.toml`, the position strategy.
+`MetroidTarget::set_shadow` takes a `StateHook` and passes it every frame's
+followed state of an action, through the first dead frame, since the target
+stops reading frames there; the route campaign observes the route key after
+every action, replayed ones included, and a dead state with `None`.
 
 ## Arcade live-feed observations
 

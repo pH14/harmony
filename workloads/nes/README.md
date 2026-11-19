@@ -130,7 +130,9 @@ rejects `strategy`, `records`, `shadow` and `keep_stream`.
 
 A hand-keyed game with a shadow hook takes `"shadow": true`: the run computes
 the game's strategy key beside every hand key it observes and writes the
-comparison (`ShadowReport`) to `shadow-keys.json`. Other games reject it.
+comparison (`ShadowReport`) to `shadow-keys.json`. Metroid takes it without a
+`strategy` and compares the route key with `metroid/metroid.toml` through a
+`StateHook`, since its decode reads cartridge RAM. Other games reject it.
 
 Every run also reports `decision_stream_sha256` and `decision_stream_records`
 in `result.json`, a digest of the stream's records after the header without
