@@ -734,11 +734,14 @@ the `ShadowReport`: absent mismatches, cells and slots that split or join
 between the two keys, progress and preference orders that disagree between
 adjacent keys, a preference count or capacity mismatch, unknown restores,
 arrivals the front end never paired (`unobserved`), and how many hand keys the
-lineage changed. Preferences are compared among all the
-keys of a cell, across identities, since the selector ranks a cell's holders
-across its slots (`cell_best`) as well as within each slot. The cursor records a lineage at every arrival
-and the archive at admitted entries, so the two agree for a hand key whose
-`complete` reads only the parent key.
+lineage changed. Preferences are compared among all the keys of a cell, across
+identities, since the selector ranks a cell's holders across its slots
+(`cell_best`) as well as within each slot. The comparison reads the preference
+orders alone, without the archive's cost and id tie-breaks, so two keys that
+pick the same holder through a tie-break still count a disagreement; it can
+report a false disagreement but never a false agreement. The cursor records a
+lineage at every arrival and the archive at admitted entries, so the two agree
+for a hand key whose `complete` reads only the parent key.
 `workloads/tiny-worlds` keys every world from a strategy file. An emulated
 program's workload lowers each target to a decoder and a declaration list and
 runs every such target through one `Workload` implementation.

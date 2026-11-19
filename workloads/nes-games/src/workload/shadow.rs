@@ -23,11 +23,19 @@ trait Lane<H>: Send + Sync {
     fn start(&self, ram: &[u8]);
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
     fn forced(&self, steps: &[[u8; WRAM_SIZE]]);
-    fn saved(&self) -> u64;
-    fn restored(&self, token: u64, ram: &[u8]);
+    fn saved(&self) -> ShadowToken;
+    fn restored(&self, token: Option<ShadowToken>, ram: &[u8]);
     fn observe(&self, hand: Option<H>) -> Option<H>;
     #[cfg(test)]
     fn key(&self) -> Option<crate::search::assertion::AssertionKey>;
+}
+
+static SHADOWS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShadowToken {
+    shadow: u64,
+    index: u64,
 }
 
 pub struct ShadowHook<H>(Box<dyn Lane<H>>);
@@ -58,11 +66,11 @@ impl<H> ShadowHook<H> {
     }
 
     #[must_use]
-    pub fn saved(&self) -> u64 {
+    pub fn saved(&self) -> ShadowToken {
         self.0.saved()
     }
 
-    pub fn restored(&self, token: u64, ram: &[u8]) {
+    pub fn restored(&self, token: Option<ShadowToken>, ram: &[u8]) {
         self.0.restored(token, ram);
     }
 
@@ -188,32 +196,37 @@ where
         position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
     }
 
-    fn saved(&self) -> u64 {
-        let token = self.shadow.issued.fetch_add(1, Ordering::Relaxed);
+    fn saved(&self) -> ShadowToken {
+        let token = ShadowToken {
+            shadow: self.shadow.id,
+            index: self.shadow.issued.fetch_add(1, Ordering::Relaxed),
+        };
         let Ok(mut current) = self.current.lock() else {
             return token;
         };
         if let (Some(position), Ok(mut saved)) =
             (current.position.as_ref(), self.shadow.saved.lock())
         {
-            saved.insert(token, position.clone());
+            saved.insert(token.index, position.clone());
         }
-        current.pending = Some(token);
+        current.pending = Some(token.index);
         token
     }
 
-    fn restored(&self, token: u64, ram: &[u8]) {
-        let found = self
-            .shadow
-            .saved
-            .lock()
-            .ok()
-            .and_then(|saved| saved.get(&token).cloned());
-        let pending = found.is_some().then_some(token);
-        let position = found.unwrap_or_else(|| {
-            self.shadow.table.unknown_restore();
-            self.begin(ram)
-        });
+    fn restored(&self, token: Option<ShadowToken>, ram: &[u8]) {
+        let found = token
+            .filter(|token| token.shadow == self.shadow.id)
+            .and_then(|token| {
+                let saved = self.shadow.saved.lock().ok()?;
+                Some((token.index, saved.get(&token.index)?.clone()))
+            });
+        let (pending, position) = match found {
+            Some((index, position)) => (Some(index), position),
+            None => {
+                self.shadow.table.unknown_restore();
+                (None, self.begin(ram))
+            }
+        };
         if let Ok(mut current) = self.current.lock() {
             current.position = Some(position);
             current.pending = pending;
@@ -248,6 +261,7 @@ pub struct Shadow<G: Game, H: ArchiveKey> {
     lowered: Lowered<G>,
     table: ShadowTable<H>,
     saved: Mutex<BTreeMap<u64, Position<G::State, H>>>,
+    id: u64,
     issued: AtomicU64,
 }
 
@@ -264,6 +278,7 @@ where
             lowered: Lowered::new(game, strategy)?,
             table: ShadowTable::default(),
             saved: Mutex::default(),
+            id: SHADOWS.fetch_add(1, Ordering::Relaxed),
             issued: AtomicU64::new(0),
         }))
     }
@@ -298,7 +313,7 @@ mod tests {
     struct Saved {
         state: Vec<u8>,
         frames: u64,
-        token: u64,
+        token: Option<ShadowToken>,
     }
 
     struct Hand {
@@ -351,7 +366,7 @@ mod tests {
 
         fn save(&mut self) -> Saved {
             let state = self.machine.export(self.at, None).unwrap();
-            let token = self.hook.saved();
+            let token = Some(self.hook.saved());
             Saved {
                 state,
                 frames: self.frames,
@@ -447,6 +462,27 @@ mod tests {
         assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
         assert_eq!(report.unknown_restores, 0);
         assert_eq!(report.unobserved, 0);
+    }
+
+    #[test]
+    fn a_token_from_another_shadow_or_no_token_restores_as_unknown() {
+        let first = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut away = Hand::new(first.hook());
+        away.walk(&[(RIGHT, 2)]);
+        let foreign = away.save();
+        let second = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(second.hook());
+        hand.save();
+        hand.restore(&foreign);
+        hand.key();
+        assert_eq!(second.report().unwrap().unknown_restores, 1);
+        hand.restore(&Saved {
+            token: None,
+            ..foreign
+        });
+        hand.key();
+        assert_eq!(second.report().unwrap().unknown_restores, 2);
+        assert_eq!(first.report().unwrap().unknown_restores, 0);
     }
 
     #[test]

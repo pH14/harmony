@@ -189,17 +189,19 @@ hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy
 and `hook` gives the hand target a `ShadowHook`, which it calls with the
 genesis RAM (`start`), the frames of each action up to the departure of a
 forced move (`advance`), the RAM after each step chord of the forced move
-(`forced`), each snapshot it takes (`saved`, which returns a token the hand
-snapshot keeps) and restores (`restored`, with that token), and its raw key,
-or `None` where it has none, after every action that leaves the target
-runnable (`observe`). In a campaign that means each state a job reaches,
-replayed actions included, after the candidate's snapshot; `current_key` keys
-only the root, so a target that observes only there compares one state. The
-report counts an action applied before the previous action's state was
-observed as `unobserved`. A restore brings back the cursor saved under its
-token, so two paths that reach the same RAM at the same frame keep their own
-lineages, and a token the hook never issued counts as an unknown restore. The
-hook decodes each frame from the one before, decodes a forced move's steps in
+(`forced`), each snapshot it takes (`saved`, which returns a `ShadowToken` the
+hand snapshot keeps) and restores (`restored`, with that token, or `None` where
+the snapshot has none), and its raw key, or `None` where it has none, after
+every action that leaves the target runnable (`observe`). In a campaign that
+means each state a job reaches, replayed actions included, after the
+candidate's snapshot; `current_key` keys only the root, so a target that
+observes only there compares one state. The report counts an action applied
+before the previous action's state was observed as `unobserved`. A restore
+brings back the cursor saved under its token, so two paths that reach the same
+RAM at the same frame keep their own lineages. A `ShadowToken` is opaque and
+does not serialize, so the hand snapshot keeps it in a `#[serde(skip)]` field
+and a snapshot read from a checkpoint restores with `None`. `None`, or a token
+another `Shadow` issued, counts as an unknown restore. The hook decodes each frame from the one before, decodes a forced move's steps in
 a chain as the target does and observes only the arrival, advances its own
 accumulator at the observed frames, completes the raw key against the previous
 one with `ArchiveKey::complete`, and counts the pair in the searcher's
