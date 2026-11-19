@@ -19,6 +19,7 @@ struct Counts<H> {
     pairs: Pairs<H>,
     lineage_changes: u64,
     unknown_restores: u64,
+    unobserved: u64,
 }
 
 pub struct ShadowTable<H: ArchiveKey> {
@@ -32,6 +33,7 @@ impl<H: ArchiveKey> Default for ShadowTable<H> {
                 pairs: BTreeMap::new(),
                 lineage_changes: 0,
                 unknown_restores: 0,
+                unobserved: 0,
             }),
         }
     }
@@ -84,6 +86,7 @@ pub struct ShadowReport {
     pub distinct_pairs: usize,
     pub disagreements: Disagreements,
     pub unknown_restores: u64,
+    pub unobserved: u64,
     pub examples: Vec<String>,
     pub tiers: Vec<ShadowTier>,
     pub cells: Vec<KeyView>,
@@ -127,6 +130,12 @@ impl<H: ArchiveKey + Debug> ShadowTable<H> {
     pub fn unknown_restore(&self) {
         if let Ok(mut counts) = self.counts.lock() {
             counts.unknown_restores += 1;
+        }
+    }
+
+    pub fn unobserved(&self) {
+        if let Ok(mut counts) = self.counts.lock() {
+            counts.unobserved += 1;
         }
     }
 
@@ -260,6 +269,7 @@ impl<H: ArchiveKey + Debug> ShadowTable<H> {
             distinct_pairs: pairs.len(),
             disagreements,
             unknown_restores: counts.unknown_restores,
+            unobserved: counts.unobserved,
             examples,
             tiers: tiers
                 .into_iter()

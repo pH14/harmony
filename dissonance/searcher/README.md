@@ -732,8 +732,9 @@ completed key with `ArchiveKey::complete` (once per arrival), records its
 lineage, and counts the pair in a `ShadowTable`. `ShadowTable::report` returns
 the `ShadowReport`: absent mismatches, cells and slots that split or join
 between the two keys, progress and preference orders that disagree between
-adjacent keys, a preference count or capacity mismatch, unknown restores, and
-how many hand keys the lineage changed. Preferences are compared among all the
+adjacent keys, a preference count or capacity mismatch, unknown restores,
+arrivals the front end never paired (`unobserved`), and how many hand keys the
+lineage changed. Preferences are compared among all the
 keys of a cell, across identities, since the selector ranks a cell's holders
 across its slots (`cell_best`) as well as within each slot. The cursor records a lineage at every arrival
 and the archive at admitted entries, so the two agree for a hand key whose

@@ -4,8 +4,10 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fmt::Debug,
-    hash::{DefaultHasher, Hash, Hasher},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use machine::nes::WRAM_SIZE;
@@ -21,8 +23,8 @@ trait Lane<H>: Send + Sync {
     fn start(&self, ram: &[u8]);
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
     fn forced(&self, steps: &[[u8; WRAM_SIZE]]);
-    fn saved(&self, tag: u64);
-    fn restored(&self, tag: u64, ram: &[u8]);
+    fn saved(&self) -> u64;
+    fn restored(&self, token: u64, ram: &[u8]);
     fn observe(&self, hand: Option<H>) -> Option<H>;
     #[cfg(test)]
     fn key(&self) -> Option<crate::search::assertion::AssertionKey>;
@@ -55,12 +57,13 @@ impl<H> ShadowHook<H> {
         self.0.forced(steps);
     }
 
-    pub fn saved(&self, tag: u64) {
-        self.0.saved(tag);
+    #[must_use]
+    pub fn saved(&self) -> u64 {
+        self.0.saved()
     }
 
-    pub fn restored(&self, tag: u64, ram: &[u8]) {
-        self.0.restored(tag, ram);
+    pub fn restored(&self, token: u64, ram: &[u8]) {
+        self.0.restored(token, ram);
     }
 
     pub fn observe(&self, hand: Option<H>) -> Option<H> {
@@ -71,14 +74,6 @@ impl<H> ShadowHook<H> {
     fn key(&self) -> Option<crate::search::assertion::AssertionKey> {
         self.0.key()
     }
-}
-
-#[must_use]
-pub fn snapshot_tag(emulator_state: &[u8], frame_count: u64) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    emulator_state.hash(&mut hasher);
-    frame_count.hash(&mut hasher);
-    hasher.finish()
 }
 
 struct Position<S, H: ArchiveKey> {
@@ -98,6 +93,7 @@ impl<S: Clone, H: ArchiveKey> Clone for Position<S, H> {
 struct Current<S, H: ArchiveKey> {
     position: Option<Position<S, H>>,
     pending: Option<u64>,
+    awaiting: bool,
 }
 
 struct Threaded<G: Game, H: ArchiveKey> {
@@ -112,6 +108,7 @@ impl<G: Game, H: ArchiveKey> Threaded<G, H> {
             current: Mutex::new(Current {
                 position: None,
                 pending: None,
+                awaiting: false,
             }),
         }
     }
@@ -153,6 +150,7 @@ where
         if let Ok(mut current) = self.current.lock() {
             current.position = Some(position);
             current.pending = None;
+            current.awaiting = false;
         }
     }
 
@@ -161,6 +159,10 @@ where
             return;
         };
         current.pending = None;
+        if current.awaiting {
+            self.shadow.table.unobserved();
+        }
+        current.awaiting = true;
         if let Some(position) = current.position.as_mut() {
             for wram in frames {
                 position.state = self.arrive(Some(&position.state), wram, &mut position.cursor);
@@ -173,6 +175,7 @@ where
             return;
         };
         current.pending = None;
+        current.awaiting = true;
         let (Some(position), Some((arrival, interior))) =
             (current.position.as_mut(), steps.split_last())
         else {
@@ -185,32 +188,36 @@ where
         position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
     }
 
-    fn saved(&self, tag: u64) {
+    fn saved(&self) -> u64 {
+        let token = self.shadow.issued.fetch_add(1, Ordering::Relaxed);
         let Ok(mut current) = self.current.lock() else {
-            return;
+            return token;
         };
         if let (Some(position), Ok(mut saved)) =
             (current.position.as_ref(), self.shadow.saved.lock())
         {
-            saved.insert(tag, position.clone());
+            saved.insert(token, position.clone());
         }
-        current.pending = Some(tag);
+        current.pending = Some(token);
+        token
     }
 
-    fn restored(&self, tag: u64, ram: &[u8]) {
+    fn restored(&self, token: u64, ram: &[u8]) {
         let found = self
             .shadow
             .saved
             .lock()
             .ok()
-            .and_then(|saved| saved.get(&tag).cloned());
+            .and_then(|saved| saved.get(&token).cloned());
+        let pending = found.is_some().then_some(token);
         let position = found.unwrap_or_else(|| {
             self.shadow.table.unknown_restore();
             self.begin(ram)
         });
         if let Ok(mut current) = self.current.lock() {
             current.position = Some(position);
-            current.pending = None;
+            current.pending = pending;
+            current.awaiting = false;
         }
     }
 
@@ -219,13 +226,14 @@ where
             return None;
         };
         let pending = current.pending.take();
+        current.awaiting = false;
         let Some(position) = current.position.as_mut() else {
             self.shadow.table.unknown_restore();
             return None;
         };
         let completed = position.cursor.pair(&self.shadow.table, hand);
-        if let (Some(tag), Ok(mut saved)) = (pending, self.shadow.saved.lock()) {
-            saved.insert(tag, position.clone());
+        if let (Some(token), Ok(mut saved)) = (pending, self.shadow.saved.lock()) {
+            saved.insert(token, position.clone());
         }
         completed
     }
@@ -240,6 +248,7 @@ pub struct Shadow<G: Game, H: ArchiveKey> {
     lowered: Lowered<G>,
     table: ShadowTable<H>,
     saved: Mutex<BTreeMap<u64, Position<G::State, H>>>,
+    issued: AtomicU64,
 }
 
 impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Shadow<G, H>
@@ -255,6 +264,7 @@ where
             lowered: Lowered::new(game, strategy)?,
             table: ShadowTable::default(),
             saved: Mutex::default(),
+            issued: AtomicU64::new(0),
         }))
     }
 
@@ -284,6 +294,12 @@ mod tests {
             target::{NesTarget, read_wram},
         },
     };
+
+    struct Saved {
+        state: Vec<u8>,
+        frames: u64,
+        token: u64,
+    }
 
     struct Hand {
         machine: Stepper,
@@ -333,20 +349,22 @@ mod tests {
                 .collect()
         }
 
-        fn save(&mut self) -> (Vec<u8>, u64) {
+        fn save(&mut self) -> Saved {
             let state = self.machine.export(self.at, None).unwrap();
-            self.hook.saved(snapshot_tag(&state, self.frames));
-            (state, self.frames)
+            let token = self.hook.saved();
+            Saved {
+                state,
+                frames: self.frames,
+                token,
+            }
         }
 
-        fn restore(&mut self, (state, frames): &(Vec<u8>, u64)) {
-            self.at = self.machine.import(state).unwrap();
+        fn restore(&mut self, saved: &Saved) {
+            self.at = self.machine.import(&saved.state).unwrap();
             self.machine.replay(self.at).unwrap();
-            self.frames = *frames;
-            self.hook.restored(
-                snapshot_tag(state, *frames),
-                &read_wram(&self.machine).unwrap(),
-            );
+            self.frames = saved.frames;
+            self.hook
+                .restored(saved.token, &read_wram(&self.machine).unwrap());
         }
     }
 
@@ -383,6 +401,69 @@ mod tests {
         assert_eq!(report.unknown_restores, 0);
         assert!(report.lineage_changes > 0);
         assert_eq!(report.keyed_states, 11);
+        assert_eq!(report.unobserved, 0);
+    }
+
+    #[test]
+    fn a_restore_brings_back_the_lineage_saved_with_its_snapshot_when_another_path_reaches_the_same_state()
+     {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        let genesis = hand.save();
+        hand.walk(&[(RIGHT, 2), (LEFT, 2)]);
+        let climbed = hand.save();
+        let on = [(RIGHT, 1), (WARP, 1)];
+        let first = hand.walk(&on);
+        hand.restore(&genesis);
+        hand.walk(&[(LEFT, 4)]);
+        let walked = hand.save();
+        assert_eq!(
+            (&walked.state, walked.frames),
+            (&climbed.state, climbed.frames)
+        );
+        hand.restore(&climbed);
+        assert_eq!(hand.walk(&on), first);
+        assert_eq!(first[0].map(|key| key.band), Some(2));
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!(report.unknown_restores, 0);
+    }
+
+    #[test]
+    fn a_candidate_observed_after_a_probe_restores_its_snapshot_keeps_that_key_in_the_snapshot() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(RIGHT, 2)]);
+        hand.apply(RIGHT, 2);
+        let candidate = hand.save();
+        hand.restore(&candidate);
+        hand.key();
+        let on = [(LEFT, 1)];
+        let first = hand.walk(&on);
+        hand.restore(&candidate);
+        assert_eq!(hand.walk(&on), first);
+        assert_eq!(first[0].map(|key| key.band), Some(4));
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!(report.unknown_restores, 0);
+        assert_eq!(report.unobserved, 0);
+    }
+
+    #[test]
+    fn a_hand_target_that_observes_only_its_root_leaves_arrivals_unobserved() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        let genesis = hand.save();
+        for _ in 0..2 {
+            hand.restore(&genesis);
+            for _ in 0..3 {
+                hand.apply(RIGHT, 1);
+                hand.save();
+            }
+        }
+        let report = shadow.report().unwrap();
+        assert_eq!(report.states, 1);
+        assert_eq!(report.unobserved, 4);
     }
 
     struct Lockstep {
@@ -460,6 +541,7 @@ mod tests {
         let report = shadow.report().unwrap();
         assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
         assert_eq!(report.keyed_states, 6);
+        assert_eq!(report.unobserved, 0);
     }
 
     #[test]
