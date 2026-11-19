@@ -611,7 +611,7 @@ fn compiled_keys_match_hand_keys_on_played_states() {
     census("random play", &keys);
     let played = pair.shadow.report().expect("shadow report");
     eprintln!(
-        "mm2 random play shadow: while seeding from tapes {} states, disagreements {:?}, unknown restores {}; in total {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}",
+        "mm2 random play shadow: while seeding from tapes {} states, disagreements {:?}, unknown restores {}; in total {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}, unobserved {}",
         seeded.states,
         seeded.disagreements,
         seeded.unknown_restores,
@@ -619,10 +619,12 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         played.keyed_states,
         played.distinct_pairs,
         played.disagreements,
-        played.unknown_restores
+        played.unknown_restores,
+        played.unobserved
     );
     assert_eq!(played.disagreements.total(), 0, "{:?}", played.examples);
     assert_eq!(played.unknown_restores, seeded.unknown_restores);
+    assert_eq!(played.unobserved, 0);
 }
 
 #[test]
@@ -657,14 +659,16 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
     census("tape", &keys);
     let report = replayer.shadow.report().expect("shadow report");
     eprintln!(
-        "mm2 tape shadow on the faithful replay ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}",
+        "mm2 tape shadow on the faithful replay ({} arrivals): {} states, {} keyed, {} distinct pairs, disagreements {:?}, unknown restores {}, unobserved {}",
         replayer.arrivals,
         report.states,
         report.keyed_states,
         report.distinct_pairs,
         report.disagreements,
-        report.unknown_restores
+        report.unknown_restores,
+        report.unobserved
     );
     assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
     assert_eq!(report.unknown_restores, 0);
+    assert_eq!(report.unobserved, 0);
 }

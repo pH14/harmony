@@ -19,7 +19,7 @@ use crate::{
     },
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
-    workload::{Game, ShadowHook, snapshot_tag},
+    workload::{Game, ShadowHook, ShadowToken},
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -634,6 +634,8 @@ pub struct Mm2Snapshot {
     emulator_state: Vec<u8>,
     observation: Mm2Observations,
     failed: bool,
+    #[serde(skip)]
+    token: Option<ShadowToken>,
 }
 
 impl Mm2Snapshot {
@@ -650,6 +652,7 @@ impl Mm2Snapshot {
                 ..Mm2Observations::default()
             },
             failed: false,
+            token: None,
         }
     }
 
@@ -1726,13 +1729,12 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             self.failed = true;
             return None;
         };
-        if let Some(shadow) = &self.shadow {
-            shadow.saved(snapshot_tag(&emulator_state, self.observation.frame_count));
-        }
+        let token = self.shadow.as_ref().map(ShadowHook::saved);
         Some(Mm2Snapshot {
             emulator_state,
             observation: self.observation.clone(),
             failed: self.failed,
+            token,
         })
     }
 
@@ -1748,10 +1750,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         if let Some(shadow) = &self.shadow {
-            shadow.restored(
-                snapshot_tag(&snapshot.emulator_state, self.observation.frame_count),
-                &self.current_wram,
-            );
+            shadow.restored(snapshot.token, &self.current_wram);
         }
         Ok(())
     }

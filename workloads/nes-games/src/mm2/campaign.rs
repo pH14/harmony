@@ -854,6 +854,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
             if self.execution_disposition(target).is_terminal() {
                 break;
             }
+            target.shadow(Some(archive_key(target.mechanical_state())));
         }
         execute_suffix(
             self,
