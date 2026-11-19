@@ -294,6 +294,27 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+## Archive memory
+
+History compaction starts once the archive's history estimate passes a quarter
+of `memory_limit`, and that estimate counts each entry, cell and slot at the
+size of its key type, so the key type is a decision input. In the hand campaign
+the route key `MetroidArchiveKey` is 26 bytes and the strategy key
+`AssertionKey` 32; an archive entry (`entry_bytes` over `MetroidAction`,
+`MetroidMilestones` and `MetroidSnapshot`) is 112 bytes under the route key and
+120 under the strategy key. A test in `nes-games/src/metroid/keying.rs` holds
+these numbers. The two arms compact at different executions, through the entry
+size and through the cell and slot maps, so an outcome that decides the Metroid
+port is scored on the strategy-keyed arm.
+
+Resident snapshots are charged by `snapshot_memory_charge`: the struct's size
+plus its emulator state bytes. `MetroidSnapshot` is 80 bytes. The QuickNES
+state it holds is 21,182 bytes, packed with LZ4 to a mean of 8,936 bytes over
+the 64 snapshots of one replayed tape (H seed 742890759 to Kraid's defeat), a
+charge of about 9,016 bytes per snapshot. The shared target's `NesSnapshot<S>`
+is larger: it also holds the strategy's `Accumulator` and an observation with
+the decoded state inline, and its charge adds the accumulator's heap bytes.
+
 ## Named milestone evaluation
 
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,

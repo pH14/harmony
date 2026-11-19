@@ -129,6 +129,22 @@ mod tests {
     }
 
     #[test]
+    fn the_route_and_strategy_keys_and_entries_have_the_sizes_the_readme_records() {
+        use crate::{
+            metroid::{action::MetroidAction, archive::MetroidMilestones, target::MetroidSnapshot},
+            search::archive::entry_bytes,
+        };
+        let sizes = (
+            size_of::<MetroidArchiveKey>(),
+            size_of::<AssertionKey>(),
+            entry_bytes::<MetroidAction, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>(),
+            entry_bytes::<MetroidAction, AssertionKey, MetroidMilestones, MetroidSnapshot>(),
+            size_of::<MetroidSnapshot>(),
+        );
+        assert_eq!(sizes, (26, 32, 112, 120, 80));
+    }
+
+    #[test]
     fn strategy_a_keeps_one_state_per_position_and_prefers_missiles_then_health() {
         let keying = StrategyKeying::default();
         assert_eq!(
