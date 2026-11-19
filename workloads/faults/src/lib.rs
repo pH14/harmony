@@ -15,7 +15,6 @@ pub mod key;
 pub mod package;
 pub mod prepare;
 pub mod report;
-pub mod shadow;
 pub mod target;
 
 #[cfg(all(

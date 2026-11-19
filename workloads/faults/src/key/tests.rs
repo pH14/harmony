@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 
 use searcher::search::{archive::ArchiveKey, rand::RomuDuoJrRand};
@@ -8,12 +8,8 @@ use searcher::search::{archive::ArchiveKey, rand::RomuDuoJrRand};
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::{
-    assertion::{AssertionKind, AssertionOutcome},
-    shadow::Shadow,
-};
+use crate::assertion::{AssertionKind, AssertionOutcome};
 
-const STATES: usize = 20_000;
 const TABLE_SEED: u64 = 0x5eed_fa17;
 const TABLE_STATES: usize = 64;
 const TABLE_NODES: [u16; 3] = [1, 3, 8];
@@ -75,63 +71,6 @@ fn sample(seed: u64, nodes: u16, states: usize) -> Vec<FaultObservations> {
 }
 
 #[test]
-fn the_strategy_key_agrees_with_the_hand_key_on_random_states() {
-    for nodes in [1, 3, 8] {
-        let keys = FaultKeys::new(STRATEGY, nodes).expect("the shipped strategy compiles");
-        let shadow = Shadow::default();
-        for observations in sample(u64::from(nodes) * 7919, nodes, STATES) {
-            shadow.observe(&keys, archive_key(&observations), &observations);
-        }
-        let report = shadow.report(&keys).unwrap();
-        assert_eq!(report.states, STATES as u64);
-        assert!(report.hand_cells > 1_000, "{report:?}");
-        assert!(report.hand_slots > report.hand_cells, "{report:?}");
-        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
-        assert_eq!(report.hand_cells, report.strategy_cells);
-        assert_eq!(report.hand_slots, report.strategy_slots);
-    }
-}
-
-#[test]
-fn the_duration_context_partitions_and_orders_parents_as_the_hand_context_does() {
-    for nodes in [1, 3, 8] {
-        let keys = FaultKeys::new(STRATEGY, nodes).unwrap();
-        let mut pairs = BTreeSet::new();
-        for observations in sample(u64::from(nodes) * 104_729, nodes, STATES) {
-            let hand = FaultArchiveKey::duration_context(&keys, archive_key(&observations));
-            let strategy = AssertionKey::duration_context(&keys, keys.key(&observations).unwrap());
-            assert_eq!(
-                FaultArchiveKey::event_ready(&keys, hand),
-                AssertionKey::event_ready(&keys, strategy)
-            );
-            pairs.insert((hand, strategy));
-        }
-        let mut forward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-        let mut backward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-        for (hand, strategy) in &pairs {
-            forward.entry(*hand).or_default().insert(*strategy);
-            backward.entry(*strategy).or_default().insert(*hand);
-        }
-        assert!(forward.values().all(|strategies| strategies.len() == 1));
-        assert!(backward.values().all(|hands| hands.len() == 1));
-        let ordered: Vec<_> = pairs.iter().map(|(_, strategy)| *strategy).collect();
-        assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(pairs.len() > 100);
-    }
-}
-
-#[test]
-fn the_shipped_strategy_has_the_hand_key_shape() {
-    let keys = FaultKeys::new(STRATEGY, 3).unwrap();
-    assert_eq!(AssertionKey::shape(&keys), FaultArchiveKey::shape(&keys));
-    assert!(AssertionKey::policy(&keys).starts_with("assertion_key_"));
-    assert_ne!(
-        AssertionKey::policy(&keys),
-        AssertionKey::policy(&FaultKeys::new(STRATEGY, 4).unwrap())
-    );
-}
-
-#[test]
 fn a_bundle_past_the_strategy_widths_fails_to_compile() {
     let error = FaultKeys::new(STRATEGY, 9).unwrap_err().to_string();
     assert!(error.contains("key field holds"), "{error}");
@@ -152,9 +91,8 @@ fn an_edited_strategy_compiles_without_a_rebuild_and_keys_differently() {
         })
         .collect();
     assert!(cells.len() <= 6 * 3);
-    let context =
-        AssertionKey::duration_context(&keys, keys.key(&FaultObservations::default()).unwrap());
-    assert_eq!(AssertionKey::event_ready(&keys, context), 0);
+    let context = keys.context(keys.key(&FaultObservations::default()).unwrap());
+    assert_eq!(keys.context_event_ready(context), 0);
 }
 
 #[test]
@@ -183,17 +121,193 @@ fn the_declarations_saturate_into_their_ranges() {
     assert_eq!(keys.catalog().signals().len(), DECLARATIONS);
 }
 
-#[test]
-fn a_shadow_needs_the_hand_key() {
-    let request = |hand, shadow| KeyRequest {
-        strategy: None,
-        hand,
-        shadow,
+fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
+    let mut observations = FaultObservations {
+        hooks_finished,
+        alive,
+        ..FaultObservations::default()
     };
-    assert!(request(true, true).validate().is_ok());
-    assert!(request(true, false).validate().is_ok());
-    assert!(request(false, false).validate().is_ok());
-    assert!(request(false, true).validate().is_err());
+    for id in sometimes {
+        observations.assertions.record(
+            id.to_string(),
+            AssertionOutcome {
+                kind: AssertionKind::Sometimes,
+                message: id.to_string(),
+                location: String::new(),
+                passed: true,
+                failed: false,
+            },
+        );
+    }
+    observations
+}
+
+fn shipped() -> FaultKeys {
+    FaultKeys::new(STRATEGY, 3).expect("the shipped strategy compiles")
+}
+
+fn key(keys: &FaultKeys, observations: &FaultObservations) -> AssertionKey {
+    keys.key(observations)
+        .expect("the shipped strategy keys every state")
+}
+
+#[test]
+fn the_shipped_strategy_policy_names_its_node_count() {
+    let policy = shipped().compiled().policy_identifier().to_owned();
+    assert!(policy.starts_with("assertion_key_"), "{policy}");
+    assert_ne!(
+        policy,
+        FaultKeys::new(STRATEGY, 4)
+            .unwrap()
+            .compiled()
+            .policy_identifier()
+    );
+    assert_eq!(shipped().compiled().shape().capacity, 1);
+}
+
+#[test]
+fn raw_event_sites_remain_diagnostic_only() {
+    let keys = shipped();
+    let first = FaultObservations {
+        event_kill_site: 41,
+        event_kill_fires: 1,
+        ..FaultObservations::default()
+    };
+    let second = FaultObservations {
+        event_kill_site: 999,
+        ..first.clone()
+    };
+    assert_eq!(key(&keys, &first), key(&keys, &second));
+}
+
+#[test]
+fn hooks_still_running_open_their_own_cell() {
+    let keys = shipped();
+    let overlapping = FaultObservations {
+        hooks_started: 2,
+        hooks_finished: 1,
+        alive: 0b1,
+        ..FaultObservations::default()
+    };
+    let alone = FaultObservations {
+        hooks_started: 1,
+        ..overlapping.clone()
+    };
+    assert_ne!(key(&keys, &overlapping).place(), key(&keys, &alone).place());
+    let running = |hooks_started| {
+        key(
+            &keys,
+            &FaultObservations {
+                hooks_started,
+                ..FaultObservations::default()
+            },
+        )
+    };
+    assert_eq!(running(8), running(100));
+    assert_ne!(running(7), running(8));
+}
+
+#[test]
+fn repeated_hooks_stop_opening_cells_past_the_cap() {
+    let keys = shipped();
+    let finished = |hooks_finished| key(&keys, &endpoint(&[1], hooks_finished, 0b1));
+    assert_eq!(finished(8), finished(9));
+    assert_eq!(finished(8), finished(100));
+    assert_ne!(finished(7), finished(8));
+    assert_eq!(
+        crate::archive::milestones(&endpoint(&[1], 100, 0b1)).hooks_finished,
+        100,
+        "the milestone keeps the true count"
+    );
+}
+
+#[test]
+fn an_in_flight_check_opens_its_own_cell() {
+    let keys = shipped();
+    let completed = FaultObservations {
+        checks_started: 1,
+        checks_finished: 1,
+        ..FaultObservations::default()
+    };
+    let running = FaultObservations {
+        checks_started: 2,
+        ..completed.clone()
+    };
+    assert_ne!(key(&keys, &completed).place(), key(&keys, &running).place());
+}
+
+#[test]
+fn a_held_park_thread_and_an_armed_event_kill_each_open_their_own_place() {
+    let keys = shipped();
+    let quiet = FaultObservations {
+        alive: 0b11,
+        ..FaultObservations::default()
+    };
+    let held = FaultObservations {
+        event_park_held: 0b10,
+        ..quiet.clone()
+    };
+    let armed = FaultObservations {
+        event_kill_armed: 0b01,
+        ..quiet.clone()
+    };
+    let places = [&quiet, &held, &armed]
+        .map(|observations| key(&keys, observations).place())
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(places.len(), 3);
+    let other_node = FaultObservations {
+        event_park_held: 0b01,
+        ..quiet
+    };
+    assert_eq!(key(&keys, &other_node), key(&keys, &held));
+}
+
+#[test]
+fn liveness_is_the_holder_identity_inside_one_place() {
+    let keys = shipped();
+    let survived = key(&keys, &endpoint(&[1], 2, 0b11));
+    let lost_a_node = key(&keys, &endpoint(&[1], 2, 0b01));
+    assert_ne!(survived.identity(), lost_a_node.identity());
+    assert_eq!(survived.place(), lost_a_node.place());
+}
+
+#[test]
+fn edge_bucket_coverage_separates_identities_inside_one_place() {
+    let keys = shipped();
+    let before = key(&keys, &endpoint(&[1], 2, 0b11));
+    let crossed = key(
+        &keys,
+        &FaultObservations {
+            edge_crossings: 3,
+            edge_digest: 0x5eed << 48,
+            ..endpoint(&[1], 2, 0b11)
+        },
+    );
+    assert_eq!(before.place(), crossed.place());
+    assert_ne!(before.identity(), crossed.identity());
+}
+
+#[test]
+fn hook_progress_separates_places_inside_one_tier() {
+    let keys = shipped();
+    let early = key(&keys, &endpoint(&[1], 1, 0b1));
+    let late = key(&keys, &endpoint(&[1], 4, 0b1));
+    assert_eq!(early.progress(), late.progress());
+    assert_ne!(early.place(), late.place());
+}
+
+#[test]
+fn the_goals_reached_are_the_progress_tier() {
+    let keys = shipped();
+    let none = key(&keys, &endpoint(&[], 0, 0b1));
+    let one = key(&keys, &endpoint(&[4], 0, 0b1));
+    let other_one = key(&keys, &endpoint(&[7], 0, 0b1));
+    let two = key(&keys, &endpoint(&[4, 7], 0, 0b1));
+    assert!(none.progress() < one.progress());
+    assert!(one.progress() < two.progress());
+    assert_eq!(one.progress(), other_one.progress());
+    assert_ne!(one.place(), other_one.place());
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -224,56 +338,6 @@ fn table_rows(nodes: u16) -> Vec<TableRow> {
             }
         })
         .collect()
-}
-
-#[test]
-fn the_strategy_key_table_agrees_with_the_hand_key() {
-    let mut lines = Vec::new();
-    for nodes in TABLE_NODES {
-        let keys = FaultKeys::new(STRATEGY, nodes).unwrap();
-        let states = sample(TABLE_SEED, nodes, TABLE_STATES);
-        let shadow = Shadow::default();
-        let mut contexts = BTreeSet::new();
-        for observations in &states {
-            let hand = archive_key(observations);
-            shadow.observe(&keys, hand, observations);
-            let hand_context = FaultArchiveKey::duration_context(&keys, hand);
-            let context = keys.context(keys.key(observations).unwrap());
-            assert_eq!(
-                FaultArchiveKey::event_ready(&keys, hand_context),
-                keys.context_event_ready(context)
-            );
-            contexts.insert((hand_context, context));
-        }
-        let report = shadow.report(&keys).unwrap();
-        assert_eq!(report.states, TABLE_STATES as u64);
-        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
-        assert_eq!(report.hand_cells, report.strategy_cells);
-        assert_eq!(report.hand_slots, report.strategy_slots);
-        let mut forward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-        let mut backward: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-        for (hand, strategy) in &contexts {
-            forward.entry(*hand).or_default().insert(*strategy);
-            backward.entry(*strategy).or_default().insert(*hand);
-        }
-        assert!(forward.values().all(|strategies| strategies.len() == 1));
-        assert!(backward.values().all(|hands| hands.len() == 1));
-        let ordered: Vec<_> = contexts.iter().map(|(_, strategy)| *strategy).collect();
-        assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
-        for row in table_rows(nodes) {
-            lines.push(serde_json::to_string(&row).unwrap());
-        }
-    }
-    let table = format!("[\n{}\n]\n", lines.join(",\n"));
-    if std::env::var_os("HARMONY_WRITE_KEY_TABLE").is_some() {
-        std::fs::write(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/src/key/strategy-keys.json"),
-            &table,
-        )
-        .unwrap();
-    } else {
-        assert_eq!(table, TABLE);
-    }
 }
 
 #[test]

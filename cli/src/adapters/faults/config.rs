@@ -523,11 +523,10 @@ mod tests {
     #[test]
     fn the_key_request_comes_from_workload_options_and_survives_roundtrip() {
         let shared: crate::config::Config = toml::from_str(
-            "[workload]\npackage = \"faults\"\n[workload.options.key]\nhand = true\nshadow = true\nstrategy = \"capacity = 1\\n\"\n",
+            "[workload]\npackage = \"faults\"\n[workload.options.key]\nstrategy = \"capacity = 1\\n\"\n",
         )
         .unwrap();
         let config = Config::from_shared(&shared).unwrap();
-        assert!(config.key.hand && config.key.shadow);
         assert_eq!(config.key.strategy(), "capacity = 1\n");
         assert_eq!(
             Config::from_shared(&config.shared().unwrap()).unwrap().key,
@@ -544,11 +543,13 @@ mod tests {
         let absent = Config::from_shared(&absent).unwrap().key;
         assert_eq!(Config::from_shared(&empty).unwrap().key, absent);
         assert_eq!(absent, faults_workload::key::KeyRequest::default());
-        let unknown: crate::config::Config = toml::from_str(
-            "[workload]\npackage = \"faults\"\n[workload.options.key]\nhandkey = true\n",
-        )
-        .unwrap();
-        assert!(Config::from_shared(&unknown).is_err());
+        for field in ["hand", "shadow", "handkey"] {
+            let unknown: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options.key]\n{field} = true\n"
+            ))
+            .unwrap();
+            assert!(Config::from_shared(&unknown).is_err(), "{field}");
+        }
     }
 
     #[test]

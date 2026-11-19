@@ -2,18 +2,12 @@
 
 use std::{error::Error, fmt::Debug};
 
-use searcher::search::{
-    archive::{ArchiveKey, KeyShape},
-    assertion::{
-        Assertion, AssertionKey, Catalog, Compiled, KeyView, Lines, Number, Record, Strategy, Wide,
-    },
+use searcher::search::assertion::{
+    Assertion, AssertionKey, Catalog, Compiled, KeyView, Lines, Number, Record, Strategy, Wide,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    archive::{FaultArchiveKey, KEY_POLICY_IDENTIFIER, archive_key},
-    target::FaultObservations,
-};
+use crate::target::FaultObservations;
 
 pub const STRATEGY: &str = include_str!("faults.toml");
 
@@ -28,23 +22,12 @@ const CONTEXT_NODES: u16 = 29;
 pub struct KeyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub hand: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub shadow: bool,
 }
 
 impl KeyRequest {
     #[must_use]
     pub fn strategy(&self) -> &str {
         self.strategy.as_deref().unwrap_or(STRATEGY)
-    }
-
-    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
-        if self.shadow && !self.hand {
-            return Err("a shadow key runs beside the hand key, so shadow needs hand".into());
-        }
-        Ok(())
     }
 }
 
@@ -247,76 +230,6 @@ impl FaultKeys {
     #[must_use]
     pub fn context_event_ready(&self, context: AssertionKey) -> u64 {
         (context.place.get() >> 4) & self.mask()
-    }
-}
-
-pub trait FaultKey: ArchiveKey + Debug + Eq + Send + Sync + 'static {
-    fn of(keys: &FaultKeys, observations: &FaultObservations) -> Option<Self>;
-    fn duration_context(keys: &FaultKeys, parent: Self) -> Self;
-    fn event_ready(keys: &FaultKeys, context: Self) -> u64;
-    fn policy(keys: &FaultKeys) -> String;
-    fn shape(keys: &FaultKeys) -> KeyShape;
-    fn hand(self) -> Option<FaultArchiveKey>;
-}
-
-impl FaultKey for FaultArchiveKey {
-    fn of(_keys: &FaultKeys, observations: &FaultObservations) -> Option<Self> {
-        Some(archive_key(observations))
-    }
-
-    fn duration_context(_keys: &FaultKeys, parent: Self) -> Self {
-        Self {
-            alive: parent.alive,
-            event_ready: parent.event_ready,
-            hooks_running: u64::from(parent.hooks_running > 0),
-            event_kill_fires: u64::from(parent.event_kill_fires > 0),
-            event_park_fires: u64::from(parent.event_park_fires > 0),
-            workload_running: parent.workload_running,
-            checks_finished: u64::from(parent.checks_finished > 0),
-            ..Self::default()
-        }
-    }
-
-    fn event_ready(_keys: &FaultKeys, context: Self) -> u64 {
-        context.event_ready
-    }
-
-    fn policy(_keys: &FaultKeys) -> String {
-        KEY_POLICY_IDENTIFIER.to_owned()
-    }
-
-    fn shape(_keys: &FaultKeys) -> KeyShape {
-        KeyShape::of::<Self>()
-    }
-
-    fn hand(self) -> Option<FaultArchiveKey> {
-        Some(self)
-    }
-}
-
-impl FaultKey for AssertionKey {
-    fn of(keys: &FaultKeys, observations: &FaultObservations) -> Option<Self> {
-        keys.key(observations)
-    }
-
-    fn duration_context(keys: &FaultKeys, parent: Self) -> Self {
-        keys.context(parent)
-    }
-
-    fn event_ready(keys: &FaultKeys, context: Self) -> u64 {
-        keys.context_event_ready(context)
-    }
-
-    fn policy(keys: &FaultKeys) -> String {
-        keys.compiled.policy_identifier().to_owned()
-    }
-
-    fn shape(keys: &FaultKeys) -> KeyShape {
-        keys.compiled.shape()
-    }
-
-    fn hand(self) -> Option<FaultArchiveKey> {
-        None
     }
 }
 

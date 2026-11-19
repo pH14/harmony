@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
-    marker::PhantomData,
     num::NonZeroU64,
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -53,8 +52,7 @@ use crate::{
         validate_snapshot_prefix_certificates,
     },
     guest::{GUEST_SITE, GuestChoices},
-    key::{FaultKey, FaultKeys},
-    shadow::{Shadow, ShadowReport},
+    key::FaultKeys,
     shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
@@ -105,10 +103,8 @@ impl FaultCampaignRun {
     }
 }
 
-pub struct FaultWorkload<K: FaultKey = AssertionKey> {
+pub struct FaultWorkload {
     keys: Arc<FaultKeys>,
-    shadow: Option<Arc<Shadow>>,
-    key: PhantomData<fn() -> K>,
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     config: FaultConfig,
@@ -118,7 +114,7 @@ pub struct FaultWorkload<K: FaultKey = AssertionKey> {
     session_worker: Option<WorkerLauncher>,
 }
 
-impl<K: FaultKey> FaultWorkload<K> {
+impl FaultWorkload {
     pub fn new(
         kernel: &[u8],
         initramfs: &[u8],
@@ -127,8 +123,6 @@ impl<K: FaultKey> FaultWorkload<K> {
     ) -> Result<Self, String> {
         Ok(Self {
             keys: Arc::new(keys),
-            shadow: None,
-            key: PhantomData,
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             config: config.clone(),
@@ -167,26 +161,12 @@ impl<K: FaultKey> FaultWorkload<K> {
     }
 
     #[must_use]
-    pub fn with_shadow(mut self) -> Self {
-        self.shadow = Some(Arc::new(Shadow::default()));
-        self
-    }
-
-    pub fn shadow_report(&self) -> Option<Result<ShadowReport, Box<dyn Error>>> {
-        self.shadow.as_ref().map(|shadow| shadow.report(&self.keys))
-    }
-
-    #[must_use]
     pub fn keys(&self) -> &FaultKeys {
         &self.keys
     }
 
-    pub fn key_of(&self, observations: &FaultObservations) -> Option<K> {
-        let key = K::of(&self.keys, observations);
-        if let (Some(shadow), Some(hand)) = (&self.shadow, key.and_then(K::hand)) {
-            shadow.observe(&self.keys, hand, observations);
-        }
-        key
+    pub fn key_of(&self, observations: &FaultObservations) -> Option<AssertionKey> {
+        self.keys.key(observations)
     }
 }
 
@@ -243,12 +223,11 @@ impl FaultCampaignEvidence {
     }
 }
 
-pub type FaultCampaignOrigin<K = AssertionKey> = CampaignOrigin<FaultWorkload<K>>;
+pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
-pub type FaultCampaignModeReport<K = AssertionKey> =
-    CampaignModeReport<FaultAction, FaultArchiveReport<K>>;
-type FaultCampaignActionResult<K> = CampaignActionResult<FaultWorkload<K>>;
-type FaultCampaignJobResult<K> = CampaignJobResult<FaultWorkload<K>>;
+pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
+type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
+type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
 fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&(
@@ -263,9 +242,7 @@ fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
     ))
 }
 
-fn fault_result_sha256<K: FaultKey>(
-    result: &FaultCampaignJobResult<K>,
-) -> Result<String, Box<dyn Error>> {
+fn fault_result_sha256(result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
     let actions = result
         .actions
         .iter()
@@ -298,8 +275,8 @@ fn fault_result_sha256<K: FaultKey>(
     ))
 }
 
-fn endpoint_result_sha256<K: FaultKey>(
-    result: &FaultCampaignJobResult<K>,
+fn endpoint_result_sha256(
+    result: &FaultCampaignJobResult,
     endpoint: FaultEndpointCertificate,
     history: Option<(u64, [u8; 32])>,
 ) -> Result<String, Box<dyn Error>> {
@@ -314,11 +291,11 @@ fn endpoint_result_sha256<K: FaultKey>(
     ))
 }
 
-fn kvm_result_endpoint<K: FaultKey>(
-    result: &FaultCampaignJobResult<K>,
+fn kvm_result_endpoint(
+    result: &FaultCampaignJobResult,
     actions: &[FaultAction],
     observation: &FaultObservations,
-    expected: Option<K>,
+    expected: Option<AssertionKey>,
     fresh_hash: impl FnOnce() -> Result<[u8; 32], String>,
 ) -> Result<FaultEndpointCertificate, Box<dyn Error>> {
     if let Some(last) = result.actions.last()
@@ -348,18 +325,17 @@ fn kvm_result_endpoint<K: FaultKey>(
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "K: FaultKey")]
-pub struct FaultCampaignReport<K: FaultKey = AssertionKey> {
+pub struct FaultCampaignReport {
     #[serde(flatten)]
-    pub campaign: FaultCampaignModeReport<K>,
+    pub campaign: FaultCampaignModeReport,
     pub bugs_found: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_bug: Option<u64>,
 }
 
-impl<K: FaultKey> FaultCampaignReport<K> {
+impl FaultCampaignReport {
     #[must_use]
-    pub fn new(campaign: FaultCampaignModeReport<K>) -> Self {
+    pub fn new(campaign: FaultCampaignModeReport) -> Self {
         let (bugs_found, executions_to_first_bug) = bug_outcome(&campaign.archive.bugs);
         Self {
             bugs_found,
@@ -386,7 +362,7 @@ pub struct FaultCampaignConfig {
 }
 
 impl FaultCampaignConfig {
-    fn generic<K: FaultKey>(&self) -> CampaignConfig<FaultWorkload<K>> {
+    fn generic(&self) -> CampaignConfig<FaultWorkload> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -489,7 +465,7 @@ fn job_hung(target: &FaultTarget, phase: &'static str) -> Result<bool, Box<dyn E
     Ok(target.watchdog_cutoffs() != 0)
 }
 
-fn hung_job<K: FaultKey>(attempted: &[FaultAction]) -> FaultCampaignJobResult<K> {
+fn hung_job(attempted: &[FaultAction]) -> FaultCampaignJobResult {
     CampaignJobResult {
         preparation_failure: None,
         hang: Some(attempted.to_vec()),
@@ -543,8 +519,8 @@ fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultA
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_job<K: FaultKey>(
-    key_of: impl Fn(&FaultObservations) -> Option<K>,
+pub(crate) fn execute_job(
+    key_of: impl Fn(&FaultObservations) -> Option<AssertionKey>,
     run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
@@ -553,7 +529,7 @@ pub(crate) fn execute_job<K: FaultKey>(
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
     stop: searcher::search::rollout::RolloutStop,
-) -> Result<FaultCampaignJobResult<K>, Box<dyn Error>> {
+) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     if replay.len() != replay_certificates.len() {
         return Err("fault replay certificate count does not match its action path".into());
     }
@@ -630,21 +606,21 @@ pub(crate) fn execute_job<K: FaultKey>(
     })
 }
 
-impl<K: FaultKey> CampaignTypes for FaultWorkload<K> {
+impl CampaignTypes for FaultWorkload {
     type JobObservation = crate::job_observation::FaultJobObservation;
     type Target = FaultTarget;
     type Action = FaultAction;
-    type Key = K;
+    type Key = AssertionKey;
     type Milestones = FaultMilestones;
     type Progress = FaultProgressWatermark;
     type Snapshot = FaultSnapshot;
     type Observations = FaultObservations;
     type Evidence = FaultCampaignEvidence;
-    type ArchiveReport = FaultArchiveReport<K>;
+    type ArchiveReport = FaultArchiveReport;
     type Run = FaultCampaignRun;
 }
 
-impl<K: FaultKey> Reporting for FaultWorkload<K> {
+impl Reporting for FaultWorkload {
     fn write_evidence_checkpoint(
         evidence: &Self::Evidence,
         out: &mut dyn std::io::Write,
@@ -691,13 +667,13 @@ impl<K: FaultKey> Reporting for FaultWorkload<K> {
         "guest_ticks"
     }
 
-    fn result_sha256(&self, result: &FaultCampaignJobResult<K>) -> Result<String, Box<dyn Error>> {
+    fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
         fault_result_sha256(result)
     }
 
     fn certified_result_sha256(
         &self,
-        result: &FaultCampaignJobResult<K>,
+        result: &FaultCampaignJobResult,
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
         match result.hang {
@@ -716,7 +692,7 @@ impl<K: FaultKey> Reporting for FaultWorkload<K> {
                 result,
                 target.actions(),
                 target.observation(),
-                K::of(&self.keys, target.observation()),
+                self.keys.key(target.observation()),
                 || target.state_hash_current(),
             )?
         };
@@ -740,7 +716,7 @@ impl<K: FaultKey> Reporting for FaultWorkload<K> {
         &self,
         evidence: &FaultCampaignEvidence,
         state: ArchiveReportState<Self>,
-    ) -> FaultArchiveReport<K> {
+    ) -> FaultArchiveReport {
         FaultArchiveReport {
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
@@ -769,7 +745,7 @@ impl<K: FaultKey> Reporting for FaultWorkload<K> {
     }
 }
 
-impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
+impl InputPolicy for FaultWorkload {
     fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
         simpler_fault_actions(action)
     }
@@ -789,7 +765,10 @@ impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .chain([
-            (KEY_POLICY_FIELD.to_owned(), K::policy(&self.keys)),
+            (
+                KEY_POLICY_FIELD.to_owned(),
+                self.keys.compiled().policy_identifier().to_owned(),
+            ),
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
@@ -835,11 +814,11 @@ impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
     fn duration_request(
         &self,
         _run: &FaultCampaignRun,
-        parent: K,
+        parent: AssertionKey,
         remaining_work: Option<NonZeroU64>,
-    ) -> Option<DurationRequest<K>> {
+    ) -> Option<DurationRequest<AssertionKey>> {
         Some(DurationRequest {
-            context: K::duration_context(&self.keys, parent),
+            context: self.keys.context(parent),
             max_duration: NonZeroU64::new(
                 remaining_work
                     .map_or(ADAPTIVE_DURATION_MAX_TICKS, NonZeroU64::get)
@@ -857,7 +836,7 @@ impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         previous: Option<&FaultAction>,
-        draw: Option<DurationDraw<K>>,
+        draw: Option<DurationDraw<AssertionKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         self.expand_duration_recorded_or_live(
             run,
@@ -880,7 +859,7 @@ impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         _previous: Option<&FaultAction>,
-        draw: DurationDraw<K>,
+        draw: DurationDraw<AssertionKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         held_suffix(
@@ -891,7 +870,7 @@ impl<K: FaultKey> InputPolicy for FaultWorkload<K> {
             mutation_seed,
             replay,
             DurationDraw {
-                context: K::event_ready(&self.keys, draw.context),
+                context: self.keys.context_event_ready(draw.context),
                 max_duration: draw.max_duration,
                 duration: draw.duration,
             },
@@ -1004,7 +983,7 @@ fn held_suffix(
     Ok(suffix)
 }
 
-impl<K: FaultKey> TargetExecution for FaultWorkload<K> {
+impl TargetExecution for FaultWorkload {
     fn worker_locality(&self, target: &FaultTarget) -> searcher::search::locality::WorkerLocality {
         target.worker_locality()
     }
@@ -1214,7 +1193,7 @@ impl<K: FaultKey> TargetExecution for FaultWorkload<K> {
     }
 }
 
-impl<K: FaultKey> Evaluation for FaultWorkload<K> {
+impl Evaluation for FaultWorkload {
     fn shrink_cost(
         &self,
         action: &FaultAction,
@@ -1237,19 +1216,19 @@ impl<K: FaultKey> Evaluation for FaultWorkload<K> {
     }
 
     fn key_shape(&self) -> KeyShape {
-        K::shape(&self.keys)
+        self.keys.compiled().shape()
     }
 
-    fn current_key(&self, target: &FaultTarget) -> Result<K, Box<dyn Error>> {
+    fn current_key(&self, target: &FaultTarget) -> Result<AssertionKey, Box<dyn Error>> {
         self.key_of(target.observation())
             .ok_or_else(|| "the faults strategy gives this state no key".into())
     }
 
     fn complete_candidate_key(
         &self,
-        key: K,
+        key: AssertionKey,
         _snapshot: &FaultSnapshot,
-    ) -> Result<K, Box<dyn Error>> {
+    ) -> Result<AssertionKey, Box<dyn Error>> {
         Ok(key)
     }
 
@@ -1268,7 +1247,7 @@ impl<K: FaultKey> Evaluation for FaultWorkload<K> {
     fn merge_origin_evidence(
         &self,
         evidence: &mut FaultCampaignEvidence,
-        source: &FaultArchiveReport<K>,
+        source: &FaultArchiveReport,
     ) {
         evidence.watermark = evidence.watermark.max(source.progress_watermark);
     }
@@ -1303,7 +1282,7 @@ impl<K: FaultKey> Evaluation for FaultWorkload<K> {
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut FaultCampaignEvidence,
-        action: &FaultCampaignActionResult<K>,
+        action: &FaultCampaignActionResult,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>
@@ -1417,12 +1396,12 @@ impl<K: FaultKey> Evaluation for FaultWorkload<K> {
 
     fn source_entries<'a>(
         &self,
-        source: &'a FaultArchiveReport<K>,
-    ) -> &'a [crate::archive::FaultArchiveEntryReport<K>] {
+        source: &'a FaultArchiveReport,
+    ) -> &'a [crate::archive::FaultArchiveEntryReport] {
         &source.entries
     }
 
-    fn resume_input(&self, source: &FaultArchiveReport<K>) -> Result<FaultInput, Box<dyn Error>> {
+    fn resume_input(&self, source: &FaultArchiveReport) -> Result<FaultInput, Box<dyn Error>> {
         source
             .entries
             .iter()
@@ -1438,15 +1417,15 @@ impl<K: FaultKey> Evaluation for FaultWorkload<K> {
     }
 }
 
-pub fn run_fault_campaign_with_plan<K: FaultKey>(
-    game: &FaultWorkload<K>,
+pub fn run_fault_campaign_with_plan(
+    game: &FaultWorkload,
     config: &FaultCampaignConfig,
-    origin: &FaultCampaignOrigin<K>,
+    origin: &FaultCampaignOrigin,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
     checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
     interrupt: Option<&'static std::sync::atomic::AtomicBool>,
-) -> Result<(FaultCampaignReport<K>, FaultSnapshotCheckpoint), Box<dyn Error>> {
+) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         generic.window = searcher::search::checkpoint::read_header(path)?.window;
@@ -1474,11 +1453,22 @@ pub(crate) fn fixture_run() -> FaultCampaignRun {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_keys() -> FaultKeys {
+    FaultKeys::new(crate::key::STRATEGY, 3).expect("the shipped strategy compiles")
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_key(observations: &FaultObservations) -> Option<AssertionKey> {
+    static KEYS: OnceLock<FaultKeys> = OnceLock::new();
+    KEYS.get_or_init(fixture_keys).key(observations)
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_workload(
     kernel: &[u8],
     initramfs: &[u8],
     config: &FaultConfig,
-) -> FaultWorkload<crate::archive::FaultArchiveKey> {
+) -> FaultWorkload {
     let identity = if config.uml().is_some() {
         identity(kernel, initramfs, config).unwrap()
     } else {
@@ -1496,11 +1486,7 @@ pub(crate) fn fixture_workload(
         )
     };
     FaultWorkload {
-        keys: Arc::new(
-            FaultKeys::new(crate::key::STRATEGY, 3).expect("the shipped strategy compiles"),
-        ),
-        shadow: None,
-        key: PhantomData,
+        keys: Arc::new(fixture_keys()),
         kernel: kernel.to_vec(),
         initramfs: initramfs.to_vec(),
         config: config.clone(),
@@ -1514,18 +1500,12 @@ pub(crate) fn fixture_workload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::archive::{FaultArchiveKey, archive_key};
-    use crate::assertion::AssertionSet;
     use crate::consonance::{DEFAULT_RAM_MIB, GuestBackend};
     use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
-    use searcher::search::{
-        archive::{SelectorDraw, SelectorPath},
-        campaign::{CampaignJobRecord, CampaignStreamRecord},
-    };
 
     #[test]
     fn endpoint_certificate_distinguishes_state_and_unavailability() {
-        let result = FaultCampaignJobResult::<FaultArchiveKey> {
+        let result = FaultCampaignJobResult {
             preparation_failure: None,
             hang: None,
             actions: Vec::new(),
@@ -1618,7 +1598,7 @@ mod tests {
             event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
-        let result = FaultCampaignJobResult::<FaultArchiveKey> {
+        let result = FaultCampaignJobResult {
             preparation_failure: None,
             hang: None,
             actions: vec![FaultCampaignActionResult {
@@ -1631,7 +1611,7 @@ mod tests {
                     disposition: ExecutionDisposition::Runnable,
                 },
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(&FaultObservations::default()),
+                    key: fixture_key(&FaultObservations::default()).unwrap(),
                     viable: true,
                     snapshot,
                 }),
@@ -1644,7 +1624,7 @@ mod tests {
             &result,
             &[action],
             &FaultObservations::default(),
-            Some(archive_key(&FaultObservations::default())),
+            fixture_key(&FaultObservations::default()),
             || {
                 fresh_calls += 1;
                 Ok([99; 32])
@@ -1653,7 +1633,7 @@ mod tests {
         .unwrap();
         assert_eq!(fresh_calls, 0);
         let fresh = kvm_result_endpoint(
-            &FaultCampaignJobResult::<FaultArchiveKey> {
+            &FaultCampaignJobResult {
                 preparation_failure: None,
                 hang: None,
                 actions: Vec::new(),
@@ -1685,7 +1665,7 @@ mod tests {
                 &malformed,
                 &[action],
                 &FaultObservations::default(),
-                Some(archive_key(&FaultObservations::default())),
+                fixture_key(&FaultObservations::default()),
                 || Ok([17; 32])
             )
             .is_err()
@@ -1695,7 +1675,7 @@ mod tests {
                 &result,
                 &[],
                 &FaultObservations::default(),
-                Some(archive_key(&FaultObservations::default())),
+                fixture_key(&FaultObservations::default()),
                 || Ok([17; 32])
             )
             .is_err()
@@ -1780,81 +1760,6 @@ mod tests {
         assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
     }
 
-    #[test]
-    fn campaign_job_record_round_trips_assertion_digest() {
-        #[derive(Serialize)]
-        struct NativeAssertionSet {
-            count: u32,
-            digest: u128,
-        }
-
-        for digest in [0, (1_u128 << 127) | 7] {
-            let key = FaultArchiveKey {
-                sometimes: AssertionSet { count: 1, digest },
-                ..FaultArchiveKey::default()
-            };
-            assert_eq!(
-                postcard::to_allocvec(&key.sometimes).unwrap(),
-                postcard::to_allocvec(&NativeAssertionSet { count: 1, digest }).unwrap()
-            );
-            let record = CampaignStreamRecord::<(), FaultArchiveKey>::Job(CampaignJobRecord {
-                sequence: 1,
-                reservation: 0,
-                parent_id: 0,
-                continuation_energy: None,
-                mutation_seed: 1,
-                execution_work: 1,
-                result_sha256: "result".to_owned(),
-                decisions: Vec::new(),
-                mixture_weight: 0,
-                splice_weight: 0,
-                splice: None,
-                selector: SelectorDraw {
-                    path: SelectorPath::Tiers,
-                    tier_rank: Some(0),
-                    best_preference: None,
-                    fall_through: false,
-                },
-                draw_checkpoint_before: None,
-                draw_checkpoint_after: None,
-                duration_draw: Some(DurationDraw {
-                    context: key,
-                    max_duration: NonZeroU64::MIN,
-                    duration: NonZeroU64::MIN,
-                }),
-                duration_admission_sequence_at_draw: None,
-                duration_remaining_work: None,
-                duration_checkpoint_at_draw: None,
-                duration_checkpoint_before: None,
-                duration_checkpoint_after: None,
-                suffix_limit: None,
-                ceiling: None,
-                incumbent: None,
-                shrink: None,
-                choices: None,
-            });
-            let line = serde_json::to_string(&record).unwrap();
-            assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
-            let decoded: CampaignStreamRecord<(), FaultArchiveKey> =
-                serde_json::from_str(&line).unwrap();
-            assert_eq!(decoded, record);
-            if digest == 0 {
-                for noncanonical in ["+0", "00"] {
-                    let changed = line.replacen(
-                        "\"digest\":\"0\"",
-                        &format!("\"digest\":\"{noncanonical}\""),
-                        1,
-                    );
-                    assert_ne!(changed, line);
-                    assert!(
-                        serde_json::from_str::<CampaignStreamRecord<(), FaultArchiveKey>>(&changed)
-                            .is_err()
-                    );
-                }
-            }
-        }
-    }
-
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
@@ -1866,7 +1771,7 @@ mod tests {
         }
     }
 
-    fn game() -> FaultWorkload<FaultArchiveKey> {
+    fn game() -> FaultWorkload {
         fixture_workload(b"kernel", b"initramfs", &config(&[]))
     }
 
@@ -2280,10 +2185,7 @@ mod tests {
                 objective_witness_path: None,
                 placement: None,
             };
-            assert_eq!(
-                config.generic::<FaultArchiveKey>().window,
-                default_window(workers)
-            );
+            assert_eq!(config.generic().window, default_window(workers));
         }
     }
 
@@ -2295,12 +2197,16 @@ mod tests {
                 .unwrap()
                 .with_instrumented_events(true),
         );
-        let parent = FaultArchiveKey {
-            alive: 7,
-            ..FaultArchiveKey::default()
+        let key = |alive| {
+            game.key_of(&FaultObservations {
+                alive,
+                ..FaultObservations::default()
+            })
+            .unwrap()
         };
+        let parent = key(7);
         let request = game.duration_request(&run, parent, None).unwrap();
-        let down = FaultArchiveKey { alive: 3, ..parent };
+        let down = key(3);
         assert_ne!(
             request.context,
             game.duration_request(&run, down, None).unwrap().context
@@ -2335,10 +2241,13 @@ mod tests {
             splice_weight: 0,
         };
         let draw = DurationDraw {
-            context: FaultArchiveKey {
-                event_ready: 1,
-                ..FaultArchiveKey::default()
-            },
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready: 1,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
+            ),
             max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
             duration: NonZeroU64::new(256).unwrap(),
         };

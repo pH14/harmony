@@ -1050,8 +1050,7 @@ The archive key is a strategy key compiled by the searcher's assertion keys
   `workload.finished`, `event.kill_fires`, `event.park_fires`,
   `event.park_held` and `event.kill_armed`.
 
-The shipped strategy reproduces the hand-written `FaultArchiveKey` in
-[`archive.rs`](src/archive.rs). Its tier is the passed count. Its place is the
+The shipped strategy's tier is the passed count. Its place is the
 passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
 event park on any node, and an event kill armed on any node. Liveness and the
@@ -1073,17 +1072,10 @@ keeps no accumulator and draws its tier directly.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
 duration context the shipped strategy gives 64 sampled states for each of 1, 3
-and 8 nodes, and a test checks that the strategy still gives them. Setting
-`HARMONY_WRITE_KEY_TABLE=1` while running the `key::tests` tests rewrites the
-table.
+and 8 nodes, and a test checks that the strategy still gives them.
 
-`workload.options.key` in a search config chooses the key: `strategy` replaces
-the shipped strategy text, `hand = true` searches with `FaultArchiveKey`, and
-`shadow = true` beside `hand` also computes the strategy key on every state.
-A shadow run writes `shadow.json` to the output directory: the state count, the cell and slot
-counts under both keys, and the disagreements, which count states the
-strategy did not key, cells and slots that are not one to one, and progress,
-cell order and preference order that differ.
+`workload.options.key.strategy` in a search config replaces the shipped
+strategy text. The key table accepts no other field.
 
 The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
 needs Linux. The action model, the bundle
