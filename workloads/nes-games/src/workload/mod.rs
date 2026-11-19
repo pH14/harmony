@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod arcade;
+#[cfg(test)]
+mod fixture;
 pub mod target;
 
 #[cfg(unix)]
@@ -781,6 +783,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize {
         std::mem::size_of::<Self::Snapshot>()
             .saturating_add(snapshot.emulator_state.memory_charge())
+            .saturating_add(snapshot.accumulator.heap_bytes())
     }
 
     fn new_target(&self) -> Result<NesTarget<G, M>, String> {

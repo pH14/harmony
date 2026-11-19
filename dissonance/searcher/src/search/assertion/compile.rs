@@ -254,6 +254,11 @@ impl Accumulator {
     pub fn stage(&self) -> Option<u8> {
         self.started.then_some(self.stage)
     }
+
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        std::mem::size_of_val::<[i64]>(&self.values)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
