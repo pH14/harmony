@@ -878,12 +878,29 @@ mod tests {
 
     fn kept(kept: &Kept) -> String {
         format!(
-            "x {} dwell {} {}{}",
+            "x {} dwell {} {}",
             kept.state.x,
             kept.state.dwell,
-            shown(kept.key),
-            if kept.stops { " stops" } else { "" }
+            keyed((kept.key, kept.stops))
         )
+    }
+
+    fn keyed((key, stops): (Option<AssertionKey>, bool)) -> String {
+        format!("{}{}", shown(key), if stops { " stops" } else { "" })
+    }
+
+    fn film_of<G: Game<State = Landing>>(lowered: &Arc<Lowered<G>>, tape: &[ButtonChord]) -> Kept {
+        let mut film = NesTarget::from_machine(Arc::clone(lowered), Stepper::default()).unwrap();
+        let (_, filmed) = film
+            .render_observed(
+                tape,
+                u32::from(tape.is_empty()),
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        Kept::of(&filmed)
     }
 
     struct Producers<G: Game<State = Landing>> {
@@ -899,7 +916,7 @@ mod tests {
         cuts: Vec<u64>,
         live_kept: Vec<Kept>,
         shadow_keys: Vec<Option<AssertionKey>>,
-        filmed: Vec<Option<Kept>>,
+        filmed: Vec<Kept>,
     }
 
     impl<G: Game<State = Landing>> Producers<G> {
@@ -916,6 +933,7 @@ mod tests {
             let genesis = Kept::of(live.observation());
             hook.observe(genesis.key);
             let shadow_key = hook.key();
+            let genesis_film = film_of(&lowered, &[]);
             let producers = Self {
                 game,
                 lowered,
@@ -929,7 +947,7 @@ mod tests {
                 cuts: vec![0],
                 live_kept: vec![genesis],
                 shadow_keys: vec![shadow_key],
-                filmed: vec![None],
+                filmed: vec![genesis_film],
             };
             (shadow, producers)
         }
@@ -981,12 +999,7 @@ mod tests {
             self.shadow_keys.push(self.hook.key());
             self.live_kept.push(Kept::of(&arrival));
             self.cuts.push(arrival.frame_count);
-            let mut film =
-                NesTarget::from_machine(Arc::clone(&self.lowered), Stepper::default()).unwrap();
-            let (_, filmed) = film
-                .render_observed(&self.tape, 0, 0, &mut Vec::new(), &mut Vec::new())
-                .unwrap();
-            self.filmed.push(Some(Kept::of(&filmed)));
+            self.filmed.push(film_of(&self.lowered, &self.tape));
             let sequence = u64::try_from(self.tape.len()).unwrap();
             self.actions.push(RecordedAction {
                 sequence,
@@ -1056,30 +1069,63 @@ mod tests {
             recording
         }
 
-        fn rekeyed(&self, recording: &Self) -> Vec<Option<AssertionKey>> {
+        fn rekeyed(&self, recording: &Self) -> Vec<(Option<AssertionKey>, bool)> {
             let records = recording.recording();
+            let strategy = &self.lowered.compiled;
             let rekeyed = Rekeying {
                 recorded: &recording.lowered.compiled,
-                strategy: &self.lowered.compiled,
+                strategy,
                 entry_limit: 256,
             }
             .run(&records.header.genesis, &recording.jobs, &records.actions)
             .unwrap_or_else(|error| panic!("rekey of {:?}: {error}", recording.tape));
-            let keys: BTreeMap<u64, AssertionKey> = rekeyed
+            let mut accumulator = Accumulator::default();
+            let genesis = strategy.observe(&records.header.genesis, &mut accumulator);
+            let mut folded = vec![(genesis.key, genesis.goal || genesis.rejected.is_some())];
+            for action in &records.actions {
+                let mut last = None;
+                for (index, frame) in action.frames.iter().enumerate() {
+                    let observed = strategy.observe(frame, &mut accumulator);
+                    let stops = observed.goal || observed.rejected.is_some();
+                    assert!(
+                        !stops || index + 1 == action.frames.len(),
+                        "rekey of {:?} stops at frame {} of the {} frames of action {}",
+                        recording.tape,
+                        index + 1,
+                        action.frames.len(),
+                        action.sequence
+                    );
+                    last = Some((observed.key, stops));
+                }
+                folded.push(
+                    last.unwrap_or_else(|| panic!("action {} has no frames", action.sequence)),
+                );
+            }
+            let held: BTreeMap<u64, AssertionKey> = rekeyed
                 .holders
                 .iter()
                 .flat_map(|held| held.ids.iter().copied().zip(held.keys.iter().copied()))
                 .collect();
-            std::iter::once(keys.get(&0).copied())
+            let admitted: Vec<Option<AssertionKey>> = std::iter::once(held.get(&0).copied())
                 .chain(rekeyed.decisions.iter().map(|made| match made.as_slice() {
                     [] => None,
                     [
                         CampaignAdmissionDecision::Retained { id }
                         | CampaignAdmissionDecision::Duplicate { id },
-                    ] => Some(keys[id]),
+                    ] => Some(held[id]),
                     other => panic!("rekey of {:?} made {other:?}", recording.tape),
                 }))
-                .collect()
+                .collect();
+            let candidates: Vec<Option<AssertionKey>> = folded
+                .iter()
+                .map(|&(key, stops)| key.filter(|_| !stops))
+                .collect();
+            assert_eq!(
+                admitted, candidates,
+                "rekey of {:?}: the keys it admits against the keys of the loaded records",
+                recording.tape
+            );
+            folded
         }
     }
 
@@ -1125,26 +1171,24 @@ mod tests {
                 shown(shadow),
                 kept(live)
             );
-            if let Some(filmed) = &producers.filmed[index] {
-                assert!(
-                    filmed == live,
-                    "{at}: film {}, live {}",
-                    kept(filmed),
-                    kept(live)
-                );
-            }
-            let candidate = live.key.filter(|_| !live.stops);
+            let filmed = &producers.filmed[index];
             assert!(
-                rekeyed[index] == candidate,
+                filmed == live,
+                "{at}: film {}, live {}",
+                kept(filmed),
+                kept(live)
+            );
+            assert!(
+                rekeyed[index] == (live.key, live.stops),
                 "{at}: rekey {}, live {}",
-                shown(rekeyed[index]),
+                keyed(rekeyed[index]),
                 kept(live)
             );
             if let Some(across) = &across {
                 assert!(
-                    across[index] == candidate,
+                    across[index] == (live.key, live.stops),
                     "{at}: rekey of the records kept under another strategy {}, live {}",
-                    shown(across[index]),
+                    keyed(across[index]),
                     kept(live)
                 );
             }
@@ -1276,7 +1320,11 @@ mod tests {
         );
         assert_eq!(
             producers.rekeyed(&producers),
-            [producers.live_kept[0].key, None]
+            producers
+                .live_kept
+                .iter()
+                .map(|kept| (kept.key, kept.stops))
+                .collect::<Vec<_>>()
         );
     }
 
