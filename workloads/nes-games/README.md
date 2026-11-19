@@ -187,10 +187,13 @@ snapshot checkpoint carry it, and a restore puts it back; the frames inside a
 forced move are decoded but not observed. `workload/shadow.rs` compares a
 hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy
 and `hook` gives the hand target a `ShadowHook`, which it calls with the
-genesis RAM (`start`), the frames of each action (`advance`), the
-`snapshot_tag` of each snapshot it takes and restores (`saved`, `restored`),
-and its raw key at each candidate (`observe`). The hook decodes each frame,
-advances its own accumulator, completes the raw key against the previous one
+genesis RAM (`start`), the frames of each action up to the departure of a
+forced move (`advance`), the RAM after each step chord of the forced move
+(`forced`), the `snapshot_tag` of each snapshot it takes and restores (`saved`,
+`restored`), and its raw key at each candidate (`observe`). The hook decodes
+each frame from the one before, decodes a forced move's steps in a chain as the
+target does and observes only the arrival, advances its own accumulator at the
+observed frames, completes the raw key against the previous one
 with `ArchiveKey::complete`, and counts the pair in the searcher's
 `ShadowTable`; a save made before the key is observed keeps the key observed
 after it. `Shadow::report` returns the searcher's `ShadowReport`. The hook
