@@ -261,15 +261,14 @@ fn expressions_cover_tables_conditionals_and_popcount() {
 }
 
 #[test]
-fn stages_climb_their_gap_latch_and_carry() {
+fn stages_climb_their_gap_and_latch() {
     let catalog = catalog();
     let compiled = Compiled::parse(
         r#"
         spread = "position"
         [[stage]]
         goal = "far room"
-        carry = true
-        objective = "if 'in transition' then none else 'far room.gap'"
+        objective = "'far room.gap'"
         [[stage]]
         name = "sword"
         goal = "'items.sword'"
@@ -294,15 +293,6 @@ fn stages_climb_their_gap_latch_and_carry() {
         ..Walk::default()
     });
     assert!(start.key.unwrap().progress() < further.key.unwrap().progress());
-    let transition = observe(Walk {
-        room: 0,
-        transition: true,
-        ..Walk::default()
-    });
-    assert_eq!(
-        transition.key.unwrap().progress(),
-        further.key.unwrap().progress()
-    );
     let far = observe(Walk {
         room: 6,
         ..Walk::default()
@@ -361,15 +351,12 @@ fn stages_climb_their_gap_latch_and_carry() {
 }
 
 #[test]
-fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
+fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
     let compiled = Compiled::parse(
         r#"
         spread = [
             "highest(lives)",
-            "ever('items.key')",
-            "count('in transition')",
-            "last(if 'in transition' then none else 'position.x')",
-            "first(time)",
+            "highest(if 'in transition' then none else 'position.x')",
             "highest(lives, 'position.room')",
         ]
         "#,
@@ -412,10 +399,10 @@ fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
     assert_eq!(
         views,
         [
-            vec![3, 0, 0, 10, 7, 3],
-            vec![5, 1, 1, 10, 7, 5],
-            vec![5, 1, 2, 10, 7, 5],
-            vec![5, 1, 2, 40, 7, 2],
+            vec![3, 10, 3],
+            vec![5, 10, 5],
+            vec![5, 10, 5],
+            vec![5, 40, 2],
         ]
     );
 }
@@ -437,18 +424,12 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
         0
     );
     assert_eq!(
-        width("spread = [\"ever('items.key')\", \"first(time)\"]"),
+        width("spread = [\"highest('items.key')\", \"highest(time, 'position.room')\"]"),
         4
     );
     assert_eq!(
         width(
-            "[[stage]]\ngoal = \"far room\"\ncarry = true\nobjective = \"'far room.gap'\"\n[[stage]]\ngoal = \"items\""
-        ),
-        OBJECTIVE_WIDTH
-    );
-    assert_eq!(
-        width(
-            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"ever(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
+            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"highest(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
         ),
         2 + OBJECTIVE_WIDTH
     );
@@ -456,13 +437,13 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
 }
 
 #[test]
-fn an_aggregate_reads_the_held_objective_of_a_stage_that_does_not_carry() {
+fn an_aggregate_reads_the_held_objective_of_the_parent_stage() {
     let compiled = Compiled::parse(
         r#"
         [[stage]]
         name = "reach"
         objective = "'position.x'"
-        goal = "ever(objective >= 5)"
+        goal = "highest(objective >= 5)"
         [[stage]]
         name = "after"
         goal = "false"
@@ -576,7 +557,9 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         ),
         (r#"prefer = [["time: most"]]"#, "is not `more`"),
         (r#"spread = "in(time, nothing)""#, "no table"),
-        (r#"spread = "highest(ever(lives))""#, "another aggregate"),
+        (r#"spread = "highest(highest(lives))""#, "another aggregate"),
+        (r#"spread = "count(lives)""#, "not a strategy function"),
+        ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
             r#"prefer_scope = "lives""#,
