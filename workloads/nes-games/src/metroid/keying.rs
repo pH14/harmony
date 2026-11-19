@@ -12,7 +12,7 @@ use crate::{
         archive::{ArchiveKey, KeyShape},
         assertion::AssertionKey,
     },
-    workload::{Game, Lowered},
+    workload::Lowered,
 };
 
 pub trait MetroidKeying: Send + Sync + 'static {
@@ -47,6 +47,8 @@ impl MetroidKeying for RouteKeying {
     }
 }
 
+pub const POSITION_STRATEGY: &str = include_str!("position.toml");
+
 #[derive(Clone, Debug)]
 pub struct StrategyKeying {
     lowered: Arc<Lowered<Metroid>>,
@@ -74,7 +76,7 @@ impl StrategyKeying {
 
 impl Default for StrategyKeying {
     fn default() -> Self {
-        Self::new(Metroid::STRATEGY).expect("the built-in Metroid strategy compiles")
+        Self::new(POSITION_STRATEGY).expect("the Metroid position strategy compiles")
     }
 }
 

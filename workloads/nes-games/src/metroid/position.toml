@@ -1,0 +1,6 @@
+goal = "ending"
+reject = ["dead"]
+capacity = 1
+spread = ["area", "map_x", "map_y"]
+identity = ["x / 16", "y / 16"]
+prefer = [["missiles: more", "health: more"]]

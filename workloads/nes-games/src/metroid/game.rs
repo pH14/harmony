@@ -175,11 +175,25 @@ impl Game for Metroid {
         out.declare(byte("missile_capacity", state.missile_capacity));
         out.declare(byte("energy_tanks", state.energy_tanks));
         out.declare(byte("equipment", state.equipment));
+        out.declare(byte(
+            "items",
+            state
+                .items()
+                .saturating_add(u8::from(state.mother_brain_defeated)),
+        ));
+        out.declare(byte("tanks", state.collectibles()));
+        out.declare(byte("zebetite_hits_left", state.zebetite_hits_left));
         out.declare(value("health", i64::from(state.health), 0, MAX_HEALTH));
         out.declare(value("balance", balance(state), 0, balance_max()));
         out.declare(value(
             "boss_health",
             i64::from(state.boss_health),
+            0,
+            i64::from(u16::MAX),
+        ));
+        out.declare(value(
+            "boss_health_ceiling",
+            i64::from(state.boss_health_ceiling()),
             0,
             i64::from(u16::MAX),
         ));
@@ -209,5 +223,167 @@ impl Game for Metroid {
 
     fn move_frames(&self, mv: Never) -> u64 {
         match mv {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        metroid::plan::{self, PLAN},
+        search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
+        workload::Lowered,
+    };
+
+    const OBJECTIVE_STRIDE: i64 = 2048;
+
+    struct Path {
+        state: MetroidMechanicalState,
+        accumulator: Accumulator,
+        hand: Option<StageProgress>,
+    }
+
+    fn strategy() -> Lowered<Metroid> {
+        Lowered::new(Metroid, Metroid::STRATEGY).unwrap()
+    }
+
+    fn step(lowered: &Lowered<Metroid>, path: &mut Path) -> StageProgress {
+        let hand = plan::locate(path.state, 0, path.hand);
+        let (record, _) = lowered.record(&path.state);
+        let key = lowered
+            .compiled
+            .observe(&record, &mut path.accumulator)
+            .key
+            .unwrap();
+        let view = lowered.compiled.view(key);
+        assert_eq!(
+            view.stage.as_deref(),
+            Some(plan::stage_name(hand.0)),
+            "{:?}",
+            path.state
+        );
+        assert_eq!(
+            view.progress,
+            [i64::from(hand.0) * OBJECTIVE_STRIDE + i64::from(hand.1)],
+            "{:?} after {:?}",
+            path.state,
+            path.hand
+        );
+        path.hand = Some(hand);
+        hand
+    }
+
+    fn wander(rand: &mut RomuDuoJrRand, state: &mut MetroidMechanicalState) {
+        let mut draw = |range: u64| rand.next_u64() % range;
+        match draw(4) {
+            0 => state.map_x = state.map_x.saturating_add(1).min(31),
+            1 => state.map_x = state.map_x.saturating_sub(1).max(1),
+            2 => state.map_y = state.map_y.saturating_add(1).min(30),
+            _ => state.map_y = state.map_y.saturating_sub(1).max(3),
+        }
+        if draw(40) == 0 {
+            state.area = if state.area == KRAID { 0x10 } else { KRAID };
+        }
+        if draw(60) == 0 {
+            state.equipment |= [MORPH_BALL, BOMBS][usize::try_from(draw(2)).unwrap()];
+        }
+        if draw(80) == 0 {
+            state.missile_capacity = state.missile_capacity.saturating_add(5);
+        }
+        if draw(400) == 0 && state.area == KRAID {
+            state.kraid_defeated = true;
+        }
+        let health = i64::from(state.health) + i64::try_from(draw(161)).unwrap() - 80;
+        state.health = u16::try_from(health.clamp(1, 999)).unwrap();
+    }
+
+    #[test]
+    fn the_route_strategy_locates_every_state_as_the_plan_across_restores() {
+        let lowered = strategy();
+        let mut rand = RomuDuoJrRand::with_seed(0x6d65_7472_6f69);
+        let mut carried = [0_u32; 10];
+        for _ in 0..40 {
+            let mut path = Path {
+                state: MetroidMechanicalState {
+                    area: 0x10,
+                    map_x: 3,
+                    map_y: 14,
+                    health: 300,
+                    mode: 3,
+                    ..MetroidMechanicalState::default()
+                },
+                accumulator: Accumulator::default(),
+                hand: None,
+            };
+            let mut saved = Vec::new();
+            for _ in 0..3000 {
+                let (stage, objective) = step(&lowered, &mut path);
+                let on_route = match PLAN[usize::from(stage)].objective {
+                    plan::Objective::Route(route) => {
+                        route.contains(&(path.state.area, path.state.map_x, path.state.map_y))
+                    }
+                    _ => true,
+                };
+                if !on_route && objective > 0 {
+                    carried[usize::from(stage)] += 1;
+                }
+                if rand.next_u64().is_multiple_of(50) {
+                    saved.push((path.state, path.accumulator.clone(), path.hand));
+                }
+                if !saved.is_empty() && rand.next_u64().is_multiple_of(70) {
+                    let index = usize::try_from(rand.next_u64()).unwrap() % saved.len();
+                    let (state, accumulator, hand) = saved[index].clone();
+                    path = Path {
+                        state,
+                        accumulator,
+                        hand,
+                    };
+                }
+                wander(&mut rand, &mut path.state);
+            }
+        }
+        for (stage, count) in carried.iter().enumerate() {
+            if matches!(PLAN[stage].objective, plan::Objective::Route(_)) {
+                assert!(*count > 0, "{}", PLAN[stage].name);
+            }
+        }
+    }
+
+    #[test]
+    fn every_stage_objective_stays_inside_its_stride() {
+        let lowered = strategy();
+        let extremes = [
+            MetroidMechanicalState::default(),
+            MetroidMechanicalState {
+                health: u16::try_from(MAX_HEALTH).unwrap(),
+                boss_health: u16::MAX,
+                ..MetroidMechanicalState::default()
+            },
+        ];
+        for (index, stage) in PLAN.iter().enumerate() {
+            let route = match stage.objective {
+                plan::Objective::Route(route) => route,
+                _ => &[],
+            };
+            assert!(i64::try_from(route.len()).unwrap() < OBJECTIVE_STRIDE);
+            for base in extremes {
+                for &(area, map_x, map_y) in route.iter().chain(&[(KRAID, 0, 0)]) {
+                    let state = MetroidMechanicalState {
+                        area,
+                        map_x,
+                        map_y,
+                        ..base
+                    };
+                    let mut accumulator = Accumulator::default();
+                    let parent = (u8::try_from(index).unwrap(), 0);
+                    let (record, _) = lowered.record(&state);
+                    let _ = lowered.compiled.observe(&record, &mut accumulator);
+                    let key = lowered.compiled.observe(&record, &mut accumulator).key;
+                    let progress = lowered.compiled.view(key.unwrap()).progress[0];
+                    let hand = plan::locate(state, 0, Some(parent));
+                    assert_eq!(progress / OBJECTIVE_STRIDE, i64::from(hand.0), "{state:?}");
+                }
+            }
+        }
     }
 }
