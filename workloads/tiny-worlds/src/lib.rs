@@ -18,6 +18,7 @@ pub mod picks;
 pub mod resource;
 pub mod ridge;
 pub mod route;
+pub mod stairs;
 pub mod targets;
 pub mod trap;
 pub mod worlds;
@@ -883,8 +884,8 @@ impl<K: Keying> TargetExecution for Workload<K> {
         {
             return Err("unavailable passive-clock duration".into());
         }
-        let cost = (self.planned_cost_fn())(action);
         let before = target.state;
+        let cost = self.config.step_work(before, *action);
         self.spend_action_cost();
         target.state = self.config.step(target.state, *action);
         self.keying
@@ -1265,7 +1266,8 @@ impl<K: Keying> Evaluation for Workload<K> {
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_))
                 | (World::Picks(_), State::Picks(_), State::Picks(_))
-                | (World::Ridge(_), State::Ridge(_), State::Ridge(_)) => {}
+                | (World::Ridge(_), State::Ridge(_), State::Ridge(_))
+                | (World::Stairs(_), State::Stairs(_), State::Stairs(_)) => {}
                 (World::Fork(w), State::Fork(_), State::Fork(after)) => {
                     e.fork_first.resize(3, None);
                     let reached = [
@@ -1812,6 +1814,9 @@ fn campaign<K: Keying>(
         "exported_entry_count":report.archive.entries.len(),"live_entries":report.live_entries,"selector":report.archive.selector,"verified":verify});
     if let Some(shadow) = shadow {
         out["shadow"] = serde_json::to_value(shadow)?;
+    }
+    if let World::Stairs(w) = &workload.config {
+        out["stairs"] = w.report(&report.archive.entries);
     }
     Ok(out)
 }

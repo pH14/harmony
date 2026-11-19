@@ -149,6 +149,7 @@ representation or action choice affects the same world transitions.
 | `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
 | `picks` | Make `depth` state-dependent picks in a row; an offered wrong pick ends the run. | None: `broken` changes nothing, and `draw` selects the flat draw or driver choices. |
 | `ridge` | Climb a line to its summit; a wrong action slides back to the last camp pitched, and a camp is pitched at a site every `spacing` positions. | Uses the same representation in both settings. |
+| `stairs` | Walk a line to its end; an action that reaches a stair runs a forced climb within it, and a wrong action slides back to the last landing. | Uses the same representation in both settings. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -513,6 +514,27 @@ an `absent` disagreement where only one side ends the path. With `reject =
 in the shadow, and the strategy run gives the shipped strategy's decision
 stream.
 
+## Stairs
+
+The stairs world gives a tiny world a forced move, shaped like the `Stairs`
+fixture game in `nes-games`. A line of `length` positions leads to the goal. At
+each position the pattern gives the walking action (two bits per position): it
+steps forward one position, and any other action slides back to the last
+landing. Every `spacing`-th position below `length` is a stair. An action that
+reaches a stair runs a forced climb of `climb` steps within the same action and
+ends on the landing above it, so the stair and the positions it climbs past are
+never resting states. A climb that would pass `length` stops at the goal and is
+cut short. The tier counts the stairs climbed, and the place is the position.
+
+Execution work counts each forced step, so the action that reaches a stair does
+one transition of work plus its forced steps. Its planned cost is one
+transition, and the archive charges it that planned cost. The report's `stairs`
+object counts the final archive entries (`entries`), the entries whose input
+ran a forced climb, so that its record cost is above its planned cost
+(`entries_with_forced_steps`), the entries whose input ran a climb cut short at
+the goal (`entries_cut_short`), and the entries whose shrink total equals the
+record cost of their input (`entries_charged_record_cost`).
+
 ## Twelve picks
 
 The picks world exercises driver choices (searcher README, "Driver choices").
@@ -564,6 +586,7 @@ family's and passive clock's reachability hold by construction.
 | Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
 | Picks | `depth` 1–16; any `seed`; `default_right` 0–`depth`; `draw` is `flat` or `{"choices": POLICY}`. Reachability holds by construction. |
 | Ridge | `length` 2–31; `spacing` and `ridge` 1 to one below `length`; `pattern` encodes two-bit actions per position. Not a chain stage. |
+| Stairs | `length` 3–31; `spacing` 2 to one below `length`; `climb` 1 to one below `spacing`; `pattern` encodes two-bit actions per position. Not a chain stage. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
