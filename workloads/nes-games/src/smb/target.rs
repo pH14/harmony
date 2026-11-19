@@ -279,8 +279,8 @@ where
     }
 
     #[must_use]
-    pub fn lineage_band(&self) -> u16 {
-        self.frame_key.lineage_band
+    pub fn frame_key(&self) -> SmbArchiveKey {
+        self.frame_key
     }
 
     #[must_use]
@@ -1420,6 +1420,7 @@ mod tests {
                 room_area: snapshot.room_area,
                 dead: snapshot.dead,
                 failed: snapshot.failed,
+                frame_key: snapshot.frame_key,
             }
         };
         let (own, foreign, changed) = (native(b'a', 1), native(b'b', 1), native(b'a', 2));

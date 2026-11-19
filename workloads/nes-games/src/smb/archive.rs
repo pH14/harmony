@@ -30,7 +30,7 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const KEY_POLICY_BASE: &str = "band_folded_every_frame_area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
+const KEY_POLICY_BASE: &str = "key_folded_every_frame_area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 #[must_use]
 pub fn key_policy_identifier(route: SmbRoute) -> String {
@@ -78,6 +78,41 @@ impl SmbArchiveKey {
     pub fn band(self) -> u16 {
         plan::band(self.progress.saturating_add(u16::from(self.room_x_bucket)))
             .max(self.lineage_band)
+    }
+
+    #[must_use]
+    pub fn follow(self, previous: Option<Self>) -> Self {
+        let this = match previous {
+            Some(previous_key) if previous_key.room[..2] == self.room[..2] => Self {
+                world: previous_key.world,
+                level: previous_key.level,
+                ..self
+            },
+            _ => self,
+        };
+        let arrived_here = this.room;
+        let (room, lineage_band) = match previous {
+            Some(previous_key)
+                if (previous_key.world, previous_key.level) == (this.world, this.level) =>
+            {
+                let same_area = previous_key.room[..2] == arrived_here[..2];
+                let warped =
+                    previous_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
+                if !same_area {
+                    (arrived_here, previous_key.band())
+                } else if warped {
+                    (arrived_here, 0)
+                } else {
+                    (previous_key.room, previous_key.band())
+                }
+            }
+            _ => (arrived_here, 0),
+        };
+        Self {
+            room,
+            lineage_band,
+            ..this
+        }
     }
 
     #[must_use]
@@ -131,37 +166,8 @@ impl ArchiveKey for SmbArchiveKey {
 
     type Lineage = ();
 
-    fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
-        let this = match parent {
-            Some((parent_key, _)) if parent_key.room[..2] == self.room[..2] => Self {
-                world: parent_key.world,
-                level: parent_key.level,
-                ..self
-            },
-            _ => self,
-        };
-        let arrived_here = this.room;
-        let (room, lineage_band) = match parent {
-            Some((parent_key, _))
-                if (parent_key.world, parent_key.level) == (this.world, this.level) =>
-            {
-                let same_area = parent_key.room[..2] == arrived_here[..2];
-                let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
-                if !same_area {
-                    (arrived_here, parent_key.band().max(this.lineage_band))
-                } else if warped {
-                    (arrived_here, this.lineage_band)
-                } else {
-                    (parent_key.room, parent_key.band().max(this.lineage_band))
-                }
-            }
-            _ => (arrived_here, this.lineage_band),
-        };
-        Self {
-            room,
-            lineage_band,
-            ..this
-        }
+    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+        self
     }
 
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
@@ -264,7 +270,7 @@ fn game_clock(wram: &[u8; 2_048]) -> u16 {
 pub fn fold_frame(previous: Option<SmbArchiveKey>, wram: &[u8; 2_048]) -> SmbArchiveKey {
     let raw = archive_key(wram);
     let raw = stamp_arrival_room(raw, wram).unwrap_or(raw);
-    raw.complete(previous.map(|key| (key, &())))
+    raw.follow(previous)
 }
 
 pub fn stamp_arrival_room(
@@ -483,55 +489,14 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_boundary_carries_its_room_to_the_next_boundary() {
-        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
-        let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
-                      parent: Option<usize>,
-                      previous: Option<SmbArchiveKey>,
-                      actions: usize,
-                      key| {
-            archive
-                .insert_after(
-                    parent,
-                    previous,
-                    0,
-                    ArchiveCandidate {
-                        suffix: vec![1_u8; actions],
-                        key,
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert")
-        };
-        let (land, _) = insert(&mut archive, None, None, 1, key(10, [3, 5]));
-        let land = land.expect("land");
-        let (first, _) = insert(&mut archive, Some(land), None, 1, key(3, [0, 2]));
-        let first = first.expect("first");
-        let (second, _) = insert(&mut archive, Some(land), None, 2, key(3, [0, 2]));
-        second.expect("second");
-        assert_eq!(archive.entry_key(first).expect("first key").room, [0, 2, 0]);
-        let (rejected, at_page_0) = insert(&mut archive, Some(land), None, 3, key(3, [0, 2]));
-        assert!(rejected.is_none());
-        assert_eq!(at_page_0.room, [0, 2, 0]);
-        let (deep, key_deep) = insert(
-            &mut archive,
-            Some(land),
-            Some(at_page_0),
-            4,
-            key(50, [0, 2]),
-        );
-        let deep = deep.expect("deep");
-        assert_eq!(key_deep.room, [0, 2, 0]);
-        assert_eq!(archive.entry_key(deep).expect("deep key").room, [0, 2, 0]);
-        let (fresh, _) = insert(&mut archive, Some(land), None, 5, key(50, [0, 2]));
-        assert_eq!(
-            archive
-                .entry_key(fresh.expect("fresh"))
-                .expect("fresh key")
-                .room,
-            [0, 2, 3]
-        );
+    fn a_frame_carries_its_room_to_the_next_frame() {
+        let land = key(10, [3, 5]);
+        let first = key(3, [0, 2]).follow(Some(land));
+        assert_eq!(first.room, [0, 2, 0]);
+        let deep = key(50, [0, 2]).follow(Some(first));
+        assert_eq!(deep.room, [0, 2, 0]);
+        let fresh = key(50, [0, 2]).follow(Some(land));
+        assert_eq!(fresh.room, [0, 2, 3]);
     }
 
     #[test]
@@ -551,7 +516,7 @@ mod tests {
         wram[0x0086] = 120;
         let loading = stamp_arrival_room(archive_key(&wram), &wram).expect("loading key");
         assert_eq!((loading.progress, loading.room_x_bucket), (0, 0));
-        let loading = loading.complete(Some((castle, &())));
+        let loading = loading.follow(Some(castle));
         assert_eq!(
             (loading.world, loading.level, loading.room),
             (1, 0, [1, 0, 0])
@@ -567,7 +532,7 @@ mod tests {
             level: 0,
             ..key(182, [2, 0])
         }
-        .complete(Some((warp_zone, &())));
+        .follow(Some(warp_zone));
         assert_eq!(
             (entering_pipe.world, entering_pipe.level, entering_pipe.room),
             (0, 1, [2, 0, 11])
@@ -577,7 +542,7 @@ mod tests {
             level: 0,
             ..key(2, [1, 4])
         }
-        .complete(Some((entering_pipe, &())));
+        .follow(Some(entering_pipe));
         assert_eq!(
             (arrived.world, arrived.level, arrived.room),
             (2, 0, [1, 4, 0])
@@ -689,35 +654,31 @@ mod tests {
     fn a_new_area_keeps_the_band_its_lineage_reached_and_a_warp_back_drops_it() {
         let castle = key(250, [3, 5]);
         assert_eq!(castle.progress(), (31, 3));
-        let underwater = key(10, [0, 2]).complete(Some((castle, &())));
+        let underwater = key(10, [0, 2]).follow(Some(castle));
         assert_eq!(underwater.progress(), (31, 3));
-        let back_in_the_castle = key(260, [3, 5]).complete(Some((underwater, &())));
+        let back_in_the_castle = key(260, [3, 5]).follow(Some(underwater));
         assert_eq!(back_in_the_castle.progress(), (31, 4));
-        let wrong_pipe = key(20, [3, 5]).complete(Some((back_in_the_castle, &())));
+        let wrong_pipe = key(20, [3, 5]).follow(Some(back_in_the_castle));
         assert_eq!(wrong_pipe.progress(), (31, 0));
         let next_level = SmbArchiveKey {
             world: 7,
             level: 0,
             ..key(10, [1, 0])
         }
-        .complete(Some((SmbArchiveKey { world: 6, ..castle }, &())));
+        .follow(Some(SmbArchiveKey { world: 6, ..castle }));
         assert_eq!(next_level.progress(), (28, 0));
     }
 
     #[test]
-    fn a_band_folded_over_the_frames_between_candidates_survives_completion() {
-        let start = key(100, [1, 4]);
-        let walked_back = SmbArchiveKey {
-            lineage_band: 3,
-            ..key(120, [1, 4])
-        };
-        assert_eq!(walked_back.complete(Some((start, &()))).band(), 3);
-        assert_eq!(walked_back.complete(None).band(), 3);
-        let warped = SmbArchiveKey {
-            lineage_band: 1,
-            ..key(20, [1, 4])
-        };
-        assert_eq!(warped.complete(Some((key(250, [1, 4]), &()))).band(), 1);
+    fn a_folded_key_is_its_own_completion() {
+        let castle = key(250, [3, 5]);
+        let walked_back = key(200, [3, 5]).follow(Some(castle));
+        assert_eq!(walked_back.band(), castle.band());
+        assert_eq!(
+            walked_back.complete(Some((key(10, [0, 2]), &()))),
+            walked_back
+        );
+        assert_eq!(walked_back.complete(None), walked_back);
     }
 
     #[test]

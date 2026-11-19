@@ -72,8 +72,9 @@ through an underwater area after the castle's third band. A state therefore
 keeps the highest band its parent held in the same level. A pipe that sends
 Mario back within the same area, as 8-4's wrong pipes do, drops that inherited
 band, so those states rank by their own column, and the room restarts at the
-page they land on. The band a state inherits is folded over every frame of its
-path, not only over the states keyed as candidates.
+page they land on. A state's key is folded over every frame of its path, so the
+band and room it inherits come from the frame before it, not from the last
+keyed candidate.
 
 The place is the room Mario entered the level section through, his column
 (the camera's column plus his column on the screen), his height bucket, whether

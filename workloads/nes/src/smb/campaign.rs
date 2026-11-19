@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_keys_preserve_recorded_room_assignment() {
+    fn a_worker_key_carries_the_room_its_frames_folded() {
         let rom = synthetic_nrom();
         let game = test_game(&rom);
         let mut target = game.new_target().expect("load target");
@@ -493,16 +493,12 @@ mod tests {
             .candidate
             .as_ref()
             .expect("live candidate");
-        assert_eq!(candidate.key.room, [0; 3]);
+        assert_eq!(&candidate.key.room[..2], &[7, 9]);
         let completed = game
             .complete_candidate_key(candidate.key, &candidate.snapshot)
             .expect("complete arrival room");
+        assert_eq!(completed, candidate.key);
         assert_eq!(completed, game.current_key(&target).expect("current room"));
-        assert_eq!(&completed.room[..2], &[7, 9]);
-        assert_ne!(
-            postcard::to_stdvec(&candidate.key).expect("recorded worker key"),
-            postcard::to_stdvec(&completed).expect("completed archive key")
-        );
     }
 
     #[test]
@@ -1037,7 +1033,7 @@ mod tests {
             "fewest_frames_in_level",
             "whole_tree",
             "nes_pressable_36",
-            "band_folded_every_frame_area_arrival_room_reset_on_warp",
+            "key_folded_every_frame_area_arrival_room_reset_on_warp",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");

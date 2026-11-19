@@ -10,10 +10,10 @@ use machine::{
 use sha2::{Digest, Sha256};
 
 use super::{
-    archive::{SmbArchiveKey, archive_key, stamp_arrival_room},
+    archive::{SmbArchiveKey, fold_frame},
     game::{SmbState, SuperMarioBros, WARPS_STRATEGY},
     plan::SmbRoute,
-    target::{SmbTarget, smb_camera_pixels},
+    target::SmbTarget,
 };
 use crate::{
     search::{
@@ -103,30 +103,22 @@ fn genesis(inputs: &Inputs) -> (QuickNesMachine, SnapId, [u8; WRAM_SIZE]) {
 #[derive(Clone)]
 struct Chain {
     frame: SmbArchiveKey,
-    candidate: SmbArchiveKey,
-    bucket: u32,
     state: SmbState,
     accumulator: Accumulator,
 }
 
 impl Chain {
     fn genesis(lowered: &Lowered<SuperMarioBros>, route: SmbRoute, wram: &[u8; WRAM_SIZE]) -> Self {
-        let key = hand_key(route, wram).complete(None);
+        let key = fold_frame(None, wram).on_route(route);
         let state = lowered.game.decode(None, wram);
         let mut accumulator = Accumulator::default();
         let _ = lowered.observe(0, state, &mut accumulator);
         Self {
             frame: key,
-            candidate: key,
-            bucket: smb_camera_pixels(wram) / 16,
             state,
             accumulator,
         }
     }
-}
-
-fn hand_key(route: SmbRoute, wram: &[u8; WRAM_SIZE]) -> SmbArchiveKey {
-    stamp_arrival_room(archive_key(wram).on_route(route), wram).expect("arrival room")
 }
 
 fn routes() -> [(SmbRoute, Lowered<SuperMarioBros>); 2] {
@@ -144,7 +136,6 @@ fn routes() -> [(SmbRoute, Lowered<SuperMarioBros>); 2] {
 
 struct Frame {
     hand: SmbArchiveKey,
-    candidate: Option<SmbArchiveKey>,
     compiled: Option<AssertionKey>,
     hand_stops: bool,
     stops: bool,
@@ -155,32 +146,17 @@ fn step(
     route: SmbRoute,
     chain: &mut Chain,
     wram: &[u8; WRAM_SIZE],
-    endpoint: bool,
 ) -> Frame {
-    let raw = hand_key(route, wram);
-    let hand = raw.complete(Some((chain.frame, &())));
+    let hand = fold_frame(Some(chain.frame), wram).on_route(route);
     chain.frame = hand;
     let state = lowered.game.decode(Some(&chain.state), wram);
     chain.state = state;
-    let bucket = smb_camera_pixels(wram) / 16;
     let hand_stops =
         state.dead || state.victory || state.doomed || (!state.dead && route.is_doomed(wram));
-    let candidate =
-        (bucket != chain.bucket || state.dead || state.victory || endpoint).then(|| {
-            let key = SmbArchiveKey {
-                lineage_band: hand.lineage_band,
-                ..raw
-            }
-            .complete(Some((chain.candidate, &())));
-            chain.candidate = key;
-            key
-        });
-    chain.bucket = bucket;
     lowered.checked_record(&state).expect("checked record");
     let observation = lowered.observe(0, state, &mut chain.accumulator);
     Frame {
         hand,
-        candidate,
         compiled: observation.key,
         hand_stops,
         stops: observation.stops(),
@@ -239,8 +215,6 @@ fn agree(pairs: &mut Vec<(SmbArchiveKey, AssertionKey)>, shape: KeyShape) -> usi
 struct Tally {
     pairs: Vec<(SmbArchiveKey, AssertionKey)>,
     frames: usize,
-    candidates: usize,
-    candidate_differs: usize,
     stops: usize,
     tiers: BTreeMap<(u8, u16), usize>,
 }
@@ -255,10 +229,6 @@ impl Tally {
         if frame.stops {
             self.stops += 1;
             return;
-        }
-        if let Some(candidate) = frame.candidate {
-            self.candidates += 1;
-            self.candidate_differs += usize::from(candidate != frame.hand);
         }
         *self.tiers.entry(frame.hand.progress()).or_default() += 1;
         self.pairs.push((frame.hand, compiled));
@@ -284,8 +254,8 @@ fn tape_starts(
         let mut at = genesis;
         'tape: for (index, chord) in tape.actions.iter().enumerate() {
             let frames = run(machine, at, std::slice::from_ref(chord));
-            for (offset, wram) in frames.iter().enumerate() {
-                if step(lowered, route, &mut chain, wram, offset + 1 == frames.len()).stops {
+            for wram in &frames {
+                if step(lowered, route, &mut chain, wram).stops {
                     break 'tape;
                 }
             }
@@ -344,8 +314,8 @@ fn random_play(
                 .unwrap();
             previous = Some(chord);
             let frames = run(machine, at, &[chord]);
-            for (offset, wram) in frames.iter().enumerate() {
-                let frame = step(lowered, route, &mut chain, wram, offset + 1 == frames.len());
+            for wram in &frames {
+                let frame = step(lowered, route, &mut chain, wram);
                 tally.add(&frame, "in random play");
                 if frame.stops {
                     ended = true;
@@ -406,12 +376,10 @@ fn compiled_keys_match_hand_keys_on_played_states() {
         let keyed = tally.pairs.len();
         let distinct = agree(&mut tally.pairs, lowered.compiled.shape());
         eprintln!(
-            "smb equivalence on {}: {keyed} keyed states ({distinct} distinct key pairs), {} stopping frames of {}; {} candidate frames, {} where the candidate chain's key differs from the frame chain's; {} tiers {:?}",
+            "smb equivalence on {}: {keyed} keyed states ({distinct} distinct key pairs), {} stopping frames of {}; {} tiers {:?}",
             route.identifier(),
             tally.stops,
             tally.frames,
-            tally.candidates,
-            tally.candidate_differs,
             tally.tiers.len(),
             tally.tiers
         );
@@ -438,14 +406,8 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
             let (frames_before, mut stop) = (tally.frames, None);
             for (index, chord) in tape.actions.iter().enumerate() {
                 let frames = run(&mut machine, at, std::slice::from_ref(chord));
-                for (offset, wram) in frames.iter().enumerate() {
-                    let frame = step(
-                        &lowered,
-                        route,
-                        &mut chain,
-                        wram,
-                        offset + 1 == frames.len(),
-                    );
+                for wram in &frames {
+                    let frame = step(&lowered, route, &mut chain, wram);
                     tally.add(&frame, &format!("in {path} at action {index}"));
                     if frame.stops {
                         stop = Some((index, chain.state.victory));
@@ -475,10 +437,8 @@ fn compiled_keys_match_hand_keys_on_replayed_tapes() {
         let keyed = tally.pairs.len();
         let distinct = agree(&mut tally.pairs, lowered.compiled.shape());
         eprintln!(
-            "smb tape equivalence on {}: {keyed} keyed states ({distinct} distinct key pairs); {} candidate frames, {} where the candidate chain's key differs from the frame chain's; {} tiers {:?}",
+            "smb tape equivalence on {}: {keyed} keyed states ({distinct} distinct key pairs); {} tiers {:?}",
             route.identifier(),
-            tally.candidates,
-            tally.candidate_differs,
             tally.tiers.len(),
             tally.tiers
         );

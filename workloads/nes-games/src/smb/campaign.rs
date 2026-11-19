@@ -39,7 +39,7 @@ use crate::{
         DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
         SmbArchiveReport, admission_is_viable, archive_key, chord_time, key_policy_identifier,
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
-        stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
+        update_first_inputs,
     },
     smb::plan::{Goal, SmbRoute},
     smb::shrink::{remaining_frames_bound, simpler_chords},
@@ -877,21 +877,18 @@ where
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(self.rollout_key(target)?, &target.wram())
+        self.rollout_key(target)
     }
 
     fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        Ok(SmbArchiveKey {
-            lineage_band: target.lineage_band(),
-            ..archive_key(&target.wram()).on_route(self.route)
-        })
+        Ok(target.frame_key().on_route(self.route))
     }
 
     fn complete_candidate_key(
         &self,
         key: SmbArchiveKey,
-        snapshot: &SmbSnapshot<P>,
+        _snapshot: &SmbSnapshot<P>,
     ) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room_identity(key, snapshot.room_area())
+        Ok(key)
     }
 }
