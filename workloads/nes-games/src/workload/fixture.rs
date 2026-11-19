@@ -267,3 +267,83 @@ impl crate::search::archive::ArchiveKey for LedgeKey {
     }
     fn record(_: &mut (), _: Self) {}
 }
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct Landing {
+    pub x: u8,
+    pub room: u8,
+    pub dwell: u8,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Climb(u8);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Stairs;
+
+impl Game for Stairs {
+    type State = Landing;
+    type Move = Climb;
+
+    const NAME: &'static str = "stairs";
+    const STRATEGY: &'static str = r#"
+capacity = 1
+goal = "room >= 9"
+spread = "room"
+identity = ["highest(x, room)", "dwell"]
+"#;
+    const CHORDS: ChordVocabulary = Ledge::CHORDS;
+
+    fn setup(&self) -> Vec<ButtonChord> {
+        Vec::new()
+    }
+
+    fn genesis(&self, _: &Landing) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn decode(&self, previous: Option<&Landing>, ram: &[u8]) -> Landing {
+        let room = ram[1];
+        Landing {
+            x: ram[0],
+            room,
+            dwell: previous
+                .filter(|previous| previous.room == room)
+                .map_or(0, |previous| previous.dwell.saturating_add(1)),
+        }
+    }
+
+    fn declare(&self, state: &Landing, out: &mut impl Declarations) {
+        out.declare(Assertion::Value {
+            name: "x",
+            value: Number::byte(state.x),
+        });
+        out.declare(Assertion::Value {
+            name: "room",
+            value: Number::byte(state.room),
+        });
+        out.declare(Assertion::Value {
+            name: "dwell",
+            value: Number::byte(state.dwell),
+        });
+    }
+
+    fn moves(&self, state: &Landing) -> Moves<Climb> {
+        if state.x == 6 {
+            Moves::forced(Climb(3))
+        } else {
+            Moves::none()
+        }
+    }
+
+    fn play(&self, Climb(left): Climb, _: &Landing) -> Option<Step<Climb>> {
+        Some(Step {
+            chord: ButtonChord::new(if left == 1 { LEFT } else { RIGHT }, 1),
+            rest: (left > 1).then(|| Climb(left - 1)),
+        })
+    }
+
+    fn move_frames(&self, Climb(left): Climb) -> u64 {
+        u64::from(left)
+    }
+}

@@ -20,9 +20,12 @@ trait Lane<H>: Send + Sync {
     fn fork(&self) -> Box<dyn Lane<H>>;
     fn start(&self, ram: &[u8]);
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
+    fn forced(&self, steps: &[[u8; WRAM_SIZE]]);
     fn saved(&self, tag: u64);
     fn restored(&self, tag: u64, ram: &[u8]);
     fn observe(&self, hand: Option<H>) -> Option<H>;
+    #[cfg(test)]
+    fn key(&self) -> Option<crate::search::assertion::AssertionKey>;
 }
 
 pub struct ShadowHook<H>(Box<dyn Lane<H>>);
@@ -48,6 +51,10 @@ impl<H> ShadowHook<H> {
         self.0.advance(frames);
     }
 
+    pub fn forced(&self, steps: &[[u8; WRAM_SIZE]]) {
+        self.0.forced(steps);
+    }
+
     pub fn saved(&self, tag: u64) {
         self.0.saved(tag);
     }
@@ -58,6 +65,11 @@ impl<H> ShadowHook<H> {
 
     pub fn observe(&self, hand: Option<H>) -> Option<H> {
         self.0.observe(hand)
+    }
+
+    #[cfg(test)]
+    fn key(&self) -> Option<crate::search::assertion::AssertionKey> {
+        self.0.key()
     }
 }
 
@@ -156,6 +168,23 @@ where
         }
     }
 
+    fn forced(&self, steps: &[[u8; WRAM_SIZE]]) {
+        let Ok(mut current) = self.current.lock() else {
+            return;
+        };
+        current.pending = None;
+        let (Some(position), Some((arrival, interior))) =
+            (current.position.as_mut(), steps.split_last())
+        else {
+            return;
+        };
+        let game = &self.shadow.lowered.game;
+        for wram in interior {
+            position.state = game.decode(Some(&position.state), wram);
+        }
+        position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
+    }
+
     fn saved(&self, tag: u64) {
         let Ok(mut current) = self.current.lock() else {
             return;
@@ -200,6 +229,11 @@ where
         }
         completed
     }
+
+    #[cfg(test)]
+    fn key(&self) -> Option<crate::search::assertion::AssertionKey> {
+        self.current.lock().ok()?.position.as_ref()?.cursor.key()
+    }
 }
 
 pub struct Shadow<G: Game, H: ArchiveKey> {
@@ -238,9 +272,13 @@ mod tests {
     };
 
     use super::*;
-    use crate::workload::{
-        fixture::{LEFT, Ledge, LedgeKey, RIGHT, Stepper, WARP},
-        target::read_wram,
+    use crate::{
+        search::assertion::AssertionKey,
+        target::Target,
+        workload::{
+            fixture::{LEFT, Ledge, LedgeKey, RIGHT, Stairs, Stepper, WARP},
+            target::{NesTarget, read_wram},
+        },
     };
 
     struct Hand {
@@ -341,5 +379,82 @@ mod tests {
         assert_eq!(report.unknown_restores, 0);
         assert!(report.lineage_changes > 0);
         assert_eq!(report.keyed_states, 11);
+    }
+
+    struct Lockstep {
+        target: NesTarget<Stairs, Stepper>,
+        machine: Stepper,
+        at: SnapId,
+        hook: ShadowHook<AssertionKey>,
+    }
+
+    impl Lockstep {
+        fn new(hook: ShadowHook<AssertionKey>) -> Self {
+            let lowered = Arc::new(Lowered::new(Stairs, Stairs::STRATEGY).unwrap());
+            let target = NesTarget::from_machine(lowered, Stepper::default()).unwrap();
+            let mut machine = Stepper::default();
+            let at = machine.snapshot().unwrap();
+            hook.start(&read_wram(&machine).unwrap());
+            let mut lockstep = Self {
+                target,
+                machine,
+                at,
+                hook,
+            };
+            lockstep.key();
+            lockstep
+        }
+
+        fn key(&mut self) -> Option<AssertionKey> {
+            let key = self.target.observation().key;
+            self.hook.observe(key);
+            assert_eq!(self.hook.key(), key);
+            key
+        }
+
+        fn press(&mut self, buttons: u8, hold: u8) -> [u8; WRAM_SIZE] {
+            let chord = ButtonChord::new(buttons, hold);
+            self.machine
+                .branch(self.at, &reproducer(std::slice::from_ref(&chord)))
+                .unwrap();
+            self.machine.run(StopConditions::default(), None).unwrap();
+            self.at = self.machine.snapshot().unwrap();
+            read_wram(&self.machine).unwrap()
+        }
+
+        fn apply(&mut self, buttons: u8, hold: u8) -> Option<AssertionKey> {
+            self.target.apply(&ButtonChord::new(buttons, hold));
+            let departure = self.press(buttons, hold);
+            self.hook.advance(self.machine.frames());
+            if Stairs
+                .moves(&Stairs.decode(None, &departure))
+                .forced
+                .is_some()
+            {
+                let steps = [RIGHT, RIGHT, LEFT].map(|buttons| self.press(buttons, 1));
+                self.hook.forced(&steps);
+            }
+            self.key()
+        }
+    }
+
+    #[test]
+    fn a_forced_move_decodes_its_interior_steps_in_a_chain_and_observes_only_the_arrival() {
+        let shadow = Shadow::<Stairs, AssertionKey>::new(Stairs).unwrap();
+        let mut lockstep = Lockstep::new(shadow.hook());
+        let identities: Vec<Vec<i64>> = [(RIGHT, 6), (RIGHT, 1), (LEFT, 2), (WARP, 1), (RIGHT, 6)]
+            .into_iter()
+            .map(|(buttons, hold)| {
+                let key = lockstep.apply(buttons, hold).unwrap();
+                shadow.lowered.compiled.view(key).identity
+            })
+            .collect();
+        assert_eq!(
+            identities,
+            [[7, 9], [8, 10], [8, 15], [0, 0], [7, 9]].map(Vec::from)
+        );
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!(report.keyed_states, 6);
     }
 }
