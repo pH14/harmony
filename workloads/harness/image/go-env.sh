@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+# shellcheck shell=sh
 # Sourced by harness image Go build stages. Sets HARNESS_GO_LDFLAGS for every
 # `go build -ldflags` and, on arm64, the toolchain settings that image
 # admission needs.
