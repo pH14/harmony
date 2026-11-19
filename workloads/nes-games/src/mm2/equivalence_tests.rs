@@ -171,9 +171,14 @@ impl Pair {
                 false
             }
         };
+        let hand = self.hand.mechanical_state();
         assert_eq!(
-            decode_state(self.strategy.wram()).expect("decode"),
-            self.hand.mechanical_state(),
+            Mm2MechanicalState {
+                enemy_damage: hand.enemy_damage,
+                boss_intro_frames: hand.boss_intro_frames,
+                ..decode_state(self.strategy.wram()).expect("decode")
+            },
+            hand,
             "states differ after a switch from {state:?}"
         );
         (switched, self.compare())

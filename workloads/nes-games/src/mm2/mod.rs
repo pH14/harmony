@@ -3,6 +3,8 @@
 pub mod action;
 pub mod archive;
 pub mod campaign;
+#[cfg(test)]
+mod draw_check;
 #[cfg(all(test, unix))]
 mod equivalence_tests;
 pub mod game;
