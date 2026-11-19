@@ -301,7 +301,8 @@ run while a cut is in force. A search execution's last checks run at the
 endpoint of its last action, with no settle. A replay settles until a check
 starts and finishes in one disturbance generation with no pending process
 fault. An unhealed cut is not a pending process fault, so the settlement does
-not wait for hook windows and can end while a held cut still stands. A check
+not wait for hook windows and can end while a held cut still stands; this is
+tracked in [#993](https://github.com/pH14/harmony/issues/993). A check
 that starts under a standing cut sees `HARMONY_FAULTS_IN_FORCE=1` (see the
 [supervisor README](../../consonance/harmony-linux/supervisor/README.md)), and
 the harness kit then skips its replica comparison and does not fail it, so a
@@ -783,6 +784,10 @@ to and including the failing action and with the branch root's actions,
 becomes a `failure-N.json` file in the run directory (at most 64 per campaign),
 and the search prints the file name. `harmony debug run --actions
 failure-N.json` replays the input, and its console shows the guest's error.
+The search's own message does not carry that error, and a guest
+out-of-memory kill in a deep lineage is recorded as an ordinary failed
+execution; both are tracked in
+[#992](https://github.com/pH14/harmony/issues/992).
 
 The searcher stops the campaign when the current run of consecutive hung jobs
 is too long for the hang rate seen before it. With `h` hangs in the `n` jobs
