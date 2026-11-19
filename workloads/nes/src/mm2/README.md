@@ -126,6 +126,20 @@ whole-game run with `"shadow": true` gives each hand target a `ShadowHook`.
 While the shadow is on, the hand target drives a transition with
 `MegaMan2::play`'s chords and passes the step states to `forced`.
 
+## Archive memory
+
+An archive entry of the hand workload is 112 bytes, with a 26-byte
+`Mm2ArchiveKey`, and an entry of the strategy workload is 128 bytes, with a
+28-byte `AssertionKey` (`size_of` on aarch64 macOS, release build). The
+strategy entry is larger because its key and its 16-byte milestones take 44
+bytes, against 29 for the hand key and its 3-byte milestones. Archive history compacts once it holds more than a quarter of
+`memory_mib`, so the strategy arm compacts after fewer entries than the hand
+arm, and the two arms' search decisions differ from the first compaction on.
+An outcome that decides a choice for this workload is therefore scored on
+`mm2-strategy`. A preference packs into 32 bits, which holds the three lowest
+weapon energies and health at a byte each. The full sorted energies would need
+12 lanes and do not fit.
+
 ## Milestones and evidence
 
 A whole-game run reports `named_progress` with the first try that saw each
