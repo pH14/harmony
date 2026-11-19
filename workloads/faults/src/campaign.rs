@@ -2452,7 +2452,14 @@ mod tests {
             profiles: ChoiceProfiles::Fixed(ChoiceProfile::new(CERTAIN / 2, 0)),
             untried_first: true,
         };
-        let plan = ChoicePlan::new(&policy, ChoiceProfile::default(), 7, Some(2), Vec::new());
+        let plan = ChoicePlan::new(
+            &policy,
+            ChoiceProfile::default(),
+            7,
+            Some(2),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(plan.untried, Some(2));
         let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
         let copied = wait.with_choice(5).with_guest(GuestChoices {

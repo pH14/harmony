@@ -40,6 +40,7 @@ impl GuestChoices {
             seed: self.seed,
             untried: self.untried,
             held: Vec::new(),
+            declared: Vec::new(),
         }
     }
 }
@@ -234,7 +235,14 @@ mod tests {
             profiles: ChoiceProfiles::Fixed(ChoiceProfile::new(contrary, hold)),
             untried_first: true,
         };
-        ChoicePlan::new(&policy, ChoiceProfile::default(), 99, untried, Vec::new())
+        ChoicePlan::new(
+            &policy,
+            ChoiceProfile::default(),
+            99,
+            untried,
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     fn labels(guest: Option<GuestChoices>, answers: Option<&EnvSpec>) -> Vec<u16> {

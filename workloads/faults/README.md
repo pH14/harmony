@@ -299,7 +299,9 @@ A guest driver's `sdk.Below(site, n)` asks a choice under fault-policy's
 `CHOICE_NAMESPACE` ([harness kit](../harness/README.md)), and the package
 answers it (ours). The faults workload offers the searcher one choice site,
 `guest`, so every drawn job carries the searcher's `ChoicePlan` with its
-CONTRARY rate, hold probability and untried ordinal. Because a guest asks at
+CONTRARY rate, hold probability and untried ordinal. The `guest` site declares
+no rate of its own (`ChoiceSite::with_contrary`), so the plan's `declared`
+list is empty. Because a guest asks at
 moments and with option counts only the guest knows, and an action must stay
 `Copy`, an action stores the plan rather than its answers: `execute_job`
 stamps each freshly drawn suffix action with `GuestChoices` (the plan's two
