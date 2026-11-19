@@ -498,7 +498,10 @@ with a latched `ridge` stage, `highest(ridge.position, ridge.camp)` and
 `prefer = [["ridge.camp: more"]]`. Hand runs key the family with `ridge::Hand`
 under `keep: portfolio` only. `ridge::tests` checks that the strategy and the
 shadow runs give the hand run's decision stream, work and executions, and that
-the shadow reports no disagreement while the lineage changes hand keys.
+the shadow reports no disagreement while the lineage changes hand keys. With a
+`reject` line prepended to the strategy, it also checks that the shadow agrees
+on a state the strategy rejects and a hand keying leaves unkeyed, and counts an
+`absent` disagreement where only one of them does.
 
 ## Twelve picks
 

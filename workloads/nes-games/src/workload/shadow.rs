@@ -3,9 +3,9 @@
 use std::{
     collections::BTreeMap,
     error::Error,
-    fmt::Debug,
+    fmt::{self, Debug},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -24,7 +24,7 @@ trait Lane<H>: Send + Sync {
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
     fn forced(&self, steps: &[[u8; WRAM_SIZE]]);
     fn saved(&self) -> ShadowToken;
-    fn restored(&self, token: Option<ShadowToken>, ram: &[u8]);
+    fn restored(&self, token: Option<&ShadowToken>, ram: &[u8]);
     fn observe(&self, hand: Option<H>) -> Option<H>;
     #[cfg(test)]
     fn key(&self) -> Option<crate::search::assertion::AssertionKey>;
@@ -32,10 +32,49 @@ trait Lane<H>: Send + Sync {
 
 static SHADOWS: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ShadowToken {
+trait Forget: Send + Sync {
+    fn forget(&self, index: u64);
+}
+
+struct Issued {
     shadow: u64,
     index: u64,
+    saved: Weak<dyn Forget>,
+}
+
+impl Drop for Issued {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.upgrade() {
+            saved.forget(self.index);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ShadowToken(Arc<Issued>);
+
+impl ShadowToken {
+    fn index_in(&self, shadow: u64) -> Option<u64> {
+        (self.0.shadow == shadow).then_some(self.0.index)
+    }
+}
+
+impl PartialEq for ShadowToken {
+    fn eq(&self, other: &Self) -> bool {
+        (self.0.shadow, self.0.index) == (other.0.shadow, other.0.index)
+    }
+}
+
+impl Eq for ShadowToken {}
+
+impl Debug for ShadowToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ShadowToken")
+            .field("shadow", &self.0.shadow)
+            .field("index", &self.0.index)
+            .finish()
+    }
 }
 
 pub struct ShadowHook<H>(Box<dyn Lane<H>>);
@@ -47,7 +86,7 @@ impl<H> Clone for ShadowHook<H> {
 }
 
 impl<H> Debug for ShadowHook<H> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ShadowHook")
     }
 }
@@ -70,7 +109,7 @@ impl<H> ShadowHook<H> {
         self.0.saved()
     }
 
-    pub fn restored(&self, token: Option<ShadowToken>, ram: &[u8]) {
+    pub fn restored(&self, token: Option<&ShadowToken>, ram: &[u8]) {
         self.0.restored(token, ram);
     }
 
@@ -197,28 +236,31 @@ where
     }
 
     fn saved(&self) -> ShadowToken {
-        let token = ShadowToken {
+        let index = self.shadow.issued.fetch_add(1, Ordering::Relaxed);
+        let saved: Weak<Shadow<G, H>> = Arc::downgrade(&self.shadow);
+        let token = ShadowToken(Arc::new(Issued {
             shadow: self.shadow.id,
-            index: self.shadow.issued.fetch_add(1, Ordering::Relaxed),
-        };
+            index,
+            saved,
+        }));
         let Ok(mut current) = self.current.lock() else {
             return token;
         };
         if let (Some(position), Ok(mut saved)) =
             (current.position.as_ref(), self.shadow.saved.lock())
         {
-            saved.insert(token.index, position.clone());
+            saved.insert(index, position.clone());
         }
-        current.pending = Some(token.index);
+        current.pending = Some(index);
         token
     }
 
-    fn restored(&self, token: Option<ShadowToken>, ram: &[u8]) {
+    fn restored(&self, token: Option<&ShadowToken>, ram: &[u8]) {
         let found = token
-            .filter(|token| token.shadow == self.shadow.id)
-            .and_then(|token| {
+            .and_then(|token| token.index_in(self.shadow.id))
+            .and_then(|index| {
                 let saved = self.shadow.saved.lock().ok()?;
-                Some((token.index, saved.get(&token.index)?.clone()))
+                Some((index, saved.get(&index)?.clone()))
             });
         let (pending, position) = match found {
             Some((index, position)) => (Some(index), position),
@@ -245,8 +287,11 @@ where
             return None;
         };
         let completed = position.cursor.pair(&self.shadow.table, hand);
-        if let (Some(token), Ok(mut saved)) = (pending, self.shadow.saved.lock()) {
-            saved.insert(token, position.clone());
+        if let Some(index) = pending
+            && let Ok(mut saved) = self.shadow.saved.lock()
+            && let Some(kept) = saved.get_mut(&index)
+        {
+            *kept = position.clone();
         }
         completed
     }
@@ -291,6 +336,25 @@ where
     pub fn report(&self) -> Result<ShadowReport, Box<dyn Error>> {
         self.table.report(&self.lowered.compiled)
     }
+
+    #[cfg(test)]
+    fn saved_positions(&self) -> usize {
+        self.saved.lock().map_or(0, |saved| saved.len())
+    }
+}
+
+impl<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static> Forget for Shadow<G, H>
+where
+    H::Lineage: Send + Sync,
+{
+    fn forget(&self, index: u64) {
+        let forgotten = self
+            .saved
+            .lock()
+            .ok()
+            .and_then(|mut saved| saved.remove(&index));
+        drop(forgotten);
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +374,7 @@ mod tests {
         },
     };
 
+    #[derive(Clone)]
     struct Saved {
         state: Vec<u8>,
         frames: u64,
@@ -341,6 +406,10 @@ mod tests {
         fn key(&mut self) -> Option<LedgeKey> {
             let spot = Ledge.decode(None, &read_wram(&self.machine).unwrap());
             self.hook.observe(Some(LedgeKey::raw(spot)))
+        }
+
+        fn rejected(&mut self) -> Option<LedgeKey> {
+            self.hook.observe(None)
         }
 
         fn apply(&mut self, buttons: u8, hold: u8) {
@@ -379,7 +448,7 @@ mod tests {
             self.machine.replay(self.at).unwrap();
             self.frames = saved.frames;
             self.hook
-                .restored(saved.token, &read_wram(&self.machine).unwrap());
+                .restored(saved.token.as_ref(), &read_wram(&self.machine).unwrap());
         }
     }
 
@@ -483,6 +552,91 @@ mod tests {
         hand.key();
         assert_eq!(second.report().unwrap().unknown_restores, 2);
         assert_eq!(first.report().unwrap().unknown_restores, 0);
+    }
+
+    #[test]
+    fn dropping_the_last_snapshot_of_a_token_forgets_its_saved_cursor() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(RIGHT, 2)]);
+        let kept = hand.save();
+        hand.key();
+        assert_eq!(shadow.saved_positions(), 1);
+        hand.walk(&[(RIGHT, 1)]);
+        drop(hand.save());
+        hand.key();
+        assert_eq!(shadow.saved_positions(), 1);
+        drop(kept);
+        assert_eq!(shadow.saved_positions(), 0);
+    }
+
+    #[test]
+    fn a_cloned_token_keeps_its_saved_cursor_until_the_last_clone_drops() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(RIGHT, 4), (LEFT, 2)]);
+        let saved = hand.save();
+        hand.key();
+        let copy = saved.clone();
+        let on = [(RIGHT, 1), (WARP, 1)];
+        let first = hand.walk(&on);
+        drop(saved);
+        assert_eq!(shadow.saved_positions(), 1);
+        hand.restore(&copy);
+        assert_eq!(hand.walk(&on), first);
+        assert_eq!(first[0].map(|key| key.band), Some(4));
+        assert_eq!(shadow.report().unwrap().unknown_restores, 0);
+        drop(copy);
+        assert_eq!(shadow.saved_positions(), 0);
+    }
+
+    #[test]
+    fn a_live_token_restores_its_cursor_after_other_tokens_drop() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        let genesis = hand.save();
+        hand.walk(&[(RIGHT, 4), (LEFT, 2)]);
+        let middle = hand.save();
+        hand.key();
+        let on = [(RIGHT, 1), (LEFT, 2), (WARP, 1)];
+        let first = hand.walk(&on);
+        let late = hand.save();
+        hand.key();
+        drop(genesis);
+        drop(late);
+        assert_eq!(shadow.saved_positions(), 1);
+        hand.restore(&middle);
+        assert_eq!(hand.walk(&on), first);
+        assert_eq!(first[1].map(|key| key.band), Some(4));
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!(report.unknown_restores, 0);
+    }
+
+    #[test]
+    fn a_frame_the_strategy_rejects_agrees_with_a_hand_key_of_none() {
+        let strategy = format!("reject = \"room == 2\"\n{}", Ledge::STRATEGY);
+        let shadow = Shadow::<Ledge, LedgeKey>::with_strategy(Ledge, &strategy).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(WARP, 1)]);
+        hand.apply(WARP, 1);
+        hand.rejected();
+        let rejected = hand.save();
+        hand.rejected();
+        hand.apply(RIGHT, 1);
+        hand.rejected();
+        hand.walk(&[(WARP, 1)]);
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.keyed_states), (6, 3));
+        hand.apply(RIGHT, 1);
+        hand.rejected();
+        assert_eq!(shadow.report().unwrap().disagreements.absent, 1);
+        hand.restore(&rejected);
+        hand.key();
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.absent, 2, "{:?}", report.examples);
+        assert_eq!(report.unknown_restores, 0);
     }
 
     #[test]

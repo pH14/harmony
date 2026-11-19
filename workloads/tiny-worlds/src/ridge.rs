@@ -218,7 +218,9 @@ impl Keying for Hand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Keep, KeyKind, SearchSettings, Workload, run_kept};
+    use crate::{
+        Keep, KeyKind, SearchSettings, ShadowLane, Shadowed, Strategic, Workload, run_kept,
+    };
 
     fn config() -> Config {
         Config {
@@ -235,6 +237,35 @@ mod tests {
 
     fn wrong(w: &Config, s: State) -> u8 {
         (w.climb(s.position) + 1) % 3
+    }
+
+    struct Unkept(u8);
+
+    impl Keying for Unkept {
+        type Key = Key;
+        type Lane = ();
+        fn arrive(&self, _: &World, _: WorldState, _: bool, _: &mut ()) {}
+        fn key(
+            &self,
+            world: &World,
+            state: WorldState,
+            broken: bool,
+            lane: &(),
+        ) -> Result<Key, Box<dyn Error>> {
+            match state {
+                WorldState::Ridge(s) if s.position == self.0 => Err("unkept".into()),
+                _ => Hand.key(world, state, broken, lane),
+            }
+        }
+        fn shape(&self) -> KeyShape {
+            Hand.shape()
+        }
+        fn identity(&self) -> String {
+            Hand.identity()
+        }
+        fn policy(&self) -> Option<&str> {
+            None
+        }
     }
 
     #[test]
@@ -348,5 +379,31 @@ mod tests {
         assert_eq!(shadow["unknown_restores"], 0);
         assert!(shadow["lineage_changes"].as_u64().unwrap() > 0, "{shadow}");
         assert_eq!(shadow["tiers"].as_array().unwrap().len(), 3, "{shadow}");
+    }
+
+    #[test]
+    fn the_shadow_pairs_a_state_the_strategy_rejects_with_a_hand_state_left_unkeyed() {
+        let w = config();
+        let world = World::Ridge(w);
+        let climb = |reject: &str| {
+            let strategy = format!("{reject}{}", include_str!("../strategies/ridge.toml"));
+            let shadowed =
+                Shadowed::new(Unkept(3), Strategic::new(&world, false, &strategy).unwrap());
+            let mut lane = ShadowLane::default();
+            let mut s = w.initial();
+            shadowed.arrive(&world, WorldState::Ridge(s), false, &mut lane);
+            for _ in 0..5 {
+                s = climbed(&w, s);
+                shadowed.arrive(&world, WorldState::Ridge(s), false, &mut lane);
+            }
+            shadowed.shadow().unwrap().unwrap()
+        };
+        let rejected = climb("reject = \"ridge.position == 3\"\n");
+        assert_eq!(rejected.disagreements.total(), 0, "{:?}", rejected.examples);
+        assert_eq!((rejected.states, rejected.keyed_states), (6, 5));
+        let kept = climb("");
+        assert_eq!(kept.disagreements.absent, 1, "{:?}", kept.examples);
+        let both = climb("reject = \"ridge.position >= 3\"\n");
+        assert_eq!(both.disagreements.absent, 2, "{:?}", both.examples);
     }
 }
