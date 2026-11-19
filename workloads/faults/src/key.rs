@@ -30,12 +30,21 @@ pub struct KeyRequest {
     pub strategy: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hand: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shadow: bool,
 }
 
 impl KeyRequest {
     #[must_use]
     pub fn strategy(&self) -> &str {
         self.strategy.as_deref().unwrap_or(STRATEGY)
+    }
+
+    pub fn validate(&self) -> Result<(), Box<dyn Error>> {
+        if self.shadow && !self.hand {
+            return Err("a shadow key runs beside the hand key, so shadow needs hand".into());
+        }
+        Ok(())
     }
 }
 

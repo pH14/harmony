@@ -1072,9 +1072,9 @@ with stages, a reject line or aggregates is refused, because the workload
 keeps no accumulator and draws its tier directly.
 
 `workload.options.key` in a search config chooses the key: `strategy` replaces
-the shipped strategy text, and `hand = true` searches with `FaultArchiveKey`
-and computes the strategy key beside it on every state. The hand run writes
-`shadow.json` to the output directory: the state count, the cell and slot
+the shipped strategy text, `hand = true` searches with `FaultArchiveKey`, and
+`shadow = true` beside `hand` also computes the strategy key on every state.
+A shadow run writes `shadow.json` to the output directory: the state count, the cell and slot
 counts under both keys, and the disagreements, which count states the
 strategy did not key, cells and slots that are not one to one, and progress,
 cell order and preference order that differ.

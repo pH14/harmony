@@ -176,3 +176,16 @@ fn the_declarations_saturate_into_their_ranges() {
         .expect("every value lies in its declared range");
     assert_eq!(keys.catalog().signals().len(), DECLARATIONS);
 }
+
+#[test]
+fn a_shadow_needs_the_hand_key() {
+    let request = |hand, shadow| KeyRequest {
+        strategy: None,
+        hand,
+        shadow,
+    };
+    assert!(request(true, true).validate().is_ok());
+    assert!(request(true, false).validate().is_ok());
+    assert!(request(false, false).validate().is_ok());
+    assert!(request(false, true).validate().is_err());
+}

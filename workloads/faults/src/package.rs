@@ -548,6 +548,7 @@ mod live {
         start: &super::SearchStart,
         interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
+        options.key.validate()?;
         let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
         if options.key.hand {
             search_keyed::<FaultArchiveKey>(
@@ -604,7 +605,7 @@ mod live {
         let game = FaultWorkload::<K>::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
-        let game = if options.key.hand {
+        let game = if options.key.shadow {
             game.with_shadow()
         } else {
             game
