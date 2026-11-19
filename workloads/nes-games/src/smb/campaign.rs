@@ -49,6 +49,7 @@ use crate::{
         smb_mechanical_state_from_wram, smb_player_has_control,
     },
     target::{ExitKind, Target},
+    workload::ShadowHook,
 };
 
 pub use crate::search::campaign::{
@@ -154,8 +155,38 @@ where
     }
 
     #[must_use]
-    pub fn with_route(self, route: SmbRoute) -> Self {
-        Self { route, ..self }
+    pub fn with_shadow(self, shadow: ShadowHook<SmbArchiveKey>) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target.set_shadow(shadow.clone());
+                Ok(target)
+            }),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_route(self, route: SmbRoute) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            route,
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target.set_shadow_route(route);
+                Ok(target)
+            }),
+            ..self
+        }
     }
 
     #[must_use]
@@ -882,6 +913,7 @@ where
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        target.observe_shadow();
         stamp_arrival_room(
             archive_key(&target.wram()).on_route(self.route),
             &target.wram(),

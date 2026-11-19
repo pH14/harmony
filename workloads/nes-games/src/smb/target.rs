@@ -14,7 +14,12 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState, WorkRamCopy},
+    smb::{
+        archive::{SmbArchiveKey, archive_key, stamp_arrival_room},
+        plan::SmbRoute,
+    },
     target::Target,
+    workload::{ShadowHook, ShadowToken},
 };
 
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
@@ -53,7 +58,20 @@ pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     room_area: [u8; 2],
     dead: bool,
     failed: bool,
+    #[serde(skip)]
+    shadow_token: SavedToken,
 }
+
+#[derive(Clone, Debug, Default)]
+struct SavedToken(Option<ShadowToken>);
+
+impl PartialEq for SavedToken {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SavedToken {}
 
 impl<P: SnapshotState> SmbSnapshot<P> {
     pub fn logical_identity(&self) -> Result<Self, MachineError> {
@@ -163,6 +181,9 @@ where
     genesis_observation: SmbObservations,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
+    shadow: Option<ShadowHook<SmbArchiveKey>>,
+    shadow_route: SmbRoute,
+    shadow_frames: Vec<[u8; WRAM_SIZE]>,
     stopped_at: Option<(SnapId, ButtonChord)>,
     dead: bool,
     failed: bool,
@@ -225,6 +246,9 @@ where
             genesis_observation: observation.clone(),
             action_observations: vec![observation.clone()],
             observation,
+            shadow: None,
+            shadow_route: SmbRoute::AllLevels,
+            shadow_frames: Vec::new(),
             stopped_at: None,
             dead: false,
             failed: false,
@@ -268,6 +292,31 @@ where
     #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.observation.frame_count
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<SmbArchiveKey>) {
+        shadow.start(&self.wram());
+        self.shadow = Some(shadow);
+    }
+
+    pub fn set_shadow_route(&mut self, route: SmbRoute) {
+        self.shadow_route = route;
+    }
+
+    pub fn observe_shadow(&self) {
+        if let Some(shadow) = &self.shadow {
+            if self.failed {
+                return;
+            }
+            let wram = self.wram();
+            if self.dead || smb_player_is_doomed(&wram) || self.shadow_route.is_doomed(&wram) {
+                shadow.observe(None);
+            } else {
+                shadow.observe(
+                    stamp_arrival_room(archive_key(&wram).on_route(self.shadow_route), &wram).ok(),
+                );
+            }
+        }
     }
 
     #[must_use]
@@ -331,6 +380,11 @@ where
                 break;
             }
         }
+        if self.shadow.is_some() {
+            let executed = usize::try_from(executed_frames).unwrap_or(usize::MAX);
+            self.shadow_frames
+                .extend_from_slice(&self.machine.frames()[..executed]);
+        }
         if executed_frames < self.machine.frames().len() as u64 {
             let kept = u8::try_from(executed_frames).unwrap_or(1);
             self.machine.keep_run_capture(usize::from(kept));
@@ -354,6 +408,26 @@ where
             self.observation = observation.clone();
         }
         executed_frames
+    }
+
+    fn apply_chords(&mut self, action: &ButtonChord) {
+        if action.hold_frames != WAIT_FOR_CONTROL_HOLD {
+            self.run_chord(*action, false);
+            return;
+        }
+        while self.last_frames < WAIT_FOR_CONTROL_FRAMES
+            && !self.failed
+            && !self.dead
+            && !self.is_victory()
+            && !smb_player_has_control(&self.wram())
+        {
+            if self.run_chord(ButtonChord::new(action.buttons, MAX_HOLD_FRAMES), true) == 0 {
+                break;
+            }
+        }
+        if self.action_observations.is_empty() {
+            self.action_observations.push(self.observation.clone());
+        }
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
@@ -495,6 +569,9 @@ where
         self.snapshot_base = None;
         self.observation = observation_from(&wram, frame_count, self.dead);
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&wram);
+        }
         self.snapshot()
             .ok_or_else(|| "failed to snapshot the restored state".into())
     }
@@ -537,6 +614,9 @@ where
         self.dead = false;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&self.genesis_observation.wram);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -546,23 +626,12 @@ where
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        if action.hold_frames != WAIT_FOR_CONTROL_HOLD {
-            self.run_chord(*action, false);
-            return;
+        self.apply_chords(action);
+        if let Some(shadow) = &self.shadow {
+            shadow.advance(&self.shadow_frames);
+            self.shadow_frames.clear();
         }
-        while self.last_frames < WAIT_FOR_CONTROL_FRAMES
-            && !self.failed
-            && !self.dead
-            && !self.is_victory()
-            && !smb_player_has_control(&self.wram())
-        {
-            if self.run_chord(ButtonChord::new(action.buttons, MAX_HOLD_FRAMES), true) == 0 {
-                break;
-            }
-        }
-        if self.action_observations.is_empty() {
-            self.action_observations.push(self.observation.clone());
-        }
+        self.observe_shadow();
     }
 
     fn observe(&self) -> Self::Observations {
@@ -590,6 +659,7 @@ where
             return None;
         };
         self.snapshot_base = Some(emulator_state.clone());
+        let shadow_token = SavedToken(self.shadow.as_ref().map(ShadowHook::saved));
         let wram = self.wram();
         Some(SmbSnapshot {
             emulator_state,
@@ -598,6 +668,7 @@ where
             room_area: ROOM_IDENTITY_BYTES.map(|offset| wram[offset]),
             dead: self.dead,
             failed: self.failed,
+            shadow_token,
         })
     }
 
@@ -621,6 +692,9 @@ where
         self.dead = snapshot.dead;
         self.failed = snapshot.failed;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
+        if let Some(shadow) = &self.shadow {
+            shadow.restored(snapshot.shadow_token.0.as_ref(), &wram);
+        }
         Ok(())
     }
 }
@@ -1402,6 +1476,7 @@ mod tests {
                 room_area: snapshot.room_area,
                 dead: snapshot.dead,
                 failed: snapshot.failed,
+                shadow_token: super::SavedToken::default(),
             }
         };
         let (own, foreign, changed) = (native(b'a', 1), native(b'b', 1), native(b'a', 2));
