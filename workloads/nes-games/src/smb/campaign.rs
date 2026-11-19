@@ -877,14 +877,14 @@ where
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(
-            archive_key(&target.wram()).on_route(self.route),
-            &target.wram(),
-        )
+        stamp_arrival_room(self.rollout_key(target)?, &target.wram())
     }
 
     fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(&target.wram()).on_route(self.route))
+        Ok(SmbArchiveKey {
+            lineage_band: target.lineage_band(),
+            ..archive_key(&target.wram()).on_route(self.route)
+        })
     }
 
     fn complete_candidate_key(

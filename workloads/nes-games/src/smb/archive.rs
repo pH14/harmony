@@ -30,7 +30,7 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const KEY_POLICY_BASE: &str = "area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
+const KEY_POLICY_BASE: &str = "band_folded_every_frame_area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 #[must_use]
 pub fn key_policy_identifier(route: SmbRoute) -> String {
@@ -148,14 +148,14 @@ impl ArchiveKey for SmbArchiveKey {
                 let same_area = parent_key.room[..2] == arrived_here[..2];
                 let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 if !same_area {
-                    (arrived_here, parent_key.band())
+                    (arrived_here, parent_key.band().max(this.lineage_band))
                 } else if warped {
-                    (arrived_here, 0)
+                    (arrived_here, this.lineage_band)
                 } else {
-                    (parent_key.room, parent_key.band())
+                    (parent_key.room, parent_key.band().max(this.lineage_band))
                 }
             }
-            _ => (arrived_here, 0),
+            _ => (arrived_here, this.lineage_band),
         };
         Self {
             room,
@@ -258,6 +258,13 @@ fn game_clock(wram: &[u8; 2_048]) -> u16 {
     wram[GAME_TIMER_HUNDREDS_OFFSET..GAME_TIMER_HUNDREDS_OFFSET + 3]
         .iter()
         .fold(0, |clock, digit| clock * 10 + u16::from(*digit))
+}
+
+#[must_use]
+pub fn fold_frame(previous: Option<SmbArchiveKey>, wram: &[u8; 2_048]) -> SmbArchiveKey {
+    let raw = archive_key(wram);
+    let raw = stamp_arrival_room(raw, wram).unwrap_or(raw);
+    raw.complete(previous.map(|key| (key, &())))
 }
 
 pub fn stamp_arrival_room(
@@ -695,6 +702,22 @@ mod tests {
         }
         .complete(Some((SmbArchiveKey { world: 6, ..castle }, &())));
         assert_eq!(next_level.progress(), (28, 0));
+    }
+
+    #[test]
+    fn a_band_folded_over_the_frames_between_candidates_survives_completion() {
+        let start = key(100, [1, 4]);
+        let walked_back = SmbArchiveKey {
+            lineage_band: 3,
+            ..key(120, [1, 4])
+        };
+        assert_eq!(walked_back.complete(Some((start, &()))).band(), 3);
+        assert_eq!(walked_back.complete(None).band(), 3);
+        let warped = SmbArchiveKey {
+            lineage_band: 1,
+            ..key(20, [1, 4])
+        };
+        assert_eq!(warped.complete(Some((key(250, [1, 4]), &()))).band(), 1);
     }
 
     #[test]

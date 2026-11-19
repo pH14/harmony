@@ -14,6 +14,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState, WorkRamCopy},
+    smb::archive::{SmbArchiveKey, fold_frame},
     target::Target,
 };
 
@@ -51,6 +52,7 @@ pub struct SmbSnapshot<P: SnapshotState = Vec<u8>> {
     observation: SnapshotObservation,
     work_ram: P::WorkRam,
     room_area: [u8; 2],
+    frame_key: SmbArchiveKey,
     dead: bool,
     failed: bool,
 }
@@ -163,6 +165,8 @@ where
     genesis_observation: SmbObservations,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
+    genesis_frame_key: SmbArchiveKey,
+    frame_key: SmbArchiveKey,
     stopped_at: Option<(SnapId, ButtonChord)>,
     dead: bool,
     failed: bool,
@@ -218,6 +222,7 @@ where
             milestones: smb_milestones_from_wram(&wram),
             dead: false,
         };
+        let frame_key = fold_frame(None, &wram);
         Ok(Self {
             machine,
             snapshot_base: None,
@@ -225,6 +230,8 @@ where
             genesis_observation: observation.clone(),
             action_observations: vec![observation.clone()],
             observation,
+            genesis_frame_key: frame_key,
+            frame_key,
             stopped_at: None,
             dead: false,
             failed: false,
@@ -255,6 +262,7 @@ where
         self.observation.frame_count = 0;
         self.genesis_observation = self.observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        self.genesis_frame_key = self.frame_key;
         self.last_frames = 0;
         self.last_level_frames = 0;
         Ok(())
@@ -268,6 +276,11 @@ where
     #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.observation.frame_count
+    }
+
+    #[must_use]
+    pub fn lineage_band(&self) -> u16 {
+        self.frame_key.lineage_band
     }
 
     #[must_use]
@@ -316,6 +329,7 @@ where
                 level_frames = level_frames.saturating_add(1);
             }
             endpoint = *wram;
+            self.frame_key = fold_frame(Some(self.frame_key), wram);
             let current_bucket = smb_scroll_bucket(wram);
             self.dead = smb_player_is_dead(wram);
             let victory = smb_is_victory(wram);
@@ -495,6 +509,7 @@ where
         self.snapshot_base = None;
         self.observation = observation_from(&wram, frame_count, self.dead);
         self.action_observations = vec![self.observation.clone()];
+        self.frame_key = fold_frame(None, &wram);
         self.snapshot()
             .ok_or_else(|| "failed to snapshot the restored state".into())
     }
@@ -537,6 +552,7 @@ where
         self.dead = false;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        self.frame_key = self.genesis_frame_key;
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -596,6 +612,7 @@ where
             observation: SnapshotObservation::from_observation(&self.observation),
             work_ram: P::WorkRam::copy_of(&wram),
             room_area: ROOM_IDENTITY_BYTES.map(|offset| wram[offset]),
+            frame_key: self.frame_key,
             dead: self.dead,
             failed: self.failed,
         })
@@ -620,6 +637,7 @@ where
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
         self.failed = snapshot.failed;
+        self.frame_key = snapshot.frame_key;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
         Ok(())
     }

@@ -167,7 +167,11 @@ fn step(
         state.dead || state.victory || state.doomed || (!state.dead && route.is_doomed(wram));
     let candidate =
         (bucket != chain.bucket || state.dead || state.victory || endpoint).then(|| {
-            let key = raw.complete(Some((chain.candidate, &())));
+            let key = SmbArchiveKey {
+                lineage_band: hand.lineage_band,
+                ..raw
+            }
+            .complete(Some((chain.candidate, &())));
             chain.candidate = key;
             key
         });
