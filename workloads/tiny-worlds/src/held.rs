@@ -770,6 +770,7 @@ pub fn run(request: &Request) -> Result<serde_json::Value, Box<dyn Error>> {
         chords: request.chords,
     };
     let config = CampaignConfig::<HeldWorkload> {
+        discovery_weight: None,
         campaign_seed: request.seed,
         workers: request.workers,
         execution_budget: request.work_budget,

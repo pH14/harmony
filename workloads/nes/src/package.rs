@@ -147,6 +147,7 @@ where
     fs::create_dir_all(&options.output)?;
     let mut stream = BufWriter::new(fs::File::create(options.output.join("stream.jsonl"))?);
     let config = CampaignConfig {
+        discovery_weight: None,
         campaign_seed: options.seed,
         workers: options.workers,
         execution_budget: options.executions,

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use super::heap;
+
+const DISCOVERY_REFRESH_JOBS: u64 = 1_024;
 
 #[derive(Default)]
 pub(crate) struct CoverageCounts {
@@ -14,6 +16,32 @@ pub(crate) struct CoverageCounts {
     job_moved: bool,
     ids: BTreeMap<u64, IdCount>,
     report: CoverageReport,
+    discoveries: Option<DiscoveryLevels>,
+}
+
+struct DiscoveryLevels {
+    cap_log2: u8,
+    levels: BTreeMap<u32, DiscoveryLevel>,
+    watched: BTreeMap<u64, Vec<u32>>,
+    risen: BTreeSet<u32>,
+    changed: Vec<(u32, u8)>,
+}
+
+struct DiscoveryLevel {
+    ids: Vec<u64>,
+    hits: u64,
+    level: u8,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DiscoveryWeightReport {
+    pub cap_log2: u8,
+    pub discoveries: u64,
+    pub cells: u64,
+    pub discoveries_by_log2_weight: Vec<u64>,
+    pub log2_weight_by_discovery: BTreeMap<u32, u8>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frontier_draws_by_discovery: BTreeMap<u32, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,11 +72,67 @@ pub struct CoverageReport {
     pub discovering_actions: u64,
     pub discovering_candidates_by_log2_job: Vec<u64>,
     pub memory_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_weight: Option<DiscoveryWeightReport>,
 }
 
 impl CoverageCounts {
     pub(crate) fn is_active(&self) -> bool {
         self.jobs > 0
+    }
+
+    pub(crate) fn weigh_discoveries(&mut self, cap_log2: u8) {
+        self.discoveries = Some(DiscoveryLevels {
+            cap_log2,
+            levels: BTreeMap::new(),
+            watched: BTreeMap::new(),
+            risen: BTreeSet::new(),
+            changed: Vec::new(),
+        });
+    }
+
+    pub(crate) fn weighs_discoveries(&self) -> bool {
+        self.discoveries.is_some()
+    }
+
+    pub(crate) fn first_hit_ids(&self, ids: &[u64]) -> Vec<u64> {
+        let mut first = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.ids
+                    .get(id)
+                    .is_some_and(|count| count.jobs == 1 && count.last_job == self.job)
+            })
+            .collect::<Vec<_>>();
+        first.sort_unstable();
+        first.dedup();
+        first
+    }
+
+    pub(crate) fn watch_discovery(&mut self, discovery: u32, ids: Vec<u64>) -> Option<u8> {
+        let jobs = self.jobs;
+        let counts = &self.ids;
+        let weights = self.discoveries.as_mut()?;
+        if let Some(known) = weights.levels.get(&discovery) {
+            return Some(known.level);
+        }
+        let hits = fewest_hits(counts, &ids);
+        let level = rarity(jobs, hits).min(weights.cap_log2);
+        for id in &ids {
+            weights.watched.entry(*id).or_default().push(discovery);
+        }
+        weights
+            .levels
+            .insert(discovery, DiscoveryLevel { ids, hits, level });
+        Some(level)
+    }
+
+    pub(crate) fn take_changed_levels(&mut self) -> Vec<(u32, u8)> {
+        self.discoveries
+            .as_mut()
+            .map(|weights| std::mem::take(&mut weights.changed))
+            .unwrap_or_default()
     }
 
     pub(crate) fn begin_job(&mut self, job: u64) {
@@ -77,6 +161,11 @@ impl CoverageCounts {
             if count.jobs == 0 || count.last_job != job {
                 count.jobs = count.jobs.saturating_add(1);
                 count.last_job = job;
+                if let Some(weights) = self.discoveries.as_mut()
+                    && let Some(discoveries) = weights.watched.get(&id)
+                {
+                    weights.risen.extend(discoveries.iter().copied());
+                }
             }
             if count.jobs < rarest.0 {
                 rarest = (count.jobs, id, count.discovery);
@@ -125,6 +214,25 @@ impl CoverageCounts {
             self.report.jobs_moved = self.report.jobs_moved.saturating_add(1);
             self.job_moved = false;
         }
+        let jobs = self.jobs;
+        let refresh = self.job_counted && jobs.is_multiple_of(DISCOVERY_REFRESH_JOBS);
+        let counts = &self.ids;
+        let Some(weights) = self.discoveries.as_mut() else {
+            return;
+        };
+        let risen = std::mem::take(&mut weights.risen);
+        for (discovery, level) in &mut weights.levels {
+            if risen.contains(discovery) {
+                level.hits = fewest_hits(counts, &level.ids);
+            } else if !refresh {
+                continue;
+            }
+            let updated = rarity(jobs, level.hits).min(weights.cap_log2);
+            if updated != level.level {
+                level.level = updated;
+                weights.changed.push((*discovery, updated));
+            }
+        }
     }
 
     pub(crate) fn report(&self) -> Option<CoverageReport> {
@@ -133,9 +241,38 @@ impl CoverageCounts {
             distinct_ids: u64::try_from(self.ids.len()).unwrap_or(u64::MAX),
             memory_bytes: heap::btree_bytes::<u64, IdCount>(1, self.ids.len())
                 + heap::btree_bytes::<u64, u64>(1, self.report.moved_by_rarest_id.len()),
+            discovery_weight: self.discoveries.as_ref().map(DiscoveryLevels::report),
             ..self.report.clone()
         })
     }
+}
+
+impl DiscoveryLevels {
+    fn report(&self) -> DiscoveryWeightReport {
+        let mut by_level = vec![0; usize::from(self.cap_log2) + 1];
+        for level in self.levels.values() {
+            by_level[usize::from(level.level)] += 1;
+        }
+        DiscoveryWeightReport {
+            cap_log2: self.cap_log2,
+            discoveries: u64::try_from(self.levels.len()).unwrap_or(u64::MAX),
+            cells: 0,
+            discoveries_by_log2_weight: by_level,
+            log2_weight_by_discovery: self
+                .levels
+                .iter()
+                .map(|(discovery, level)| (*discovery, level.level))
+                .collect(),
+            frontier_draws_by_discovery: BTreeMap::new(),
+        }
+    }
+}
+
+fn fewest_hits(counts: &BTreeMap<u64, IdCount>, ids: &[u64]) -> u64 {
+    ids.iter()
+        .map(|id| counts.get(id).map_or(0, |count| count.jobs))
+        .min()
+        .unwrap_or(u64::MAX)
 }
 
 #[must_use]
@@ -230,5 +367,50 @@ mod tests {
         assert_eq!(report.moved_by_rarest_id, BTreeMap::from([(12, 1)]));
         assert_eq!(report.discovering_actions, 3);
         assert_eq!(report.discovering_candidates_by_log2_job, vec![0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn a_discovery_level_follows_the_fewest_hits_over_its_first_hit_ids() {
+        fn job(counts: &mut CoverageCounts, job: u64, ids: &[u64]) {
+            counts.begin_job(job);
+            counts.rate(ids);
+            counts.finish_job();
+        }
+        let mut counts = CoverageCounts::default();
+        assert_eq!(counts.watch_discovery(1, vec![1]), None);
+        counts.weigh_discoveries(3);
+        for number in 1..=6 {
+            job(&mut counts, number, &[1]);
+        }
+        counts.begin_job(7);
+        assert_eq!(counts.rate(&[1, 20, 21]).expect("rated").discovery, Some(2));
+        let first = counts.first_hit_ids(&[21, 1, 20, 21]);
+        assert_eq!(first, vec![20, 21]);
+        assert_eq!(counts.watch_discovery(2, first), Some(2));
+        assert_eq!(counts.watch_discovery(2, vec![1]), Some(2));
+        counts.finish_job();
+        for number in 8..=15 {
+            job(&mut counts, number, &[1]);
+        }
+        assert!(counts.take_changed_levels().is_empty());
+        job(&mut counts, 16, &[21]);
+        assert_eq!(counts.take_changed_levels(), vec![(2, 3)]);
+        job(&mut counts, 17, &[20]);
+        assert_eq!(counts.take_changed_levels(), vec![(2, 2)]);
+        for number in 18..DISCOVERY_REFRESH_JOBS {
+            job(&mut counts, number, &[1]);
+        }
+        assert!(counts.take_changed_levels().is_empty());
+        job(&mut counts, DISCOVERY_REFRESH_JOBS, &[1]);
+        assert_eq!(counts.take_changed_levels(), vec![(2, 3)]);
+        let report = counts
+            .report()
+            .expect("active")
+            .discovery_weight
+            .expect("weighed");
+        assert_eq!(report.cap_log2, 3);
+        assert_eq!(report.discoveries, 1);
+        assert_eq!(report.discoveries_by_log2_weight, vec![0, 0, 0, 1]);
+        assert_eq!(report.log2_weight_by_discovery, BTreeMap::from([(2, 3)]));
     }
 }

@@ -15,10 +15,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
-    KeyShape, Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SavedStateRecord,
-    SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, Cell, ContinuationAccounting,
+    DiscoveryWeight, Edge, Input, KeyShape, MAX_DISCOVERY_CAP_LOG2, Position, ProgressPoint,
+    RetentionPolicy, SavedStateRecord, SelectorAccounting, SelectorDraw, SelectorPath,
+    SnapshotRetention, cell_of, discovery_weight_from_selector_identifier,
     retention_policy_from_identifier, retention_policy_identifier, saved_state_entries,
+    selector_identifier,
 };
 use crate::search::chain::{Chain, State};
 use crate::search::checkpoint::{
@@ -1041,6 +1043,7 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub retention: RetentionPolicy,
     pub objective_witness_path: Option<PathBuf>,
     pub minimize: Option<MinimizeConfig>,
+    pub discovery_weight: Option<DiscoveryWeight>,
 }
 
 impl<G: Workload + ?Sized> CampaignConfig<G> {
@@ -1813,6 +1816,7 @@ fn verify_selector_annotation(
             Err("continuation draw carries a tier rank".into())
         }
         (SelectorPath::Shrink, Some(_)) => Err("minimize draw carries a tier rank".into()),
+        (SelectorPath::Frontier, Some(_)) => Err("frontier draw carries a tier rank".into()),
         _ => Ok(()),
     }
 }
@@ -1879,6 +1883,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
     coverage: CoverageCounts,
+    discovery_cells: BTreeMap<u32, BTreeSet<Cell<G::Key>>>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1934,6 +1939,47 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             shrink: None,
             choices,
             coverage: CoverageCounts::default(),
+            discovery_cells: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn enable_discovery_weight(
+        &mut self,
+        weight: DiscoveryWeight,
+    ) -> Result<(), Box<dyn Error>> {
+        if !(1..=MAX_DISCOVERY_CAP_LOG2).contains(&weight.cap_log2) {
+            return Err(format!(
+                "a discovery weight cap must be between 1 and {MAX_DISCOVERY_CAP_LOG2} powers of two"
+            )
+            .into());
+        }
+        self.coverage.weigh_discoveries(weight.cap_log2);
+        if let Some(frontier) = weight.frontier {
+            self.archive.enable_frontier(frontier);
+        }
+        Ok(())
+    }
+
+    fn weigh_discovery_cell(&mut self, discovery: u32, first_hits: Vec<u64>, id: usize) {
+        let cell = cell_of(self.archive.entries[id].key);
+        if !self
+            .discovery_cells
+            .entry(discovery)
+            .or_default()
+            .insert(cell)
+        {
+            return;
+        }
+        if let Some(level) = self.coverage.watch_discovery(discovery, first_hits) {
+            self.archive.set_cell_factor(cell, 1 << level);
+        }
+    }
+
+    fn apply_discovery_levels(&mut self) {
+        for (discovery, level) in self.coverage.take_changed_levels() {
+            for cell in self.discovery_cells.get(&discovery).into_iter().flatten() {
+                self.archive.set_cell_factor(*cell, 1 << level);
+            }
         }
     }
 
@@ -2913,6 +2959,16 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.coverage.begin_job(sequence);
         for action in actions {
             let rating = self.coverage.rate(workload.action_coverage(&action));
+            let mut first_hits = rating
+                .and_then(|rating| rating.discovery)
+                .filter(|_| self.coverage.weighs_discoveries())
+                .map(|discovery| {
+                    (
+                        discovery,
+                        self.coverage
+                            .first_hit_ids(workload.action_coverage(&action)),
+                    )
+                });
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
             let certificate = action
@@ -2982,8 +3038,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     workload.complete_candidate_key(candidate.key, &candidate.snapshot)?;
                 if let Some(rating) = rating {
                     let rated = workload.rate_coverage(completed, rating);
-                    self.coverage
-                        .record_candidate(rating, rated.place() != completed.place());
+                    let moved = rated.place() != completed.place();
+                    self.coverage.record_candidate(rating, moved);
+                    if !moved {
+                        first_hits = None;
+                    }
                     completed = rated;
                 }
                 if let Some(incumbent) = self.incumbent_cost
@@ -3037,6 +3096,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     origin_cost,
                 )?;
                 left_place |= key.place() != parent_place;
+                if let (Some(id), Some((discovery, first))) = (admitted, first_hits.take()) {
+                    self.weigh_discovery_cell(discovery, first, id);
+                }
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         self.archive.set_entry_remaining_bound(id, action.bound);
@@ -3075,6 +3137,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             }
         }
         self.coverage.finish_job();
+        self.apply_discovery_levels();
         if limited {
             self.archive.record_suffix_outcome(
                 parent_index,
@@ -3412,7 +3475,7 @@ fn stream_header<G: Workload>(
         workload_policies: recorded_policies(workload, &config.run),
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
-        parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
+        parent_scheduler: selector_identifier(config.discovery_weight),
         preference_portfolio: preference_portfolio_identifier(workload.key_shape()),
         executor_mode: EXECUTOR_MODE.to_owned(),
         selection_seed_derivation: SELECTION_SEED_DERIVATION.to_owned(),
@@ -3754,7 +3817,29 @@ fn build_report<G: Workload>(
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
     let historical_cells = core.archive.historical_cell_count();
-    let coverage = core.coverage.report();
+    let mut coverage = core.coverage.report();
+    if let Some(weights) = coverage
+        .as_mut()
+        .and_then(|coverage| coverage.discovery_weight.as_mut())
+    {
+        weights.cells = core
+            .discovery_cells
+            .values()
+            .map(|cells| u64::try_from(cells.len()).unwrap_or(u64::MAX))
+            .sum();
+        weights.frontier_draws_by_discovery = core
+            .discovery_cells
+            .iter()
+            .map(|(discovery, cells)| {
+                let draws = cells
+                    .iter()
+                    .map(|cell| core.archive.frontier_draws(*cell))
+                    .fold(0_u64, u64::saturating_add);
+                (*discovery, draws)
+            })
+            .filter(|(_, draws)| *draws > 0)
+            .collect();
+    }
     let (archive, snapshots) = core.into_archive_report_and_snapshots(
         workload,
         header.campaign_seed,
@@ -4912,7 +4997,10 @@ fn search_checkpoint_header<G: Workload>(
             "retention_policy",
             retention_policy_identifier(config.retention).to_owned(),
         ),
-        ("parent_scheduler", SELECTOR_IDENTIFIER.to_owned()),
+        (
+            "parent_scheduler",
+            selector_identifier(config.discovery_weight),
+        ),
         ("continuation_policy", CONTINUATION_IDENTIFIER.to_owned()),
         (
             PREFERENCE_PORTFOLIO_FIELD,
@@ -5790,9 +5878,9 @@ where
     }
 
     let replay_retention = retention_policy_from_identifier(&header.retention_policy)?;
-    if header.parent_scheduler != SELECTOR_IDENTIFIER {
-        return Err("campaign stream parent scheduler is not recognized".into());
-    }
+    let replay_discovery_weight =
+        discovery_weight_from_selector_identifier(&header.parent_scheduler)
+            .map_err(|_| "campaign stream parent scheduler is not recognized")?;
     let expected_resume = if header.origin_kind == ORIGIN_SNAPSHOT_ROOT {
         SNAPSHOT_ROOT_RESUME_IDENTIFIER
     } else {
@@ -5862,6 +5950,9 @@ where
         header.archive_entry_limit,
         header.memory_budget_mib,
     );
+    if let Some(weight) = replay_discovery_weight {
+        core.enable_discovery_weight(weight)?;
+    }
     core.record_progress = true;
     core.bounded_progress_curve = true;
     core.archive
@@ -8667,6 +8758,7 @@ mod tests {
                 targets: Some(Arc::new(targets)),
             },
             CampaignConfig {
+                discovery_weight: None,
                 campaign_seed: 29,
                 workers: 2,
                 execution_budget,
@@ -8804,6 +8896,7 @@ mod tests {
                 std::process::id()
             ));
             let config = CampaignConfig {
+                discovery_weight: None,
                 campaign_seed: 7,
                 workers: 1,
                 execution_budget: 1,
@@ -8861,6 +8954,7 @@ mod tests {
     #[test]
     fn replay_rejects_work_after_a_bootstrap_objective_stop() {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 7,
             workers: 1,
             execution_budget: 1,
@@ -8920,6 +9014,7 @@ mod tests {
             targets: Some(targets),
         };
         let mut config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 7,
             workers: 1,
             execution_budget: 5,
@@ -8982,6 +9077,7 @@ mod tests {
 
     fn five_job_campaign_stream() -> (TestWorkload, Vec<String>) {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 7,
             workers: 1,
             execution_budget: 5,
@@ -10918,6 +11014,7 @@ mod tests {
     #[test]
     fn cell_interval_accounting_leaves_the_draws_unchanged() {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 47,
             workers: 2,
             execution_budget: 7_000,
@@ -11010,6 +11107,7 @@ mod tests {
     #[test]
     fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 31,
             workers: 2,
             execution_budget: 200,
@@ -13243,6 +13341,7 @@ mod tests {
 
     fn three_worker_config() -> CampaignConfig<TestWorkload> {
         CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 5,
             workers: 3,
             execution_budget: 60,
@@ -14072,6 +14171,7 @@ mod tests {
             checkpoint: None,
         };
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed: 954,
             workers: 3,
             execution_budget: 300,

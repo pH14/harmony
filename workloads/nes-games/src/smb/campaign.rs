@@ -44,7 +44,7 @@ use crate::{
         merge_progress_watermark, milestone_key, stamp_arrival_room, stamp_arrival_room_identity,
         update_first_inputs,
     },
-    smb::plan::{Goal, SmbRoute, vine_step},
+    smb::plan::{Goal, SmbRoute, revealed_vine_step_columns, vine_step},
     smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
@@ -340,9 +340,10 @@ pub struct SmbCoverageRating {
     pub discovery: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SmbRevealEvidence {
     pub discovery: u32,
+    pub revealed_columns: Vec<u16>,
     pub id: u64,
     pub cell_jobs: u64,
     pub lineage: u32,
@@ -425,6 +426,21 @@ where
         .map(vine_step)
         .max()
         .unwrap_or(0)
+}
+
+fn action_revealed_columns<M, P>(action: &SmbCampaignActionResult<M, P>) -> Vec<u16>
+where
+    M: NesBackend<P>,
+    P: SnapshotState,
+{
+    action
+        .observations
+        .iter()
+        .rev()
+        .filter_map(|observation| <&[u8; WRAM_SIZE]>::try_from(observation.wram.as_slice()).ok())
+        .find(|wram| vine_step(wram) == 2)
+        .map(revealed_vine_step_columns)
+        .unwrap_or_default()
 }
 
 pub type SmbCampaignOrigin<M, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
@@ -706,11 +722,12 @@ where
                 }),
             );
         }
-        if let Some(reveal) = evidence.reveal {
+        if let Some(reveal) = &evidence.reveal {
             diagnostics.insert(
                 "reveal".to_owned(),
                 serde_json::json!({
                     "discovery": reveal.discovery,
+                    "revealed_columns": reveal.revealed_columns,
                     "id": reveal.id,
                     "kind": CoverageKind::of(reveal.id).identifier(),
                     "address": coverage_id_address(reveal.id),
@@ -1202,6 +1219,7 @@ where
             {
                 evidence.reveal = Some(SmbRevealEvidence {
                     discovery,
+                    revealed_columns: action_revealed_columns(action),
                     id: rating.id,
                     ..SmbRevealEvidence::default()
                 });

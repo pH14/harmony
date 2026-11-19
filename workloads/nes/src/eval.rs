@@ -2,7 +2,10 @@
 
 use crate::{
     search::{
-        archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
+        archive::{
+            ArchiveKey, DiscoveryWeight, FrontierWeight, Input, MAX_ARCHIVE_ENTRIES,
+            MAX_DISCOVERY_CAP_LOG2, RetentionPolicy,
+        },
         campaign::{
             CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch,
             MinimizeConfig, SavedStates, Workload, replay_campaign_checkpointed,
@@ -76,6 +79,12 @@ pub struct Request {
     #[serde(default)]
     pub smb_coverage_new_ids: bool,
     #[serde(default)]
+    pub discovery_weight: bool,
+    #[serde(default)]
+    pub discovery_weight_cap: Option<u8>,
+    #[serde(default)]
+    pub discovery_frontier: Option<FrontierWeight>,
+    #[serde(default)]
     pub minimize: bool,
     #[serde(default)]
     pub root_input: Option<PathBuf>,
@@ -99,6 +108,30 @@ pub struct Request {
     pub records: bool,
     #[serde(default)]
     pub keep_stream: bool,
+}
+
+impl Request {
+    pub fn discovery_weight(&self) -> Result<Option<DiscoveryWeight>> {
+        if !self.discovery_weight {
+            if self.discovery_weight_cap.is_some() || self.discovery_frontier.is_some() {
+                return Err(
+                    "discovery_weight_cap and discovery_frontier need discovery_weight".into(),
+                );
+            }
+            return Ok(None);
+        }
+        let cap_log2 = self.discovery_weight_cap.unwrap_or(MAX_DISCOVERY_CAP_LOG2);
+        if !(1..=MAX_DISCOVERY_CAP_LOG2).contains(&cap_log2) {
+            return Err(format!(
+                "discovery_weight_cap must be between 1 and {MAX_DISCOVERY_CAP_LOG2}"
+            )
+            .into());
+        }
+        Ok(Some(DiscoveryWeight {
+            cap_log2,
+            frontier: self.discovery_frontier,
+        }))
+    }
 }
 
 struct StreamDigest {
@@ -349,6 +382,7 @@ where
         retention: RetentionPolicy::Unprobed,
         objective_witness_path: Some(out.join("victory-input.json")),
         minimize: request.minimize.then(MinimizeConfig::default),
+        discovery_weight: request.discovery_weight()?,
     };
     if request.workers == 0
         || request.executions == 0
@@ -365,7 +399,7 @@ where
         .transpose()?;
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v5", "strategy":request.strategy, "strategy_sha256":strategy_sha256, "records":request.records, "keep_stream":request.keep_stream, "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states, "root_input":request.root_input, "minimize":request.minimize}),
+        &json!({"format":"nes-eval-identity-v5", "strategy":request.strategy, "strategy_sha256":strategy_sha256, "records":request.records, "keep_stream":request.keep_stream, "game":request.game, "whole_game":request.whole_game, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "prepared_execution_sha256":execution_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "memory_mib":request.memory_mib, "window":request.window, "wall_seconds":request.wall_seconds, "mixture":request.mixture, "verification":request.verification, "checkpoint_every":request.checkpoint_every, "checkpoint_on_progress":request.checkpoint_on_progress, "checkpoint_on_stall":request.checkpoint_on_stall, "resume":request.resume, "resume_states":request.resume_states, "root_input":request.root_input, "minimize":request.minimize, "discovery_weight":config.discovery_weight}),
     )?;
     let mut stream = StreamDigest {
         file: if full || request.keep_stream {

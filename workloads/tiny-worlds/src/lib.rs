@@ -96,6 +96,7 @@ fn path_name(path: SelectorPath) -> &'static str {
         SelectorPath::Tiers => "tiers",
         SelectorPath::Recent => "recent",
         SelectorPath::Shrink => "shrink",
+        SelectorPath::Frontier => "frontier",
     }
 }
 
@@ -1540,6 +1541,7 @@ fn campaign_config<K: Keying>(
         ..Scale::default()
     });
     CampaignConfig {
+        discovery_weight: None,
         campaign_seed: seed,
         workers: scale.workers,
         execution_budget: budget,

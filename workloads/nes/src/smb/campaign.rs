@@ -49,6 +49,7 @@ impl SmbCampaignConfig {
         P: SnapshotState,
     {
         GenericCampaignConfig {
+            discovery_weight: None,
             mixture: self.mixture,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -709,6 +710,7 @@ mod tests {
                 "id": branch,
                 "kind": "branch",
                 "address": "$BD9F",
+                "revealed_columns": [63],
                 "cell_jobs": 1,
                 "lineage": 42,
                 "descendant_jobs": 2,

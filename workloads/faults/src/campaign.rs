@@ -327,6 +327,7 @@ pub struct FaultCampaignConfig {
 impl FaultCampaignConfig {
     fn generic(&self) -> CampaignConfig<FaultWorkload> {
         CampaignConfig {
+            discovery_weight: None,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,

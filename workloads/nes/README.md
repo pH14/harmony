@@ -410,12 +410,17 @@ A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
 the arcade game from genesis with its own draw mixture and a `Traced` core, as
 the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
 `smb_route`, `smb_terminal`, `smb_coverage_cap`, `smb_coverage_new_ids`, `smb_coverage_ids`,
-`minimize`, `resume`, `resume_states` and `mixture`. For Super Mario Bros., `smb_route` names
-a route plan, `smb_terminal` a goal such as `control_in:7,0`, `smb_coverage_cap` puts coverage
-rarity up to that cap in the place, `smb_coverage_new_ids` instead puts the discovery order of
-the smallest id no earlier job hit, `smb_coverage_ids` (`all` or `code`, with either term)
-chooses which ids rate (see the [SMB README](src/smb/README.md#coverage)), and `root_input` a
-tape the game replays before its genesis.
+`discovery_weight`, `minimize`, `resume`, `resume_states` and `mixture`. For Super Mario
+Bros., `smb_route` names a route plan, `smb_terminal` a goal such as `control_in:7,0`,
+`smb_coverage_cap` puts coverage rarity up to that cap in the place, `smb_coverage_new_ids`
+instead puts the discovery order of the smallest id no earlier job hit, `smb_coverage_ids`
+(`all` or `code`, with either term) chooses which ids rate (see the
+[SMB README](src/smb/README.md#coverage)), and `root_input` a tape the game replays before
+its genesis. `discovery_weight: true`, which needs `smb_coverage_new_ids`, sets the
+campaign's `discovery_weight` (see the
+[selector](../../dissonance/searcher/README.md)): `discovery_weight_cap` is its `cap_log2`,
+8 by default, and `discovery_frontier` (`top_tier` or `second_tier`) adds the frontier
+tier. `identity.json` records the setting.
 For any game, `minimize` runs the campaign in the searcher's minimize mode
 (see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search
 keeps going after its first goal and `victory-input.json` holds the cheapest

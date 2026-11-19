@@ -530,6 +530,7 @@ where
 {
     let workers = u32::try_from(config.workers.max(1))?;
     let campaign = CampaignConfig {
+        discovery_weight: None,
         campaign_seed: config.seed,
         workers,
         execution_budget: segment.job_budget.unwrap_or(u64::MAX),

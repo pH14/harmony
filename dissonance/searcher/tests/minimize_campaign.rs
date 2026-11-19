@@ -370,6 +370,7 @@ impl Evaluation for Walk {
 
 fn walk_config(workers: u32) -> CampaignConfig<Walk> {
     CampaignConfig {
+        discovery_weight: None,
         campaign_seed: 0x3a1d_77e1,
         workers,
         execution_budget: 160,

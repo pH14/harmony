@@ -204,7 +204,10 @@ With coverage on, the progress records' `workload_diagnostics` also give:
   `discovered_from_f400`);
 - under `reveal`, with the new-id term, when the first job to reveal a hidden
   block (vine step 2) kept a state rated by a new id: that discovery and id,
-  the jobs started from a state in the discovery's cell (`cell_jobs`), and,
+  the columns of the vine-step blocks no longer hidden in the revealing
+  action's last observed frame at vine step 2 (`revealed_columns`), the jobs
+  started from
+  a state in the discovery's cell (`cell_jobs`), and,
   following the first such state, its discovery as the `lineage`, the jobs
   started from its descendants (`descendant_jobs`) and the highest vine step
   their actions reached (`descendant_furthest_step`). The key carries the

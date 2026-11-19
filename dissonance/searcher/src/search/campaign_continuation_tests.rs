@@ -378,6 +378,7 @@ fn continuation_config(
     budget_mib: usize,
 ) -> CampaignConfig<TestWorkload> {
     CampaignConfig {
+        discovery_weight: None,
         campaign_seed: 947,
         workers,
         execution_budget: 800,
@@ -908,6 +909,7 @@ fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
 fn history_growth_before_maintenance_does_not_stop_the_campaign() {
     for (workers, campaign_seed) in [(1, 947), (2, 947), (2, 11), (2, 12), (4, 947)] {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed,
             execution_budget: 300,
             ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
@@ -936,6 +938,7 @@ fn history_growth_before_maintenance_does_not_stop_the_campaign() {
 fn a_budget_that_fits_the_bootstrap_state_finishes_the_campaign() {
     for (workers, campaign_seed) in [(1, 2), (1, 3), (2, 0), (2, 1), (3, 1), (4, 1)] {
         let config = CampaignConfig {
+            discovery_weight: None,
             campaign_seed,
             execution_budget: 300,
             ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 7)
@@ -1964,6 +1967,7 @@ fn choice_config(
 ) -> CampaignConfig<ChoiceTestWorkload<true>> {
     let plain = continuation_config(workers, mixture, budget_mib);
     CampaignConfig {
+        discovery_weight: None,
         campaign_seed: plain.campaign_seed,
         workers: plain.workers,
         execution_budget: plain.execution_budget,

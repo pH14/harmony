@@ -103,6 +103,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.smb_coverage_cap.is_some()
         || request.smb_coverage_ids.is_some()
         || request.smb_coverage_new_ids
+        || request.discovery_weight
         || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
@@ -224,6 +225,9 @@ fn main() -> Result<()> {
             && !request.smb_coverage_new_ids
         {
             return Err("smb_coverage_ids needs smb_coverage_cap or smb_coverage_new_ids".into());
+        }
+        if request.discovery_weight && !request.smb_coverage_new_ids {
+            return Err("discovery_weight needs smb_coverage_new_ids, which opens a cell for each discovery".into());
         }
         match request.game.as_str() {
             "smb" | "metroid"

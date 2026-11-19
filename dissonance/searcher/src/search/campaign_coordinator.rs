@@ -302,6 +302,9 @@ where
             config.archive_entry_limit,
             config.memory_budget_mib,
         );
+        if let Some(weight) = config.discovery_weight {
+            core.enable_discovery_weight(weight)?;
+        }
         let mut counters = CampaignCounters::new();
         let mut telemetry = CampaignTelemetry::default();
         let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
@@ -309,6 +312,9 @@ where
         let bootstrap_started = now();
         let (resume, incumbent_target) = with_coordinator_session(workload, || {
             Ok(match search_checkpoint {
+                Some(_) if config.discovery_weight.is_some() => {
+                    return Err("a search checkpoint does not carry discovery weights".into());
+                }
                 Some(reader) => {
                     let resume = restore_search_checkpoint(
                         workload,

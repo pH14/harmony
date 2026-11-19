@@ -356,6 +356,8 @@ candidate to another place, the rated candidates at each rarity before the
 workload's cap, the moved candidates counted by the rarest id that rated each
 one, the actions and the candidates whose action hit a new id, the latter by the
 power of two below the job that admitted them, and the memory the counts hold.
+`CampaignConfig::discovery_weight` also weighs the cells discoveries open in the
+parent draw, described with the selector below.
 
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,
@@ -904,6 +906,33 @@ from the existing ordered active index and saved counts, so it adds no
 checkpoint state. `recent_selections` records draws through this path. There
 is no retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
+
+`CampaignConfig::discovery_weight` multiplies a cell's count weight by a factor
+from coverage. A discovery cell is a cell that `rate_coverage` moved a
+discovering candidate into. Its ids are the ids the discovering action hit
+before any other job, f is the fewest jobs that have hit any of them, and its
+factor is `2^min(rarity(J, f), cap_log2)`, with `cap_log2` from 1 to 8; every
+other cell's factor is 1. Both cell draws, the recent-arrival window and the
+full tier, use the product. After each job the factor is recomputed for the
+discoveries whose ids the job hit, and every 1,024 jobs with ids for all of
+them as J grows. With `frontier` set, the tier draw gains one entry after the
+ranked tiers, the frontier tier: every cell whose factor is at least 2, at any
+progress value, weighing the same as the leading tier (`top_tier`, so it shares
+the halvings when the leading tier falls) or the rank below it
+(`second_tier`). It is left out while it holds no cell, so the draw is then the
+same as without it. A frontier draw picks a cell from the frontier tier by the
+same product, with no recent-arrival window, then a holder as in any tier. It
+counts in the cell's draws and in its own tier's runs like any other draw, and
+carries `SelectorPath::Frontier` with no tier rank. A cell also stays in its own
+tier. The selector identifier gains `+discovery_weight_cap_N`,
+`+discovery_frontier_top_cap_N` or `+discovery_frontier_second_cap_N`, so replay
+restores the setting, and a search checkpoint cannot resume into a campaign
+with it. `SelectorAccounting` adds `frontier_selections`,
+`weighted_cell_selections` (the draws counted in `cell_selections` whose cell's
+factor was above 1) and `weighted_cells_by_log2_factor`. The `coverage.discovery_weight`
+section gives the cap, the discoveries and their cells, the discoveries at each
+power of two, each discovery's power, and each discovery's draws through the
+frontier tier.
 
 A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place

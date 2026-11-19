@@ -38,6 +38,7 @@ pub struct Mm2CampaignConfig {
 impl Mm2CampaignConfig {
     fn generic(&self) -> CampaignConfig<Mm2Game> {
         CampaignConfig {
+            discovery_weight: None,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,

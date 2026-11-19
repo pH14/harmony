@@ -333,19 +333,24 @@ pub fn vine_step(wram: &[u8; WRAM_SIZE]) -> u16 {
     if vine_spawned(wram) {
         return VINE_SPAWNED;
     }
-    let camera = smb_camera_pixels(wram);
     if player_pixels(wram) < VINE_STEPS_FROM_PIXEL {
         return 0;
     }
-    let revealed = if (VINE_STEPS_READABLE_FROM_CAMERA..=VINE_BRICK_LAST_CAMERA).contains(&camera) {
-        VINE_STEPS
-            .iter()
-            .filter(|&&(column, row)| metatile(wram, column, row) != HIDDEN_COIN_METATILE)
-            .count()
-    } else {
-        0
-    };
-    VINE_AT_THE_STEPS + u16::try_from(revealed).unwrap_or(0)
+    VINE_AT_THE_STEPS + u16::try_from(revealed_vine_step_columns(wram).len()).unwrap_or(0)
+}
+
+#[must_use]
+pub fn revealed_vine_step_columns(wram: &[u8; WRAM_SIZE]) -> Vec<u16> {
+    if !(VINE_STEPS_READABLE_FROM_CAMERA..=VINE_BRICK_LAST_CAMERA)
+        .contains(&smb_camera_pixels(wram))
+    {
+        return Vec::new();
+    }
+    VINE_STEPS
+        .iter()
+        .filter(|&&(column, row)| metatile(wram, column, row) != HIDDEN_COIN_METATILE)
+        .filter_map(|&(column, _)| u16::try_from(column).ok())
+        .collect()
 }
 
 #[cfg(test)]

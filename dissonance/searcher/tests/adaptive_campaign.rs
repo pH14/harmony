@@ -413,6 +413,7 @@ impl Evaluation for TimingWorkload {
 
 fn fixture_config() -> CampaignConfig<TimingWorkload> {
     CampaignConfig {
+        discovery_weight: None,
         campaign_seed: 0x51a7_e001,
         workers: 2,
         execution_budget: 64,

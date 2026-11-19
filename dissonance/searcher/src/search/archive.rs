@@ -279,6 +279,82 @@ pub fn retention_policy_from_identifier(
 
 pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
 
+const DISCOVERY_WEIGHT_SUFFIX: &str = "+discovery_weight_cap_";
+
+const DISCOVERY_FRONTIER_TOP_SUFFIX: &str = "+discovery_frontier_top_cap_";
+
+const DISCOVERY_FRONTIER_SECOND_SUFFIX: &str = "+discovery_frontier_second_cap_";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontierWeight {
+    TopTier,
+    SecondTier,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DiscoveryWeight {
+    pub cap_log2: u8,
+    pub frontier: Option<FrontierWeight>,
+}
+
+#[must_use]
+pub fn selector_identifier(discovery: Option<DiscoveryWeight>) -> String {
+    let Some(discovery) = discovery else {
+        return SELECTOR_IDENTIFIER.to_owned();
+    };
+    let suffix = match discovery.frontier {
+        None => DISCOVERY_WEIGHT_SUFFIX,
+        Some(FrontierWeight::TopTier) => DISCOVERY_FRONTIER_TOP_SUFFIX,
+        Some(FrontierWeight::SecondTier) => DISCOVERY_FRONTIER_SECOND_SUFFIX,
+    };
+    format!("{SELECTOR_IDENTIFIER}{suffix}{}", discovery.cap_log2)
+}
+
+pub fn discovery_weight_from_selector_identifier(
+    identifier: &str,
+) -> Result<Option<DiscoveryWeight>, Box<dyn Error>> {
+    let Some(suffix) = identifier.strip_prefix(SELECTOR_IDENTIFIER) else {
+        return Err("parent scheduler is not recognized".into());
+    };
+    if suffix.is_empty() {
+        return Ok(None);
+    }
+    for (prefix, frontier) in [
+        (DISCOVERY_WEIGHT_SUFFIX, None),
+        (DISCOVERY_FRONTIER_TOP_SUFFIX, Some(FrontierWeight::TopTier)),
+        (
+            DISCOVERY_FRONTIER_SECOND_SUFFIX,
+            Some(FrontierWeight::SecondTier),
+        ),
+    ] {
+        if let Some(cap) = suffix.strip_prefix(prefix) {
+            let cap_log2 = cap.parse::<u8>()?;
+            if cap_log2 == 0 || cap_log2 > MAX_DISCOVERY_CAP_LOG2 {
+                return Err("discovery weight cap is out of range".into());
+            }
+            return Ok(Some(DiscoveryWeight { cap_log2, frontier }));
+        }
+    }
+    Err("parent scheduler is not recognized".into())
+}
+
+pub const MAX_DISCOVERY_CAP_LOG2: u8 = 8;
+
+const _: () = assert!(
+    COUNT_DECAY_SCALE.leading_zeros() + 1
+        > MAX_DISCOVERY_CAP_LOG2 as u32 + MAX_ARCHIVE_ENTRIES.ilog2()
+);
+
+enum TierDraw<P> {
+    Tier {
+        progress: P,
+        rank: u8,
+        fall_through: bool,
+    },
+    Frontier,
+}
+
 const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
@@ -332,6 +408,7 @@ pub enum SelectorPath {
     Tiers,
     Recent,
     Shrink,
+    Frontier,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -368,6 +445,12 @@ pub struct SelectorAccounting {
     pub continuation_selections: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recent_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontier_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weighted_cell_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weighted_cells_by_log2_factor: Vec<u64>,
     pub cell_selections: u64,
     pub productive_selections: u64,
     pub cell_resets: u64,
@@ -763,6 +846,14 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selector_weighted: bool,
     active_ids: ActiveIds,
     tiers: BTreeMap<K::Progress, TierCells<K>>,
+    #[serde(skip)]
+    cell_factors: BTreeMap<Cell<K>, u64>,
+    #[serde(skip)]
+    frontier: Option<FrontierWeight>,
+    #[serde(skip)]
+    frontier_cells: WeightedSet<Cell<K>>,
+    #[serde(skip)]
+    frontier_draws: BTreeMap<Cell<K>, u64>,
     #[serde(skip)]
     parent_index: Vec<usize>,
     preserve_inactive_snapshots: bool,
@@ -1389,6 +1480,10 @@ where
             selector_weighted: false,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
+            cell_factors: BTreeMap::new(),
+            frontier: None,
+            frontier_cells: WeightedSet::default(),
+            frontier_draws: BTreeMap::new(),
             parent_index: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
@@ -1964,6 +2059,7 @@ where
         let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
+        self.frontier_cells = WeightedSet::default();
         self.parent_index = Vec::new();
         if selector_indexed {
             self.rebuild_selector_index();
@@ -2429,6 +2525,7 @@ where
             if members.ids.is_empty() {
                 tier.places.remove(&place);
                 tier.weights.remove(&place);
+                self.frontier_cells.remove(&(progress, place));
             }
         }
         if tier.places.is_empty() {
@@ -2441,6 +2538,9 @@ where
         let (progress, place) = (rank.key.progress(), rank.key.place());
         let place_weight = self.place_weight(progress, place);
         let holder_weight = count_decay(self.selected[id]);
+        if self.on_frontier((progress, place)) {
+            self.frontier_cells.insert((progress, place), place_weight);
+        }
         let tier = self.tiers.entry(progress).or_default();
         tier.weights.insert(place, place_weight);
         let members = tier.places.entry(place).or_default();
@@ -2454,11 +2554,74 @@ where
     }
 
     fn place_weight(&self, progress: K::Progress, place: K::Place) -> u64 {
-        count_decay(
+        self.weighted_decay(
+            (progress, place),
             self.cells
                 .get(&(progress, place))
                 .map_or(0, |state| state.draws),
         )
+    }
+
+    fn weighted_decay(&self, cell: Cell<K>, draws: u64) -> u64 {
+        count_decay(draws).saturating_mul(self.cell_factor(cell))
+    }
+
+    fn cell_factor(&self, cell: Cell<K>) -> u64 {
+        self.cell_factors.get(&cell).copied().unwrap_or(1)
+    }
+
+    fn on_frontier(&self, cell: Cell<K>) -> bool {
+        self.frontier.is_some() && self.cell_factor(cell) > 1
+    }
+
+    pub fn enable_frontier(&mut self, frontier: FrontierWeight) {
+        self.frontier = Some(frontier);
+        self.selector_weighted = false;
+    }
+
+    pub fn set_cell_factor(&mut self, cell: Cell<K>, factor: u64) {
+        let factor = factor.clamp(1, 1 << MAX_DISCOVERY_CAP_LOG2);
+        if self.cell_factor(cell) == factor {
+            return;
+        }
+        if factor == 1 {
+            self.cell_factors.remove(&cell);
+        } else {
+            self.cell_factors.insert(cell, factor);
+        }
+        if !(self.selector_indexed && self.selector_weighted) {
+            return;
+        }
+        let weight = self.place_weight(cell.0, cell.1);
+        let present = self
+            .tiers
+            .get_mut(&cell.0)
+            .is_some_and(|tier| tier.weights.set_weight(&cell.1, weight));
+        if present && self.on_frontier(cell) {
+            if !self.frontier_cells.set_weight(&cell, weight) {
+                self.frontier_cells.insert(cell, weight);
+            }
+        } else {
+            self.frontier_cells.remove(&cell);
+        }
+    }
+
+    #[must_use]
+    pub fn frontier_draws(&self, cell: Cell<K>) -> u64 {
+        self.frontier_draws.get(&cell).copied().unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn weighted_cells_by_log2_factor(&self) -> Vec<u64> {
+        let mut counts = Vec::new();
+        for factor in self.cell_factors.values() {
+            let band = usize::try_from(factor.ilog2()).unwrap_or(usize::MAX);
+            if counts.len() <= band {
+                counts.resize(band + 1, 0);
+            }
+            counts[band] += 1;
+        }
+        counts
     }
 
     fn holder_order(&self, preference: usize, left: usize, right: usize) -> Ordering {
@@ -2524,6 +2687,15 @@ where
                 members.ids = ids;
             }
         }
+        self.frontier_cells = WeightedSet::from_sorted(
+            tiers
+                .iter()
+                .flat_map(|(progress, tier)| {
+                    tier.places.keys().map(move |place| (*progress, *place))
+                })
+                .filter(|cell| self.on_frontier(*cell))
+                .map(|cell| (cell, self.place_weight(cell.0, cell.1))),
+        );
         self.tiers = tiers;
         self.selector_weighted = true;
     }
@@ -3330,7 +3502,27 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank, fall_through) = self.draw_tier(rand)?;
+        debug_assert!(self.frontier_current());
+        let (progress, rank, fall_through) = match self.draw_tier(rand)? {
+            TierDraw::Tier {
+                progress,
+                rank,
+                fall_through,
+            } => (progress, rank, fall_through),
+            TierDraw::Frontier => {
+                let (progress, place) = draw_member(rand, &self.frontier_cells)?;
+                let (id, best_preference) = self.draw_holder(rand, progress, place)?;
+                return Ok((
+                    id,
+                    SelectorDraw {
+                        path: SelectorPath::Frontier,
+                        tier_rank: None,
+                        best_preference,
+                        fall_through: false,
+                    },
+                ));
+            }
+        };
         debug_assert!(
             self.tiers
                 .get(&progress)
@@ -3377,13 +3569,13 @@ where
                     return None;
                 }
                 let draws = self.cells.get(&cell_of(key)).map_or(0, |cell| cell.draws);
-                (draws < 32).then_some((key.place(), draws))
+                (draws < 32).then(|| (key.place(), self.weighted_decay(cell_of(key), draws)))
             })
             .collect();
         if places.is_empty() {
             return Ok(None);
         }
-        let index = draw_weighted(rand, places.values().map(|draws| count_decay(*draws)))?;
+        let index = draw_weighted(rand, places.values().copied())?;
         Ok(places.into_keys().nth(index))
     }
 
@@ -3452,10 +3644,7 @@ where
         }
     }
 
-    fn draw_tier(
-        &self,
-        rand: &mut RomuDuoJrRand,
-    ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
+    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<TierDraw<K::Progress>, Box<dyn Error>> {
         let tiers = self.tiers.len();
         let mut ranked = self.tiers.keys().rev().copied().peekable();
         let mut floor = 0_usize;
@@ -3468,14 +3657,24 @@ where
             floor += 1;
         }
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
-        let weights = (0..tiers).map(|rank| {
+        let rank_weight = |rank: usize| {
             if rank <= floor {
                 floor_weight
             } else {
                 tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
             }
-        });
-        let index = draw_weighted(rand, weights)?;
+        };
+        let frontier = self
+            .frontier
+            .filter(|_| !self.frontier_cells.is_empty())
+            .map(|frontier| match frontier {
+                FrontierWeight::TopTier => rank_weight(0),
+                FrontierWeight::SecondTier => rank_weight(1),
+            });
+        let index = draw_weighted(rand, (0..tiers).map(rank_weight).chain(frontier))?;
+        if index == tiers {
+            return Ok(TierDraw::Frontier);
+        }
         let progress = self
             .tiers
             .keys()
@@ -3484,11 +3683,27 @@ where
             .copied()
             .ok_or("tier draw chose an absent tier")?;
         let fall_through = (floor > 0 || halvings > 0) && index <= floor;
-        Ok((
+        Ok(TierDraw::Tier {
             progress,
-            u8::try_from(index).unwrap_or(u8::MAX),
+            rank: u8::try_from(index).unwrap_or(u8::MAX),
             fall_through,
-        ))
+        })
+    }
+
+    fn frontier_current(&self) -> bool {
+        if self.frontier.is_none() {
+            return self.frontier_cells.is_empty();
+        }
+        let expected = self
+            .tiers
+            .iter()
+            .flat_map(|(progress, tier)| tier.places.keys().map(move |place| (*progress, *place)))
+            .filter(|cell| self.on_frontier(*cell))
+            .collect::<Vec<_>>();
+        expected.len() == self.frontier_cells.len()
+            && expected.iter().all(|cell| {
+                self.frontier_cells.weight(cell) == Some(self.place_weight(cell.0, cell.1))
+            })
     }
 
     fn draw_cell(
@@ -3623,9 +3838,11 @@ where
             if let Some(interval) = self.interval_counts(cell) {
                 interval.resets = interval.resets.saturating_add(1);
             }
+            let weight = self.weighted_decay(cell, 0);
             if let Some(tier) = self.tiers.get_mut(&cell.0) {
-                tier.weights.set_weight(&cell.1, count_decay(0));
+                tier.weights.set_weight(&cell.1, weight);
             }
+            self.frontier_cells.set_weight(&cell, weight);
         }
     }
 
@@ -3987,8 +4204,11 @@ where
         let state = self.cells.entry(cell_of(key)).or_default();
         state.draws = state.draws.saturating_add(1);
         state.draws_total = state.draws_total.saturating_add(1);
-        let place_weight = count_decay(state.draws);
+        let draws = state.draws;
+        let place_weight = self.weighted_decay(cell_of(key), draws);
         let holder_weight = count_decay(self.selected[id]);
+        let weighted = self.cell_factor(cell_of(key)) > 1;
+        self.frontier_cells.set_weight(&cell_of(key), place_weight);
         if let Some(interval) = self.interval_counts(cell_of(key)) {
             interval.draws = interval.draws.saturating_add(1);
             match draw.path {
@@ -3996,7 +4216,7 @@ where
                     interval.continuation = interval.continuation.saturating_add(1);
                 }
                 SelectorPath::Recent => interval.recent = interval.recent.saturating_add(1),
-                SelectorPath::Tiers | SelectorPath::Shrink => {}
+                SelectorPath::Tiers | SelectorPath::Frontier | SelectorPath::Shrink => {}
             }
             if draw.best_preference.is_some() {
                 interval.best_holder = interval.best_holder.saturating_add(1);
@@ -4023,9 +4243,25 @@ where
                     .get_or_insert(0);
                 *count = count.saturating_add(1);
             }
-            SelectorPath::Tiers | SelectorPath::Recent => {
+            SelectorPath::Tiers | SelectorPath::Recent | SelectorPath::Frontier => {
                 if draw.path == SelectorPath::Recent {
                     let count = self.selector_accounting.recent_selections.get_or_insert(0);
+                    *count = count.saturating_add(1);
+                }
+                if draw.path == SelectorPath::Frontier {
+                    let count = self
+                        .selector_accounting
+                        .frontier_selections
+                        .get_or_insert(0);
+                    *count = count.saturating_add(1);
+                    let draws = self.frontier_draws.entry(cell_of(key)).or_default();
+                    *draws = draws.saturating_add(1);
+                }
+                if weighted {
+                    let count = self
+                        .selector_accounting
+                        .weighted_cell_selections
+                        .get_or_insert(0);
                     *count = count.saturating_add(1);
                 }
                 self.selector_accounting.cell_selections =
@@ -4178,6 +4414,7 @@ where
 
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_counters();
+        accounting.weighted_cells_by_log2_factor = self.weighted_cells_by_log2_factor();
         accounting.draws_by_cell = self
             .cells
             .iter()
@@ -4373,7 +4610,14 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let (progress, rank, fall_through) = self.draw_tier(rand)?;
+        let TierDraw::Tier {
+            progress,
+            rank,
+            fall_through,
+        } = self.draw_tier(rand)?
+        else {
+            return Err("reference selector has no frontier tier".into());
+        };
         let recent = self.draw_recent_cell(rand, progress)?;
         let place = match recent {
             Some(place) => place,
@@ -4515,10 +4759,10 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
-        CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, slot_of_key, tier_weight,
+        CellState, FrontierWeight, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input,
+        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw,
+        SelectorPath, SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT,
+        TierCells, TierDraw, WeightedSet, slot_of_key, tier_weight,
     };
     use crate::search::{cost::ShrinkCost, draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -6369,7 +6613,10 @@ mod tests {
                     assert_eq!(
                         archive
                             .draw_tier(&mut actual)
-                            .map(|(progress, rank, _)| (progress, rank))
+                            .map(|draw| match draw {
+                                TierDraw::Tier { progress, rank, .. } => (progress, rank),
+                                TierDraw::Frontier => unreachable!("no frontier tier"),
+                            })
                             .map_err(|error| error.to_string()),
                         expected
                     );
@@ -6390,6 +6637,75 @@ mod tests {
         }
         assert_eq!(weights[8], 1);
         assert_eq!(weights[9], 1);
+    }
+
+    #[test]
+    fn the_frontier_tier_draws_weighted_cells_at_the_top_tier_weight() {
+        let mut archive = Archive::<u64, TierKey, (), ()>::new(|_| 1);
+        for tier in 0..6 {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![tier as u64],
+                        key: TierKey(tier),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap();
+        }
+        archive.enable_frontier(FrontierWeight::TopTier);
+        archive.set_cell_factor((2, ()), 4);
+        archive.set_cell_factor((4, ()), 2);
+        archive.ensure_selector_index();
+        assert!(archive.frontier_current());
+        let mut weights = (0..6_u8).map(tier_weight).collect::<Vec<_>>();
+        weights.push(weights[0]);
+        let mut actual = RomuDuoJrRand::with_seed(5);
+        let mut reference = actual;
+        for _ in 0..256 {
+            let expected = materialized_weighted_reference(&mut reference, &weights).unwrap();
+            let drawn = match archive.draw_tier(&mut actual).unwrap() {
+                TierDraw::Tier { rank, .. } => usize::from(rank),
+                TierDraw::Frontier => 6,
+            };
+            assert_eq!(drawn, expected);
+        }
+        let mut frontier_draws = BTreeMap::<usize, u64>::new();
+        for _ in 0..512 {
+            let (id, draw) = archive.select_parent(&mut actual).unwrap();
+            if draw.path == SelectorPath::Frontier {
+                assert_eq!(draw.tier_rank, None);
+                *frontier_draws.entry(archive.entries[id].key.0).or_default() += 1;
+            }
+        }
+        assert_eq!(
+            frontier_draws.keys().copied().collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+        assert!(frontier_draws[&2] > frontier_draws[&4]);
+        let (id, draw) = loop {
+            let (id, draw) = archive.select_parent(&mut actual).unwrap();
+            if draw.path == SelectorPath::Frontier {
+                break (id, draw);
+            }
+        };
+        archive.record_selection(id, &draw);
+        assert!(archive.frontier_current());
+        assert_eq!(archive.frontier_draws((archive.entries[id].key.0, ())), 1);
+        let report = archive.selector_report();
+        assert_eq!(report.frontier_selections, Some(1));
+        assert_eq!(report.weighted_cell_selections, Some(1));
+        assert_eq!(report.weighted_cells_by_log2_factor, vec![0, 1, 1]);
+        archive.set_cell_factor((2, ()), 1);
+        archive.set_cell_factor((4, ()), 1);
+        assert!(archive.frontier_cells.is_empty());
+        for _ in 0..256 {
+            let (_, draw) = archive.select_parent(&mut actual).unwrap();
+            assert_ne!(draw.path, SelectorPath::Frontier);
+        }
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
