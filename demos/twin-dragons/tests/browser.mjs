@@ -833,18 +833,6 @@ try {
     await page.locator("#search-here").innerText(),
     "↗ Branch search from here",
   );
-  const readOverlay = () =>
-    page
-      .locator('.map-row .area-map')
-      .first()
-      .evaluate((canvas) => window.tdTestHeatPixels(canvas));
-  let originalOverlay = await readOverlay();
-  for (let attempt = 0; attempt < 30; attempt++) {
-    await page.waitForTimeout(1000);
-    const next = await readOverlay();
-    if (JSON.stringify(next) === JSON.stringify(originalOverlay)) break;
-    originalOverlay = next;
-  }
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.tdTestFork);
   const manualTape = await page.evaluate(() => window.tdTestFork.tape);
@@ -917,6 +905,11 @@ try {
     Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
     "The prefix trail must outlast the origin ripple while the pane stays closed",
   );
+  await page.locator('#branch-tree button[data-search="0"]').hover();
+  await page.waitForFunction(() => document.querySelector(".map-row .area-map").dataset.previewSearch === "0");
+  const originalOverlay = await page.locator(".map-row .area-map").first().evaluate((canvas) => window.tdTestHeatPixels(canvas));
+  await page.mouse.move(0, 0);
+  await page.waitForFunction(() => document.querySelector("#map").dataset.previewSearch === "");
   await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
@@ -1065,7 +1058,7 @@ try {
       const changed = shared.filter((key) => overlay[key].some((channel, i) => Math.abs(channel - restored.overlay[key][i]) > 3));
       assert.ok(
         changed.length <= Math.max(1, shared.length * 0.03),
-        "Returning to the original search must preserve its rendered cell colors while exploration resumes",
+        `Returning to the original search must preserve its rendered cell colors while exploration resumes: ${changed.length} of ${shared.length} changed, ${JSON.stringify(changed.slice(0, 8).map((key) => [key, overlay[key], restored.overlay[key]]))}`,
       );
     }
     await page.waitForFunction(
