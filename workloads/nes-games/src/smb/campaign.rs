@@ -908,13 +908,12 @@ where
     }
 
     fn current_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        target.observe_shadow();
         self.rollout_key(target)
     }
 
     fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        let key = target.frame_key().on_route(self.route);
-        target.shadow((!target.is_dead() && !self.is_doomed(target)).then_some(key));
-        Ok(key)
+        Ok(target.frame_key().on_route(self.route))
     }
 
     fn complete_candidate_key(

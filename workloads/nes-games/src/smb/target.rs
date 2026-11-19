@@ -308,9 +308,16 @@ where
         self.shadow = Some(shadow);
     }
 
-    pub fn shadow(&self, hand: Option<SmbArchiveKey>) {
+    pub fn observe_shadow(&self) {
         if let Some(shadow) = &self.shadow {
-            shadow.observe(hand);
+            let wram = self.wram();
+            if !self.failed
+                && !self.dead
+                && !smb_player_is_doomed(&wram)
+                && !self.route.is_doomed(&wram)
+            {
+                shadow.observe(Some(self.frame_key.on_route(self.route)));
+            }
         }
     }
 
@@ -413,6 +420,7 @@ where
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
         }
+        self.observe_shadow();
         executed_frames
     }
 
