@@ -169,17 +169,20 @@ where
         &self,
         previous: Option<&G::State>,
         ram: &[u8],
+        action_end: bool,
         cursor: &mut ShadowCursor<H>,
     ) -> G::State {
         let lowered = &self.shadow.lowered;
         let state = lowered.game.decode(previous, ram);
-        cursor.observe(&lowered.compiled, &lowered.record(&state).0);
+        let mut record = lowered.record(&state).0;
+        record.set_action_end(action_end);
+        cursor.observe(&lowered.compiled, &record);
         state
     }
 
     fn begin(&self, ram: &[u8]) -> Position<G::State, H> {
         let mut cursor = ShadowCursor::default();
-        let state = self.arrive(None, ram, &mut cursor);
+        let state = self.arrive(None, ram, true, &mut cursor);
         Position { state, cursor }
     }
 }
@@ -211,8 +214,13 @@ where
         }
         current.awaiting = true;
         if let Some(position) = current.position.as_mut() {
-            for wram in frames {
-                position.state = self.arrive(Some(&position.state), wram, &mut position.cursor);
+            for (index, wram) in frames.iter().enumerate() {
+                position.state = self.arrive(
+                    Some(&position.state),
+                    wram,
+                    index + 1 == frames.len(),
+                    &mut position.cursor,
+                );
             }
         }
     }
@@ -232,7 +240,7 @@ where
         for wram in interior {
             position.state = game.decode(Some(&position.state), wram);
         }
-        position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
+        position.state = self.arrive(Some(&position.state), arrival, true, &mut position.cursor);
     }
 
     fn saved(&self) -> ShadowToken {

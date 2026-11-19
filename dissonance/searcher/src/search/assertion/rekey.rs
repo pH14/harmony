@@ -79,7 +79,16 @@ fn fold(
     mut checker: Option<&mut Checker<'_>>,
 ) -> Step {
     let mut key = None;
-    for (index, frame) in frames.iter().enumerate() {
+    for (index, recorded) in frames.iter().enumerate() {
+        let marked;
+        let frame = if strategy.reads_action_end() {
+            let mut end = *recorded;
+            end.set_action_end(index + 1 == frames.len());
+            marked = end;
+            &marked
+        } else {
+            recorded
+        };
         let parent = checker.is_some().then(|| accumulator.clone());
         let observed = strategy.observe(frame, accumulator);
         let stopped = observed.goal || observed.rejected.is_some();
@@ -118,7 +127,9 @@ impl Rekeying<'_> {
         let mut recorded = Accumulator::default();
         let _ = self.recorded.observe(genesis, &mut recorded);
         let mut keyed = Accumulator::default();
-        let keyed_genesis = self.strategy.observe(genesis, &mut keyed);
+        let mut marked = *genesis;
+        marked.set_action_end(true);
+        let keyed_genesis = self.strategy.observe(&marked, &mut keyed);
         let genesis_key = keyed_genesis
             .key
             .ok_or("the genesis record has no key under the strategy")?;

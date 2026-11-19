@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    catalog::{Catalog, NONE, RECORD_SLOTS, Record},
+    catalog::{ACTION_END, ACTION_END_SLOT, Catalog, NONE, RECORD_SLOTS, Record},
     expr::{self, Binary, Expr},
     key::{AssertionKey, MAX_PREFERENCES, Wide},
     strategy::{Lines, Shared, StageLines, Steps, Strategy},
@@ -488,6 +488,7 @@ struct Compiler<'a> {
     aggregate_spans: Vec<Span>,
     in_aggregate: bool,
     locals: Option<Vec<Span>>,
+    reads_action_end: bool,
 }
 
 impl Compiler<'_> {
@@ -543,6 +544,11 @@ impl Compiler<'_> {
                 hi: signal.max,
                 none: false,
             });
+        }
+        if name == ACTION_END {
+            self.reads_action_end = true;
+            ops.push(Op::Load(u8::try_from(ACTION_END_SLOT)?));
+            return Ok(Span::FLAG);
         }
         if self.catalog.group(name).is_some() {
             return Err(format!("`{name}` is a tuple and is used as a number").into());
@@ -918,6 +924,7 @@ impl Compiler<'_> {
             aggregate_spans: Vec::new(),
             in_aggregate: false,
             locals: self.locals.clone(),
+            reads_action_end: false,
         };
         scratch.truth(&expr) != Some(false)
     }
@@ -1328,6 +1335,7 @@ pub struct Compiled {
     goal: Option<Vec<Op>>,
     goal_reachable: bool,
     holds_objective: bool,
+    reads_action_end: bool,
 }
 
 impl Compiled {
@@ -1343,6 +1351,7 @@ impl Compiled {
             aggregate_spans: Vec::new(),
             in_aggregate: false,
             locals: None,
+            reads_action_end: false,
         };
         let lines = compiler.lines(&strategy.lines()?, None)?;
         let goal = strategy
@@ -1412,6 +1421,7 @@ impl Compiled {
             goal,
             goal_reachable,
             holds_objective,
+            reads_action_end: compiler.reads_action_end,
         })
     }
 
@@ -1422,6 +1432,11 @@ impl Compiled {
     #[must_use]
     pub fn has_goal(&self) -> bool {
         self.goal.is_some()
+    }
+
+    #[must_use]
+    pub fn reads_action_end(&self) -> bool {
+        self.reads_action_end
     }
 
     #[must_use]
