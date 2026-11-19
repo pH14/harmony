@@ -187,11 +187,7 @@ impl Config {
             forced += u64::from(record != entry.input.actions.len() as u64);
             cut_short += u64::from(cut);
             walkway += u64::from(walked);
-            charged += u64::from(
-                entry
-                    .shrink_total
-                    .is_some_and(|total| total.primary == record),
-            );
+            charged += u64::from(entry.cost_total == Some(record));
         }
         serde_json::json!({
             "entries": entries.len(),
@@ -380,19 +376,98 @@ mod tests {
     }
 
     #[test]
-    fn a_walkway_world_campaign_replays_and_charges_the_record_cost() {
-        let report = crate::run(&workload(walkway()), crate::test_seed(), 20_000, true).unwrap();
-        assert_eq!(report["verified"], true);
-        assert_eq!(report["success"], true, "{report}");
-        let stairs = &report["stairs"];
-        assert!(
-            stairs["entries_with_walkway"].as_u64().is_some(),
-            "{stairs}"
-        );
-        assert_eq!(
-            stairs["entries_charged_record_cost"], stairs["entries"],
-            "{stairs}"
-        );
+    fn walkway_world_campaigns_replay_and_charge_the_record_cost() {
+        let (mut walked, mut forced) = (0, 0);
+        for _ in 0..16 {
+            let report =
+                crate::run(&workload(walkway()), crate::test_seed(), 20_000, true).unwrap();
+            assert_eq!(report["verified"], true);
+            assert_eq!(report["success"], true, "{report}");
+            let stairs = &report["stairs"];
+            assert_eq!(
+                stairs["entries_charged_record_cost"], stairs["entries"],
+                "{stairs}"
+            );
+            walked += stairs["entries_with_walkway"].as_u64().unwrap();
+            forced += stairs["entries_with_forced_steps"].as_u64().unwrap();
+        }
+        assert!(walked > 0 && forced > 0, "walked={walked} forced={forced}");
+    }
+
+    #[test]
+    fn the_charged_cost_ranks_the_walkway_above_the_climb_onto_the_landing() {
+        use searcher::search::archive::{Archive, ArchiveCandidate};
+        use searcher::search::campaign::{Evaluation, TargetExecution};
+        let w = walkway();
+        let workload = workload(w);
+        let charged = |actions: &[u8]| -> Vec<u64> {
+            let mut target = workload.new_target().unwrap();
+            let mut milestones = false;
+            actions
+                .iter()
+                .map(|action| {
+                    workload
+                        .apply_action(&mut target, action, &mut milestones)
+                        .unwrap();
+                    workload.action_cost(action, &workload.rollout_observations(&target))
+                })
+                .collect()
+        };
+        let prefix: Vec<u8> = (0..4).map(|position| w.action(position)).collect();
+        let climb = [w.action(4)];
+        let walk = [w.side_action(4), w.action(5), w.action(5)];
+        let path = |tail: &[u8]| [prefix.as_slice(), tail].concat();
+        let record = |tail: &[u8]| charged(&path(tail))[prefix.len()..].iter().sum::<u64>();
+        assert_eq!((record(&climb), record(&walk)), (4, 3));
+        let planned = |tail: &[u8]| tail.iter().map(workload.planned_cost_fn()).sum::<u64>();
+        assert_eq!((planned(&climb), planned(&walk)), (1, 3));
+        let at = |actions: &[u8]| {
+            actions
+                .iter()
+                .fold(w.initial(), |s, &action| w.step(s, action))
+        };
+        let insert = |archive: &mut Archive<u8, Key, bool, u8>,
+                      parent,
+                      before: &[u8],
+                      suffix: &[u8],
+                      cost| {
+            let state = at(&[before, suffix].concat());
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: suffix.to_vec(),
+                        key: w.key(state),
+                        milestones: false,
+                        cost,
+                    },
+                    state.position,
+                )
+                .unwrap()
+        };
+        let holder = |cost: &dyn Fn(&[u8]) -> u64, walk_first: bool| {
+            let mut archive = Archive::<u8, Key, bool, u8>::new();
+            let genesis = insert(&mut archive, None, &[], &[], 0);
+            let below = insert(&mut archive, genesis, &[], &prefix, 4);
+            let order: [&[u8]; 2] = if walk_first {
+                [&walk, &climb]
+            } else {
+                [&climb, &walk]
+            };
+            let held: Vec<bool> = order
+                .iter()
+                .map(|tail| insert(&mut archive, below, &prefix, tail, cost(tail)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|id| id.is_some_and(|id| archive.active[id]))
+                .collect();
+            if walk_first { held[0] } else { held[1] }
+        };
+        for walk_first in [false, true] {
+            assert!(holder(&record, walk_first));
+            assert!(!holder(&planned, walk_first));
+        }
     }
 
     #[test]

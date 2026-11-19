@@ -547,8 +547,9 @@ object counts the final archive entries (`entries`), the entries whose input
 ran a forced climb, so that its record cost is above its planned cost
 (`entries_with_forced_steps`), the entries whose input ran a climb cut short at
 the goal (`entries_cut_short`), the entries whose input completed a walkway
-(`entries_with_walkway`), and the entries whose shrink total equals the record
-cost of their input (`entries_charged_record_cost`).
+(`entries_with_walkway`), and the entries whose cost total, the summed
+`action_cost` the archive charged along the input, equals the input's record
+cost (`entries_charged_record_cost`).
 
 ## Twelve picks
 
