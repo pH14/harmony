@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::sync::OnceLock;
+
 use machine::nes::{ButtonChord, WRAM_SIZE};
 
 use crate::{
@@ -7,8 +9,8 @@ use crate::{
     metroid::{
         archive::CHORDS,
         target::{
-            MetroidMechanicalState, MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state,
-            follow_frame, power_on_walk,
+            MAX_ENERGY_TANKS, MetroidMechanicalState, MetroidTerminalPolicy,
+            STARTING_HEALTH_TENTHS, decode_state, follow_frame, health_cap, power_on_walk,
         },
     },
     search::assertion::{Assertion, Declarations, Number},
@@ -50,6 +52,77 @@ fn flag(name: &'static str, value: bool) -> Assertion {
 
 fn sometimes(name: &'static str, condition: bool) -> Assertion {
     Assertion::Sometimes { name, condition }
+}
+
+#[must_use]
+pub fn balance(state: MetroidMechanicalState) -> i64 {
+    if state.missile_capacity == 0 {
+        return 0;
+    }
+    let missiles = Ratio::of(u64::from(state.missiles), u64::from(state.missile_capacity));
+    let energy = Ratio::of(
+        u64::from(state.health),
+        u64::from(health_cap(state.energy_tanks)),
+    );
+    let ratio = missiles.min(energy);
+    i64::try_from(balance_table().partition_point(|entry| *entry < ratio)).unwrap_or(i64::MAX)
+}
+
+#[must_use]
+pub fn balance_max() -> i64 {
+    i64::try_from(balance_table().len().saturating_sub(1)).unwrap_or(i64::MAX)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Ratio {
+    part: u64,
+    whole: u64,
+}
+
+impl Ratio {
+    fn of(part: u64, whole: u64) -> Self {
+        Self {
+            part: part.min(whole),
+            whole,
+        }
+    }
+}
+
+impl PartialEq for Ratio {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Ratio {}
+
+impl PartialOrd for Ratio {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ratio {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.part * other.whole).cmp(&(other.part * self.whole))
+    }
+}
+
+fn balance_table() -> &'static [Ratio] {
+    static TABLE: OnceLock<Vec<Ratio>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let missiles = (1..=u8::MAX).flat_map(|capacity| {
+            (0..=capacity).map(move |count| Ratio::of(u64::from(count), u64::from(capacity)))
+        });
+        let energy = (0..=MAX_ENERGY_TANKS).flat_map(|tanks| {
+            let cap = health_cap(tanks);
+            (0..=cap).map(move |health| Ratio::of(u64::from(health), u64::from(cap)))
+        });
+        let mut table: Vec<Ratio> = missiles.chain(energy).collect();
+        table.sort_unstable();
+        table.dedup();
+        table
+    })
 }
 
 fn decode_memory(ram: &[u8]) -> MetroidMechanicalState {
@@ -103,6 +176,7 @@ impl Game for Metroid {
         out.declare(byte("energy_tanks", state.energy_tanks));
         out.declare(byte("equipment", state.equipment));
         out.declare(value("health", i64::from(state.health), 0, MAX_HEALTH));
+        out.declare(value("balance", balance(state), 0, balance_max()));
         out.declare(value(
             "boss_health",
             i64::from(state.boss_health),

@@ -289,8 +289,7 @@ fn drive_target_action<E: From<MachineError>>(
 }
 
 const MISSILE_TANK_STEP: u8 = 5;
-#[cfg(unix)]
-const MAX_ENERGY_TANKS: u8 = 6;
+pub const MAX_ENERGY_TANKS: u8 = 6;
 const CARTRIDGE_RAM_SIZE: usize = 8192;
 const CARTRIDGE_FRAME_RANGE: std::ops::Range<usize> =
     ENERGY_TANKS..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
