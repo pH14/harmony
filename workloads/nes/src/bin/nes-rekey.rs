@@ -14,7 +14,7 @@ use nes_games::workload::{
 use nes_workload::{famidash::Famidash, joust::Joust, zelda::Zelda};
 use searcher::search::{
     assertion::{
-        AssertionKey, RecordedAction, RecordedJob, Recording, Rekeying, StreamIdentity,
+        AssertionKey, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying, StreamIdentity,
         same_decisions,
     },
     campaign::SnapshotCheckpoint,
@@ -32,6 +32,22 @@ fn forced_move_frames<A>(actions: &[RecordedAction<A>]) -> BTreeMap<u64, usize> 
         }
     }
     lengths
+}
+
+fn rekeyed_report(rekeyed: &Rekeyed) -> Value {
+    json!({
+        "format": rekeyed.format,
+        "policy": rekeyed.policy,
+        "jobs": rekeyed.jobs,
+        "candidates": rekeyed.candidates,
+        "retained": rekeyed.retained,
+        "rejected": rekeyed.rejected,
+        "cells": rekeyed.cells,
+        "entries": rekeyed.holders.iter().map(|held| held.ids.len()).sum::<usize>(),
+        "tiers": rekeyed.tiers,
+        "findings": rekeyed.findings,
+        "holders": rekeyed.holders,
+    })
 }
 
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
@@ -94,25 +110,26 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
     }
     .run(&recording.header.genesis, &jobs, &recording.actions)?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;
-    let mut report = json!({
-        "recorded_policy": recording.header.policy,
-        "policy": rekeyed.policy,
-        "jobs": rekeyed.jobs,
-        "records_jobs": recording.jobs,
-        "records_truncated_bytes": recording.truncated_bytes,
-        "actions": recording.actions.len(),
-        "frames": recording.actions.iter().map(|action| action.frames.len()).sum::<usize>(),
-        "cost": recording.actions.iter().map(|action| action.cost).sum::<u64>(),
-        "forced_move_frames": forced_move_frames(&recording.actions),
-        "candidates": rekeyed.candidates,
-        "retained": rekeyed.retained,
-        "rejected": rekeyed.rejected,
-        "cells": rekeyed.cells,
-        "entries": rekeyed.holders.iter().map(|held| held.ids.len()).sum::<usize>(),
-        "tiers": rekeyed.tiers,
-        "findings": rekeyed.findings,
-        "holders": rekeyed.holders,
-    });
+    let mut report = rekeyed_report(&rekeyed);
+    report["recorded_policy"] = json!(recording.header.policy);
+    report["records_jobs"] = json!(recording.jobs);
+    report["records_truncated_bytes"] = json!(recording.truncated_bytes);
+    report["actions"] = json!(recording.actions.len());
+    report["frames"] = json!(
+        recording
+            .actions
+            .iter()
+            .map(|action| action.frames.len())
+            .sum::<usize>()
+    );
+    report["cost"] = json!(
+        recording
+            .actions
+            .iter()
+            .map(|action| action.cost)
+            .sum::<u64>()
+    );
+    report["forced_move_frames"] = json!(forced_move_frames(&recording.actions));
     let replay = run.join(REPLAY_RECORDS_FILE);
     if replay.exists() {
         report["replay_records_identical"] =
@@ -170,4 +187,42 @@ fn main() -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use searcher::search::assertion::{Holders, Tier};
+
+    #[test]
+    fn the_rekeyed_report_names_its_format() {
+        let rekeyed = Rekeyed {
+            format: "assertion-rekeyed-v1",
+            policy: "assertion_key_test".to_owned(),
+            jobs: 1,
+            candidates: 2,
+            retained: 1,
+            rejected: 1,
+            cells: 1,
+            tiers: vec![Tier {
+                progress: 0,
+                cells: 1,
+                entries: 1,
+            }],
+            holders: vec![Holders {
+                progress: 0,
+                place: 3,
+                identity: u64::from(u32::MAX) + 1,
+                ids: vec![7],
+                keys: vec![AssertionKey::default()],
+            }],
+            snapshots: vec![7],
+            findings: Vec::new(),
+            decisions: Vec::new(),
+        };
+        let report = rekeyed_report(&rekeyed);
+        assert_eq!(report["format"], "assertion-rekeyed-v1");
+        assert_eq!(report["entries"], 1);
+        assert_eq!(report["holders"][0]["identity"], u64::from(u32::MAX) + 1);
+    }
 }
