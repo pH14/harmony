@@ -724,6 +724,13 @@ later keys on that path skip the stage's goal. The second argument of
 parent's value, which expresses a band that resets on a warp. A strategy holds
 at most eight distinct aggregates, and identical ones share a slot.
 
+The aggregate `last(x, s)` is the last value of `x` that was not `none` on any
+frame of the path since `s` last changed, and `none` until there is one; the
+second argument is optional as for `highest`, and each observed frame folds in
+the same way. It carries a position along a route: with `x` the route index of
+the current cell, the objective stays at the last route cell while the path is
+off the route and follows the path back when it returns to an earlier cell.
+
 **Compilation.** `Compiled::new` checks every name against the catalog, runs
 interval analysis from the declared ranges, and packs each tuple into an
 integer by mixed radix, so packed order is the tuple's order. Expressions run

@@ -94,8 +94,25 @@ impl Span {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Aggregate {
+    fold: Fold,
     value: Vec<Op>,
     since: Option<Vec<Op>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fold {
+    Highest,
+    Last,
+}
+
+impl Fold {
+    fn named(function: &str) -> Option<Self> {
+        match function {
+            "highest" => Some(Self::Highest),
+            "last" => Some(Self::Last),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -837,7 +854,7 @@ impl Compiler<'_> {
                     }
                 })
             }
-            AGGREGATE => {
+            name if let Some(fold) = Fold::named(name) => {
                 arity(1..=2)?;
                 if self.in_aggregate {
                     return Err("an aggregate cannot contain another aggregate".into());
@@ -858,7 +875,7 @@ impl Compiler<'_> {
                 if let Some(since) = &since {
                     depth_of(since)?;
                 }
-                let aggregate = Aggregate { value, since };
+                let aggregate = Aggregate { fold, value, since };
                 let index = match self.aggregates.iter().position(|held| *held == aggregate) {
                     Some(index) => index,
                     None if self.aggregates.len() == MAX_AGGREGATES => {
@@ -1213,8 +1230,6 @@ impl Compiler<'_> {
     }
 }
 
-const AGGREGATE: &str = "highest";
-
 fn whole_values(
     items: &[&str],
     catalog: &Catalog,
@@ -1266,7 +1281,9 @@ fn outside_cell(expr: &Expr, cell: &BTreeSet<String>) -> Option<String> {
         Expr::If(condition, then, otherwise) => outside_cell(condition, cell)
             .or_else(|| outside_cell(then, cell))
             .or_else(|| outside_cell(otherwise, cell)),
-        Expr::Call(function, _) if function == AGGREGATE => Some(format!("{function}(...)")),
+        Expr::Call(function, _) if Fold::named(function).is_some() => {
+            Some(format!("{function}(...)"))
+        }
         Expr::Call(function, args) => args.iter().enumerate().find_map(|(index, arg)| match arg {
             Expr::Name(_)
                 if index == 1 && ["in", "index", "bucket"].contains(&function.as_str()) =>
@@ -1556,10 +1573,10 @@ impl Compiled {
             });
             let reset = !parent.started || anchor != parent.anchors[index];
             let held = parent.values[index];
-            next.values[index] = match (reset || held == NONE, value == NONE) {
-                (true, _) => value,
-                (false, true) => held,
-                (false, false) => held.max(value),
+            next.values[index] = match (reset || held == NONE, value == NONE, aggregate.fold) {
+                (true, _, _) | (false, false, Fold::Last) => value,
+                (false, true, _) => held,
+                (false, false, Fold::Highest) => held.max(value),
             };
             next.anchors[index] = anchor;
         }
