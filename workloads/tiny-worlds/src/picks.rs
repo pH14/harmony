@@ -415,6 +415,7 @@ mod tests {
                 u64::try_from(ordinal).unwrap(),
                 Some(u32::try_from(ordinal).unwrap()),
                 Vec::new(),
+                Vec::new(),
             );
             let mut chooser = Chooser::new(&plan);
             let action = w.resolve_action(&target, &ASK, &mut chooser).unwrap();

@@ -16,7 +16,7 @@ use crate::{
         assertion::{Assertion, Declarations, Number},
         choice::ChoiceSite,
     },
-    workload::{Game, Moves, Offer, Step},
+    workload::{EVERY_OPTION, Game, Moves, Offer, Play, Step},
 };
 
 pub const LUCKY_DRAW_LEVEL: u8 = 24;
@@ -46,15 +46,15 @@ impl Wait {
     }
 }
 
-const WAITS: [(u16, Wait); 8] = [
-    (START, Wait::Start),
-    (1, Wait::Idle(1)),
-    (2, Wait::Idle(2)),
-    (3, Wait::Idle(4)),
-    (4, Wait::Idle(8)),
-    (5, Wait::Idle(16)),
-    (6, Wait::Idle(32)),
-    (7, Wait::Idle(64)),
+const WAITS: [(u16, Play<Wait>); 8] = [
+    (START, Play::Move(Wait::Start)),
+    (1, Play::Move(Wait::Idle(1))),
+    (2, Play::Move(Wait::Idle(2))),
+    (3, Play::Move(Wait::Idle(4))),
+    (4, Play::Move(Wait::Idle(8))),
+    (5, Play::Move(Wait::Idle(16))),
+    (6, Play::Move(Wait::Idle(32))),
+    (7, Play::Move(Wait::Idle(64))),
 ];
 
 const WAIT_LABELS: [&str; 8] = ["start", "1", "2", "4", "8", "16", "32", "64"];
@@ -162,6 +162,7 @@ impl Game for LuckyDraw {
                 site: WAIT_SITE,
                 default: WAIT_ONE,
                 options: &WAITS,
+                offered: EVERY_OPTION,
             })
         } else if state.resolved() {
             Moves::none()
@@ -205,8 +206,8 @@ impl Game for LuckyDraw {
             .iter()
             .find(|(offered, _)| site == WAIT_SITE && *offered == label)
         {
-            Some((_, Wait::Idle(frames))) => u64::from(*frames),
-            Some((_, Wait::Start)) => 1 + u64::from(START_FRAMES),
+            Some((_, Play::Move(Wait::Idle(frames)))) => u64::from(*frames),
+            Some((_, Play::Move(Wait::Start))) => 1 + u64::from(START_FRAMES),
             _ => 1,
         }
     }

@@ -49,6 +49,7 @@ impl Choice {
 pub struct ChoiceSite {
     pub name: String,
     pub labels: Vec<String>,
+    pub contrary: Option<u32>,
 }
 
 impl ChoiceSite {
@@ -57,7 +58,37 @@ impl ChoiceSite {
         Self {
             name: name.to_owned(),
             labels: labels.into_iter().collect(),
+            contrary: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_contrary(self, contrary: u32) -> Self {
+        Self {
+            contrary: Some(contrary),
+            ..self
+        }
+    }
+
+    pub fn validate_all(sites: &[Self]) -> Result<(), Box<dyn Error>> {
+        match sites
+            .iter()
+            .find(|site| site.contrary.is_some_and(|contrary| contrary > CERTAIN))
+        {
+            Some(site) => {
+                Err(format!("choice site {} declares a rate above one", site.name).into())
+            }
+            None => Ok(()),
+        }
+    }
+
+    #[must_use]
+    pub fn declared_contrary(sites: &[Self]) -> Vec<(u16, u32)> {
+        sites
+            .iter()
+            .enumerate()
+            .filter_map(|(index, site)| Some((u16::try_from(index).ok()?, site.contrary?)))
+            .collect()
     }
 }
 
@@ -169,6 +200,7 @@ pub struct ChoicePlan {
     pub seed: u64,
     pub untried: Option<u32>,
     pub held: Vec<(u16, Choice)>,
+    pub declared: Vec<(u16, u32)>,
 }
 
 impl ChoicePlan {
@@ -179,6 +211,7 @@ impl ChoicePlan {
         mutation_seed: u64,
         untried: Option<u32>,
         held: Vec<(u16, Choice)>,
+        declared: Vec<(u16, u32)>,
     ) -> Self {
         let (profile, redrawn) = policy.job_profile(parent, mutation_seed);
         Self {
@@ -187,6 +220,7 @@ impl ChoicePlan {
             seed: mutation_seed ^ ANSWER_SEED_MIX,
             untried,
             held,
+            declared,
         }
     }
 
@@ -244,6 +278,7 @@ pub struct Chooser {
     untried: Option<u32>,
     asked: bool,
     held: Vec<(u16, Choice)>,
+    declared: Vec<(u16, u32)>,
 }
 
 impl Chooser {
@@ -255,7 +290,20 @@ impl Chooser {
             untried: plan.untried,
             asked: false,
             held: plan.held.clone(),
+            declared: plan.declared.clone(),
         }
+    }
+
+    #[must_use]
+    pub fn contrary(&self, site: u16) -> u32 {
+        self.declared_rate(site).unwrap_or(self.profile.contrary)
+    }
+
+    fn declared_rate(&self, site: u16) -> Option<u32> {
+        self.declared
+            .iter()
+            .find(|(declared, _)| *declared == site)
+            .map(|(_, contrary)| *contrary)
     }
 
     pub fn choose(&mut self, site: u16, offered: &[u16], default: u16) -> Choice {
@@ -272,6 +320,9 @@ impl Chooser {
     }
 
     fn ask(&mut self, site: u16, offered: &[(u16, u32)], default: u16, draw: Draw) -> Choice {
+        if let Some(rate) = self.declared_rate(site) {
+            return self.declared_answer(rate, offered, default);
+        }
         let answer = self.answer(site, offered, default, draw);
         match self.held.iter_mut().find(|(held, _)| *held == site) {
             Some(slot) => slot.1 = answer,
@@ -316,7 +367,7 @@ impl Chooser {
         }
         match draw {
             Draw::Contrary => {
-                if self.chance(self.profile.contrary)
+                if self.chance(self.contrary(site))
                     && let Some(label) = weighted_pick(
                         &mut self.rand,
                         offered
@@ -332,6 +383,20 @@ impl Chooser {
             Draw::Weighted => weighted_pick(&mut self.rand, offered.iter().copied())
                 .map_or(Choice::Default, normal),
         }
+    }
+
+    fn declared_answer(&mut self, rate: u32, offered: &[(u16, u32)], default: u16) -> Choice {
+        if offered.len() < 2 || !self.chance(rate) {
+            return Choice::Default;
+        }
+        weighted_pick(
+            &mut self.rand,
+            offered
+                .iter()
+                .filter(|(label, _)| *label != default)
+                .map(|(label, _)| (*label, 1)),
+        )
+        .map_or(Choice::Default, Choice::Option)
     }
 
     fn chance(&mut self, probability: u32) -> bool {
@@ -404,7 +469,7 @@ fn below(rand: &mut RomuDuoJrRand, bound: usize) -> usize {
 mod tests {
     use super::{
         CERTAIN, Choice, ChoicePlan, ChoicePolicy, ChoiceProfile, ChoiceProfiles, ChoiceRecord,
-        Chooser, deviations,
+        ChoiceSite, Chooser, deviations,
     };
 
     fn plan(contrary: u32, hold: u32, untried: Option<u32>) -> ChoicePlan {
@@ -414,6 +479,7 @@ mod tests {
             seed: 7,
             untried,
             held: Vec::new(),
+            declared: Vec::new(),
         }
     }
 
@@ -447,6 +513,71 @@ mod tests {
             .filter(|_| chooser.choose(0, &[0, 1, 2, 3], 0).is_deviation())
             .count();
         assert!((9_400..10_600).contains(&deviations), "{deviations}");
+    }
+
+    #[test]
+    fn a_declared_rate_replaces_the_profile_contrary_at_its_site_alone() {
+        let sites = [
+            ChoiceSite::new("chord", ["a", "b"].map(str::to_owned)),
+            ChoiceSite::new("move", ["chord", "x", "y"].map(str::to_owned))
+                .with_contrary(CERTAIN / 12),
+        ];
+        assert_eq!(ChoiceSite::declared_contrary(&sites), [(1, CERTAIN / 12)]);
+        let mut chooser = Chooser::new(&ChoicePlan {
+            declared: ChoiceSite::declared_contrary(&sites),
+            ..plan(CERTAIN / 2, 0, None)
+        });
+        assert_eq!(
+            (chooser.contrary(0), chooser.contrary(1)),
+            (CERTAIN / 2, CERTAIN / 12)
+        );
+        let mut moves = 0;
+        let mut chords = 0;
+        for _ in 0..48_000 {
+            moves += usize::from(chooser.choose(1, &[0, 1, 2], 0).is_deviation());
+            chords += usize::from(chooser.choose(0, &[0, 1], 0).is_deviation());
+        }
+        assert!((3_700..4_300).contains(&moves), "{moves}");
+        assert!((23_400..24_600).contains(&chords), "{chords}");
+        let mut zero = Chooser::new(&ChoicePlan {
+            declared: vec![(1, 0)],
+            ..plan(CERTAIN, 0, None)
+        });
+        assert!((0..1000).all(|_| zero.choose(1, &[0, 1, 2], 0) == Choice::Default));
+    }
+
+    #[test]
+    fn a_declared_site_ignores_hold_and_untried_first_and_leaves_them_to_other_sites() {
+        let mut chooser = Chooser::new(&ChoicePlan {
+            held: vec![(1, Choice::Option(2))],
+            declared: vec![(1, 0)],
+            ..plan(0, CERTAIN, Some(1))
+        });
+        assert_eq!(chooser.choose(1, &[0, 1, 2], 0), Choice::Default);
+        assert_eq!(chooser.choose(1, &[0, 1, 2], 0), Choice::Default);
+        assert_eq!(chooser.choose(0, &[0, 1], 0), Choice::Option(1));
+        let mut weighted = Chooser::new(&ChoicePlan {
+            declared: vec![(1, CERTAIN)],
+            ..plan(0, CERTAIN, None)
+        });
+        let mut taken = [0_u32; 3];
+        for _ in 0..30_000 {
+            if let Choice::Option(label) = weighted.choose_weighted(1, &[(0, 1), (1, 1), (2, 9)], 0)
+            {
+                taken[usize::from(label)] += 1;
+            }
+        }
+        assert_eq!(taken[0], 0);
+        assert!((14_000..16_000).contains(&taken[1]), "{taken:?}");
+    }
+
+    #[test]
+    fn a_rate_above_one_is_refused() {
+        let site = |contrary| {
+            ChoiceSite::new("move", ["a", "b"].map(str::to_owned)).with_contrary(contrary)
+        };
+        assert!(ChoiceSite::validate_all(&[site(CERTAIN)]).is_ok());
+        assert!(ChoiceSite::validate_all(&[site(CERTAIN + 1)]).is_err());
     }
 
     #[test]
