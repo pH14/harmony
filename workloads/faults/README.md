@@ -284,6 +284,28 @@ Every action of the job draws its kind from that profile. A job with a heavy
 `Wait` weight leaves quiet time between faults, so the check can run while the
 cluster recovers. A job with weight 1 draws `Wait` as one more kind.
 
+In half of the jobs, chosen by the top bit of the profile's kind word, the
+`Wait` weight draws `Hook` instead, so the job draws no `Wait`. Every other
+kept kind keeps its one share of the same total, so its rate per action does
+not change. Only how often a network fault stands while it runs changes. This
+follows Antithesis's fault model, in which faults are scheduled independently
+and overlap. A vocabulary that offers no hook draws exactly as before. A single
+duration serves every action of a suffix, and most guest time is spent in
+actions of 5 to 10 seconds, so without these jobs a hook is rare. A network
+cut long enough to outlast a client timeout then seldom stands while a request
+is in flight.
+
+The cost is quiet time. With rqlite's 13 offered kinds, `Wait` falls from 54%
+of the drawn actions to 27%, and hooks rise from 4% to 31%, so more checks
+run while a cut is in force. A search execution ends at its last action
+without a settle. A replay's settlement waits until a check starts and
+finishes in one disturbance generation with no pending process fault. An
+unhealed cut is not a pending process fault, so a replay can settle while a
+held cut still stands. A check that needs a quiet cluster reads
+`HARMONY_FAULTS_IN_FORCE`, which covers an unhealed cut, as the harness kit's
+replica comparison does (see the
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md)).
+
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
 The rate is 1,000 ppm times a power of two from 1 through 4,096, with a
