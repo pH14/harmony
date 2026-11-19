@@ -232,7 +232,10 @@ as its own limit. The draw state and the duration histories are checked against
 their reserves on every admission and fail the campaign when either exceeds one.
 The archive's limit is enforced incrementally, a bounded number of eviction
 visits per admission, so resident bytes sit above the limit while maintenance
-catches up. Maintenance does not always converge below the limit: history
+catches up. History compaction runs once the history's estimated bytes pass a
+quarter of the archive's limit, and the estimate counts every entry's key at its
+size, so the size of the key type is a decision input. Maintenance does not
+always converge below the limit: history
 compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS` or
 one sixteenth of the entries, whichever is larger, and entry dropping stops at
 one surviving active entry, so a campaign can carry an over-budget tail of
@@ -614,7 +617,7 @@ catalog names:
 | `[[stage]]` | Progress as a staged plan: `name`, `goal`, `objective`, `step`, `latch`, with the same locate rules as `plan::locate`. A goal that names a numeric `sometimes` declaration defaults its objective to the gap (negated for the less-than forms) stepped by the left unit. |
 | `spread` | The place, as a tuple. |
 | `identity` | The slot identity, as a tuple. |
-| `prefer` | Up to two preference lists of `expression: more` or `expression: less`. |
+| `prefer` | Up to two preference lists of `expression: more` or `expression: less`. A list after the first that ends in `"above"` breaks its ties by the lists above it. The marker is the top bit of that list's key field, because the searcher compares keys alone, so a later list holds at most 2^31 values. A list that needs more, or a first list that ends in `"above"`, fails to compile. |
 | `prefer_scope`, `prefer_across` | Two keys whose scope values differ compare by the across list instead of `prefer`. |
 | `absent` | A condition under which the state gets no key. |
 | `reject` | Named conditions; the first that holds is reported by index. |
@@ -678,7 +681,11 @@ by `prefer_across`.
 bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
 padding), `identity` (32 bits), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
-its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
+its field fails to compile with the line's name. The first `prefer` value holds 32
+bits and each later one 31: its top bit, `TIES_ABOVE`, marks a list that ends in `"above"`, and
+`preference_cmp` compares such a list's tie by the list above. Every key of a
+strategy carries the same mark, so the mark never orders two keys, and a tie on
+all lists keeps the incumbent. The key has `Lineage = ()`. Aggregates and
 the latched stage live in an `Accumulator` that the front end keeps beside its
 state and `Compiled::observe` advances in place; a strategy without them
 `is_pure` and needs only `Compiled::key`. The accumulator holds the stage

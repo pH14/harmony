@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::{
     catalog::{Catalog, NONE, RECORD_SLOTS, Record},
     expr::{self, Binary, Expr},
-    key::{AssertionKey, MAX_PREFERENCES, Wide},
+    key::{AssertionKey, MAX_PREFERENCES, TIES_ABOVE, Wide},
     strategy::{Lines, Shared, StageLines, Steps, Strategy},
 };
 use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY};
@@ -19,6 +19,7 @@ use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY};
 pub const MAX_AGGREGATES: usize = 8;
 pub const OBJECTIVE_WIDTH: usize = 4;
 const STACK: usize = 32;
+const ABOVE: &str = "above";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Cmp {
@@ -238,6 +239,7 @@ struct LineSet {
     spread: Tuple,
     identity: Tuple,
     prefer: Vec<Tuple>,
+    above: Vec<bool>,
     scope: Option<Tuple>,
     across: Tuple,
 }
@@ -1083,7 +1085,7 @@ impl Compiler<'_> {
             (None, Some(fallback)) => fallback.identity.clone(),
             (None, None) => Tuple::empty(),
         };
-        let prefer = match (&lines.prefer, fallback) {
+        let (prefer, above) = match (&lines.prefer, fallback) {
             (Some(prefer), _) => {
                 if prefer.len() > MAX_PREFERENCES {
                     return Err(format!(
@@ -1091,13 +1093,36 @@ impl Compiler<'_> {
                     )
                     .into());
                 }
-                prefer
-                    .iter()
-                    .map(|list| self.preference(list, u128::from(u32::MAX) + 1, "prefer"))
-                    .collect::<Result<_, _>>()?
+                let mut tuples = Vec::new();
+                let mut above = Vec::new();
+                for (index, list) in prefer.iter().enumerate() {
+                    let (last, terms) =
+                        list.split_last()
+                            .map_or((false, &list[..]), |(last, rest)| {
+                                if last.trim() == ABOVE {
+                                    (true, rest)
+                                } else {
+                                    (false, &list[..])
+                                }
+                            });
+                    if last && index == 0 {
+                        return Err(format!(
+                            "the first `prefer` list has no list above for `{ABOVE}`"
+                        )
+                        .into());
+                    }
+                    let limit = if index == 0 {
+                        u128::from(u32::MAX) + 1
+                    } else {
+                        u128::from(TIES_ABOVE)
+                    };
+                    tuples.push(self.preference(terms, limit, "prefer")?);
+                    above.push(last);
+                }
+                (tuples, above)
             }
-            (None, Some(fallback)) => fallback.prefer.clone(),
-            (None, None) => Vec::new(),
+            (None, Some(fallback)) => (fallback.prefer.clone(), fallback.above.clone()),
+            (None, None) => (Vec::new(), Vec::new()),
         };
         let scope = match (&lines.prefer_scope, fallback) {
             (Some(scope), _) => {
@@ -1119,6 +1144,7 @@ impl Compiler<'_> {
             spread,
             identity,
             prefer,
+            above,
             scope,
             across,
         })
@@ -1629,8 +1655,9 @@ impl Compiled {
             .and_then(|index| u8::try_from(index).ok());
         let key = (!absent).then(|| {
             let mut prefer = [0; MAX_PREFERENCES];
-            for (slot, tuple) in prefer.iter_mut().zip(&lines.prefer) {
-                *slot = u32::try_from(tuple.pack(&env, &mut stack)).unwrap_or(u32::MAX);
+            for ((slot, tuple), above) in prefer.iter_mut().zip(&lines.prefer).zip(&lines.above) {
+                let packed = u32::try_from(tuple.pack(&env, &mut stack)).unwrap_or(u32::MAX);
+                *slot = if *above { packed | TIES_ABOVE } else { packed };
             }
             AssertionKey {
                 progress: u32::try_from(progress).unwrap_or(u32::MAX),

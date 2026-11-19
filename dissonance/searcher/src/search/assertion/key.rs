@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::search::archive::ArchiveKey;
 
 pub const MAX_PREFERENCES: usize = 2;
+pub const TIES_ABOVE: u32 = 1 << 31;
 
 #[repr(C, packed(4))]
 #[derive(Clone, Copy, Default)]
@@ -102,9 +103,14 @@ impl ArchiveKey for AssertionKey {
         if self.scope != other.scope {
             return self.across.cmp(&other.across);
         }
-        self.prefer
-            .get(preference)
-            .cmp(&other.prefer.get(preference))
+        let mine = self.prefer.get(preference);
+        let order = mine.cmp(&other.prefer.get(preference));
+        match (order, preference.checked_sub(1)) {
+            (Ordering::Equal, Some(above)) if mine.is_some_and(|value| value & TIES_ABOVE != 0) => {
+                self.preference_cmp(above, other)
+            }
+            _ => order,
+        }
     }
 
     fn complete(self, _parent: Option<(Self, &())>) -> Self {

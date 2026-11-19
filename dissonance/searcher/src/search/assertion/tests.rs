@@ -592,6 +592,59 @@ fn an_aggregate_reads_the_held_objective_of_the_parent_stage() {
 }
 
 #[test]
+fn a_preference_list_ending_in_above_breaks_its_ties_by_the_list_above() {
+    let key = |text: &str, lives, time| {
+        Compiled::parse(text, &catalog())
+            .unwrap()
+            .key(&record(Walk {
+                lives,
+                time,
+                ..Walk::default()
+            }))
+            .unwrap()
+    };
+    let above = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\", \"above\"]]";
+    let plain = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\"]]";
+    assert_eq!(
+        key(above, 3, 9).preference_cmp(1, key(above, 3, 5)),
+        Ordering::Greater
+    );
+    assert_eq!(
+        key(above, 4, 1).preference_cmp(1, key(above, 3, 9)),
+        Ordering::Greater
+    );
+    assert_eq!(
+        key(above, 3, 9).preference_cmp(1, key(above, 3, 9)),
+        Ordering::Equal
+    );
+    assert_eq!(
+        key(above, 3, 9).preference_cmp(0, key(above, 3, 5)),
+        Ordering::Greater
+    );
+    assert_eq!(
+        key(plain, 3, 9).preference_cmp(1, key(plain, 3, 5)),
+        Ordering::Equal
+    );
+    for (text, message) in [
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\", \"above\"]]",
+            "no list above",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\"], [\"above\", \"lives: more\"]]",
+            "needs `: more` or `: less`",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time * 100000: more\", \"time * 100000: more\"]]",
+            "key field holds 2147483648",
+        ),
+    ] {
+        let error = Compiled::parse(text, &catalog()).unwrap_err().to_string();
+        assert!(error.contains(message), "{text}: {error}");
+    }
+}
+
+#[test]
 fn chain_scoped_preferences_compare_across_scopes_by_one_list() {
     let compiled = Compiled::parse(
         r#"
