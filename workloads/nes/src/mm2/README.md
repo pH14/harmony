@@ -104,7 +104,10 @@ move at the step's end. The tier is the
 preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
 inside 64 bits. The hand target finishes the current chord before a stage
 transition, while the strategy target cuts it at the transition frame, so a
-witness's frame count can differ by that remainder; no key differs.
+witness's frame count can differ by that remainder; no key differs. The
+hand target ends an action, a weapon switch included, at the frame where the
+player first reads dead, as the strategy target does outside a `Drive` step,
+so a rejected path charges the same frames in each.
 
 `equivalence_tests.rs` runs both targets side by side on one-frame chords
 over random play and replayed tapes and checks every frame's key order. A
