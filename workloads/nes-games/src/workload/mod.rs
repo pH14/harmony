@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
-pub use shadow::{Shadow, ShadowHook, ShadowToken};
+pub use shadow::{Shadow, ShadowHook, ShadowToken, StateHook};
 pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{

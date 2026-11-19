@@ -433,6 +433,12 @@ searcher's `ShadowReport`. The hook records a hand lineage at every candidate,
 where the archive records it at admitted entries only, so a hand key whose
 lineage holds more than the parent key can disagree there.
 
+`Shadow::state_hook` gives a target whose game state comes from more than work
+RAM a `StateHook`, which takes decoded states in place of RAM: the genesis
+state (`start_state`), every frame's state of an action (`advance_states`), and
+the restored state (`restored_state`), with `saved` and `observe` as above. It
+has no forced moves.
+
 ### Metroid
 
 Metroid implements `Game` in `metroid/game.rs`, and its `decode` reads work RAM
