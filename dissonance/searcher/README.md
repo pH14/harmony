@@ -725,9 +725,10 @@ in a cell. Across cells, the gains mask recorded in the continuation bank and
 `outranks_slot_holders` compare a pair of keys, so a scope change there decides
 by `prefer_across`.
 
-**Key.** `AssertionKey` is 28 bytes: packed `progress` (32 bits), `place` (64
-bits, held as `Wide` at 4-byte alignment so cells, slots and positions carry no
-padding), `identity` (32 bits), two `prefer` values (32 bits each), and
+**Key.** `AssertionKey` is 32 bytes: packed `progress` (32 bits), `place` (64
+bits, held as `Wide` at 4-byte alignment so a 12-byte cell and a 16-byte
+position carry no padding), `identity` (64 bits, so a slot is 24 bytes with 4
+bytes of padding), two `prefer` values (32 bits each), and
 `across` and `scope` (16 bits each). A strategy whose tuple needs more than
 its field fails to compile with the line's name. The key has `Lineage = ()`. Aggregates and
 the latched stage live in an `Accumulator` that the front end keeps beside its
@@ -1464,7 +1465,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v19`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v20`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same

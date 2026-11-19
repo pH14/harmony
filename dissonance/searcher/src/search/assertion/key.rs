@@ -74,7 +74,7 @@ impl<'de> Deserialize<'de> for Wide {
 pub struct AssertionKey {
     pub progress: u32,
     pub place: Wide,
-    pub identity: u32,
+    pub identity: u64,
     pub prefer: [u32; MAX_PREFERENCES],
     pub across: u16,
     pub scope: u16,
@@ -83,7 +83,7 @@ pub struct AssertionKey {
 impl ArchiveKey for AssertionKey {
     type Place = Wide;
     type Progress = u32;
-    type Identity = u32;
+    type Identity = u64;
     type Lineage = ();
 
     fn place(self) -> Wide {
@@ -94,7 +94,7 @@ impl ArchiveKey for AssertionKey {
         self.progress
     }
 
-    fn identity(self) -> u32 {
+    fn identity(self) -> u64 {
         self.identity
     }
 

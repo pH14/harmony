@@ -40,9 +40,10 @@ use crate::{
             StreamIdentity,
         },
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
-            CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
-            postcard_semantic_result_sha256, postcard_value_sha256,
+            ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
+            CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
+            postcard_value_sha256,
         },
         choice::{Choice, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser},
         rand::RomuDuoJrRand,
@@ -51,9 +52,10 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v2";
 pub const NAMED_PROGRESS_FORMAT: &str = "nes-named-progress-v1";
+pub const ARCHIVE_FORMAT: &str = "nes-workload-archive-v1";
 pub const MAX_SOMETIMES: usize = 128;
 pub const RECORDS_FILE: &str = "records.bin";
 pub const REPLAY_RECORDS_FILE: &str = "records-replay.bin";
@@ -630,8 +632,16 @@ impl NesEvidence {
 
 pub type NesEntryReport = ArchiveEntryReport<ButtonChord, AssertionKey, Satisfied>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NesArchive;
+
+impl ArchiveFormatName for NesArchive {
+    const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NesArchiveReport {
+    pub format: ArchiveFormat<NesArchive>,
     pub seed: u64,
     pub executions: u64,
     pub milestones: Satisfied,
@@ -956,6 +966,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Reporting for NesWorkload<G, M> {
         state: ArchiveReportState<Self>,
     ) -> NesArchiveReport {
         NesArchiveReport {
+            format: ArchiveFormat::default(),
             seed: state.seed,
             executions: state.executions,
             milestones: evidence.aggregate,
@@ -1448,6 +1459,32 @@ mod tests {
         charges.push(charged("live admission", &live));
         let (report, snapshots) = live.finish(Vec::new()).unwrap();
         let source = serde_json::to_vec(&report.archive).unwrap();
+        let mut renamed = serde_json::to_value(&report.archive).unwrap();
+        assert_eq!(renamed["format"], ARCHIVE_FORMAT);
+        renamed["format"] = "nes-workload-archive-v0".into();
+        let refused =
+            ArchiveSource::<NesArchiveReport>::from_bytes(&serde_json::to_vec(&renamed).unwrap())
+                .err()
+                .expect("another archive format is refused")
+                .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive format is nes-workload-archive-v0; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
+        renamed.as_object_mut().unwrap().remove("format");
+        let refused =
+            ArchiveSource::<NesArchiveReport>::from_bytes(&serde_json::to_vec(&renamed).unwrap())
+                .err()
+                .expect("an archive without a format is refused")
+                .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive names no format; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
         let mut imports = Vec::new();
         for (label, checkpoint) in [
             ("replayed import", None),

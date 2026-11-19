@@ -34,13 +34,16 @@ pub struct Tier {
 pub struct Holders {
     pub progress: u32,
     pub place: u64,
-    pub identity: u32,
+    pub identity: u64,
     pub ids: Vec<u64>,
     pub keys: Vec<AssertionKey>,
 }
 
+pub const REKEYED_FORMAT: &str = "assertion-rekeyed-v1";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Rekeyed {
+    pub format: &'static str,
     pub policy: String,
     pub jobs: usize,
     pub candidates: usize,
@@ -302,6 +305,7 @@ impl Rekeying<'_> {
             .map(|(id, ())| id)
             .collect();
         Ok(Rekeyed {
+            format: REKEYED_FORMAT,
             policy: self.strategy.policy_identifier().to_owned(),
             jobs: jobs.len(),
             candidates,
