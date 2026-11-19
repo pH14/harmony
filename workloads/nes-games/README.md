@@ -207,17 +207,20 @@ where the snapshot has none), and its raw key, or `None` where it has none,
 after every action that leaves the target runnable (`observe`). In a campaign
 that means each state a job reaches, replayed actions included, after the
 candidate's snapshot; `current_key` keys only the root, so a target that
-observes only there compares one state. A hand target that observes a terminal
-state passes `None`, and the hook pairs a frame that a `reject` line matches
-with no strategy key, since the strategy target ends there as a doomed
-terminal, so neither side keys such a state. A forced move cut short at a goal
-or reject passes `hook.forced` the steps up to the stopping frame, the last
-being where it stopped. The report counts an action applied before the previous
-action's state was observed as `unobserved`. A restore brings back the cursor
-saved under its token, so two paths that reach the same RAM at the same frame
-keep their own lineages. A `ShadowToken` is opaque and does not serialize, so
-the hand snapshot keeps it in a `#[serde(skip)]` field and a snapshot read from
-a checkpoint restores with `None`. `None`, or a token another `Shadow` issued,
+observes only there compares one state. A hand target may also observe a state
+that ends its path, a dead or doomed state with `None` and a goal state with
+its key. The hook pairs a frame that a `reject` line matches with no strategy
+key, since the strategy target ends there as a doomed terminal, and keys a goal
+frame, even one a `reject` line matches, since the strategy target ends it as a
+terminal objective. The strategy target archives neither frame, since a rollout
+admits only runnable states. A forced move cut short at a goal or reject passes
+`hook.forced` the steps up to the stopping frame, the last being where it
+stopped. The report counts an action applied before the previous action's state
+was observed as `unobserved`. A restore brings back the cursor saved under its
+token, so two paths that reach the same RAM at the same frame keep their own
+lineages. A `ShadowToken` is opaque and does not serialize, so the hand
+snapshot keeps it in a `#[serde(skip)]` field and a snapshot read from a
+checkpoint restores with `None`. `None`, or a token another `Shadow` issued,
 counts as an unknown restore. Clones of a token share one handle, and when the
 last clone drops, the hook forgets the cursor saved under it, so the saved
 cursors are those of the snapshots still alive. The handle holds a weak

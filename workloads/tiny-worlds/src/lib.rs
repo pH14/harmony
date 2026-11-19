@@ -384,6 +384,9 @@ pub trait Keying: Sync {
         broken: bool,
         lane: &Self::Lane,
     ) -> Result<Self::Key, Box<dyn Error>>;
+    fn rejected(&self, _world: &World, _state: State, _broken: bool, _lane: &Self::Lane) -> bool {
+        false
+    }
     fn shape(&self) -> KeyShape;
     fn identity(&self) -> String;
     fn policy(&self) -> Option<&str>;
@@ -447,10 +450,18 @@ impl Strategic {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+enum Arrival {
+    #[default]
+    Absent,
+    Keyed(AssertionKey),
+    Rejected,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StrategyLane {
     accumulator: Accumulator,
-    key: Option<AssertionKey>,
+    arrival: Arrival,
 }
 
 impl Lane for StrategyLane {
@@ -463,13 +474,15 @@ impl Keying for Strategic {
     type Key = AssertionKey;
     type Lane = StrategyLane;
     fn arrive(&self, world: &World, state: State, broken: bool, lane: &mut StrategyLane) {
-        lane.key = self
-            .compiled
-            .observe(
-                &assertions::record(world, state, broken),
-                &mut lane.accumulator,
-            )
-            .key;
+        let observed = self.compiled.observe(
+            &assertions::record(world, state, broken),
+            &mut lane.accumulator,
+        );
+        lane.arrival = match observed.key {
+            _ if observed.rejected.is_some() && !observed.goal => Arrival::Rejected,
+            Some(key) => Arrival::Keyed(key),
+            None => Arrival::Absent,
+        };
     }
     fn key(
         &self,
@@ -478,8 +491,14 @@ impl Keying for Strategic {
         _: bool,
         lane: &StrategyLane,
     ) -> Result<AssertionKey, Box<dyn Error>> {
-        lane.key
-            .ok_or_else(|| "a tiny-world strategy marked a state absent".into())
+        match lane.arrival {
+            Arrival::Keyed(key) => Ok(key),
+            Arrival::Absent => Err("a tiny-world strategy marked a state absent".into()),
+            Arrival::Rejected => Err("a tiny-world strategy rejected the state".into()),
+        }
+    }
+    fn rejected(&self, _: &World, _: State, _: bool, lane: &StrategyLane) -> bool {
+        lane.arrival == Arrival::Rejected
     }
     fn shape(&self) -> KeyShape {
         self.compiled.shape()
@@ -568,7 +587,11 @@ where
         self.hand.arrive(world, state, broken, &mut lane.hand);
         lane.cursor
             .observe(&self.compiled, &assertions::record(world, state, broken));
-        let raw = self.hand.key(world, state, broken, &lane.hand).ok();
+        let raw = if self.hand.rejected(world, state, broken, &lane.hand) {
+            None
+        } else {
+            self.hand.key(world, state, broken, &lane.hand).ok()
+        };
         lane.cursor.pair(&self.table, raw);
     }
     fn key(
@@ -579,6 +602,9 @@ where
         lane: &Self::Lane,
     ) -> Result<K::Key, Box<dyn Error>> {
         self.hand.key(world, state, broken, &lane.hand)
+    }
+    fn rejected(&self, world: &World, state: State, broken: bool, lane: &Self::Lane) -> bool {
+        self.hand.rejected(world, state, broken, &lane.hand)
     }
     fn shape(&self) -> KeyShape {
         self.hand.shape()
@@ -973,6 +999,10 @@ impl<K: Keying> Evaluation for Workload<K> {
     }
     fn objective_reached(&self, _: &(), target: &Target<K::Lane>) -> Result<bool, Box<dyn Error>> {
         Ok(self.config.goal(target.state))
+    }
+    fn is_doomed(&self, target: &Target<K::Lane>) -> bool {
+        self.keying
+            .rejected(&self.config, target.state, self.broken, &target.lane)
     }
     fn current_key(&self, target: &Target<K::Lane>) -> Result<K::Key, Box<dyn Error>> {
         self.keying

@@ -384,11 +384,14 @@ keying keeps a lane in the target: `Keying::arrive` advances it at genesis, at
 every reset and after every transition, snapshots carry it, and a restore puts
 it back, so a state reached from a snapshot keys as it would on the path that
 made the snapshot. The strategy's lane is its `Accumulator` and the key
-`Compiled::observe` gave; a hand key's lane is empty, since the campaign
-completes a hand key against its parent with `ArchiveKey::complete`. The
-shadow keying `Shadowed` wraps a hand keying, and its lane adds a searcher
-`ShadowCursor`: at each arrival the cursor observes the state's record under
-the strategy, completes the raw hand key against the previous one and counts
+`Compiled::observe` gave, or that its `reject` line matched a state that is not
+a goal. A rejected state ends its path as doomed (`Keying::rejected`), as in
+`NesTarget`, so the archive never keys it; a hand key's lane is empty, since
+the campaign completes a hand key against its parent with
+`ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying, and
+its lane adds a searcher `ShadowCursor`: at each arrival the cursor observes
+the state's record under the strategy, takes no hand key where the hand keying
+ends the path, completes the raw hand key against the previous one and counts
 the pair in a `ShadowTable`. The report's `shadow` is the table's
 `ShadowReport`, taken after the run and before verification replays it.
 
@@ -493,15 +496,17 @@ The hand key `ridge::Key` reads its parent through `ArchiveKey::complete`. Its
 tier is 2 at the summit and 1 once the path has reached the ridge, kept when a
 slide falls below it; its place is the position; its identity is the highest
 position since the camp last changed; and its one preference favours the higher
-camp within a tier, with capacity 1. `strategies/ridge.toml` states the same key
-with a latched `ridge` stage, `highest(ridge.position, ridge.camp)` and
+camp within a tier, with capacity 1. `strategies/ridge.toml` states the same
+key with a latched `ridge` stage, `highest(ridge.position, ridge.camp)` and
 `prefer = [["ridge.camp: more"]]`. Hand runs key the family with `ridge::Hand`
 under `keep: portfolio` only. `ridge::tests` checks that the strategy and the
 shadow runs give the hand run's decision stream, work and executions, and that
 the shadow reports no disagreement while the lineage changes hand keys. With a
-`reject` line prepended to the strategy, it also checks that the shadow agrees
-on a state the strategy rejects and a hand keying leaves unkeyed, and counts an
-`absent` disagreement where only one of them does.
+`reject` line prepended to the strategy, it also checks that a strategy run
+ends its paths at the rejected state with the decision stream of a hand keying
+that ends them there, that the shadow agrees on that state, and that it counts
+an `absent` disagreement where only one side ends the path. A goal that a
+`reject` line also matches keeps its key in the strategy and in the shadow.
 
 ## Twelve picks
 

@@ -366,10 +366,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        search::assertion::AssertionKey,
+        search::assertion::{Accumulator, AssertionKey},
         target::Target,
         workload::{
-            fixture::{LEFT, Ledge, LedgeKey, RIGHT, Stairs, Stepper, WARP},
+            fixture::{LEFT, Ledge, LedgeKey, RIGHT, Spot, Stairs, Stepper, WARP},
             target::{NesTarget, read_wram},
         },
     };
@@ -637,6 +637,31 @@ mod tests {
         let report = shadow.report().unwrap();
         assert_eq!(report.disagreements.absent, 2, "{:?}", report.examples);
         assert_eq!(report.unknown_restores, 0);
+    }
+
+    #[test]
+    fn a_goal_state_observed_with_the_hand_key_agrees() {
+        let shadow = Shadow::<Ledge, LedgeKey>::new(Ledge).unwrap();
+        let goal = shadow
+            .lowered
+            .observe(0, Spot { x: 0, room: 9 }, &mut Accumulator::default());
+        assert!(goal.goal && goal.key.is_some() && goal.rejected.is_none());
+        let mut hand = Hand::new(shadow.hook());
+        let keys = hand.walk(&[(WARP, 1); 9]);
+        assert_eq!(keys[8].map(|key| key.room), Some(9));
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.keyed_states), (10, 10));
+        hand.apply(RIGHT, 1);
+        hand.rejected();
+        assert_eq!(shadow.report().unwrap().disagreements.absent, 1);
+        let strategy = format!("reject = \"room >= 9\"\n{}", Ledge::STRATEGY);
+        let shadow = Shadow::<Ledge, LedgeKey>::with_strategy(Ledge, &strategy).unwrap();
+        let mut hand = Hand::new(shadow.hook());
+        hand.walk(&[(WARP, 1); 9]);
+        let report = shadow.report().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.keyed_states), (10, 10));
     }
 
     #[test]

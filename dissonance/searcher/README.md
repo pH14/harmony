@@ -727,11 +727,12 @@ holds.
 **Shadow keys.** `assertion/shadow.rs` compares a hand `ArchiveKey` with a
 strategy over the same states. A `ShadowCursor` lives beside a front end's
 state and travels with its snapshots: `observe` advances its accumulator and
-keeps the compiled key, or no key for a record that a `reject` line matches,
-since a front end that honors `reject` archives no such state, and `pair`
-completes the hand key against the previous completed key with
-`ArchiveKey::complete` (once per arrival), records its lineage, and counts the
-pair in a `ShadowTable`. `ShadowTable::report` returns the `ShadowReport`:
+keeps the compiled key, or no key for a record that a `reject` line matches and
+that is not a goal, since a strategy front end ends the path there as doomed
+and archives nothing, and `pair` completes the hand key against the previous
+completed key with `ArchiveKey::complete` (once per arrival), records its
+lineage, and counts the pair in a `ShadowTable`. `ShadowTable::report` returns
+the `ShadowReport`:
 absent mismatches, cells and slots that split or join between the two keys,
 progress and preference orders that disagree between adjacent keys, a
 preference count or capacity mismatch, unknown restores, arrivals the front end
