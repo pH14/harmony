@@ -298,12 +298,12 @@ not control:
 
 | Event | This guest |
 |---|---|
-| Spurious #PF from a stale, less permissive TLB entry after R/W goes from 0 to 1 or NX from 1 to 0 | Patch 0020 invalidates after `ptep_set_access_flags`; other upgrade paths already invalidate |
+| Spurious #PF from a stale, less permissive TLB entry after R/W goes from 0 to 1 or NX from 1 to 0 | Patch 0020 invalidates after `ptep_set_access_flags`; other upgrade paths already invalidate; N6 row `x86-translation-upgrade` checks it |
 | Accessed-flag setting by page walks, including walks for speculative and prefetch accesses | Matters only after software clears the flag; audit in [#996](https://github.com/pH14/harmony/issues/996) |
 | Paging-structure cache use (PML4E, PDPTE, PDE) | Linux creates upper-level entries fully permissive and invalidates when it frees page tables |
 | XSAVE init-state tracking | XSAVEOPT, XSAVEC and XSAVES are hidden; patch 0008 canonicalizes saves |
 | RTM and HLE aborts | Hidden by CPUID |
-| Counter, entropy and wait instructions | Trapped, hidden or audited; see `scripts/instruction-contract.toml` |
+| Counter, entropy and wait instructions | Trapped, hidden or audited; see [`instruction-contract.toml`](../scripts/instruction-contract.toml) |
 | Thermal, HFI and PMU state | Hidden by CPUID; guest MSR access is denied by default |
 
 Snapshot restore and dirty-log drains invalidate all guest translations at
@@ -311,22 +311,41 @@ deterministic points
 ([KVM backend](../../vmm-backend/README.md)). Between those points the
 translation caches follow the host.
 
-Whether a host shows such a difference depends on its TLB design: #984's path
-split on the P-cores and gave one digest in 50 repeats on the same machine's
-E-cores. Recheck a guest kernel change by hand on an Intel P-core. Pick one P-core with nothing else scheduled, run
-the same action file many times with the candidate kernel and with a control
-kernel without the change, and interleave the two in one batch:
+The N6 row `x86-translation-upgrade` in
+[`instruction-contract.toml`](../scripts/instruction-contract.toml) checks the
+pin from inside the guest. It writes 1024 private pages, forks a child that
+exits at once so each page is read-only but reusable, reads every page to
+cache read-only translations, and upgrades them with `MADV_POPULATE_WRITE`,
+which goes through `get_user_pages` and takes no hardware fault. It then
+stores to every page and returns its own minor-fault count for those stores,
+over eight rounds. The sweep requires zero. Run as an OCI command on one ms02
+P-core, the same code counted between 4589 and 5535 spurious faults under the
+kernel without patch 0020, a different total in each of 10 boots, and zero in
+each of 10 boots under the patched kernel. The count depends on the CPU's TLB,
+so a host whose processor walks the page tables again before raising the fault
+passes with either kernel.
+
+Whether a host shows such a difference at all depends on its TLB design:
+#984's path split on the P-cores and gave one digest in 50 repeats on the same
+machine's E-cores. Recheck a guest kernel change by hand on one Intel P-core
+with nothing else scheduled. Point `runner.options.kernel` and
+`runner.options.base_initramfs` at the candidate kernel in one configuration
+and at a control kernel without the change in another. Then alternate short
+batches of the same action file between the two:
 
 ```sh
-taskset -c "${PCORE:?}" harmony debug run --config "${CONFIG:?}" \
-  --actions "${ACTIONS:?}" --repeat 50 --out "${OUT:?}"
+for batch in 1 2 3 4 5; do
+  for arm in candidate control; do
+    taskset -c "${PCORE:?}" harmony debug run --config "$arm.toml" \
+      --actions "${ACTIONS:?}" --repeat 10 --out "out/$arm-$batch"
+  done
+done
 ```
 
-`runner.options.kernel` and `runner.options.base_initramfs` in the
-configuration select each kernel. `debug run --repeat` exits 2 and names each
-repeat and state digest when the repeats end differently. The control must
-split in the same batch; otherwise the host did not expose the channel and the
-run shows nothing about the candidate.
+`debug run --repeat` exits 2 and names each repeat and state digest when the
+repeats end differently. The control must split during the same batches.
+Otherwise the host did not expose the channel, and the run shows nothing about
+the candidate.
 
 
 ## Fixed x86 XSAVE layout
