@@ -7,11 +7,11 @@ const browser = await chromium.launch({headless: true, ...(process.env.CHROME_CH
 const errors = [];
 const paths = page => page.evaluate(() => Number(document.querySelector('#attempts').textContent.replaceAll(',', '')));
 const growing = (page, n) => page.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',', '')) > n, n, {timeout: 30000});
-const MIN_REPLAY_FRAMES = 180;
+const MIN_REPLAY_FRAMES = 300;
 async function startReplay(page) {
   const seen = await page.evaluate(() => window.tdReplayStarts.length);
   await page.locator('#play').click();
-  await page.waitForFunction((seen) => window.tdReplayStarts.length > seen, seen, {timeout: 15000});
+  await page.waitForFunction((seen) => window.tdReplayStarts.length > seen, seen, {timeout: 30000});
   const start = await page.evaluate((seen) => window.tdReplayStarts[seen], seen);
   assert.equal(start.search, 'Resume Search', 'Starting a replay leaves the search paused while the history is open');
   return start;
@@ -75,7 +75,7 @@ try {
           if (data.type === 'batch')
             for (const point of data.points)
               if (point.retained !== null && point.frame >= minFrames && !point.observation.loading && point.observation.health > 0)
-                (window.tdRetained ??= new Map()).set(point.observation.level, point.observation);
+                (window.tdRetained ??= new Map()).set(point.observation.level, {...point.observation, id: point.retained});
         });
       }
     };
@@ -91,7 +91,7 @@ try {
   for (let unopened = 0, short = 0; ;) {
     await page.waitForFunction((tried) => {
       const o = window.tdRetained?.get(Number(document.querySelector('#map').dataset.map));
-      return o && !tried.includes(`${o.level}:${Math.floor((o.x + 8) / 32)}:${Math.floor(o.y / 32)}`);
+      return o && !tried.includes(o.id);
     }, tried, {timeout: 60000});
     const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
     const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
@@ -107,7 +107,7 @@ try {
     assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search', 'Selecting a path pauses the search');
     const replay = await startReplay(page);
     if (replay.to - replay.from >= MIN_REPLAY_FRAMES) break;
-    tried.push(`${o.level}:${Math.floor((o.x + 8) / 32)}:${Math.floor(o.y / 32)}`);
+    tried.push(o.id, await page.locator('#film-title').getAttribute('data-state-id'));
     assert.ok(++short < 5, `A retained history replays at least ${MIN_REPLAY_FRAMES} frames from where Replay starts: ${JSON.stringify(tried)}`);
     await page.locator('#close-inspector').click();
     await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
