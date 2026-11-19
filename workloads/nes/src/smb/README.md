@@ -75,7 +75,12 @@ Mario back within the same area, as 8-4's wrong pipes do, drops that inherited
 band, so those states rank by their own column, and the room restarts at the
 page they land on. A state's key is folded over every frame of its path, so the
 band and room it inherits come from the frame before it, not from the last
-keyed candidate.
+keyed candidate: the lineage band is the highest band reached on any frame of
+the path. A frame where the player engine state (`$000E`) is not 8, the player
+under control, carries the previous frame's level, area, column, room and
+band, because pipe and level transitions show the camera column of an area
+that is not yet loaded. A real warp is still seen at the first controlled frame
+after it.
 
 The place is the room Mario entered the level section through, his column
 (the camera's column plus his column on the screen), his height bucket, whether

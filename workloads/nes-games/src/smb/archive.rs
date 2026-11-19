@@ -19,8 +19,8 @@ use crate::{
         target::{
             ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
             SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_area_is_loading,
-            smb_camera_pixels, smb_is_victory, smb_mechanical_state_from_wram,
-            smb_milestones_from_wram, smb_player_position,
+            smb_camera_pixels, smb_engine_is_in_control, smb_is_victory,
+            smb_mechanical_state_from_wram, smb_milestones_from_wram, smb_player_position,
         },
     },
     target::Target,
@@ -30,7 +30,7 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const KEY_POLICY_BASE: &str = "key_folded_every_frame_area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
+const KEY_POLICY_BASE: &str = "key_folded_every_control_frame_area_arrival_room_reset_on_warp_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 #[must_use]
 pub fn key_policy_identifier(route: SmbRoute) -> String {
@@ -270,7 +270,18 @@ fn game_clock(wram: &[u8; 2_048]) -> u16 {
 pub fn fold_frame(previous: Option<SmbArchiveKey>, wram: &[u8; 2_048]) -> SmbArchiveKey {
     let raw = archive_key(wram);
     let raw = stamp_arrival_room(raw, wram).unwrap_or(raw);
-    raw.follow(previous)
+    match previous {
+        Some(previous) if !smb_engine_is_in_control(wram) => SmbArchiveKey {
+            world: previous.world,
+            level: previous.level,
+            progress: previous.progress,
+            room_x_bucket: previous.room_x_bucket,
+            room: previous.room,
+            lineage_band: previous.lineage_band,
+            ..raw
+        },
+        _ => raw.follow(previous),
+    }
 }
 
 pub fn stamp_arrival_room(
@@ -667,6 +678,38 @@ mod tests {
         }
         .follow(Some(SmbArchiveKey { world: 6, ..castle }));
         assert_eq!(next_level.progress(), (28, 0));
+    }
+
+    #[test]
+    fn a_frame_out_of_control_carries_the_room_and_band() {
+        let mut wram = [0_u8; 2_048];
+        wram[0x0770] = 1;
+        wram[0x0772] = 3;
+        wram[0x075f] = 7;
+        wram[0x075c] = 3;
+        wram[0x074e] = 3;
+        wram[0x074f] = 5;
+        wram[0x000e] = 8;
+        wram[0x071a] = 13;
+        wram[0x071c] = 208;
+        let castle = super::fold_frame(None, &wram);
+        assert_eq!(castle.progress, 221);
+        wram[0x000e] = 3;
+        wram[0x071a] = 0;
+        wram[0x071c] = 0;
+        let pipe = super::fold_frame(Some(castle), &wram);
+        assert_eq!(
+            (pipe.progress, pipe.room, pipe.band()),
+            (castle.progress, castle.room, castle.band())
+        );
+        wram[0x000e] = 8;
+        wram[0x074e] = 0;
+        wram[0x074f] = 2;
+        let water = super::fold_frame(Some(pipe), &wram);
+        assert_eq!(
+            (water.room[0], water.room[1], water.band()),
+            (0, 2, castle.band())
+        );
     }
 
     #[test]

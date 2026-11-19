@@ -860,6 +860,11 @@ pub const fn wait_for_control(buttons: u8) -> ButtonChord {
 }
 
 #[must_use]
+pub fn smb_engine_is_in_control(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_CONTROL_STATE
+}
+
+#[must_use]
 pub fn smb_player_has_control(wram: &[u8; WRAM_SIZE]) -> bool {
     smb_is_playing(wram) && wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_CONTROL_STATE
 }

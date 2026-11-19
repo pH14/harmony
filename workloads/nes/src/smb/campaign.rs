@@ -473,6 +473,7 @@ mod tests {
         target.reset();
         target.poke_wram(0x074e, 7).unwrap();
         target.poke_wram(0x074f, 9).unwrap();
+        target.poke_wram(0x000e, 8).unwrap();
         let origin = target.snapshot().expect("snapshot room");
         let result = game
             .execute_job(
@@ -1033,7 +1034,7 @@ mod tests {
             "fewest_frames_in_level",
             "whole_tree",
             "nes_pressable_36",
-            "key_folded_every_frame_area_arrival_room_reset_on_warp",
+            "key_folded_every_control_frame_area_arrival_room_reset_on_warp",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");

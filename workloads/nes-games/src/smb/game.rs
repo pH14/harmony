@@ -8,8 +8,9 @@ use crate::{
     smb::{
         plan,
         target::{
-            BOOT_WALK, ROOM_IDENTITY_BYTES, smb_area_is_loading, smb_camera_pixels, smb_is_playing,
-            smb_is_victory, smb_player_has_control, smb_player_is_doomed, smb_player_position,
+            BOOT_WALK, ROOM_IDENTITY_BYTES, smb_area_is_loading, smb_camera_pixels,
+            smb_engine_is_in_control, smb_is_playing, smb_is_victory, smb_player_has_control,
+            smb_player_is_doomed, smb_player_position,
         },
     },
     workload::{Game, Moves, Never, Step},
@@ -216,7 +217,7 @@ impl Game for SuperMarioBros {
         };
         let dead = wram[PLAYER_ENGINE_STATE] == PLAYER_KILLED_STATE
             || wram[PLAYER_VERTICAL_PAGE] >= PLAYER_BELOW_PLAY_AREA_PAGE;
-        SmbState {
+        let state = SmbState {
             world,
             level,
             raw_world,
@@ -239,6 +240,19 @@ impl Game for SuperMarioBros {
             operating_mode: wram[OPERATING_MODE],
             level_epoch,
             room_epoch,
+        };
+        match previous {
+            Some(previous) if !smb_engine_is_in_control(&wram) => SmbState {
+                world: previous.world,
+                level: previous.level,
+                area: previous.area,
+                progress: previous.progress,
+                screen_x: previous.screen_x,
+                level_epoch: previous.level_epoch,
+                room_epoch: previous.room_epoch,
+                ..state
+            },
+            _ => state,
         }
     }
 
@@ -304,6 +318,7 @@ mod tests {
         let mut ram = [0; WRAM_SIZE];
         ram[OPERATING_MODE] = 1;
         ram[0x0772] = 3;
+        ram[PLAYER_ENGINE_STATE] = 8;
         ram[ROOM_IDENTITY_BYTES[0]] = area[0];
         ram[ROOM_IDENTITY_BYTES[1]] = area[1];
         ram[0x071a] = (camera >> 8) as u8;
@@ -339,5 +354,23 @@ mod tests {
         assert_eq!((back.level_epoch, back.room_epoch), (1, 1));
         let warped = game.decode(Some(&ahead), &ram([1, 0], 1_000 - 17 * 16, 1, 0));
         assert_eq!((warped.level_epoch, warped.room_epoch), (2, 2));
+    }
+
+    #[test]
+    fn a_frame_out_of_control_carries_the_position_and_epochs() {
+        let game = SuperMarioBros;
+        let ahead = game.decode(None, &ram([3, 5], 3_536, 7, 3));
+        let mut entering = ram([3, 5], 0, 7, 3);
+        entering[PLAYER_ENGINE_STATE] = 3;
+        let pipe = game.decode(Some(&ahead), &entering);
+        assert_eq!(
+            (pipe.area, pipe.progress, pipe.level_epoch, pipe.room_epoch),
+            (ahead.area, ahead.progress, 0, 0)
+        );
+        let water = game.decode(Some(&pipe), &ram([0, 2], 0, 7, 3));
+        assert_eq!((water.level_epoch, water.room_epoch), (0, 1));
+        let mut killed = ram([3, 5], 0, 7, 3);
+        killed[PLAYER_ENGINE_STATE] = PLAYER_KILLED_STATE;
+        assert!(game.decode(Some(&ahead), &killed).dead);
     }
 }
