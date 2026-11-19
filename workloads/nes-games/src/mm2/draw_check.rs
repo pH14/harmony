@@ -386,3 +386,381 @@ fn the_harness_draws_what_the_hand_search_and_target_draw() {
     }
     assert!(switches > 1_000);
 }
+
+fn draw_categories(drawn: Drawn) -> Vec<String> {
+    match drawn {
+        Drawn::Chord(chord) => vec![
+            "kind:chord".to_owned(),
+            format!("chord:{:02x}", chord.buttons),
+            format!("hold:{}", chord.hold_frames),
+        ],
+        Drawn::Switch(label) => vec!["kind:switch".to_owned(), format!("switch:{label}")],
+        Drawn::Idle => vec!["kind:idle".to_owned()],
+    }
+}
+
+fn expected_draws(
+    switch_rate: f64,
+    targets: &[u8],
+    idles: bool,
+    previous: Option<ButtonChord>,
+) -> BTreeMap<String, f64> {
+    use crate::chord::{LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES};
+    let held = NES_PRESSABLE_BUTTON_MASKS;
+    let mut expected = BTreeMap::new();
+    let mut add = |category: String, share: f64| *expected.entry(category).or_insert(0.0) += share;
+    let switch_share = if targets.is_empty() && !idles {
+        0.0
+    } else {
+        switch_rate
+    };
+    if targets.is_empty() {
+        add("kind:idle".to_owned(), switch_share);
+    } else {
+        add("kind:switch".to_owned(), switch_share);
+        for target in targets {
+            add(
+                format!("switch:{}", u16::from(*target) + 1),
+                switch_share / targets.len() as f64,
+            );
+        }
+    }
+    let chord_share = 1.0 - switch_share;
+    add("kind:chord".to_owned(), chord_share);
+    let mut buttons: BTreeMap<u8, f64> = BTreeMap::new();
+    let base = previous
+        .map(|chord| chord.buttons)
+        .filter(|base| held.contains(base));
+    match base {
+        None => {
+            for mask in held {
+                *buttons.entry(mask).or_default() += 1.0 / held.len() as f64;
+            }
+        }
+        Some(base) => {
+            let directions: std::collections::BTreeSet<u8> =
+                held.iter().map(|mask| mask & 0xf0).collect();
+            let edits: Vec<u8> = directions
+                .iter()
+                .filter(|direction| **direction != base & 0xf0)
+                .map(|direction| (base & 0x0f) | direction)
+                .filter(|mask| held.contains(mask))
+                .collect();
+            let toggled = |bit: u8| {
+                Some(base ^ bit)
+                    .filter(|mask| held.contains(mask))
+                    .unwrap_or(base)
+            };
+            *buttons.entry(base).or_default() += 0.25;
+            *buttons.entry(toggled(0x01)).or_default() += 0.25;
+            *buttons.entry(toggled(0x02)).or_default() += 0.25;
+            if edits.is_empty() {
+                *buttons.entry(base).or_default() += 0.25;
+            }
+            for mask in &edits {
+                *buttons.entry(*mask).or_default() += 0.25 / edits.len() as f64;
+            }
+        }
+    }
+    for (mask, share) in buttons {
+        add(format!("chord:{mask:02x}"), chord_share * share);
+    }
+    for (low, high) in [SHORT_HOLD_FRAMES, LONG_HOLD_FRAMES] {
+        for frames in low..=high {
+            add(
+                format!("hold:{frames}"),
+                chord_share * 0.5 / f64::from(high - low + 1),
+            );
+        }
+    }
+    expected
+}
+
+fn departures(drawn: &[Drawn], expected: &BTreeMap<String, f64>) -> Vec<(String, f64)> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for categories in drawn.iter().copied().map(draw_categories) {
+        for category in categories {
+            *counts.entry(category).or_default() += 1;
+        }
+    }
+    let n = drawn.len() as f64;
+    let mut judged = Vec::new();
+    for category in counts.keys().chain(expected.keys()) {
+        let share = expected.get(category).copied().unwrap_or(0.0);
+        let count = counts.get(category).copied().unwrap_or(0) as f64;
+        if share == 0.0 || share == 1.0 {
+            assert_eq!(count, share * n, "{category}");
+            continue;
+        }
+        if n * share.min(1.0 - share) >= MINIMUM_EXPECTED {
+            let z = (count - n * share) / (n * share * (1.0 - share)).sqrt();
+            judged.push((category.clone(), z));
+        }
+    }
+    judged.sort_by(|a, b| a.0.cmp(&b.0));
+    judged.dedup_by(|a, b| a.0 == b.0);
+    judged
+}
+
+struct Declared {
+    sites: Vec<crate::search::choice::ChoiceSite>,
+    weapon_rate: u32,
+}
+
+fn declared() -> Declared {
+    use crate::{
+        mm2::game::MegaMan2,
+        search::choice::{CERTAIN, ChoiceSite},
+        workload::Game,
+    };
+    let mut sites = MegaMan2::CHORDS.sites();
+    sites.extend(MegaMan2.move_sites());
+    let weapon_rate = ChoiceSite::declared_contrary(&sites)
+        .into_iter()
+        .find(|(site, _)| *site == CHORD_SITES + WEAPON_SITE)
+        .map(|(_, rate)| rate)
+        .expect("a declared weapon rate");
+    assert_eq!(
+        ChoiceSite::declared_contrary(&sites).len(),
+        1,
+        "only the weapon site carries a declared rate"
+    );
+    assert_eq!(
+        MegaMan2::CHORDS.reproducing_profile().contrary,
+        CERTAIN * 3 / 4
+    );
+    assert_eq!(MegaMan2::CHORDS.reproducing_profile().hold, 0);
+    Declared { sites, weapon_rate }
+}
+
+fn strategy_ask(
+    state: &super::game::Mm2State,
+    chooser: &mut crate::search::choice::Chooser,
+    previous: Option<ButtonChord>,
+) -> Drawn {
+    use crate::{chord::ask, mm2::game::MegaMan2, workload::Game};
+    let mut records = Vec::new();
+    let asked = ask(previous.as_ref());
+    let resolved = match MegaMan2.moves(state).offer {
+        Some(offer) => offer.resolve(
+            &MegaMan2::CHORDS,
+            chooser,
+            &asked,
+            previous.as_ref(),
+            &mut records,
+        ),
+        None => MegaMan2::CHORDS.resolve(chooser, &asked, previous.as_ref(), &mut records),
+    }
+    .expect("resolve");
+    played(resolved)
+}
+
+fn offered_targets(state: &super::game::Mm2State) -> (Vec<u16>, Vec<u8>) {
+    use crate::{mm2::game::MegaMan2, workload::Game};
+    let labels = MegaMan2
+        .moves(state)
+        .offer
+        .map_or_else(Vec::new, |offer| offer.labels());
+    let targets = labels
+        .iter()
+        .filter(|label| **label != 0)
+        .map(|label| u8::try_from(label - 1).expect("a weapon label"))
+        .collect();
+    (labels, targets)
+}
+
+fn prefix_states() -> Vec<(&'static str, super::game::Mm2State, Vec<u16>)> {
+    use super::{
+        game::Mm2State,
+        target::{GAMEPLAY_BANK, MENU_CLOSED, PLAYER_STATE_STANDING},
+    };
+    let holding = |weapon| Mm2State {
+        bank: GAMEPLAY_BANK,
+        health: 28,
+        player_state: PLAYER_STATE_STANDING,
+        menu: MENU_CLOSED,
+        weapons_obtained: 0x80,
+        weapon_energies: [28; 11],
+        weapon,
+        ..Mm2State::default()
+    };
+    vec![
+        ("root, no move offered", Mm2State::default(), Vec::new()),
+        ("buster held, weapon 8 owned", holding(0), vec![0, 9]),
+        ("weapon 8 held and masked", holding(8), vec![0, 1]),
+    ]
+}
+
+const PREVIOUS: [Option<ButtonChord>; 3] = [
+    None,
+    Some(ButtonChord {
+        buttons: 0x81,
+        hold_frames: 30,
+    }),
+    Some(ButtonChord {
+        buttons: 0x03,
+        hold_frames: 9,
+    }),
+];
+
+fn judge(name: &str, sides: &[(&str, Vec<(String, f64)>)]) -> usize {
+    let k: usize = sides.iter().map(|(_, rows)| rows.len()).sum();
+    let limit = upper_quantile(0.025 / k.max(1) as f64);
+    let mut failures = 0;
+    for (side, rows) in sides {
+        let worst = rows
+            .iter()
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .cloned();
+        let over: Vec<_> = rows.iter().filter(|row| row.1.abs() > limit).collect();
+        failures += over.len();
+        println!(
+            "{{\"setting\":\"{name}\",\"side\":\"{side}\",\"judged\":{},\"z_limit\":{limit:.3},\"worst\":\"{:?}\",\"over\":\"{over:?}\"}}",
+            rows.len(),
+            worst
+        );
+    }
+    failures
+}
+
+#[test]
+fn the_declared_moves_draw_what_the_hand_draws_at_the_root_and_at_two_prefix_states() {
+    use crate::search::choice::{CERTAIN, ChoicePlan, Chooser};
+    const DRAWS: usize = 200_000;
+    let declared = declared();
+    assert_eq!(declared.sites.len(), usize::from(CHORD_SITES) + 1);
+    let strategy_rate = f64::from(declared.weapon_rate) / f64::from(CERTAIN);
+    let hand_rate = 1.0 / super::action::SWITCH_ODDS as f64;
+    assert!((strategy_rate - hand_rate).abs() < 1.0 / f64::from(CERTAIN));
+    let mut failures = 0;
+    for (index, (name, state, offered)) in prefix_states().into_iter().enumerate() {
+        let (labels, targets) = offered_targets(&state);
+        assert_eq!(labels, offered, "{name}");
+        let reached: Vec<u8> = state.switch_targets().collect();
+        assert_eq!(
+            reached
+                .iter()
+                .map(|weapon| u16::from(*weapon) + 1)
+                .collect::<Vec<_>>(),
+            offered
+                .iter()
+                .copied()
+                .filter(|label| *label != 0)
+                .collect::<Vec<_>>(),
+            "{name}"
+        );
+        for (context, previous) in PREVIOUS.into_iter().enumerate() {
+            let seed = 0x6d32_a000 + (index * 16 + context) as u64;
+            let mut chooser = Chooser::new(&ChoicePlan {
+                profile: MegaMan2Chords::profile(),
+                redrawn: false,
+                seed,
+                untried: None,
+                held: Vec::new(),
+                declared: crate::search::choice::ChoiceSite::declared_contrary(&declared.sites),
+            });
+            let strategy: Vec<Drawn> = (0..DRAWS)
+                .map(|_| strategy_ask(&state, &mut chooser, previous))
+                .collect();
+            let mut rand = RomuDuoJrRand::with_seed(seed);
+            let hand: Vec<Drawn> = (0..DRAWS)
+                .map(|_| {
+                    let before = previous.map(Mm2Action::Chord);
+                    hand_drawn(hand_draw(&mut rand, before.as_ref()), &targets)
+                })
+                .collect();
+            let setting = format!("A {name}, previous {previous:?}");
+            failures += judge(
+                &setting,
+                &[
+                    (
+                        "strategy",
+                        departures(
+                            &strategy,
+                            &expected_draws(strategy_rate, &targets, false, previous),
+                        ),
+                    ),
+                    (
+                        "hand",
+                        departures(&hand, &expected_draws(hand_rate, &targets, true, previous)),
+                    ),
+                ],
+            );
+        }
+    }
+    assert_eq!(failures, 0);
+}
+
+struct MegaMan2Chords;
+
+impl MegaMan2Chords {
+    fn profile() -> crate::search::choice::ChoiceProfile {
+        use crate::{mm2::game::MegaMan2, workload::Game};
+        MegaMan2::CHORDS.reproducing_profile()
+    }
+}
+
+#[test]
+fn a_job_first_ask_under_the_shipped_policy_draws_what_the_hand_draws() {
+    use crate::{
+        mm2::game::MegaMan2,
+        search::choice::{CERTAIN, ChoicePlan, Chooser},
+        workload::reproducing_choices,
+    };
+    const JOBS: usize = 200_000;
+    let policy = reproducing_choices::<MegaMan2>();
+    assert!(!policy.untried_first);
+    let declared = declared();
+    let strategy_rate = f64::from(declared.weapon_rate) / f64::from(CERTAIN);
+    let hand_rate = 1.0 / super::action::SWITCH_ODDS as f64;
+    let mut failures = 0;
+    for (index, (name, state, _)) in prefix_states().into_iter().enumerate() {
+        let (_, targets) = offered_targets(&state);
+        for (context, previous) in PREVIOUS.into_iter().enumerate() {
+            let campaign_seed = 0x6d32_b000 + (index * 16 + context) as u64;
+            let root = policy.root_profile(campaign_seed);
+            let mut mutation_seeds = RomuDuoJrRand::with_seed(campaign_seed);
+            let seeds: Vec<u64> = (0..JOBS).map(|_| mutation_seeds.next_u64()).collect();
+            let strategy: Vec<Drawn> = seeds
+                .iter()
+                .map(|&mutation_seed| {
+                    let mut chooser = Chooser::new(&ChoicePlan::new(
+                        &policy,
+                        root,
+                        mutation_seed,
+                        None,
+                        Vec::new(),
+                        crate::search::choice::ChoiceSite::declared_contrary(&declared.sites),
+                    ));
+                    strategy_ask(&state, &mut chooser, previous)
+                })
+                .collect();
+            let hand: Vec<Drawn> = seeds
+                .iter()
+                .map(|&mutation_seed| {
+                    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+                    let before = previous.map(Mm2Action::Chord);
+                    hand_drawn(hand_draw(&mut rand, before.as_ref()), &targets)
+                })
+                .collect();
+            let setting = format!("B {name}, previous {previous:?}");
+            failures += judge(
+                &setting,
+                &[
+                    (
+                        "strategy",
+                        departures(
+                            &strategy,
+                            &expected_draws(strategy_rate, &targets, false, previous),
+                        ),
+                    ),
+                    (
+                        "hand",
+                        departures(&hand, &expected_draws(hand_rate, &targets, true, previous)),
+                    ),
+                ],
+            );
+        }
+    }
+    assert_eq!(failures, 0);
+}

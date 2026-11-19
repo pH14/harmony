@@ -245,6 +245,14 @@ pub fn move_answer(chord: &ButtonChord) -> Option<(u16, u16)> {
     })
 }
 
+#[must_use]
+pub fn reproducing_choices<G: Game>() -> ChoicePolicy {
+    ChoicePolicy {
+        profiles: ChoiceProfiles::Fixed(G::CHORDS.reproducing_profile()),
+        untried_first: false,
+    }
+}
+
 pub const FORCED_MOVE_BOUND: &str = "forced_move_within_bound";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -476,10 +484,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             identity,
             machines,
             records: None,
-            choices: ChoicePolicy {
-                profiles: ChoiceProfiles::Fixed(G::CHORDS.reproducing_profile()),
-                untried_first: false,
-            },
+            choices: reproducing_choices::<G>(),
         })
     }
 
