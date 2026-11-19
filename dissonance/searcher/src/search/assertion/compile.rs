@@ -97,8 +97,25 @@ impl Span {
 struct Aggregate {
     fold: Fold,
     value: Vec<Op>,
-    since: Option<Vec<Op>>,
+    since: Option<Since>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Since {
+    Value(Vec<Op>),
+    Stage(u8),
+}
+
+impl Since {
+    fn ops(&self) -> &[Op] {
+        match self {
+            Self::Value(ops) => ops,
+            Self::Stage(_) => &[],
+        }
+    }
+}
+
+const STAGE_SCOPE: &str = "stage";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fold {
@@ -507,6 +524,7 @@ struct Compiler<'a> {
     aggregate_spans: Vec<Span>,
     in_aggregate: bool,
     locals: Option<Vec<Span>>,
+    stage: Option<u8>,
     reads_action_end: bool,
 }
 
@@ -864,18 +882,12 @@ impl Compiler<'_> {
                 self.in_aggregate = true;
                 let mut value = Vec::new();
                 let span = self.scalar(&args[0], &mut value);
-                let since = args
-                    .get(1)
-                    .map(|since| {
-                        let mut ops = Vec::new();
-                        self.scalar(since, &mut ops).map(|_| ops)
-                    })
-                    .transpose();
+                let since = args.get(1).map(|since| self.since(since)).transpose();
                 self.in_aggregate = false;
                 let (span, since) = (span?, since?);
                 depth_of(&value)?;
                 if let Some(since) = &since {
-                    depth_of(since)?;
+                    depth_of(since.ops())?;
                 }
                 let aggregate = Aggregate { fold, value, since };
                 let index = match self.aggregates.iter().position(|held| *held == aggregate) {
@@ -897,6 +909,35 @@ impl Compiler<'_> {
             }
             _ => Err(format!("`{function}` is not a strategy function").into()),
         }
+    }
+
+    fn since(&mut self, since: &Expr) -> Result<Since, Box<dyn Error>> {
+        if !matches!(since, Expr::Name(name) if name == STAGE_SCOPE) {
+            let mut ops = Vec::new();
+            self.scalar(since, &mut ops)?;
+            return Ok(Since::Value(ops));
+        }
+        if self.catalog.slot(STAGE_SCOPE).is_some() || self.defines.contains_key(STAGE_SCOPE) {
+            return Err(format!(
+                "`{STAGE_SCOPE}` names a value in this strategy, so it cannot scope an aggregate"
+            )
+            .into());
+        }
+        self.stage.map(Since::Stage).ok_or_else(|| {
+            format!("`{STAGE_SCOPE}` scopes an aggregate only in a stage's objective").into()
+        })
+    }
+
+    fn objective(
+        &mut self,
+        items: &[&str],
+        ops: &mut Vec<Op>,
+    ) -> Result<Vec<Span>, Box<dyn Error>> {
+        let mut spans = Vec::new();
+        for item in items {
+            spans.extend(self.line(item, ops)?);
+        }
+        Ok(spans)
     }
 
     fn line(&mut self, text: &str, ops: &mut Vec<Op>) -> Result<Vec<Span>, Box<dyn Error>> {
@@ -951,6 +992,7 @@ impl Compiler<'_> {
             aggregate_spans: Vec::new(),
             in_aggregate: false,
             locals: self.locals.clone(),
+            stage: self.stage,
             reads_action_end: false,
         };
         scratch.truth(&expr) != Some(false)
@@ -1154,7 +1196,12 @@ impl Compiler<'_> {
         })
     }
 
-    fn stage(&mut self, lines: &StageLines, shared: &LineSet) -> Result<Stage, Box<dyn Error>> {
+    fn stage(
+        &mut self,
+        index: u8,
+        lines: &StageLines,
+        shared: &LineSet,
+    ) -> Result<Stage, Box<dyn Error>> {
         let goal_text = lines.goal.trim();
         let declared = self.catalog.declaration(goal_text).filter(|declaration| {
             declaration.form.starts_with("sometimes") || declaration.form == "reachable"
@@ -1188,10 +1235,10 @@ impl Compiler<'_> {
             .as_ref()
             .map_or_else(|| vec![default_objective.as_str()], Lines::items);
         let mut objective_ops = Vec::new();
-        let mut spans = Vec::new();
-        for item in &objective_items {
-            spans.extend(self.line(item, &mut objective_ops)?);
-        }
+        self.stage = Some(index);
+        let spans = self.objective(&objective_items, &mut objective_ops);
+        self.stage = None;
+        let spans = spans?;
         if spans.is_empty() || spans.len() > OBJECTIVE_WIDTH {
             return Err(format!("an objective holds from 1 to {OBJECTIVE_WIDTH} values").into());
         }
@@ -1405,6 +1452,7 @@ impl Compiled {
             aggregate_spans: Vec::new(),
             in_aggregate: false,
             locals: None,
+            stage: None,
             reads_action_end: false,
         };
         let lines = compiler.lines(&strategy.lines()?, None)?;
@@ -1422,14 +1470,15 @@ impl Compiled {
         } else if strategy.stage.is_empty() {
             Progress::Flat
         } else {
+            if strategy.stage.len() > usize::from(u8::MAX) {
+                return Err("a strategy holds at most 255 stages".into());
+            }
             let stages = strategy
                 .stage
                 .iter()
-                .map(|stage| compiler.stage(stage, &lines))
+                .enumerate()
+                .map(|(index, stage)| compiler.stage(u8::try_from(index)?, stage, &lines))
                 .collect::<Result<Vec<_>, _>>()?;
-            if stages.len() > usize::from(u8::MAX) {
-                return Err("a strategy holds at most 255 stages".into());
-            }
             let radix = stages
                 .iter()
                 .map(|stage| stage.objective.radix())
@@ -1449,7 +1498,7 @@ impl Compiled {
             aggregate
                 .value
                 .iter()
-                .chain(aggregate.since.iter().flatten())
+                .chain(aggregate.since.iter().flat_map(Since::ops))
                 .any(|op| matches!(op, Op::Local(_)))
         });
         let tables = strategy.table.values().cloned().collect();
@@ -1602,11 +1651,16 @@ impl Compiled {
         for (index, aggregate) in self.aggregates.iter().enumerate() {
             let depth = eval(&aggregate.value, &env, stack);
             let value = stack[depth - 1];
-            let anchor = aggregate.since.as_ref().map_or(0, |since| {
-                let depth = eval(since, &env, stack);
-                stack[depth - 1]
-            });
-            let reset = !parent.started || anchor != parent.anchors[index];
+            let (anchor, restarts) = match &aggregate.since {
+                None => (0, false),
+                Some(Since::Value(since)) => {
+                    let depth = eval(since, &env, stack);
+                    let anchor = stack[depth - 1];
+                    (anchor, anchor != parent.anchors[index])
+                }
+                Some(Since::Stage(stage)) => (0, parent.stage != *stage),
+            };
+            let reset = !parent.started || restarts;
             let held = parent.values[index];
             next.values[index] = match (reset || held == NONE, value == NONE, aggregate.fold) {
                 (true, _, _) | (false, false, Fold::Last) => value,

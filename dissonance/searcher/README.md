@@ -731,6 +731,17 @@ the same way. It carries a position along a route: with `x` the route index of
 the current cell, the objective stays at the last route cell while the path is
 off the route and follows the path back when it returns to an earlier cell.
 
+In a stage's objective, an aggregate's second argument may be the word `stage`:
+the aggregate restarts unless the parent was located in this same stage. This
+is the hand plans' carried objective, which a stage keeps from a parent in the
+same stage and starts afresh on entering it. A route stage writes it as
+`objective = "max(last(index(cell, route), stage), 0)"`: the index of the
+current cell on the route, the last route cell while the path is off the route,
+and 0 when the stage is entered off the route. The aggregate reads the stage
+the accumulator holds for the parent, so objectives carry no stage number. The
+word scopes an aggregate nowhere else, and a strategy whose catalog or defines
+name a value `stage` cannot use it.
+
 **Compilation.** `Compiled::new` checks every name against the catalog, runs
 interval analysis from the declared ranges, and packs each tuple into an
 integer by mixed radix, so packed order is the tuple's order. Expressions run

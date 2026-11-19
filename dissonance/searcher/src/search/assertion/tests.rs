@@ -567,6 +567,52 @@ fn a_last_route_objective_follows_the_route_back_and_is_carried_off_it() {
 }
 
 #[test]
+fn a_stage_scoped_route_objective_is_carried_only_from_a_parent_in_the_same_stage() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "to_key"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "'items.key'"
+        [[stage]]
+        name = "after_key"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "false"
+        [table]
+        route = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let views: Vec<_> = [(3, 0), (0, 0), (0, 0b100), (5, 0b100), (0, 0b100)]
+        .into_iter()
+        .map(|(room, items)| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    items,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            let view = compiled.view(observed.key.unwrap());
+            (view.stage.unwrap(), view.progress)
+        })
+        .collect();
+    assert_eq!(
+        views,
+        [
+            ("to_key".to_owned(), vec![2]),
+            ("to_key".to_owned(), vec![2]),
+            ("after_key".to_owned(), vec![0]),
+            ("after_key".to_owned(), vec![4]),
+            ("after_key".to_owned(), vec![4]),
+        ]
+    );
+}
+
+#[test]
 fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
     let width = |text: &str| {
         let compiled = Compiled::parse(text, &catalog()).unwrap();
@@ -812,6 +858,14 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         (r#"spread = "last(highest(lives))""#, "another aggregate"),
         (r#"spread = "last(lives, last(time))""#, "another aggregate"),
         (r#"spread = "count(lives)""#, "not a strategy function"),
+        (
+            r#"spread = "last(lives, stage)""#,
+            "only in a stage's objective",
+        ),
+        (
+            "[[stage]]\ngoal = \"last(lives, stage) > 0\"",
+            "only in a stage's objective",
+        ),
         ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
