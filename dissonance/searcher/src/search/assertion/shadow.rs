@@ -345,7 +345,29 @@ impl<H: ArchiveKey> Eq for ShadowCursor<H> where H::Lineage: Eq {}
 
 impl<H: ArchiveKey + Debug> ShadowCursor<H> {
     pub fn observe(&mut self, compiled: &Compiled, record: &Record) -> Option<AssertionKey> {
-        self.key = compiled.observe(record, &mut self.accumulator).key;
+        self.arrive(compiled, record, None)
+    }
+
+    pub fn observe_with_objective(
+        &mut self,
+        compiled: &Compiled,
+        record: &Record,
+        objective: bool,
+    ) -> Option<AssertionKey> {
+        self.arrive(compiled, record, Some(objective))
+    }
+
+    fn arrive(
+        &mut self,
+        compiled: &Compiled,
+        record: &Record,
+        objective: Option<bool>,
+    ) -> Option<AssertionKey> {
+        let observed = compiled.observe(record, &mut self.accumulator);
+        let objective = objective.unwrap_or(observed.goal);
+        self.key = observed
+            .key
+            .filter(|_| objective || observed.rejected.is_none());
         self.fresh = true;
         self.key
     }

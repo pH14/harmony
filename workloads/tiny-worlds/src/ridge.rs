@@ -218,7 +218,9 @@ impl Keying for Hand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Keep, KeyKind, SearchSettings, Workload, run_kept};
+    use crate::{
+        Keep, KeyKind, SearchSettings, ShadowLane, Shadowed, Strategic, Workload, run_kept,
+    };
 
     fn config() -> Config {
         Config {
@@ -235,6 +237,44 @@ mod tests {
 
     fn wrong(w: &Config, s: State) -> u8 {
         (w.climb(s.position) + 1) % 3
+    }
+
+    struct Ended(u8);
+
+    impl Ended {
+        fn ends(&self, state: WorldState) -> bool {
+            matches!(state, WorldState::Ridge(s) if s.position == self.0)
+        }
+    }
+
+    impl Keying for Ended {
+        type Key = Key;
+        type Lane = ();
+        fn arrive(&self, _: &World, _: WorldState, _: bool, _: &mut ()) {}
+        fn key(
+            &self,
+            world: &World,
+            state: WorldState,
+            broken: bool,
+            lane: &(),
+        ) -> Result<Key, Box<dyn Error>> {
+            if self.ends(state) {
+                return Err("the path ended".into());
+            }
+            Hand.key(world, state, broken, lane)
+        }
+        fn rejected(&self, _: &World, state: WorldState, _: bool, _: &()) -> bool {
+            self.ends(state)
+        }
+        fn shape(&self) -> KeyShape {
+            Hand.shape()
+        }
+        fn identity(&self) -> String {
+            Hand.identity()
+        }
+        fn policy(&self) -> Option<&str> {
+            None
+        }
     }
 
     #[test]
@@ -348,5 +388,181 @@ mod tests {
         assert_eq!(shadow["unknown_restores"], 0);
         assert!(shadow["lineage_changes"].as_u64().unwrap() > 0, "{shadow}");
         assert_eq!(shadow["tiers"].as_array().unwrap().len(), 3, "{shadow}");
+    }
+
+    #[test]
+    fn the_shadow_pairs_a_state_the_strategy_rejects_with_a_state_the_hand_ends_at() {
+        let w = config();
+        let world = World::Ridge(w);
+        let climb = |reject: &str| {
+            let strategy = format!("{reject}{}", include_str!("../strategies/ridge.toml"));
+            let shadowed =
+                Shadowed::new(Ended(3), Strategic::new(&world, false, &strategy).unwrap());
+            let mut lane = ShadowLane::default();
+            let mut s = w.initial();
+            shadowed.arrive(&world, WorldState::Ridge(s), false, &mut lane);
+            for _ in 0..5 {
+                s = climbed(&w, s);
+                shadowed.arrive(&world, WorldState::Ridge(s), false, &mut lane);
+            }
+            shadowed.shadow().unwrap().unwrap()
+        };
+        let rejected = climb("reject = \"ridge.position == 3\"\n");
+        assert_eq!(rejected.disagreements.total(), 0, "{:?}", rejected.examples);
+        assert_eq!((rejected.states, rejected.keyed_states), (6, 5));
+        let kept = climb("");
+        assert_eq!(kept.disagreements.absent, 1, "{:?}", kept.examples);
+        let both = climb("reject = \"ridge.position >= 3\"\n");
+        assert_eq!(both.disagreements.absent, 2, "{:?}", both.examples);
+    }
+
+    #[test]
+    fn a_goal_of_the_world_that_the_strategy_also_rejects_keeps_its_key() {
+        let w = Config {
+            length: 4,
+            spacing: 1,
+            ridge: 2,
+            pattern: 0,
+        };
+        let world = World::Ridge(w);
+        let rejecting = format!(
+            "reject = \"goal\"\n{}",
+            include_str!("../strategies/ridge.toml")
+        );
+        let strategic = Strategic::new(&world, false, &rejecting).unwrap();
+        let shadowed = Shadowed::new(Hand, Strategic::new(&world, false, &rejecting).unwrap());
+        let mut lane = crate::StrategyLane::default();
+        let mut shadow_lane = ShadowLane::default();
+        let mut s = w.initial();
+        let mut states = 0;
+        loop {
+            let state = WorldState::Ridge(s);
+            strategic.arrive(&world, state, false, &mut lane);
+            assert!(!strategic.rejected(&world, state, false, &lane), "{s:?}");
+            assert!(strategic.key(&world, state, false, &lane).is_ok(), "{s:?}");
+            shadowed.arrive(&world, state, false, &mut shadow_lane);
+            states += 1;
+            if world.goal(state) {
+                break;
+            }
+            assert!(states < 32, "{s:?}");
+            s = climbed(&w, s);
+        }
+        let report = shadowed.shadow().unwrap().unwrap();
+        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
+        assert_eq!((report.states, report.keyed_states), (states, states));
+
+        let workload = Workload {
+            keying: crate::Hand::<false>,
+            config: world,
+            broken: false,
+            scale: None,
+        };
+        let seed = 174_839_205;
+        let settings = SearchSettings {
+            mixture: None,
+            stop_on_objective: Some(false),
+        };
+        let strategy = |text: Option<&str>| {
+            run_kept(
+                &workload,
+                Keep::Portfolio,
+                KeyKind::Strategy,
+                text,
+                false,
+                seed,
+                1_000,
+                true,
+                1,
+                settings,
+            )
+            .unwrap()
+        };
+        let rejected = strategy(Some(&rejecting));
+        let shipped = strategy(None);
+        for field in [
+            "decision_stream_sha256",
+            "decision_stream_records",
+            "work",
+            "executions",
+            "first_objective_work",
+        ] {
+            assert_eq!(rejected[field], shipped[field], "{field}");
+        }
+        assert!(!shipped["first_objective_work"].is_null());
+        let shadowed = crate::hand_campaign(
+            &workload,
+            Hand,
+            Some(Strategic::new(&workload.config, false, &rejecting).unwrap()),
+            (seed, 1_000, true, 1, settings),
+        )
+        .unwrap();
+        let shadow = &shadowed["shadow"];
+        for field in ["absent", "cell", "slot", "progress", "preference"] {
+            assert_eq!(shadow["disagreements"][field], 0, "{field}: {shadow}");
+        }
+    }
+
+    #[test]
+    fn a_strategy_that_rejects_a_state_ends_its_paths_there_as_a_hand_that_ends_them() {
+        let workload = Workload {
+            keying: crate::Hand::<false>,
+            config: World::Ridge(config()),
+            broken: false,
+            scale: None,
+        };
+        let rejecting = format!(
+            "reject = \"ridge.position == 3\"\n{}",
+            include_str!("../strategies/ridge.toml")
+        );
+        let seed = crate::test_seed();
+        let settings = SearchSettings {
+            mixture: None,
+            stop_on_objective: Some(false),
+        };
+        let run = (seed, 20_000, true, 1, settings);
+        let strategy = |text: Option<&str>| {
+            run_kept(
+                &workload,
+                Keep::Portfolio,
+                KeyKind::Strategy,
+                text,
+                false,
+                seed,
+                20_000,
+                true,
+                1,
+                settings,
+            )
+            .unwrap()
+        };
+        let hand = crate::hand_campaign(&workload, Ended(3), None, run).unwrap();
+        let shadowed = crate::hand_campaign(
+            &workload,
+            Ended(3),
+            Some(Strategic::new(&workload.config, false, &rejecting).unwrap()),
+            run,
+        )
+        .unwrap();
+        let rejected = strategy(Some(&rejecting));
+        let shipped = strategy(None);
+        for field in [
+            "decision_stream_sha256",
+            "decision_stream_records",
+            "work",
+            "executions",
+            "first_objective_work",
+        ] {
+            assert_eq!(hand[field], rejected[field], "{field}");
+            assert_eq!(hand[field], shadowed[field], "{field}");
+        }
+        assert_eq!(hand["verified"], true);
+        assert!(rejected["first_objective_work"].is_null());
+        assert!(!shipped["first_objective_work"].is_null());
+        let shadow = &shadowed["shadow"];
+        for field in ["absent", "cell", "slot", "progress", "preference"] {
+            assert_eq!(shadow["disagreements"][field], 0, "{field}: {shadow}");
+        }
+        assert_eq!(shadow["unknown_restores"], 0);
     }
 }
