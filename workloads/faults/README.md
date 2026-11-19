@@ -297,14 +297,16 @@ is in flight.
 
 The cost is quiet time. With rqlite's 13 offered kinds, `Wait` falls from 54%
 of the drawn actions to 27%, and hooks rise from 4% to 31%, so more checks
-run while a cut is in force. A search execution ends at its last action
-without a settle. A replay's settlement waits until a check starts and
-finishes in one disturbance generation with no pending process fault. An
-unhealed cut is not a pending process fault, so a replay can settle while a
-held cut still stands. A check that needs a quiet cluster reads
-`HARMONY_FAULTS_IN_FORCE`, which covers an unhealed cut, as the harness kit's
-replica comparison does (see the
-[supervisor README](../../consonance/harmony-linux/supervisor/README.md)).
+run while a cut is in force. A search execution's last checks run at the
+endpoint of its last action, with no settle. A replay settles until a check
+starts and finishes in one disturbance generation with no pending process
+fault. An unhealed cut is not a pending process fault, so the settlement does
+not wait for hook windows and can end while a held cut still stands. A check
+that starts under a standing cut sees `HARMONY_FAULTS_IN_FORCE=1` (see the
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md)), and
+the harness kit then skips its replica comparison and does not fail it, so a
+divergence that only that comparison shows is checked only in the stretches
+between cuts.
 
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
