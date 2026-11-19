@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::config::{Config, Result};
-use faults_workload::FaultAction;
+use faults_workload::{FaultAction, guest::GuestAnswer};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -14,6 +14,8 @@ use std::{
 struct State {
     bundle: Option<String>,
     actions: Vec<FaultAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    answers: Vec<GuestAnswer>,
     settle: bool,
     #[serde(default)]
     uml_entropy_admitted: bool,
@@ -28,6 +30,8 @@ pub struct Manifest {
     pub config: Config,
     pub bundle: Option<String>,
     pub actions: Vec<FaultAction>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<GuestAnswer>,
     pub settle: bool,
     pub uml_host: Option<serde_json::Value>,
     pub uml_entropy_admitted: bool,
@@ -98,6 +102,7 @@ impl Manifest {
             config,
             bundle,
             actions: Vec::new(),
+            answers: Vec::new(),
             settle: true,
             uml_host,
             uml_entropy_admitted,
@@ -118,6 +123,7 @@ impl Manifest {
             config,
             bundle: state.bundle,
             actions: state.actions,
+            answers: state.answers,
             settle: state.settle,
             uml_host,
             uml_entropy_admitted: state.uml_entropy_admitted,
@@ -148,6 +154,7 @@ impl Manifest {
         record.payload = serde_json::to_value(State {
             bundle: self.bundle.clone(),
             actions: self.actions.clone(),
+            answers: self.answers.clone(),
             settle: self.settle,
             uml_entropy_admitted: self.uml_entropy_admitted,
             outcome,
@@ -193,6 +200,7 @@ impl Manifest {
             uml_profile,
             checkpoint_owner: self.record.checkpoint_owner.clone(),
             boot_cache: crate::runtime::cache_dir().map(|dir| dir.join("boot")),
+            answers: self.answers.clone(),
         })
     }
 

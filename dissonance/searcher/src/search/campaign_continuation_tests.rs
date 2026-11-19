@@ -288,7 +288,7 @@ impl<const CHOICES: bool> TargetExecution for ChoiceTestWorkload<CHOICES> {
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
         target.snapshot()
     }
-    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64 {
         test_action_cost
     }
 

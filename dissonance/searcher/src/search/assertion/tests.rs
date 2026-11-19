@@ -978,7 +978,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         strategy: &recorded,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(same_decisions(&jobs, &same), 2);
     assert_eq!(same.cells, 4);
@@ -995,7 +995,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         strategy: &coarse,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(rooms.cells, 2);
     assert_eq!(same_decisions(&jobs, &rooms), 0);
@@ -1007,7 +1007,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
             strategy: &recorded,
             entry_limit: 1024,
         }
-        .run(&genesis, &short, &actions, |_| 1)
+        .run(&genesis, &short, &actions)
         .is_err()
     );
 }
@@ -1027,7 +1027,7 @@ fn rekeying_keeps_the_descendants_of_a_state_the_strategy_stops_at_stopped() {
         strategy: &rejecting,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(
         rekeyed

@@ -108,7 +108,8 @@ where
             start = Some((workload.snapshot(&mut target)?, milestones, cost));
         }
         workload.apply_action(&mut target, action, &mut milestones)?;
-        cost = cost + workload.shrink_cost(action, &target);
+        cost =
+            cost + workload.shrink_cost(action, &target, &workload.rollout_observations(&target));
         let outcome = classify(workload, run, &target)?;
         if outcome.disposition.is_failed() {
             return Err("the window incumbent failed to execute".into());
@@ -194,7 +195,8 @@ where
             workload.restore(&mut target, &parent.snapshot)?;
             let mut milestones = parent.milestones;
             workload.apply_action(&mut target, action, &mut milestones)?;
-            let child_cost = cost + workload.shrink_cost(action, &target);
+            let child_cost = cost
+                + workload.shrink_cost(action, &target, &workload.rollout_observations(&target));
             let outcome = classify(workload, run, &target)?;
             if outcome.disposition.is_failed() {
                 return Err("a window expansion failed to execute".into());

@@ -284,7 +284,7 @@ impl Explorer {
         if !admissible(obs) || (genesis && (obs.loading || obs.level != 0)) {
             return Err(js_error("Game setup did not reach level one"));
         }
-        let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
+        let mut archive = Archive::new();
         archive
             .insert(
                 None,
@@ -293,6 +293,7 @@ impl Explorer {
                     suffix: Vec::<Action>::new(),
                     key: obs,
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )
@@ -477,6 +478,7 @@ impl Explorer {
                         suffix: suffix.clone(),
                         key: obs,
                         milestones: (),
+                        cost: suffix.iter().map(|action| u64::from(action.frames)).sum(),
                     },
                     (),
                 )
@@ -662,7 +664,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn selector_matches_recorded_native_choices() {
-        let mut archive = Archive::<u8, ProbeKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ProbeKey, (), ()>::new();
         for id in 0..3 {
             archive
                 .insert(
@@ -672,6 +674,7 @@ mod tests {
                         suffix: vec![id],
                         key: ProbeKey(id),
                         milestones: (),
+                        cost: 1,
                     },
                     (),
                 )

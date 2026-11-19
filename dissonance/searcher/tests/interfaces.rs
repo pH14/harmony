@@ -90,7 +90,7 @@ impl TargetExecution for TinyExecution {
         target.execution_work
     }
 
-    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64 {
         action_cost
     }
 
@@ -135,7 +135,7 @@ fn exercise_execution<T: TargetExecution>(
         T::snapshot_memory_charge(&origin),
         std::mem::size_of_val(&origin)
     );
-    assert!((execution.action_cost_fn())(&action) > 0);
+    assert!((execution.planned_cost_fn())(&action) > 0);
 
     let mut milestones = T::Milestones::default();
     execution.apply_action(&mut target, &action, &mut milestones)?;

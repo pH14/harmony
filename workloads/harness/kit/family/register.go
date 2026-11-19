@@ -98,8 +98,8 @@ type registerGenerator struct {
 }
 
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
-	key := registerKey(int(draw(uint64(g.keys))))
-	switch draw(4) {
+	key := registerKey(int(draw("register.key", uint64(g.keys))))
+	switch draw("register.op", 4) {
 	case 0, 1:
 		return Op{F: RegisterReadF, K: key}
 	case 3:

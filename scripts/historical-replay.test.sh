@@ -96,6 +96,25 @@ if (
 fi
 grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.sample-input/panel-status.json"
 
+jq '.replays[1].state_hash = "def"' "${work}/report.json" >"${work}/split-report.json"
+if (
+    cd "${work}"
+    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/split-report.json" FAKE_EXIT_STATUS=2
+    export FAKE_OUTPUT='error: 1 of 2 repeats ended differently from the first: repeat 1 at abc; repeat 2 at def'
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" sample "${work}/input.json"
+); then
+    printf 'FAIL replay accepted repeats that ended in different states\n'
+    exit 1
+fi
+jq -e '.cli_exit_status == 2 and .oracle == "fail: replay-mismatch"
+    and .state_hash_count == 2' \
+    "${work}/reports/pgcic.sample-input/panel-status.json" >/dev/null
+
 uml_run=$(jq -c '.bug = true | .stop = "Assertion"
     | .violations = ["case-assertion"]
     | .state_hash = "" | .state_hash_encoding = "unavailable"' <<<"$run")

@@ -4,6 +4,8 @@ package sdk
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,9 +35,91 @@ func TestNativeRandomFollowsTheSeed(t *testing.T) {
 	if Random() == first[0] {
 		t.Fatal("a different seed repeated the first draw")
 	}
-	if Below(0) != 0 || Below(1) != 0 {
+	if Below("test", 0) != 0 || Below("test", 1) != 0 {
 		t.Fatal("Below must stay inside its range")
 	}
+}
+
+func TestNativeBelowNeverAsksTheHost(t *testing.T) {
+	resetRandom(t, "7")
+	saved := choice.exchange
+	defer func() { choice.exchange = saved }()
+	choice.exchange = func([]byte) ([]byte, error) {
+		t.Fatal("a native draw asked the host")
+		return nil, nil
+	}
+	for range 32 {
+		if Below("test", 5) >= 5 {
+			t.Fatal("Below must stay inside its range")
+		}
+	}
+}
+
+func answerFrame(request []byte, payload ...byte) []byte {
+	frame := make([]byte, frameHeader, frameHeader+len(payload))
+	copy(frame, request[:frameHeader])
+	binary.LittleEndian.PutUint16(frame[4:], kindResponse)
+	binary.LittleEndian.PutUint32(frame[16:], uint32(len(payload)))
+	return append(frame, payload...)
+}
+
+func TestAChoiceQuestionCarriesItsSiteDefaultAndClock(t *testing.T) {
+	request := choiceRequest(9, 0x0102, "register.op", 4, 3, 0x0a0b)
+	want := []byte{
+		0x48, 0x43, 0x50, 0x31, 1, 0, 6, 0, 3, 0, 0, 0, 9, 0, 0, 0, 33, 0, 0, 0, 0, 0, 0, 0,
+		11, 0, 2, 1, 0, 0, 0, 0, 0, 0, 4, 0, 3, 0, 0x0b, 0x0a, 0, 0, 0, 0, 0, 0,
+	}
+	want = append(want, "register.op"...)
+	if !bytes.Equal(request, want) {
+		t.Fatalf("request %x, want %x", request, want)
+	}
+	if label, err := choiceAnswer(answerFrame(request, 0), 9, 4, 3); err != nil || label != 3 {
+		t.Fatalf("nominal answer gave %d, %v", label, err)
+	}
+	if label, err := choiceAnswer(answerFrame(request, 1, 2, 0), 9, 4, 3); err != nil || label != 2 {
+		t.Fatalf("label answer gave %d, %v", label, err)
+	}
+	for _, payload := range [][]byte{{1, 4, 0}, {1}, {2}, {}} {
+		if _, err := choiceAnswer(answerFrame(request, payload...), 9, 4, 3); err == nil {
+			t.Fatalf("payload %x was accepted", payload)
+		}
+	}
+	if _, err := choiceAnswer(answerFrame(request, 0), 8, 4, 3); err == nil {
+		t.Fatal("a response for another request was accepted")
+	}
+	failed := answerFrame(request, 0)
+	binary.LittleEndian.PutUint16(failed[10:], 2)
+	if _, err := choiceAnswer(failed, 9, 4, 3); err == nil {
+		t.Fatal("a failed status was accepted")
+	}
+}
+
+func TestAskSendsOneQuestionPerDrawAndTakesTheAnswer(t *testing.T) {
+	saved := choice.exchange
+	defer func() { choice.exchange = saved }()
+	var questions [][]byte
+	choice.exchange = func(request []byte) ([]byte, error) {
+		questions = append(questions, request)
+		if len(questions) == 2 {
+			return answerFrame(request, 1, 0, 0), nil
+		}
+		return answerFrame(request, 0), nil
+	}
+	if got := ask("runner.pause", 21, 7); got != 7 {
+		t.Fatalf("nominal ask returned %d", got)
+	}
+	if got := ask("runner.pause", 21, 7); got != 0 {
+		t.Fatalf("label ask returned %d", got)
+	}
+	if len(questions) != 2 || binary.LittleEndian.Uint32(questions[1][12:]) != binary.LittleEndian.Uint32(questions[0][12:])+1 {
+		t.Fatal("each question takes the next sequence number")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("an unnamed site was accepted")
+		}
+	}()
+	ask("", 2, 0)
 }
 
 type decoded struct {

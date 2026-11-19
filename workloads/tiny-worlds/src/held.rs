@@ -476,7 +476,7 @@ impl TargetExecution for HeldWorkload {
     fn execution_work(&self, target: &Target) -> u64 {
         target.work
     }
-    fn action_cost_fn(&self) -> fn(&Chord) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Chord) -> u64 {
         |chord| u64::from(frames(chord.hold))
     }
     fn snapshot_memory_charge(_: &State) -> usize {

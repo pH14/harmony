@@ -14,7 +14,7 @@ use machine::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{Game, Lowered, Moves, Satisfied, played_time};
+use super::{Game, Lowered, Moves, Satisfied};
 #[cfg(unix)]
 use crate::nes_backend::FilmMachine;
 use crate::{
@@ -45,10 +45,8 @@ impl<S> NesObservation<S> {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(transparent)]
 pub struct ActionObservation<S> {
     pub observation: NesObservation<S>,
-    #[serde(skip)]
     pub cost: u64,
     #[serde(skip)]
     pub records: Vec<Record>,
@@ -198,7 +196,6 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     failed: bool,
     snapshot_base: Option<Vec<u8>>,
     execution_work: u64,
-    offer_cost: Option<u64>,
     recording: bool,
 }
 
@@ -229,7 +226,6 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             failed: false,
             snapshot_base: None,
             execution_work: 0,
-            offer_cost: None,
             recording: false,
         })
     }
@@ -256,11 +252,6 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     pub fn record_frames(&mut self, recording: bool) {
         self.recording = recording;
-    }
-
-    #[must_use]
-    pub fn offer_cost(&self) -> Option<u64> {
-        self.offer_cost
     }
 
     #[must_use]
@@ -485,14 +476,12 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 
     fn apply_internal(&mut self, action: &ButtonChord) {
         self.action_observations.clear();
-        self.offer_cost = None;
         if self.failed || self.observation.stops() || !self.settle() {
             return;
         }
         if let Some(offer) = self.lowered.game.moves(&self.observation.state).offer
             && let Some(mv) = offer.chosen(action)
         {
-            self.offer_cost = Some(played_time::<G>(Some(&offer), action));
             return self.apply_move(mv);
         }
         let start = self.current;
@@ -1049,6 +1038,22 @@ mod tests {
         assert!(target.observation().stops());
         assert_eq!(target.observation().frame_count, 9);
         target
+    }
+
+    #[test]
+    fn an_action_observation_keeps_its_cost_through_postcard() {
+        let target = stopped_at_the_goal();
+        let observations = target.last_action_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|observation| observation.cost)
+                .sum::<u64>(),
+            1
+        );
+        let received: Vec<ActionObservation<Spot>> =
+            postcard::from_bytes(&postcard::to_allocvec(observations).unwrap()).unwrap();
+        assert_eq!(received, observations);
     }
 
     #[test]

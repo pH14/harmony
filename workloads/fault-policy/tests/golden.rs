@@ -159,6 +159,7 @@ fn golden_covers_every_class_with_faults() {
             }
             (false, Answer::Nominal) => {}
             (false, Answer::Supply(_)) => panic!("fault class produced a supply answer"),
+            (false, Answer::Label(_)) => panic!("the seeded environment produced a choice label"),
         }
     }
     assert!(
@@ -264,6 +265,13 @@ fn golden_action_wire_format() {
         "01020f",
         "guest plane tag 01 + payload"
     );
+
+    let label = Action::Guest(Answer::Label(0x0102));
+    assert_eq!(
+        to_hex(&label.encode()),
+        "01030201",
+        "guest plane tag 01 + label tag 03 + little-endian label"
+    );
 }
 
 #[test]
@@ -285,7 +293,7 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            "4445563207000100000000000000003600000046504c3103000000000001000000000000000000000001000000000000000000000001000000000000000000000001000000000000000200000001000000000000000a00000000008000000000000000020000000000000002000000010000000000010000000300000000000000ced100000000000000",
+            "4445563208000100000000000000003600000046504c3103000000000001000000000000000000000001000000000000000000000001000000000000000000000001000000000000000200000001000000000000000a00000000008000000000000000020000000000000002000000010000000000010000000300000000000000ced100000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);

@@ -8,9 +8,11 @@ use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, proce
 use process_proto::EVERY_NODE;
 use process_proto::registers as reg;
 use searcher::target::ExitKind;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+use crate::guest::GuestChoices;
 
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
@@ -276,12 +278,31 @@ impl FaultOperation {
 
 pub const ACTION_KEY_WIDTH: usize = OPERATION_KEY_WIDTH + 2 + 8;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
 pub struct FaultAction {
     pub operation: FaultOperation,
     pub coverage_quantum: NonZeroU16,
     #[serde(default)]
     pub choice: u64,
+    #[serde(default)]
+    pub guest: Option<GuestChoices>,
+}
+
+impl Serialize for FaultAction {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let omit_guest = serializer.is_human_readable() && self.guest.is_none();
+        let mut state =
+            serializer.serialize_struct("FaultAction", if omit_guest { 3 } else { 4 })?;
+        state.serialize_field("operation", &self.operation)?;
+        state.serialize_field("coverage_quantum", &self.coverage_quantum)?;
+        state.serialize_field("choice", &self.choice)?;
+        if omit_guest {
+            state.skip_field("guest")?;
+        } else {
+            state.serialize_field("guest", &self.guest)?;
+        }
+        state.end()
+    }
 }
 
 impl FaultAction {
@@ -290,12 +311,21 @@ impl FaultAction {
             operation,
             coverage_quantum,
             choice: 0,
+            guest: None,
         }
     }
 
     #[must_use]
     pub fn with_choice(self, choice: u64) -> Self {
         Self { choice, ..self }
+    }
+
+    #[must_use]
+    pub fn with_guest(self, guest: GuestChoices) -> Self {
+        Self {
+            guest: Some(guest),
+            ..self
+        }
     }
 
     #[must_use]
@@ -1660,6 +1690,34 @@ mod tests {
         );
         assert_ne!(first.key_bytes(), second.key_bytes());
         assert_eq!(first.with_ticks(ticks(9)).choice, 1);
+    }
+
+    #[test]
+    fn guest_choices_are_omitted_from_text_only_when_absent_and_always_encoded_in_binary() {
+        let plain = FaultAction::from(FaultOperation::Wait(ticks(4))).with_choice(3);
+        let text = serde_json::to_value(plain).unwrap();
+        assert!(text.get("guest").is_none());
+        assert_eq!(serde_json::from_value::<FaultAction>(text).unwrap(), plain);
+        let guest = plain.with_guest(crate::guest::GuestChoices {
+            contrary: 7,
+            hold: 9,
+            seed: 11,
+            untried: Some(1),
+        });
+        let text = serde_json::to_value(guest).unwrap();
+        assert_eq!(text["guest"]["seed"], 11);
+        assert_eq!(serde_json::from_value::<FaultAction>(text).unwrap(), guest);
+        for action in [plain, guest] {
+            let bytes = postcard::to_allocvec(&(action, 0x55_u8)).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<(FaultAction, u8)>(&bytes).unwrap(),
+                (action, 0x55)
+            );
+        }
+        assert_ne!(
+            postcard::to_allocvec(&plain).unwrap(),
+            postcard::to_allocvec(&guest).unwrap()
+        );
     }
 
     #[test]

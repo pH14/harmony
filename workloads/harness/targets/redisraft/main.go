@@ -63,7 +63,7 @@ func definite(err error) bool {
 // answers with -MOVED and the leader's address; the client follows one
 // redirect.
 func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	addr := nodes[sdk.Below(uint64(len(nodes)))]
+	addr := nodes[sdk.Below("redisraft.server", uint64(len(nodes)))]
 	switch op.F {
 	case family.RegisterWrite:
 		_, err := call(ctx, addr, "SET", op.K, op.V.(string))

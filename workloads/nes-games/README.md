@@ -170,8 +170,18 @@ work RAM, so a terminal stop runs its chord once. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
 the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it
-covers when the workload keeps records. A snapshot holds the `NesObservation`
-and the accumulator alone. A goal frame is a terminal objective, and a rejected
+covers when the workload keeps records. The cost is serialized with the
+observation, so a browser worker's job outcome carries it; the records are not.
+The serialized cost is part of each job's `result_sha256`, and so of
+`stream_sha256`. A binary built before the cost was serialized gives other
+values of both for the same decisions, so a comparison against such a binary
+reads `decision_stream_sha256`, `decision_stream_records`, executions and
+frames emulated, never `stream_sha256`.
+`NesWorkload`'s `action_cost` sums the observations' costs, so the archive and
+the records file charge an action the frames it ran. An action a stop cuts
+short costs the frames up to the stop, while its planned cost
+(`planned_cost_fn`, the chord's hold) counts the whole hold. A snapshot holds
+the `NesObservation` and the accumulator alone. A goal frame is a terminal objective, and a rejected
 frame is a doomed terminal. Named progress reports each `sometimes`
 declaration by name with its first execution. The strategy's policy identifier
 is part of the recorded workload policies, and `with_strategy` builds the same
@@ -196,8 +206,8 @@ An action also stops at the first frame whose state declares a forced move.
 The target plays the move to its end inside that action and reports the
 arrival state as the action's last observation. The move's chords are absent
 from the tape: replay and films rebuild them from the state. Its frames count
-as execution work, in the frame count and in the action's cost in the records
-file, but not in the archive's action cost, which sums the tape's chords. A move that runs past its bound ends the
+as execution work, in the frame count and in the action's cost, which the
+records file and the archive both charge. A move that runs past its bound ends the
 action as a doomed terminal and reports the `always` violation
 `forced_move_within_bound` with the job's input, under `violations` in the
 archive report and the diagnostics, so the input and the run's identity
@@ -249,9 +259,9 @@ move chord that names an offered move of this site plays that move, an ordinary
 chord plays the chord option when one is offered, and anything else plays the
 default. So at an offer of moves only, a chord or a move chord for an unoffered
 label, as after shrink, plays the default and is stored as the default's move
-chord; a supplied tape keeps the chord, and the target costs it as the move it
-plays (`played_time`, which the workload's `shrink_cost` reads for an action
-that plays a move only). At an offer beside chords, a move chord for an
+chord; a supplied tape keeps the chord, and the target records the frames of
+the move it plays as the action's cost, which `action_cost` and the default
+`shrink_cost` read. At an offer beside chords, a move chord for an
 unoffered label plays as where no offer stands: a job resolves it as a chord,
 and the target, which has no chooser, presses it as it is. A move chord where
 no offer stands, as when a table or splice copies one, is resolved as a chord.
@@ -260,15 +270,17 @@ state that counts frames, such as Lucky Draw's `menu_wait`, ends a film where
 it ends the run. `action_choices` reports a move chord's answer, so a job's
 first ask at that site can hold its parent's last answer.
 
-A move chord costs the archive the frames its answer plays before any forced
-move it leads to, as the game's `Game::answer_frames` gives them (one unless
-the game says otherwise): Lucky Draw's idle wait costs its frames and its start
-the press and the start wait, the level being a forced move. Two routes that
-wait the same frames cost the same, so the older entry keeps its cell. The cost
-is fixed per label: a move whose frames depend on the state, such as a weapon
-switch that walks a menu, costs the archive its label's `answer_frames`
-whatever it ran, while the records file carries the frames it ran. Costing the
-archive from the record is later work. The records header's catalog names the
+A move chord's planned cost (`chord_time`) is the frames its answer plays
+before any forced move it leads to, as the game's `Game::answer_frames` gives
+them (one unless the game says otherwise): Lucky Draw's idle wait plans its
+frames and its start the press and the start wait, the level being a forced
+move. The planned cost is fixed per label, so a move whose frames depend on
+the state, such as a weapon switch that walks a menu, plans its label's
+`answer_frames` whatever it runs. The archive and the shrink objective charge
+the recorded cost instead, every frame the move and the forced moves after it
+play, so Lucky Draw's start also costs its level and the weapon switch the
+frames it ran. Two routes that wait the same frames cost the same, so the
+older entry keeps its cell. The records header's catalog names the
 chord sites and the game's move sites with their declared rates
 (`Lowered::records_catalog`), and `nes-rekey` checks records against it.
 

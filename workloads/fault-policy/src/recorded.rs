@@ -36,7 +36,7 @@ pub enum EnvSpec {
 }
 
 impl EnvSpec {
-    pub const BLOB_VERSION: u16 = 7;
+    pub const BLOB_VERSION: u16 = 8;
 
     pub fn seed(&self) -> u64 {
         match self {
@@ -396,11 +396,18 @@ impl RecordedEnv {
     }
 }
 
+impl RecordedEnv {
+    #[must_use]
+    pub fn recorded(&self, point: &DecisionPoint) -> Option<&Answer> {
+        self.overrides
+            .get(&self.moment)
+            .filter(|answer| point.admits(answer))
+    }
+}
+
 impl Environment for RecordedEnv {
     fn decide(&mut self, point: &DecisionPoint) -> Outcome {
-        if let Some(ans) = self.overrides.get(&self.moment)
-            && point.admits(ans)
-        {
+        if let Some(ans) = self.recorded(point) {
             return Outcome::Resolved(ans.clone());
         }
         Outcome::Resolved(self.base.answer(point))

@@ -4,6 +4,7 @@ use super::runs::Manifest;
 use crate::{config::Result, runs::Destination};
 use faults_workload::{
     FaultAction,
+    guest::GuestAnswer,
     package::{self, ReplaySummary, Report, StateHashEncoding},
 };
 use std::fs;
@@ -62,7 +63,47 @@ pub(super) fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bo
     expected.state_hash_encoding != StateHashEncoding::Unavailable
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash
-        && expected.state_hash_encoding == actual.state_hash_encoding
+        && same_end_evidence(expected, actual)
+}
+
+pub(super) fn repeat_disagreement(replays: &[ReplaySummary]) -> Option<String> {
+    let (first, rest) = replays.split_first()?;
+    let identity = first.state_hash_encoding != StateHashEncoding::Unavailable;
+    let differing: Vec<&ReplaySummary> = rest
+        .iter()
+        .filter(|repeat| {
+            if identity {
+                !equivalent(first, repeat)
+            } else {
+                !same_end_evidence(first, repeat)
+            }
+        })
+        .collect();
+    if differing.is_empty() {
+        return None;
+    }
+    let ending = |repeat: &ReplaySummary| {
+        if repeat.state_hash.is_empty() {
+            format!("repeat {} (state digest unavailable)", repeat.run)
+        } else {
+            format!("repeat {} at {}", repeat.run, repeat.state_hash)
+        }
+    };
+    let mut message = format!(
+        "{} of {} repeats ended differently from the first: {}",
+        differing.len(),
+        replays.len(),
+        ending(first)
+    );
+    for repeat in differing {
+        message.push_str("; ");
+        message.push_str(&ending(repeat));
+    }
+    Some(message)
+}
+
+fn same_end_evidence(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
+    expected.state_hash_encoding == actual.state_hash_encoding
         && expected.bug == actual.bug
         && expected.stop == actual.stop
         && expected.violations == actual.violations
@@ -211,6 +252,17 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
     branch_saved(request, saved)
 }
 
+fn shifted_answers(answers: &[GuestAnswer], cut: usize, offset: usize) -> Vec<GuestAnswer> {
+    answers
+        .iter()
+        .filter(|answer| answer.step > cut as u64)
+        .map(|answer| GuestAnswer {
+            step: answer.step - cut as u64 + offset as u64,
+            ..*answer
+        })
+        .collect()
+}
+
 pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
     let source = saved.path;
@@ -245,26 +297,29 @@ pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved
         return Err("guest script exceeds 1 MiB".into());
     }
     let mut continuation = Vec::new();
+    let mut answers = Vec::new();
     if let Some(path) = request.actions {
-        continuation
-            .extend(faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?.actions);
+        let recorded = faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?;
+        continuation.extend(recorded.actions);
+        answers.extend(recorded.answers);
     }
     let stop = request.stop || request.shell;
     if !stop {
+        answers.extend(shifted_answers(&original.answers, cut, continuation.len()));
         continuation.extend_from_slice(&actions[cut..]);
     }
     let out = request.destination.create()?;
     let mut manifest = original.inherit(&source, &out, "branch")?;
     manifest.actions = continuation;
+    manifest.answers = answers;
     manifest.settle = !stop;
     manifest.save(&out)?;
     println!("branch point: after action {cut}");
     let result = (|| -> Result<u8> {
-        let mut target = package::prepare_debug(
-            &manifest.fault_artifacts(&out)?,
-            &actions[..cut],
-            &manifest.options(&out)?,
-        )?;
+        let mut prefix = manifest.options(&out)?;
+        prefix.answers.clone_from(&original.answers);
+        let mut target =
+            package::prepare_debug(&manifest.fault_artifacts(&out)?, &actions[..cut], &prefix)?;
         if let Some(script) = &script {
             manifest.store(&out, "debug-script.sh", script)?;
         }
@@ -592,6 +647,25 @@ mod tests {
     use std::num::NonZeroU16;
 
     #[test]
+    fn a_branch_moves_the_answers_after_its_cut_behind_its_new_actions() {
+        let answer = |step, choice| GuestAnswer {
+            step,
+            choice,
+            label: Some(1),
+        };
+        let original = [answer(2, 0), answer(3, 4), answer(5, 1)];
+        assert_eq!(
+            shifted_answers(&original, 2, 0),
+            vec![answer(1, 4), answer(3, 1)]
+        );
+        assert_eq!(
+            shifted_answers(&original, 2, 3),
+            vec![answer(4, 4), answer(6, 1)]
+        );
+        assert!(shifted_answers(&original, 5, 1).is_empty());
+    }
+
+    #[test]
     fn undecided_keys_show_only_when_a_check_left_keys_undecided() {
         let line = undecided_line(&serde_json::json!({"executions": 2, "keys": 5}));
         assert_eq!(
@@ -616,6 +690,7 @@ mod tests {
             observation: FaultObservations::default(),
             console: "ready".into(),
             settlement: false,
+            choices: 0,
         }];
         let mut actual = expected.clone();
         actual.timeline[0].console = "different output".into();
@@ -627,6 +702,62 @@ mod tests {
         actual.run = 2;
         actual.guest_horizons = 1;
         assert!(equivalent(&expected, &actual));
+    }
+
+    fn repeats(digests: &[Option<[u8; 32]>]) -> Vec<ReplaySummary> {
+        use faults_workload::target::FaultObservations;
+        digests
+            .iter()
+            .enumerate()
+            .map(|(index, digest)| {
+                let mut summary =
+                    ReplaySummary::from_observation(&FaultObservations::default(), *digest, 0, 0);
+                summary.run = (index + 1) as u32;
+                summary.guest_horizons = index as u64;
+                summary
+            })
+            .collect()
+    }
+
+    #[test]
+    fn agreeing_repeats_pass() {
+        assert_eq!(repeat_disagreement(&[]), None);
+        assert_eq!(repeat_disagreement(&repeats(&[Some([7; 32])])), None);
+        assert_eq!(
+            repeat_disagreement(&repeats(&[Some([7; 32]), Some([7; 32]), Some([7; 32])])),
+            None
+        );
+    }
+
+    #[test]
+    fn differing_repeat_digests_name_each_repeat_and_digest() {
+        let replays = repeats(&[Some([7; 32]), Some([7; 32]), Some([8; 32]), Some([9; 32])]);
+        let message = repeat_disagreement(&replays).expect("digests differ");
+        assert!(message.starts_with("2 of 4 repeats ended differently from the first"));
+        assert!(message.contains(&format!("repeat 1 at {}", replays[0].state_hash)));
+        assert!(message.contains(&format!("repeat 3 at {}", replays[2].state_hash)));
+        assert!(message.contains(&format!("repeat 4 at {}", replays[3].state_hash)));
+        assert!(!message.contains("repeat 2 "));
+    }
+
+    #[test]
+    fn differing_repeat_evidence_fails_with_equal_digests() {
+        let mut replays = repeats(&[Some([7; 32]), Some([7; 32])]);
+        replays[1].violations = vec!["linearizable".into()];
+        let message = repeat_disagreement(&replays).expect("evidence differs");
+        assert!(message.contains("repeat 2 at"), "{message}");
+    }
+
+    #[test]
+    fn unavailable_identity_compares_the_remaining_evidence() {
+        let mut replays = repeats(&[None, None]);
+        assert_eq!(repeat_disagreement(&replays), None);
+        replays[1].actions_applied = 3;
+        let message = repeat_disagreement(&replays).expect("evidence differs");
+        assert!(
+            message.contains("repeat 2 (state digest unavailable)"),
+            "{message}"
+        );
     }
 
     fn saved_replay_record(path: &std::path::Path, digests: &[Option<[u8; 32]>], status: &str) {
@@ -643,6 +774,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "replay",
@@ -785,6 +917,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "search",
@@ -863,6 +996,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "search",
@@ -966,6 +1100,7 @@ mod tests {
                 },
                 console: String::new(),
                 settlement: step > 1,
+                choices: 0,
             })
             .collect();
         let (actions, boundaries, anchor) = trajectory(&replay, true);

@@ -212,6 +212,7 @@ impl Admissions {
                     parent,
                     self.execution,
                     ArchiveCandidate {
+                        cost: suffix.iter().map(|chord| u64::from(chord.hold)).sum(),
                         suffix,
                         key,
                         milestones: (),
@@ -336,7 +337,7 @@ fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool, shared: bool) {
         next: 0,
         execution: 0,
     };
-    let mut archive = LevelArchive::new(|chord| u64::from(chord.hold));
+    let mut archive = LevelArchive::new();
     archive.set_memory_budget(usize::MAX, snapshot_charge);
     if shared {
         archive.set_snapshot_shared_allocations(shared_history);

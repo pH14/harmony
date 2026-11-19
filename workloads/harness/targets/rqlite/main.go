@@ -100,7 +100,7 @@ func (a adapter) Connect(_ context.Context, _ int) (runner.Client, error) {
 	if a.forward {
 		return forwardClient{}, nil
 	}
-	return newClient(nodes[sdk.Below(uint64(len(nodes)))]), nil
+	return newClient(nodes[sdk.Below("rqlite.connect", uint64(len(nodes)))]), nil
 }
 
 type forwardClient struct{}
@@ -108,7 +108,7 @@ type forwardClient struct{}
 func (forwardClient) Close() {}
 
 func (forwardClient) Invoke(ctx context.Context, op family.Op) (any, error) {
-	c := newClient(nodes[sdk.Below(uint64(len(nodes)))])
+	c := newClient(nodes[sdk.Below("rqlite.forward", uint64(len(nodes)))])
 	c.forward = true
 	defer c.Close()
 	switch op.F {
@@ -141,7 +141,7 @@ func pinnedClient(ctx context.Context, node string) (*client, error) {
 	if at < 0 {
 		return nil, fmt.Errorf("unknown node %q", node)
 	}
-	leader := newClient(nodes[sdk.Below(uint64(len(nodes)))])
+	leader := newClient(nodes[sdk.Below("rqlite.fence", uint64(len(nodes)))])
 	defer leader.Close()
 	resp, status, err := leader.post(ctx, "/db/execute?raft_index", [][]any{{fenceSQL}})
 	if err != nil {

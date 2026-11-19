@@ -3,6 +3,9 @@ ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889
 ARG GO_IMAGE=golang:1.27-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
 
 ARG HARMONY_RUNTIME_IMAGE=harmony-language-runtime:local
+ARG TARGETARCH
+FROM ${HARMONY_RUNTIME_IMAGE} AS voidstar
+
 FROM ${GO_IMAGE} AS harness-build
 
 ARG TARGETARCH
@@ -21,13 +24,15 @@ COPY workloads/harness/targets/rqlite/go.mod workloads/harness/targets/rqlite/go
 RUN (cd kit && go mod download) && (cd targets/rqlite && go mod download)
 COPY workloads/harness/kit kit
 COPY workloads/harness/targets/rqlite/main.go targets/rqlite/
+COPY workloads/harness/image/go-env.sh consonance/harmony-linux/linux/patches/go/ /build/harness-go/
 RUN mkdir -p /out \
+    && . /build/harness-go/go-env.sh \
     && (cd kit && go test -mod=readonly ./...) \
     && (cd targets/rqlite && go vet -mod=readonly ./... \
         && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           go build -mod=readonly -buildvcs=false -o /out/rqlite-harness .) \
+           go build -mod=readonly -buildvcs=false -ldflags="${HARNESS_GO_LDFLAGS}" -o /out/rqlite-harness .) \
     && (cd kit && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
-           go build -mod=readonly -buildvcs=false -o /out/harness-net ./cmd/harness-net) \
+           go build -mod=readonly -buildvcs=false -ldflags="${HARNESS_GO_LDFLAGS}" -o /out/harness-net ./cmd/harness-net) \
     && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/rqlite-harness \
     && test -x /out/rqlite-harness
 
@@ -74,6 +79,8 @@ COPY workloads/bugs/historical/etcd-3.5-inconsistency/image/patches/antithesis-s
      /build/antithesis-sdk-go-v0.8.0-linux-arm64.patch
 COPY workloads/languages/go/antithesis-go-toolexec-v0.8.0-stdlib.patch /build/stdlib.patch
 COPY workloads/languages/go/configure-instrumentation.sh /build/configure-instrumentation.sh
+COPY workloads/harness/image/go-env.sh consonance/harmony-linux/linux/patches/go/ /build/harness-go/
+COPY --from=voidstar /out/harness/musl /opt/harmony-musl
 
 RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "${sdk_cache_dir}" \
@@ -90,6 +97,7 @@ RUN sdk_cache_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-g
        /build/antithesis-sdk-go/internal/voidstar_handler.go
 
 RUN mkdir -p /out/rqlite /out/symbols /out/stdlib \
+    && . /build/harness-go/go-env.sh \
     && sdk_dir=/build/antithesis-sdk-go \
     && (cd /build/rqlite \
         && CGO_ENABLED=1 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
@@ -100,7 +108,7 @@ RUN mkdir -p /out/rqlite /out/symbols /out/stdlib \
            ANTITHESIS_SYMBOLS_DIR=/out/symbols \
            ANTITHESIS_SYMBOL_PREFIX=rqlited \
            go build -toolexec=antithesis-go-toolexec -buildvcs=false \
-             -ldflags="-X github.com/rqlite/rqlite/v10/cmd.Version=${RQLITE_VERSION}" \
+             -ldflags="-X github.com/rqlite/rqlite/v10/cmd.Version=${RQLITE_VERSION} ${HARNESS_GO_LDFLAGS}" \
              -o /out/rqlite/rqlited ./cmd/rqlited) \
     && test -x /out/rqlite/rqlited \
     && set -- /out/symbols/*.sym.tsv \
@@ -111,10 +119,7 @@ RUN mkdir -p /out/rqlite /out/symbols /out/stdlib \
     && cp /build/rqlite/LICENSE /out/RQLITE-LICENSE \
     && cp "${sdk_dir}/LICENSE" /out/ANTITHESIS-SDK-GO-LICENSE
 
-FROM ${HARMONY_RUNTIME_IMAGE} AS voidstar
-
-FROM ${DEBIAN_IMAGE}
-ARG RQLITE_VERSION=v10.6.2
+FROM ${DEBIAN_IMAGE} AS base-amd64
 SHELL ["/bin/sh", "-euxc"]
 # Image paths must stay distinct on case-insensitive hosts. The harness uses
 # none of the iptables extensions whose names differ only in case. OpenSSL
@@ -134,10 +139,16 @@ COPY workloads/languages/reviewed/bookworm-x86_64.txt /tmp/harmony-base-review
 RUN if [ "$(uname -m)" = x86_64 ]; then \
         mkdir -p /etc/harmony && cp /tmp/harmony-base-review /etc/harmony/instruction-allowlist; \
     fi && rm /tmp/harmony-base-review
+COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 
+FROM scratch AS base-arm64
+COPY --from=voidstar /out/harness/root/ /
+
+FROM base-${TARGETARCH}
+ARG RQLITE_VERSION=v10.6.2
+SHELL ["/bin/sh", "-euxc"]
 COPY --from=instrumented-build /out/rqlite/rqlited /opt/rqlite/rqlited
 COPY --from=harness-build /out/rqlite-harness /out/harness-net /opt/harmony/
-COPY --from=voidstar /out/libvoidstar.so /usr/lib/libvoidstar.so
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
 COPY --from=instrumented-build /out/stdlib /symbols/stdlib
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events

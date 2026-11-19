@@ -15,7 +15,7 @@ type Op struct {
 	V    any
 }
 
-type Draw func(n uint64) uint64
+type Draw func(site string, n uint64) uint64
 
 type Generator interface {
 	Next(draw Draw, value func() string) Op

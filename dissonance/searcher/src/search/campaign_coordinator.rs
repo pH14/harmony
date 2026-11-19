@@ -985,15 +985,15 @@ where
         let Some((mut spec, mut pending)) = selected else {
             return Ok(false);
         };
-        let action_cost = self.workload.action_cost_fn();
+        let planned_cost = self.workload.planned_cost_fn();
         self.profile.note_dispatch(
             &spec,
             matches!(pending.splice, Some(CampaignSpliceRecord::Tail { .. })),
-            action_cost,
+            planned_cost,
         );
         let reservation = usize::try_from(self.reserved.saturating_sub(1))?;
         spec.reservation = reservation;
-        pending.planned_finish = planned_finish(self.planned_clock, &spec, action_cost);
+        pending.planned_finish = planned_finish(self.planned_clock, &spec, planned_cost);
         spec.planned_finish = pending.planned_finish;
         let key = (pending.planned_finish, reservation);
         if self.pending.insert(reservation, pending).is_some() {
