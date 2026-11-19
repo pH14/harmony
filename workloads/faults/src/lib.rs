@@ -11,9 +11,11 @@ pub mod history;
 #[cfg(any(feature = "consonance", test))]
 #[cfg_attr(not(feature = "consonance"), allow(dead_code))]
 pub mod job_observation;
+pub mod key;
 pub mod package;
 pub mod prepare;
 pub mod report;
+pub mod shadow;
 pub mod target;
 
 #[cfg(all(

@@ -1032,14 +1032,52 @@ candidate's actions. Each `hang-N.json` and `failure-N.json` has the same
 `actions` and `standing` fields, so `harmony debug run --actions` and replay
 accept it as input.
 
-`FaultArchiveKey` has a place, a progress, and a holder identity. The place is
-the passed assertion set and every lifecycle count except liveness, plus two
+The archive key is a strategy key compiled by the searcher's assertion keys
+(`dissonance/searcher/src/search/assertion`). [`key.rs`](src/key.rs) declares
+18 values from each state's observations into a catalog, and the strategy
+[`faults.toml`](src/faults.toml) keys them. The declarations are:
+
+- `sometimes.count`, the number of Sometimes and Reachable assertions passed,
+  and `sometimes.set`, the top 62 bits of the digest of their sorted ids. SDK
+  catalog points and JSON assertions both arrive at run time, so the catalog
+  carries the passed set as these two aggregates rather than one value per
+  point.
+- `always.violated`, the number of violated assertions.
+- `alive` and `event.ready`, the node masks.
+- `edges`, the top 62 bits of the edge digest, and `edges.crossed`.
+- `ticks` and the lifecycle counters `hooks.started`, `hooks.finished`,
+  `checks.started`, `checks.finished`, `workload.started`,
+  `workload.finished`, `event.kill_fires`, `event.park_fires`,
+  `event.park_held` and `event.kill_armed`.
+
+The shipped strategy reproduces the hand-written `FaultArchiveKey` in
+[`archive.rs`](src/archive.rs). Its tier is the passed count. Its place is the
+passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
 event park on any node, and an event kill armed on any node. Liveness and the
-edge digest are the holder identity inside the place. The progress is the
-number of Sometimes and Reachable assertions the state has passed. The
-selector's tiers rank states by that count and draw most parents from the
-states that passed the most. Places inside a tier rank by their draw counts.
+edge digest are the holder identity inside the place. The place must fit 64
+bits and the identity 32, so the set digest keeps 36 bits and the edge digest
+24, and the shipped strategy fails to compile for a bundle of more than 8
+nodes. A strategy for a larger bundle drops or coarsens place lanes. The
+selector's tiers rank states by the passed count and draw most parents from
+the states that passed the most. Places inside a tier rank by their draw
+counts.
+
+The duration context is a function of the parent key alone, because replay
+validates the recorded context. It is read from the key's lanes named
+`hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
+`checks_finished`, `workload_running` and the identity lane `alive`; a
+strategy without one of them leaves that part of the context zero. A strategy
+with stages, a reject line or aggregates is refused, because the workload
+keeps no accumulator and draws its tier directly.
+
+`workload.options.key` in a search config chooses the key: `strategy` replaces
+the shipped strategy text, and `hand = true` searches with `FaultArchiveKey`
+and computes the strategy key beside it on every state. The hand run writes
+`shadow.json` to the output directory: the state count, the cell and slot
+counts under both keys, and the disagreements, which count states the
+strategy did not key, cells and slots that are not one to one, and progress,
+cell order and preference order that differ.
 
 The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
 needs Linux. The action model, the bundle

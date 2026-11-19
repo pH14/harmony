@@ -13,6 +13,7 @@ use searcher::search::{
     archive::{
         ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
     },
+    assertion::AssertionKey,
     draw_tables::DrawView,
     rand::RomuDuoJrRand,
 };
@@ -440,8 +441,8 @@ fn park_hold_us(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u32, Box<
 }
 
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
-pub type FaultArchiveEntryReport =
-    ArchiveEntryReport<FaultAction, FaultArchiveKey, FaultMilestones>;
+pub type FaultArchiveEntryReport<K = AssertionKey> =
+    ArchiveEntryReport<FaultAction, K, FaultMilestones>;
 pub type FaultInput = searcher::search::archive::Input<FaultAction>;
 
 pub const MAX_RECORDED_BUGS: usize = 64;
@@ -478,7 +479,8 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FaultArchiveReport {
+#[serde(bound = "K: ArchiveKey")]
+pub struct FaultArchiveReport<K: ArchiveKey = AssertionKey> {
     pub seed: u64,
     pub root_seal: u64,
     pub executions: u64,
@@ -486,7 +488,7 @@ pub struct FaultArchiveReport {
     pub progress_watermark: FaultProgressWatermark,
     pub champion_input: FaultInput,
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<FaultArchiveEntryReport>,
+    pub entries: Vec<FaultArchiveEntryReport<K>>,
     pub progress_curve: Vec<FaultProgressPoint>,
     pub retained: u64,
     pub rejected: u64,

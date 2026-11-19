@@ -21,6 +21,7 @@ pub struct Options {
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
     pub boot_cache: Option<PathBuf>,
+    pub key: crate::key::KeyRequest,
     pub answers: Vec<GuestAnswer>,
 }
 
@@ -424,12 +425,16 @@ mod live {
         Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
         StateHashEncoding, first_confirmed_bug, replay_confirms_bug, replay_needs_settle,
     };
+    use searcher::search::assertion::AssertionKey;
+
     use crate::{
+        archive::FaultArchiveKey,
         bundle::FaultVocabulary,
         campaign::{
             FaultCampaignConfig, FaultCampaignRun, FaultWorkload, run_fault_campaign_with_plan,
         },
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
+        key::{FaultKey, FaultKeys},
         report::{
             BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
             write_hang_reports,
@@ -543,6 +548,43 @@ mod live {
         start: &super::SearchStart,
         interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
+        let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
+        if options.key.hand {
+            search_keyed::<FaultArchiveKey>(
+                artifacts,
+                vocabulary,
+                options,
+                resources,
+                session_worker,
+                start,
+                interrupt,
+                keys,
+            )
+        } else {
+            search_keyed::<AssertionKey>(
+                artifacts,
+                vocabulary,
+                options,
+                resources,
+                session_worker,
+                start,
+                interrupt,
+                keys,
+            )
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_keyed<K: FaultKey>(
+        artifacts: &Artifacts,
+        vocabulary: &FaultVocabulary,
+        options: &Options,
+        resources: &Resources,
+        session_worker: Option<WorkerLauncher>,
+        start: &super::SearchStart,
+        interrupt: Option<&'static std::sync::atomic::AtomicBool>,
+        keys: FaultKeys,
+    ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
@@ -559,9 +601,14 @@ mod live {
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+        let game = FaultWorkload::<K>::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
+        let game = if options.key.hand {
+            game.with_shadow()
+        } else {
+            game
+        };
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),
@@ -639,6 +686,12 @@ mod live {
             options,
             game.image_identity(),
         )?;
+        if let Some(shadow) = game.shadow_report() {
+            std::fs::write(
+                options.output.join("shadow.json"),
+                serde_json::to_vec_pretty(&shadow?)?,
+            )?;
+        }
         let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
             root_seal: archive.root_seal,
@@ -890,8 +943,14 @@ mod live {
         let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(memory.budget));
-        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
-            .with_snapshot_cache(Some(Arc::clone(&cache)));
+        let keys = FaultKeys::new(options.key.strategy(), run.vocabulary.nodes())?;
+        let workload = FaultWorkload::<AssertionKey>::new(
+            &artifacts.kernel,
+            &artifacts.initramfs,
+            &config,
+            keys,
+        )?
+        .with_snapshot_cache(Some(Arc::clone(&cache)));
         let workers = memory.workers;
         let mut settings = ShrinkConfig::new(run, options.seed);
         settings.workers = workers;
@@ -1314,6 +1373,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: crate::key::KeyRequest::default(),
             answers: Vec::new(),
         }
     }

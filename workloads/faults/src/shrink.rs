@@ -39,7 +39,7 @@ pub fn settle_tail(last: Option<&FaultAction>) -> Vec<FaultAction> {
         .collect()
 }
 
-impl ShrinkPolicy for FaultWorkload {}
+impl<K: crate::key::FaultKey> ShrinkPolicy for FaultWorkload<K> {}
 
 #[cfg(test)]
 mod tests {
