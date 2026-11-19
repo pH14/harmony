@@ -694,8 +694,9 @@ in its last slot, and it is 1 on the root state and on the last frame of each
 action as recorded, the frame whose state the target keeps, and 0 on every
 other frame. `Compiled::observe_ending` decides the flag and returns it with
 the observation. A frame ends the action when the caller says so (the last
-frame of the action's input, a cut at an offer, the last step of a move that no
-forced move follows in the same action) or when its observation with 0 reaches
+frame of the action's input or a cut at an offer, when no forced move departs
+from that frame, or the last step of a move that no forced move follows in the
+same action) or when its observation with 0 reaches
 a goal or a rejection; such a frame is observed again with 1 from the
 accumulator before it, and stays the action's end even when that second
 observation no longer stops, as an ordinary kept state. A strategy that does
