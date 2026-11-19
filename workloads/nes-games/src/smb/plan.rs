@@ -49,6 +49,7 @@ pub enum SmbRoute {
     #[default]
     AllLevels,
     Warps,
+    WarpsWithoutVine,
 }
 
 impl SmbRoute {
@@ -57,11 +58,12 @@ impl SmbRoute {
         match self {
             Self::AllLevels => "all_levels",
             Self::Warps => "warps_1_2_to_4_vine_area_4_2_to_8",
+            Self::WarpsWithoutVine => "warps_1_2_to_4_2_to_8_without_a_vine_stage",
         }
     }
 
     pub fn from_identifier(identifier: &str) -> Result<Self, String> {
-        [Self::AllLevels, Self::Warps]
+        [Self::AllLevels, Self::Warps, Self::WarpsWithoutVine]
             .into_iter()
             .find(|route| route.identifier() == identifier)
             .ok_or_else(|| format!("unknown Super Mario Bros. route {identifier}"))
@@ -72,6 +74,7 @@ impl SmbRoute {
         match self {
             Self::AllLevels => ALL_LEVELS,
             Self::Warps => WARPS,
+            Self::WarpsWithoutVine => WARPS_WITHOUT_VINE,
         }
     }
 
@@ -89,7 +92,7 @@ impl SmbRoute {
     pub fn omits(self, world: u8, level: u8) -> bool {
         match self {
             Self::AllLevels => false,
-            Self::Warps => !ROUTE_LEVELS.contains(&(world, level)),
+            Self::Warps | Self::WarpsWithoutVine => !ROUTE_LEVELS.contains(&(world, level)),
         }
     }
 
@@ -100,6 +103,9 @@ impl SmbRoute {
             Self::Warps => {
                 self.omits(wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET])
                     || vine_out_of_reach(wram)
+            }
+            Self::WarpsWithoutVine => {
+                self.omits(wram[WORLD_NUMBER_OFFSET], wram[LEVEL_NUMBER_OFFSET])
             }
         }
     }
@@ -188,6 +194,25 @@ const WARPS: &[Stage] = &[
     stage("1-2 pipe to 4-1", 0, 1, Goal::Pipe),
     stage("4-1", 3, 0, Goal::Level),
     stage("4-2 to the vine", 3, 1, Goal::Vine),
+    stage("4-2 to the warp zone", 3, 1, Goal::WarpZone(VINE_WARP_ZONE)),
+    stage("4-2 pipe to 8-1", 3, 1, Goal::Pipe),
+    stage("8-1", 7, 0, Goal::Level),
+    stage("8-2", 7, 1, Goal::Level),
+    stage("8-3", 7, 2, Goal::Level),
+    stage("8-4", 7, 3, Goal::Victory),
+    stage("ending", 7, 3, Goal::Ending),
+];
+
+const WARPS_WITHOUT_VINE: &[Stage] = &[
+    stage("1-1", 0, 0, Goal::Level),
+    stage(
+        "1-2 to the warp zone",
+        0,
+        1,
+        Goal::WarpZone(FIRST_WARP_ZONE),
+    ),
+    stage("1-2 pipe to 4-1", 0, 1, Goal::Pipe),
+    stage("4-1", 3, 0, Goal::Level),
     stage("4-2 to the warp zone", 3, 1, Goal::WarpZone(VINE_WARP_ZONE)),
     stage("4-2 pipe to 8-1", 3, 1, Goal::Pipe),
     stage("8-1", 7, 0, Goal::Level),
@@ -466,5 +491,36 @@ mod tests {
         let mut five_one = [0_u8; WRAM_SIZE];
         five_one[WORLD_NUMBER_OFFSET] = 4;
         assert!(SmbRoute::Warps.is_doomed(&five_one));
+    }
+
+    #[test]
+    fn the_route_without_a_vine_stage_climbs_4_2_by_band_to_the_vine_warp_zone() {
+        let route = SmbRoute::WarpsWithoutVine;
+        assert_eq!(
+            SmbRoute::from_identifier(route.identifier()),
+            Ok(SmbRoute::WarpsWithoutVine)
+        );
+        assert_eq!(route.plan().len(), SmbRoute::Warps.plan().len() - 1);
+        assert!(route.plan().iter().all(|stage| stage.goal != Goal::Vine));
+        let steps = PlanState {
+            vine: 3,
+            ..state(3, 1, 9)
+        };
+        assert_eq!(route.locate(&steps), (4, 9));
+        let end_of_level = PlanState {
+            warp_zone: VINE_WARP_ZONE - 1,
+            ..state(3, 1, 40)
+        };
+        assert_eq!(route.locate(&end_of_level), (4, 40));
+        let vine_zone = PlanState {
+            warp_zone: VINE_WARP_ZONE,
+            ..state(3, 1, 2)
+        };
+        assert_eq!(route.locate(&vine_zone), (5, 0));
+        assert_eq!(route.stage_name(5), "4-2 pipe to 8-1");
+        assert!(!route.is_doomed(&four_two_at(1041, 1100)));
+        let mut five_one = [0_u8; WRAM_SIZE];
+        five_one[WORLD_NUMBER_OFFSET] = 4;
+        assert!(route.is_doomed(&five_one));
     }
 }

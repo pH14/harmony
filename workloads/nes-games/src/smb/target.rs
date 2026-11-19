@@ -42,6 +42,8 @@ pub struct SmbObservations {
     pub milestones: SmbMilestones,
     #[serde(default)]
     pub dead: bool,
+    #[serde(skip)]
+    pub coverage: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -93,6 +95,7 @@ impl SnapshotObservation {
             decoded: self.decoded,
             milestones: self.milestones,
             dead: self.dead,
+            coverage: Vec::new(),
         }
     }
 }
@@ -166,6 +169,13 @@ where
     boot_frames: u64,
     last_frames: u64,
     last_level_frames: u64,
+    coverage: Option<CoverageIds>,
+}
+
+#[derive(Debug, Default)]
+struct CoverageIds {
+    drained: Vec<u64>,
+    hit: Vec<u64>,
 }
 
 impl<M, P> SmbTarget<M, P>
@@ -213,6 +223,7 @@ where
             decoded: smb_mechanical_state_from_wram(&wram),
             milestones: smb_milestones_from_wram(&wram),
             dead: false,
+            coverage: Vec::new(),
         };
         Ok(Self {
             machine,
@@ -228,6 +239,7 @@ where
             boot_frames,
             last_frames: 0,
             last_level_frames: 0,
+            coverage: None,
         })
     }
 
@@ -254,6 +266,59 @@ where
         self.last_frames = 0;
         self.last_level_frames = 0;
         Ok(())
+    }
+
+    pub fn record_coverage(&mut self) -> Result<(), MachineError> {
+        if !self.machine.has_coverage() {
+            return Err(MachineError::Backend(
+                "coverage needs a QuickNES core built with HARMONY_QUICKNES_COVERAGE".to_owned(),
+            ));
+        }
+        self.coverage = Some(CoverageIds::default());
+        self.drain_coverage(false);
+        if self.failed {
+            return Err(MachineError::Backend(
+                "the NES core failed to report coverage".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn drain_coverage(&mut self, keep: bool) {
+        let Some(coverage) = self.coverage.as_mut() else {
+            return;
+        };
+        if self.machine.take_coverage(&mut coverage.drained).is_err() {
+            self.failed = true;
+            return;
+        }
+        if keep {
+            coverage.hit.extend_from_slice(&coverage.drained);
+        }
+    }
+
+    fn collect_coverage(&mut self) {
+        if self.coverage.is_none() {
+            return;
+        }
+        if self.stopped_at.is_some() {
+            self.drain_coverage(false);
+            if !self.rerun_to_stop() {
+                return;
+            }
+        }
+        self.drain_coverage(true);
+    }
+
+    fn attach_coverage(&mut self) {
+        let Some(coverage) = self.coverage.as_mut() else {
+            return;
+        };
+        coverage.hit.sort_unstable();
+        coverage.hit.dedup();
+        if let Some(endpoint) = self.action_observations.last_mut() {
+            endpoint.coverage.clone_from(&coverage.hit);
+        }
     }
 
     #[must_use]
@@ -334,6 +399,7 @@ where
         } else {
             let _ = self.machine.drop_snapshot(start);
         }
+        self.collect_coverage();
         self.execution_work = self.execution_work.saturating_add(executed_frames);
         self.last_frames = self.last_frames.saturating_add(executed_frames);
         self.last_level_frames = self.last_level_frames.saturating_add(level_frames);
@@ -503,6 +569,7 @@ fn observation_from(wram: &[u8; WRAM_SIZE], frame_count: u64, dead: bool) -> Smb
         decoded: smb_mechanical_state_from_wram(wram),
         milestones: smb_milestones_from_wram(wram),
         dead,
+        coverage: Vec::new(),
     }
 }
 
@@ -539,11 +606,16 @@ where
         self.action_observations.clear();
         self.last_frames = 0;
         self.last_level_frames = 0;
+        if let Some(coverage) = self.coverage.as_mut() {
+            coverage.hit.clear();
+        }
+        self.drain_coverage(false);
         if self.failed || self.dead || self.is_victory() {
             return;
         }
         if action.hold_frames != WAIT_FOR_CONTROL_HOLD {
             self.run_chord(*action, false);
+            self.attach_coverage();
             return;
         }
         while self.last_frames < WAIT_FOR_CONTROL_FRAMES
@@ -559,6 +631,7 @@ where
         if self.action_observations.is_empty() {
             self.action_observations.push(self.observation.clone());
         }
+        self.attach_coverage();
     }
 
     fn observe(&self) -> Self::Observations {

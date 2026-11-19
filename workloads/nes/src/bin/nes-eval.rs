@@ -99,6 +99,7 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.metroid_terminal.is_some()
         || request.smb_route.is_some()
         || request.smb_terminal.is_some()
+        || request.smb_coverage_cap.is_some()
         || request.minimize
         || request.resume.is_some()
         || request.resume_states.is_some()
@@ -200,9 +201,15 @@ fn main() -> Result<()> {
         if request.live.is_some() {
             return live(&request, &rom, &out, started);
         }
-        if (request.smb_route.is_some() || request.smb_terminal.is_some()) && request.game != "smb"
+        if (request.smb_route.is_some()
+            || request.smb_terminal.is_some()
+            || request.smb_coverage_cap.is_some())
+            && request.game != "smb"
         {
-            return Err("only Super Mario Bros. takes smb_route and smb_terminal options".into());
+            return Err(
+                "only Super Mario Bros. takes smb_route, smb_terminal and smb_coverage_cap options"
+                    .into(),
+            );
         }
         match request.game.as_str() {
             "smb" | "metroid"
@@ -245,21 +252,27 @@ fn main() -> Result<()> {
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
             "smb" => evaluate_watching(
-                SmbGame::new(&rom, p, h, &execution_sha256)
-                    .with_root(
-                        root_actions::<nes_games::smb::target::SmbInput>(
-                            request.root_input.as_deref(),
-                        )?
-                        .unwrap_or_default(),
-                    )
-                    .with_route(
-                        request
-                            .smb_route
-                            .as_deref()
-                            .map(SmbRoute::from_identifier)
-                            .transpose()?
+                {
+                    let game = SmbGame::new(&rom, p, h, &execution_sha256)
+                        .with_root(
+                            root_actions::<nes_games::smb::target::SmbInput>(
+                                request.root_input.as_deref(),
+                            )?
                             .unwrap_or_default(),
-                    ),
+                        )
+                        .with_route(
+                            request
+                                .smb_route
+                                .as_deref()
+                                .map(SmbRoute::from_identifier)
+                                .transpose()?
+                                .unwrap_or_default(),
+                        );
+                    match request.smb_coverage_cap {
+                        Some(cap) => game.with_coverage(cap),
+                        None => game,
+                    }
+                },
                 SmbCampaignRun {
                     vocabulary: Default::default(),
                     terminal: Some(

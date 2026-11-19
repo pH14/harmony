@@ -92,6 +92,17 @@ where
 
     fn keep_run_capture(&mut self, _frames: usize) {}
 
+    fn has_coverage(&self) -> bool {
+        false
+    }
+
+    fn take_coverage(&mut self, ids: &mut Vec<u64>) -> Result<(), MachineError> {
+        ids.clear();
+        Err(MachineError::Backend(
+            "this NES backend does not report coverage".to_owned(),
+        ))
+    }
+
     fn capture_nes(&mut self, base: Option<&P>) -> Result<P, MachineError> {
         let snapshot = self.snapshot()?;
         let exported = self.export_nes(snapshot, base);
@@ -177,6 +188,14 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
 
     fn keep_run_capture(&mut self, frames: usize) {
         QuickNesMachine::keep_run_capture(self, frames);
+    }
+
+    fn has_coverage(&self) -> bool {
+        QuickNesMachine::has_coverage(self)
+    }
+
+    fn take_coverage(&mut self, ids: &mut Vec<u64>) -> Result<(), MachineError> {
+        QuickNesMachine::take_coverage(self, ids)
     }
 
     fn capture_nes(&mut self, _base: Option<&Vec<u8>>) -> Result<Vec<u8>, MachineError> {

@@ -357,6 +357,7 @@ mod tests {
                 },
                 milestones,
                 dead: false,
+                coverage: Vec::new(),
             }],
             milestones,
             outcome: Outcome::default(),
@@ -463,6 +464,49 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert_eq!(evidence.champion_milestones, reigning);
         }
+    }
+
+    #[test]
+    fn action_evidence_counts_the_first_job_and_the_actions_at_each_vine_step() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut evidence = super::SmbCampaignEvidence::default();
+        let mut vine_area = evidence_action(SmbMilestones::default());
+        let mut wram = vec![0_u8; 2_048];
+        wram[0x075f] = 3;
+        wram[0x075c] = 1;
+        wram[0x074e] = 1;
+        wram[0x074f] = 15;
+        vine_area.observations[0].wram = wram;
+        let elsewhere = evidence_action(SmbMilestones::default());
+        for (action, sequence) in [(&elsewhere, 10), (&vine_area, 11), (&vine_area, 12)] {
+            game.merge_action_evidence(&mut evidence, action, sequence, || {
+                Ok(SmbInput {
+                    actions: Vec::new(),
+                })
+            })
+            .expect("merge vine evidence");
+        }
+        assert_eq!(
+            evidence.vine_steps,
+            std::collections::BTreeMap::from([(
+                8,
+                super::SmbVineStepReach {
+                    first_job: 11,
+                    actions: 2,
+                },
+            )])
+        );
+        assert_eq!(
+            <SmbGame as crate::search::campaign::Reporting>::diagnostics(&evidence),
+            Some(serde_json::json!({"vine_steps": {"8": {"first_job": 11, "actions": 2}}}))
+        );
+        assert_eq!(
+            <SmbGame as crate::search::campaign::Reporting>::diagnostics(
+                &super::SmbCampaignEvidence::default()
+            ),
+            None
+        );
     }
 
     #[test]
@@ -619,6 +663,24 @@ mod tests {
         assert!(!stage.reached(&target).expect("next stage without control"));
         target.poke_wram(0x000e, 8).unwrap();
         assert!(stage.reached(&target).expect("next stage with control"));
+        let warp_zone = SmbTerminalPredicate::Stage {
+            route: SmbRoute::WarpsWithoutVine,
+            stage: 5,
+        };
+        target.poke_wram(0x075f, 3).unwrap();
+        target.poke_wram(0x075c, 2).unwrap();
+        assert!(
+            !warp_zone
+                .reached(&target)
+                .expect("off-route level after 4-2")
+        );
+        target.poke_wram(0x075f, 7).unwrap();
+        target.poke_wram(0x075c, 0).unwrap();
+        assert!(
+            warp_zone
+                .reached(&target)
+                .expect("on-route level after 4-2")
+        );
         assert_eq!(
             stage.identifier(),
             "stage:warps_1_2_to_4_vine_area_4_2_to_8:1"

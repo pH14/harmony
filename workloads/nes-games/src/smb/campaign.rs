@@ -29,7 +29,7 @@ use crate::{
         CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
         CampaignOrigin, CampaignProgressRecord, CampaignStreamRecord, CampaignTypes, Evaluation,
         InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-        postcard_semantic_result_sha256,
+        postcard_semantic_result_sha256, postcard_value_sha256,
     },
     search::cost::ShrinkCost,
     search::empirical_steps::EmpiricalStepCheckpoint,
@@ -41,7 +41,7 @@ use crate::{
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         stamp_arrival_room, stamp_arrival_room_identity, update_first_inputs,
     },
-    smb::plan::{Goal, SmbRoute},
+    smb::plan::{Goal, SmbRoute, vine_step},
     smb::shrink::{remaining_frames_bound, simpler_chords},
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
@@ -98,6 +98,7 @@ where
     checkpoint_format: &'static str,
     targets: SmbTargets<M, P>,
     route: SmbRoute,
+    coverage_cap: Option<u8>,
 }
 
 #[must_use]
@@ -125,6 +126,7 @@ where
             checkpoint_format,
             targets,
             route: SmbRoute::AllLevels,
+            coverage_cap: None,
         }
     }
 
@@ -163,13 +165,42 @@ where
         self.route
     }
 
+    #[must_use]
+    pub fn with_coverage(self, cap: u8) -> Self
+    where
+        M: 'static,
+        P: 'static,
+    {
+        let targets = self.targets;
+        Self {
+            targets: Box::new(move || {
+                let mut target = targets()?;
+                target
+                    .record_coverage()
+                    .map_err(|error| error.to_string())?;
+                Ok(target)
+            }),
+            coverage_cap: Some(cap),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn coverage_cap(&self) -> Option<u8> {
+        self.coverage_cap
+    }
+
     fn key_policy(&self) -> String {
-        key_policy_identifier(self.route)
+        key_policy_identifier(self.route, self.coverage_cap)
     }
 
     fn doomed_policy(&self) -> String {
         match self.route {
             SmbRoute::AllLevels => DOOMED_POLICY_IDENTIFIER.to_owned(),
+            SmbRoute::WarpsWithoutVine => format!(
+                "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}",
+                self.route.identifier()
+            ),
             route => format!(
                 "{DOOMED_POLICY_IDENTIFIER}_or_off_route_{}_or_vine_brick_left_of_screen_without_the_vine_and_its_area_pointer",
                 route.identifier()
@@ -283,6 +314,14 @@ pub struct SmbCampaignEvidence {
     pub first_inputs: SmbMilestoneInputs,
     pub champion_input: SmbInput,
     pub champion_milestones: SmbMilestones,
+    #[serde(default)]
+    pub vine_steps: std::collections::BTreeMap<u16, SmbVineStepReach>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SmbVineStepReach {
+    pub first_job: u64,
+    pub actions: u64,
 }
 
 pub type SmbCampaignOrigin<M, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
@@ -411,7 +450,9 @@ impl SmbTerminalPredicate {
             }
             Self::Stage { route, stage } => {
                 let wram = target.wram();
-                route_stage(route, &wram) >= stage && smb_player_has_control(&wram)
+                route_stage(route, &wram) >= stage
+                    && !route.is_doomed(&wram)
+                    && smb_player_has_control(&wram)
             }
         })
     }
@@ -509,6 +550,18 @@ where
     M: NesBackend<P>,
     P: SnapshotState,
 {
+    fn diagnostics(evidence: &Self::Evidence) -> Option<serde_json::Value> {
+        (!evidence.vine_steps.is_empty()).then(|| {
+            serde_json::json!({
+                "vine_steps": evidence
+                    .vine_steps
+                    .iter()
+                    .map(|(step, reach)| (step.to_string(), reach))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            })
+        })
+    }
+
     fn write_evidence_checkpoint(
         evidence: &Self::Evidence,
         out: &mut dyn std::io::Write,
@@ -535,7 +588,16 @@ where
         "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
-        postcard_semantic_result_sha256(result)
+        let semantic = postcard_semantic_result_sha256(result)?;
+        if self.coverage_cap.is_none() {
+            return Ok(semantic);
+        }
+        let coverage: Vec<&[u64]> = result
+            .actions
+            .iter()
+            .map(|action| self.action_coverage(action))
+            .collect();
+        postcard_value_sha256(&(semantic, coverage))
     }
 
     fn snapshot_identity_sha256(
@@ -799,6 +861,22 @@ where
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        let step = action
+            .observations
+            .iter()
+            .filter_map(|observation| {
+                <&[u8; WRAM_SIZE]>::try_from(observation.wram.as_slice()).ok()
+            })
+            .map(vine_step)
+            .max()
+            .unwrap_or(0);
+        if step > 0 {
+            let reach = evidence.vine_steps.entry(step).or_insert(SmbVineStepReach {
+                first_job: sequence,
+                actions: 0,
+            });
+            reach.actions = reach.actions.saturating_add(1);
+        }
         let first_input_needed = (action.milestones.max_1_1_scroll_bucket > 0
             && evidence.first_inputs.progress_into_1_1.is_none())
             || (action.milestones.reached_1_1_flag && evidence.first_inputs.flag_1_1.is_none())
@@ -893,5 +971,22 @@ where
         snapshot: &SmbSnapshot<P>,
     ) -> Result<SmbArchiveKey, Box<dyn Error>> {
         stamp_arrival_room_identity(key, snapshot.room_area())
+    }
+
+    fn action_coverage<'a>(&self, action: &'a CampaignActionResult<Self>) -> &'a [u64] {
+        action
+            .observations
+            .last()
+            .map_or(&[], |endpoint| endpoint.coverage.as_slice())
+    }
+
+    fn rate_coverage(&self, key: SmbArchiveKey, rarity: u8) -> SmbArchiveKey {
+        match self.coverage_cap {
+            Some(cap) => SmbArchiveKey {
+                coverage: rarity.min(cap),
+                ..key
+            },
+            None => key,
+        }
     }
 }

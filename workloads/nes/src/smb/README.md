@@ -142,6 +142,38 @@ x 1040 while the player is not climbing, unless the vine has spawned and
 AreaPointer still holds `$2F`, since the brick is then left of the screen. `smb-route <tape> --route <identifier>` replays a tape and prints each
 stage it visits with its objectives and the number of doomed actions.
 
+The `warps_1_2_to_4_2_to_8_without_a_vine_stage` route is the warp route
+without the vine stage: 4-2 has one stage to the vine area's warp zone with the
+band as its objective, and a state is doomed only when it names a level the
+route omits. It tests whether a search finds the hidden blocks and the vine
+without the hand-written ladder. On every route, a progress record's
+`workload_diagnostics.vine_steps` gives, for each vine step that was the
+highest of some action, the first such job and the number of such actions, so
+a run's records show how far up the ladder the search got even when the key
+does not use the ladder.
+
+## Coverage rarity
+
+`SmbGame::with_coverage(cap)` puts coverage rarity in the place, for a core
+built with `HARMONY_QUICKNES_COVERAGE` (see the
+[machine README](../../../nes-machine/README.md)). The target drains the core's
+ids before each action, which drops the frames of the viability probe, and after
+each chord. When a chord stops early, at a death, a victory or the return of
+control, the target drops the chord's ids and reruns it to the stop at once, so
+an action's ids are those of its own frames. The sorted ids ride on the action's
+last observation in a field serde skips, and `result_sha256` adds them to the
+semantic digest only when coverage is on. The searcher rates the action (see
+[Workload boundary](../../../../dissonance/searcher/README.md#workload-boundary))
+and `rate_coverage` stores min(rarity, cap) in the key's `coverage` field, the
+last element of the place. Serde skips that field too, so with coverage off
+every stream record after the header and every serialized key keeps its bytes,
+and a report shows two keys that differ only in coverage as one. The selector's
+`draws_by_cell` report names a cell by its place tuple, which ends in the
+coverage value, 0 with coverage off. The key policy names the cap.
+`nes-eval` takes the cap as `smb_coverage_cap`. A cap of 0 drains and counts the
+ids without moving any state to another place, so the search makes the same
+decisions as without coverage and its speed shows what the mechanism costs.
+
 A campaign in the searcher's minimize mode (see
 [Minimizing](../../../../dissonance/searcher/README.md#minimizing)) uses the
 shrink's per-action cost and lower bound (see [Shrink](#shrink)) to keep the
@@ -182,7 +214,10 @@ of each level on the warp route (1-1, 1-2, 4-1, 4-2 and world 8), and zero
 elsewhere. The stages are the route plan's: a state's stage is the plan stage
 its archive key locates, and the run for stage `n` has the terminal predicate
 `stage:<route>:<n>`, reached at the first state with control once the plan
-locates stage `n` or a later one. Control is part of the goal because two lines
+locates stage `n` or a later one in a state the route does not doom. The plan
+counts any level after a stage's level as past that stage, so without the doom
+check the 4-3 start or the world 5 warp would count as passing 4-2's warp zone.
+Control is part of the goal because two lines
 can enter a stage's room with different cutscenes ahead of them: climbing the
 4-2 vine can enter the vine area earlier than taking the pipe does and then
 gives control about 400 frames later. Stage runs stop at the run's own

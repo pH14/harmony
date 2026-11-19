@@ -33,8 +33,12 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 const KEY_POLICY_BASE: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_band_64_stage_plan_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area_signed_coordinates";
 
 #[must_use]
-pub fn key_policy_identifier(route: SmbRoute) -> String {
-    format!("{KEY_POLICY_BASE}_route_{}", route.identifier())
+pub fn key_policy_identifier(route: SmbRoute, coverage_cap: Option<u8>) -> String {
+    let base = format!("{KEY_POLICY_BASE}_route_{}", route.identifier());
+    match coverage_cap {
+        Some(cap) => format!("{base}_place_coverage_rarity_of_the_rarest_id_capped_at_{cap}"),
+        None => base,
+    }
 }
 
 pub type SmbRoomIdentity = [u8; 3];
@@ -71,6 +75,8 @@ pub struct SmbArchiveKey {
     pub vine: u16,
     #[serde(default)]
     pub victory: bool,
+    #[serde(skip)]
+    pub coverage: u8,
 }
 
 impl SmbArchiveKey {
@@ -99,7 +105,7 @@ impl SmbArchiveKey {
 }
 
 impl ArchiveKey for SmbArchiveKey {
-    type Place = (SmbRoomIdentity, u16, u8, bool, u8);
+    type Place = (SmbRoomIdentity, u16, u8, bool, u8, u8);
     type Progress = StageProgress;
     type Identity = u8;
 
@@ -110,6 +116,7 @@ impl ArchiveKey for SmbArchiveKey {
             self.player_y_bucket,
             self.loop_on_path,
             self.time_bucket,
+            self.coverage,
         )
     }
 
@@ -258,6 +265,7 @@ pub fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         warp_zone: plan::warp_zone(wram),
         vine: plan::vine_step(wram),
         victory: smb_is_victory(wram),
+        coverage: 0,
     }
 }
 
@@ -376,7 +384,10 @@ pub fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room};
+    use super::{
+        KEY_POLICY_BASE, SmbArchiveKey, SmbRoomIdentity, SmbRoute, archive_key,
+        key_policy_identifier, stamp_arrival_room,
+    };
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
@@ -413,6 +424,7 @@ mod tests {
             decoded: Default::default(),
             milestones: Default::default(),
             dead: false,
+            coverage: Vec::new(),
         };
         first.decoded.world = 0;
         first.decoded.level = 2;
@@ -444,6 +456,7 @@ mod tests {
             warp_zone: 0,
             vine: 0,
             victory: false,
+            coverage: 0,
         }
     }
 
@@ -593,7 +606,7 @@ mod tests {
     #[test]
     fn the_place_carries_the_room_and_the_tier_is_the_level_band() {
         let key = key(153, [3, 5]);
-        assert_eq!(key.place(), (key.room, 153, 11, true, 0));
+        assert_eq!(key.place(), (key.room, 153, 11, true, 0, 0));
         assert_eq!(key.progress(), (31, 2));
         assert_eq!(key.identity(), 0);
         let on_screen = SmbArchiveKey {
@@ -609,6 +622,29 @@ mod tests {
         assert_eq!(faster.place(), key.place());
         assert_eq!(faster.identity(), key.identity());
         assert_eq!(faster.preference_cmp(0, key), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn coverage_rarity_splits_the_place_and_is_never_serialized() {
+        let key = key(153, [3, 5]);
+        let rare = SmbArchiveKey { coverage: 3, ..key };
+        assert_eq!(rare.place(), (key.room, 153, 11, true, 0, 3));
+        assert_eq!(rare.progress(), key.progress());
+        assert_eq!(rare.identity(), key.identity());
+        assert_eq!(rare.complete(Some((key, &Vec::new()))).coverage, 3);
+        assert_eq!(
+            serde_json::to_string(&rare).unwrap(),
+            serde_json::to_string(&key).unwrap()
+        );
+        assert_eq!(
+            crate::search::campaign::postcard_value_sha256(&rare).unwrap(),
+            crate::search::campaign::postcard_value_sha256(&key).unwrap()
+        );
+        assert_eq!(
+            key_policy_identifier(SmbRoute::Warps, None),
+            format!("{KEY_POLICY_BASE}_route_{}", SmbRoute::Warps.identifier())
+        );
+        assert!(key_policy_identifier(SmbRoute::Warps, Some(4)).ends_with("_capped_at_4"));
     }
 
     #[test]
