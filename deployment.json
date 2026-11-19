@@ -77,9 +77,8 @@
     }
   },
   "arcade": {
-    "commit": "9640b7da2ec3eefa4a92898fb486e3ff9628895d",
-    "merge_commit": "73c87101be843eb9822360587bb166bdf96db001",
-    "build": "GitHub Actions run 39419265629, artifact twin-dragons-browser-dist",
-    "checks": "PR #804 CI and independent shipping-code review passed"
+    "commit": "5c8205cc3a3ac8c196d68ae00ca7abc65c4feb2b",
+    "build": "GitHub Actions run 44422114436, artifact twin-dragons-browser-dist",
+    "checks": "PR #972 CI and the main-branch Twin Dragons Browser run passed"
   }
 }
