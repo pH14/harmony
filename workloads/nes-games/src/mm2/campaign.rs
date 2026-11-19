@@ -506,6 +506,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
                 snapshot,
             })
         } else {
+            target.shadow_current();
             None
         };
         actions.push(CampaignActionResult {
@@ -851,10 +852,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for Mm2Game<M> {
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
+            target.shadow_current();
             if self.execution_disposition(target).is_terminal() {
                 break;
             }
-            target.shadow(Some(archive_key(target.mechanical_state())));
         }
         execute_suffix(
             self,

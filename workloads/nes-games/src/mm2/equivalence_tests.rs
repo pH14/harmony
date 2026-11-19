@@ -158,6 +158,7 @@ impl Pair {
                 observation.goal,
                 "goal differs"
             );
+            self.hand.shadow_current();
             return Frame::Stopped {
                 goal: observation.goal,
             };
@@ -284,8 +285,7 @@ impl Replayer {
             if self.reference.observe().arrived {
                 self.arrivals += 1;
             }
-            self.reference
-                .shadow(Some(archive_key(self.reference.mechanical_state())));
+            self.reference.shadow_current();
             if let Some(goal) = pair.act(*action, keys) {
                 replayed.stop = Some((index, goal));
                 break;

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     mm2::{
         action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
-        archive::Mm2ArchiveKey,
+        archive::{Mm2ArchiveKey, archive_key},
         game::{self, Drive, MegaMan2},
     },
     nes_backend::{NesBackend, NesMemory},
@@ -1198,6 +1198,17 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         }
     }
 
+    pub fn shadow_current(&self) {
+        if self.exit_kind() != ExitKind::Ok {
+            return;
+        }
+        if self.is_dead() && !self.objective_reached() {
+            self.shadow(None);
+        } else {
+            self.shadow(Some(archive_key(self.mechanical_state())));
+        }
+    }
+
     #[must_use]
     pub fn mechanical_state(&self) -> Mm2MechanicalState {
         self.observation.decoded
@@ -1750,7 +1761,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         if let Some(shadow) = &self.shadow {
-            shadow.restored(snapshot.token, &self.current_wram);
+            shadow.restored(snapshot.token.as_ref(), &self.current_wram);
         }
         Ok(())
     }
