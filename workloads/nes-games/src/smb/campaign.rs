@@ -39,8 +39,8 @@ use crate::{
     search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, LONG_HOLD_FRAMES, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, SmbCoverage, SmbCoverageIds, admission_is_viable, archive_key,
-        chord_time, key_policy_identifier, merge_action_milestones, merge_milestones,
+        SmbArchiveReport, SmbCoverage, SmbCoverageIds, SmbCoverageTerm, admission_is_viable,
+        archive_key, chord_time, key_policy_identifier, merge_action_milestones, merge_milestones,
         merge_progress_watermark, milestone_key, stamp_arrival_room, stamp_arrival_room_identity,
         update_first_inputs,
     },
@@ -318,6 +318,10 @@ pub struct SmbCampaignEvidence {
     pub vine_step_starts: BTreeMap<u16, SmbVineStepStarts>,
     #[serde(default, skip_serializing_if = "SmbCoverageEvidence::is_empty")]
     pub coverage: SmbCoverageEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<SmbRevealEvidence>,
+    #[serde(skip)]
+    pub job_descends_from_reveal: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -332,6 +336,18 @@ pub struct SmbVineStepReach {
 pub struct SmbCoverageRating {
     pub rarity: u8,
     pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SmbRevealEvidence {
+    pub discovery: u32,
+    pub id: u64,
+    pub cell_jobs: u64,
+    pub lineage: u32,
+    pub descendant_jobs: u64,
+    pub descendant_furthest_step: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -345,6 +361,10 @@ pub struct SmbCoverageEvidence {
     pub action_ids_by_kind: [u64; 3],
     pub capped_by_kind: [u64; 3],
     pub capped_from_f400: u64,
+    #[serde(default)]
+    pub discovered_by_kind: [u64; 3],
+    #[serde(default)]
+    pub discovered_from_f400: u64,
 }
 
 impl SmbCoverageEvidence {
@@ -363,13 +383,26 @@ pub fn smb_cpu_address(site: u32) -> u16 {
     u16::try_from(address).unwrap_or(0)
 }
 
+fn coverage_id_address(id: u64) -> String {
+    format!("${:04X}", smb_cpu_address(coverage_site(id)))
+}
+
 fn coverage_rating_json(rating: SmbCoverageRating) -> serde_json::Value {
     serde_json::json!({
         "rarity": rating.rarity,
         "id": rating.id,
         "kind": CoverageKind::of(rating.id).identifier(),
-        "address": format!("${:04X}", smb_cpu_address(coverage_site(rating.id))),
+        "address": coverage_id_address(rating.id),
+        "discovery": rating.discovery,
     })
+}
+
+fn count_coverage_id(by_kind: &mut [u64; 3], from_f400: &mut u64, id: u64) {
+    let kind = &mut by_kind[CoverageKind::of(id).index()];
+    *kind = kind.saturating_add(1);
+    if smb_cpu_address(coverage_site(id)) >= 0xF400 {
+        *from_f400 = from_f400.saturating_add(1);
+    }
 }
 
 fn kinds_json(counts: [u64; 3]) -> serde_json::Value {
@@ -668,6 +701,23 @@ where
                     "action_ids_by_kind": kinds_json(evidence.coverage.action_ids_by_kind),
                     "capped_by_kind": kinds_json(evidence.coverage.capped_by_kind),
                     "capped_from_f400": evidence.coverage.capped_from_f400,
+                    "discovered_by_kind": kinds_json(evidence.coverage.discovered_by_kind),
+                    "discovered_from_f400": evidence.coverage.discovered_from_f400,
+                }),
+            );
+        }
+        if let Some(reveal) = evidence.reveal {
+            diagnostics.insert(
+                "reveal".to_owned(),
+                serde_json::json!({
+                    "discovery": reveal.discovery,
+                    "id": reveal.id,
+                    "kind": CoverageKind::of(reveal.id).identifier(),
+                    "address": coverage_id_address(reveal.id),
+                    "cell_jobs": reveal.cell_jobs,
+                    "lineage": reveal.lineage,
+                    "descendant_jobs": reveal.descendant_jobs,
+                    "descendant_furthest_step": reveal.descendant_furthest_step,
                 }),
             );
         }
@@ -981,6 +1031,11 @@ where
             });
             reach.actions = reach.actions.saturating_add(1);
         }
+        if evidence.job_descends_from_reveal
+            && let Some(reveal) = evidence.reveal.as_mut()
+        {
+            reveal.descendant_furthest_step = reveal.descendant_furthest_step.max(step);
+        }
         if let Some(endpoint) = action.observations.last() {
             let ids = endpoint.coverage.as_slice();
             let mut start = 0;
@@ -1102,11 +1157,19 @@ where
     }
 
     fn rate_coverage(&self, key: SmbArchiveKey, rating: CoverageRating) -> SmbArchiveKey {
-        match self.coverage {
-            Some(coverage) => SmbArchiveKey {
-                coverage: rating.rarity.min(coverage.cap),
+        match self.coverage.map(|coverage| coverage.term) {
+            Some(SmbCoverageTerm::Rarity { cap }) => SmbArchiveKey {
+                coverage: u32::from(rating.rarity.min(cap)),
                 ..key
             },
+            Some(SmbCoverageTerm::NewId) => {
+                let discovery = rating.discovery.unwrap_or(0);
+                SmbArchiveKey {
+                    coverage: discovery,
+                    vine_discovery: if key.vine >= 2 { discovery } else { 0 },
+                    ..key
+                }
+            }
             None => key,
         }
     }
@@ -1126,18 +1189,45 @@ where
             reach.rating = Some(SmbCoverageRating {
                 rarity: rating.rarity,
                 id: rating.id,
+                discovery: rating.discovery,
             });
-        }
-        if let Some(coverage) = self.coverage
-            && action.candidate.is_some()
-            && rating.rarity >= coverage.cap
-        {
-            let kind = &mut evidence.coverage.capped_by_kind[CoverageKind::of(rating.id).index()];
-            *kind = kind.saturating_add(1);
-            if smb_cpu_address(coverage_site(rating.id)) >= 0xF400 {
-                evidence.coverage.capped_from_f400 =
-                    evidence.coverage.capped_from_f400.saturating_add(1);
+            if step == 2
+                && evidence.reveal.is_none()
+                && action.candidate.is_some()
+                && let Some(discovery) = rating.discovery
+                && matches!(
+                    self.coverage.map(|coverage| coverage.term),
+                    Some(SmbCoverageTerm::NewId)
+                )
+            {
+                evidence.reveal = Some(SmbRevealEvidence {
+                    discovery,
+                    id: rating.id,
+                    ..SmbRevealEvidence::default()
+                });
             }
+        }
+        let Some(coverage) = self.coverage else {
+            return;
+        };
+        if action.candidate.is_none() {
+            return;
+        }
+        if let SmbCoverageTerm::Rarity { cap } = coverage.term
+            && rating.rarity >= cap
+        {
+            count_coverage_id(
+                &mut evidence.coverage.capped_by_kind,
+                &mut evidence.coverage.capped_from_f400,
+                rating.id,
+            );
+        }
+        if rating.discovery.is_some() {
+            count_coverage_id(
+                &mut evidence.coverage.discovered_by_kind,
+                &mut evidence.coverage.discovered_from_f400,
+                rating.id,
+            );
         }
     }
 
@@ -1147,6 +1237,19 @@ where
         parent: &SmbArchiveKey,
         sequence: u64,
     ) {
+        evidence.job_descends_from_reveal = false;
+        if let Some(reveal) = evidence.reveal.as_mut() {
+            if parent.coverage == reveal.discovery {
+                reveal.cell_jobs = reveal.cell_jobs.saturating_add(1);
+                if reveal.lineage == 0 {
+                    reveal.lineage = parent.vine_discovery;
+                }
+            }
+            if reveal.lineage != 0 && parent.vine_discovery == reveal.lineage {
+                reveal.descendant_jobs = reveal.descendant_jobs.saturating_add(1);
+                evidence.job_descends_from_reveal = true;
+            }
+        }
         if parent.vine == 0 {
             return;
         }

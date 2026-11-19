@@ -335,10 +335,14 @@ counts them in admission order: J is the number of jobs that hit any id and c
 the number that hit a given id, each including the job being admitted, and an
 id counts once per job. An action's rarity is floor(log2((J+1)/(c+1))) for its
 rarest id, so an id most jobs hit rates 0 and the rating rises by one each time
-the share of jobs that hit the id halves. `Evaluation::rate_coverage(key,
-rating)` returns the key the archive admits, and its default ignores the
-`CoverageRating` (the rarity and the rarest id), so the workload chooses the cap
-and where the rating sits in its key. `Evaluation::merge_coverage_evidence`
+the share of jobs that hit the id halves. The counts also number each id from 1
+in the order the run first saw it, and when the rarest id has c = 1, so no
+earlier job hit it, the rating carries that id's number as its `discovery`.
+Ids rate in sorted order and the first rarest one wins, so a discovery names the
+smallest new id. `Evaluation::rate_coverage(key, rating)` returns the key the
+archive admits, and its default ignores the `CoverageRating` (the rarity, the
+rarest id and the discovery), so the workload chooses the term and where it sits
+in its key. `Evaluation::merge_coverage_evidence`
 gives the workload each rated action's rating after `merge_action_evidence`,
 and `Evaluation::merge_job_start_evidence` gives it the key of each job's
 parent before the job's actions, so a workload can record which ids rated the
@@ -350,7 +354,8 @@ gives J, the distinct ids, the actions with ids and their total ids, the rated
 candidates, the candidates and the jobs in which `rate_coverage` moved a
 candidate to another place, the rated candidates at each rarity before the
 workload's cap, the moved candidates counted by the rarest id that rated each
-one, and the memory the counts hold.
+one, the actions and the candidates whose action hit a new id, the latter by the
+power of two below the job that admitted them, and the memory the counts hold.
 
 A cell is a progress value paired with a place. A slot is a cell paired with
 an identity. A slot keeps the top `capacity()` entries under each preference,

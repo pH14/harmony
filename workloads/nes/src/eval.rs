@@ -74,6 +74,8 @@ pub struct Request {
     #[serde(default)]
     pub smb_coverage_ids: Option<String>,
     #[serde(default)]
+    pub smb_coverage_new_ids: bool,
+    #[serde(default)]
     pub minimize: bool,
     #[serde(default)]
     pub root_input: Option<PathBuf>,

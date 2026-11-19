@@ -152,9 +152,9 @@ highest of some action, the first such job and the number of such actions, so
 a run's records show how far up the ladder the search got even when the key
 does not use the ladder.
 
-## Coverage rarity
+## Coverage
 
-`SmbGame::with_coverage(SmbCoverage { cap, ids })` puts coverage rarity in the
+`SmbGame::with_coverage(SmbCoverage { term, ids })` puts a coverage term in the
 place, for a core built with `HARMONY_QUICKNES_COVERAGE` (see the
 [machine README](../../../nes-machine/README.md)). The target drains the core's
 ids before each action, which drops the frames of the viability probe, and after
@@ -164,15 +164,25 @@ an action's ids are those of its own frames. The sorted ids ride on the action's
 last observation in a field serde skips, and `result_sha256` adds them to the
 semantic digest only when coverage is on. The searcher rates the action (see
 [Workload boundary](../../../../dissonance/searcher/README.md#workload-boundary))
-and `rate_coverage` stores min(rarity, cap) in the key's `coverage` field, the
+and `rate_coverage` stores the term's value in the key's `coverage` field, the
 last element of the place. Serde skips that field too, so with coverage off
 every stream record after the header and every serialized key keeps its bytes,
 and a report shows two keys that differ only in coverage as one. The selector's
 `draws_by_cell` report names a cell by its place tuple, which ends in the
-coverage value, 0 with coverage off. The key policy names the cap.
-`nes-eval` takes the cap as `smb_coverage_cap`. A cap of 0 drains and counts the
-ids without moving any state to another place, so the search makes the same
-decisions as without coverage and its speed shows what the mechanism costs.
+coverage value, 0 with coverage off. The key policy names the term.
+
+`SmbCoverageTerm::Rarity { cap }` stores min(rarity, cap). `nes-eval` takes the
+cap as `smb_coverage_cap`. A cap of 0 drains and counts the ids without moving
+any state to another place, so the search makes the same decisions as without
+coverage and its speed shows what the mechanism costs.
+
+`SmbCoverageTerm::NewId` (`smb_coverage_new_ids`) keeps a state whose action hit
+an id no earlier job hit, the rule coverage-guided fuzzers such as AFL use to
+keep an input. The field holds 0 when the action hit nothing new, and otherwise
+the discovery order of the smallest new id: the searcher numbers ids from 1 in
+the order the run first saw them. Each discovery thus has a cell of its own, and
+the cells beyond those of the key without coverage number at most the run's
+discoveries. Selection treats these cells as any other.
 
 `SmbCoverageIds::All` (`smb_coverage_ids` `all`, the default) rates every id.
 `SmbCoverageIds::Code` (`code`) rates only branch outcomes and indirect jump
@@ -183,12 +193,24 @@ The key policy names the id set.
 With coverage on, the progress records' `workload_diagnostics` also give:
 
 - under `vine_steps`, the `rating` of the first job's action at each step: its
-  rarity before the cap, the id that set it, the id's kind and its CPU address
-  (`$8000` plus the PRG ROM offset; a jump's address is its target);
+  rarity before the cap, the id that set it, its discovery order when the id
+  was new, the id's kind and its CPU address (`$8000` plus the PRG ROM offset;
+  a jump's address is its target);
 - under `coverage`, the ids the actions carried by kind
-  (`action_ids_by_kind`), and the candidates whose rarity reached the cap by the
+  (`action_ids_by_kind`), the candidates whose rarity reached the cap by the
   kind of the id that rated them (`capped_by_kind`) and how many of those ids
-  sit at `$F400` or above (`capped_from_f400`).
+  sit at `$F400` or above (`capped_from_f400`), and the same two counts for the
+  candidates whose action hit a new id (`discovered_by_kind`,
+  `discovered_from_f400`);
+- under `reveal`, with the new-id term, when the first job to reveal a hidden
+  block (vine step 2) kept a state rated by a new id: that discovery and id,
+  the jobs started from a state in the discovery's cell (`cell_jobs`), and,
+  following the first such state, its discovery as the `lineage`, the jobs
+  started from its descendants (`descendant_jobs`) and the highest vine step
+  their actions reached (`descendant_furthest_step`). The key carries the
+  lineage in `vine_discovery`, which only a state at vine step 2 or above
+  rated by a new id sets, a child inherits from its parent, and neither the
+  place nor serde sees.
 
 On every route, `vine_step_starts` counts, for each vine step that some job's
 parent key held, the first such job and the number of jobs that started from a

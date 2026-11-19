@@ -57,24 +57,34 @@ impl SmbCoverageIds {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmbCoverageTerm {
+    Rarity { cap: u8 },
+    NewId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SmbCoverage {
-    pub cap: u8,
+    pub term: SmbCoverageTerm,
     pub ids: SmbCoverageIds,
 }
 
 #[must_use]
 pub fn key_policy_identifier(route: SmbRoute, coverage: Option<SmbCoverage>) -> String {
     let base = format!("{KEY_POLICY_BASE}_route_{}", route.identifier());
-    match coverage {
-        Some(SmbCoverage {
-            cap,
-            ids: SmbCoverageIds::All,
-        }) => format!("{base}_place_coverage_rarity_of_the_rarest_id_capped_at_{cap}"),
-        Some(SmbCoverage {
-            cap,
-            ids: SmbCoverageIds::Code,
-        }) => format!("{base}_place_coverage_rarity_of_the_rarest_code_id_capped_at_{cap}"),
-        None => base,
+    let Some(coverage) = coverage else {
+        return base;
+    };
+    let ids = match coverage.ids {
+        SmbCoverageIds::All => "id",
+        SmbCoverageIds::Code => "code_id",
+    };
+    match coverage.term {
+        SmbCoverageTerm::Rarity { cap } => {
+            format!("{base}_place_coverage_rarity_of_the_rarest_{ids}_capped_at_{cap}")
+        }
+        SmbCoverageTerm::NewId => {
+            format!("{base}_place_coverage_discovery_order_of_the_smallest_new_{ids}")
+        }
     }
 }
 
@@ -113,7 +123,9 @@ pub struct SmbArchiveKey {
     #[serde(default)]
     pub victory: bool,
     #[serde(skip)]
-    pub coverage: u8,
+    pub coverage: u32,
+    #[serde(skip)]
+    pub vine_discovery: u32,
 }
 
 impl SmbArchiveKey {
@@ -142,7 +154,7 @@ impl SmbArchiveKey {
 }
 
 impl ArchiveKey for SmbArchiveKey {
-    type Place = (SmbRoomIdentity, u16, u8, bool, u8, u8);
+    type Place = (SmbRoomIdentity, u16, u8, bool, u8, u32);
     type Progress = StageProgress;
     type Identity = u8;
 
@@ -208,9 +220,14 @@ impl ArchiveKey for SmbArchiveKey {
             }
             _ => (arrived_here, 0),
         };
+        let vine_discovery = match parent {
+            Some((parent_key, _)) if parent_key.vine_discovery != 0 => parent_key.vine_discovery,
+            _ => this.vine_discovery,
+        };
         Self {
             room,
             lineage_band,
+            vine_discovery,
             ..this
         }
     }
@@ -303,6 +320,7 @@ pub fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         vine: plan::vine_step(wram),
         victory: smb_is_victory(wram),
         coverage: 0,
+        vine_discovery: 0,
     }
 }
 
@@ -422,8 +440,8 @@ pub fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
 #[cfg(test)]
 mod tests {
     use super::{
-        KEY_POLICY_BASE, SmbArchiveKey, SmbCoverage, SmbCoverageIds, SmbRoomIdentity, SmbRoute,
-        archive_key, key_policy_identifier, stamp_arrival_room,
+        KEY_POLICY_BASE, SmbArchiveKey, SmbCoverage, SmbCoverageIds, SmbCoverageTerm,
+        SmbRoomIdentity, SmbRoute, archive_key, key_policy_identifier, stamp_arrival_room,
     };
     use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
@@ -494,6 +512,7 @@ mod tests {
             vine: 0,
             victory: false,
             coverage: 0,
+            vine_discovery: 0,
         }
     }
 
@@ -669,26 +688,47 @@ mod tests {
         assert_eq!(rare.progress(), key.progress());
         assert_eq!(rare.identity(), key.identity());
         assert_eq!(rare.complete(Some((key, &Vec::new()))).coverage, 3);
+        let marked = SmbArchiveKey {
+            vine_discovery: 7,
+            ..rare
+        };
+        assert_eq!(marked.place(), rare.place());
+        assert_eq!(key.complete(Some((marked, &Vec::new()))).vine_discovery, 7);
         assert_eq!(
-            serde_json::to_string(&rare).unwrap(),
+            SmbArchiveKey {
+                vine_discovery: 9,
+                ..key
+            }
+            .complete(Some((marked, &Vec::new())))
+            .vine_discovery,
+            7
+        );
+        assert_eq!(marked.complete(Some((key, &Vec::new()))).vine_discovery, 7);
+        assert_eq!(key.complete(None).vine_discovery, 0);
+        assert_eq!(
+            serde_json::to_string(&marked).unwrap(),
             serde_json::to_string(&key).unwrap()
         );
         assert_eq!(
-            crate::search::campaign::postcard_value_sha256(&rare).unwrap(),
+            crate::search::campaign::postcard_value_sha256(&marked).unwrap(),
             crate::search::campaign::postcard_value_sha256(&key).unwrap()
         );
         assert_eq!(
             key_policy_identifier(SmbRoute::Warps, None),
             format!("{KEY_POLICY_BASE}_route_{}", SmbRoute::Warps.identifier())
         );
-        let cap = |ids| Some(SmbCoverage { cap: 4, ids });
+        let policy =
+            |term, ids| key_policy_identifier(SmbRoute::Warps, Some(SmbCoverage { term, ids }));
+        let rarity = SmbCoverageTerm::Rarity { cap: 4 };
+        assert!(policy(rarity, SmbCoverageIds::All).ends_with("_rarest_id_capped_at_4"));
+        assert!(policy(rarity, SmbCoverageIds::Code).ends_with("_rarest_code_id_capped_at_4"));
         assert!(
-            key_policy_identifier(SmbRoute::Warps, cap(SmbCoverageIds::All))
-                .ends_with("_rarest_id_capped_at_4")
+            policy(SmbCoverageTerm::NewId, SmbCoverageIds::All)
+                .ends_with("_place_coverage_discovery_order_of_the_smallest_new_id")
         );
         assert!(
-            key_policy_identifier(SmbRoute::Warps, cap(SmbCoverageIds::Code))
-                .ends_with("_rarest_code_id_capped_at_4")
+            policy(SmbCoverageTerm::NewId, SmbCoverageIds::Code)
+                .ends_with("_discovery_order_of_the_smallest_new_code_id")
         );
         assert_eq!(
             SmbCoverageIds::from_identifier("code"),
