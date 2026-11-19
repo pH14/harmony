@@ -77,6 +77,10 @@ fn strategy_drawn(action: &RecordedAction<ButtonChord>) -> Drawn {
     }
 }
 
+fn hand_draw(rand: &mut RomuDuoJrRand, previous: Option<&Mm2Action>) -> Mm2Action {
+    Mm2Action::draw(rand, previous).expect("hand draw")
+}
+
 fn hand_drawn(action: Mm2Action, targets: &[u8]) -> Drawn {
     match action {
         Mm2Action::Chord(chord) => Drawn::Chord(chord),
@@ -197,7 +201,7 @@ fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
             untargeted += u64::from(ask.targets.is_empty());
             let targeted = !ask.targets.is_empty();
             strategy_job.push((strategy_drawn(action), targeted));
-            let drawn = Mm2Action::draw(&mut rand, previous.as_ref()).expect("hand draw");
+            let drawn = hand_draw(&mut rand, previous.as_ref());
             previous = Some(drawn);
             hand_job.push((hand_drawn(drawn, &ask.targets), targeted));
         }
@@ -252,4 +256,54 @@ fn strategy_draws_match_the_hand_draw_on_recorded_jobs() {
         jobs.len()
     );
     assert_eq!(failures, 0);
+}
+
+#[test]
+fn the_harness_draws_what_the_hand_search_and_target_draw() {
+    use crate::{
+        mm2::{
+            campaign::{Mm2CampaignRun, Mm2Game},
+            game::MegaMan2,
+            target::switch_choices,
+        },
+        search::campaign::InputPolicy,
+        workload::Game,
+    };
+    let hand = Mm2Game::<machine::quicknes::QuickNesMachine>::whole_game(
+        &[],
+        "core",
+        "sha",
+        Vec::new(),
+        Box::new(|| Err(machine::MachineError::Backend("no machine".into()))),
+    );
+    let mut harness = RomuDuoJrRand::with_seed(0x6d32);
+    let mut search = RomuDuoJrRand::with_seed(0x6d32);
+    let mut states = RomuDuoJrRand::with_seed(7);
+    let mut wram = [0_u8; machine::nes::WRAM_SIZE];
+    let (mut previous, mut searched) = (None, None);
+    let mut switches = 0;
+    for _ in 0..50_000 {
+        wram[0x9a] = u8::try_from(states.next_u64() >> 56).unwrap();
+        wram[0x9b] = u8::try_from(states.next_u64() >> 61).unwrap();
+        wram[0xa9] = u8::try_from(states.next_u64() % 12).unwrap();
+        for energy in &mut wram[0x9c..0xa8] {
+            *energy = u8::try_from(states.next_u64() >> 62).unwrap();
+        }
+        let targets: Vec<u8> = MegaMan2.decode(None, &wram).switch_targets().collect();
+        let drawn = hand_draw(&mut harness, previous.as_ref());
+        let action = hand
+            .sample_alphabet(&Mm2CampaignRun, searched.as_ref(), &mut search)
+            .expect("search draw");
+        assert_eq!(drawn, action);
+        let played = match action {
+            Mm2Action::Chord(chord) => Drawn::Chord(chord),
+            Mm2Action::Switch(word) => switch_choice(&switch_choices(&wram).unwrap(), word)
+                .map_or(Drawn::Idle, |weapon| Drawn::Switch(u16::from(weapon) + 1)),
+        };
+        switches += usize::from(matches!(played, Drawn::Switch(_)));
+        assert_eq!(hand_drawn(drawn, &targets), played);
+        previous = Some(drawn);
+        searched = Some(action);
+    }
+    assert!(switches > 1_000);
 }

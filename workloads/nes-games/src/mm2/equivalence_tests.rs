@@ -172,6 +172,9 @@ impl Pair {
             }
         };
         let hand = self.hand.mechanical_state();
+        if self.hand.is_terminal() {
+            return (switched, self.compare());
+        }
         assert_eq!(
             Mm2MechanicalState {
                 enemy_damage: hand.enemy_damage,
