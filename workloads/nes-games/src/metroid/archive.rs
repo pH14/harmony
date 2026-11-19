@@ -1096,6 +1096,80 @@ mod tests {
     }
 
     #[test]
+    fn the_balance_rank_orders_every_reachable_stock_as_its_exact_ratio() {
+        use crate::metroid::{
+            game::{balance, balance_max},
+            target::MAX_ENERGY_TANKS,
+        };
+        let stocked = |missiles, missile_capacity, health, energy_tanks| MetroidMechanicalState {
+            area: 0x10,
+            map_x: 3,
+            map_y: 14,
+            mode: 3,
+            missiles,
+            missile_capacity,
+            health,
+            energy_tanks,
+            ..MetroidMechanicalState::default()
+        };
+        let mut states = Vec::new();
+        for missile_capacity in 1..=u8::MAX {
+            for missiles in 0..=missile_capacity {
+                states.push(stocked(missiles, missile_capacity, 999, 0));
+            }
+        }
+        for energy_tanks in 0..=MAX_ENERGY_TANKS {
+            let full = 5 * (MAX_ENERGY_TANKS + 1 - energy_tanks);
+            let cap = u16::try_from(health_cap(energy_tanks)).unwrap();
+            for health in 1..=cap {
+                states.push(stocked(full, full, health, energy_tanks));
+                if health % 97 == 0 {
+                    states.push(stocked(0, 0, health, energy_tanks));
+                    states.push(stocked(0, full, health, energy_tanks));
+                }
+            }
+            for health in [1, 2, cap / 2, cap - 1, cap] {
+                for missiles in [u8::MAX, u8::MAX - 1, 128] {
+                    states.push(stocked(missiles, u8::MAX, health, energy_tanks));
+                }
+                states.push(stocked(0, 0, health, energy_tanks));
+            }
+        }
+        let ratio = |state: &MetroidMechanicalState| {
+            if state.missile_capacity == 0 {
+                return (0_u64, 1_u64);
+            }
+            let missiles = (u64::from(state.missiles), u64::from(state.missile_capacity));
+            let energy = (
+                u64::from(state.health),
+                u64::from(health_cap(state.energy_tanks)),
+            );
+            if missiles.0 * energy.1 <= energy.0 * missiles.1 {
+                missiles
+            } else {
+                energy
+            }
+        };
+        let exact_cmp = |a: &MetroidMechanicalState, b: &MetroidMechanicalState| {
+            let (x, y) = (ratio(a), ratio(b));
+            (x.0 * y.1).cmp(&(y.0 * x.1))
+        };
+        let mut exact = states.clone();
+        exact.sort_by(exact_cmp);
+        for pair in exact.windows(2) {
+            assert_eq!(
+                balance(pair[0]).cmp(&balance(pair[1])),
+                exact_cmp(&pair[0], &pair[1]),
+                "{:?} {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(balance(stocked(5, 5, 999, 0)), balance_max());
+        assert_eq!(balance(stocked(0, 0, 999, 0)), 0);
+    }
+
+    #[test]
     fn a_balanced_state_holds_the_balance_preference_over_a_lopsided_one() {
         let balanced = stock(10, 20, 500, 0);
         let lopsided = stock(20, 20, 100, 0);
