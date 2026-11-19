@@ -8,9 +8,9 @@ case "$(uname -m)" in
         harness_goroot=$(go env GOROOT)
         if [ ! -e "$harness_goroot/.harmony-arm64-patches" ]; then
             for harness_patch in /build/harness-go/*.patch; do
-                (cd "$harness_goroot" && git apply -p1 "$harness_patch")
+                (cd "$harness_goroot" && git apply -p1 "$harness_patch") || return 1
             done
-            : >"$harness_goroot/.harmony-arm64-patches"
+            : >"$harness_goroot/.harmony-arm64-patches" || return 1
         fi
         export GOARM64=v8.1
         if [ -x /opt/harmony-musl/bin/harmony-cc ]; then
