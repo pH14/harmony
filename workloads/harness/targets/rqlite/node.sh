@@ -9,7 +9,12 @@ index=${name#n}
 address="10.77.0.${index}"
 joins='10.77.0.1:4002,10.77.0.2:4004,10.77.0.3:4006'
 
-exec /opt/harmony/harness-net exec "${index}" -- /opt/rqlite/rqlited \
+set --
+while read -r flag value; do
+  set -- "$@" "${flag}" "${value}"
+done </opt/harmony/rqlited-flags
+
+exec /opt/harmony/harness-net exec "${index}" -- /opt/rqlite/rqlited "$@" \
   -node-id "${name}" \
   -http-addr "${address}:${http_port}" \
   -raft-addr "${address}:${raft_port}" \

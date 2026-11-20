@@ -94,6 +94,8 @@ pub struct FaultVocabulary {
     hooks_replace_waits: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hold_hooks: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_park: Option<Vec<u64>>,
 }
 
 impl FaultVocabulary {
@@ -122,6 +124,7 @@ impl FaultVocabulary {
             excluded: Vec::new(),
             hooks_replace_waits: false,
             hold_hooks: false,
+            resume_park: None,
         })
     }
 
@@ -159,6 +162,29 @@ impl FaultVocabulary {
         self.excluded.sort_unstable();
         self.excluded.dedup();
         self
+    }
+
+    pub fn with_resume_park(mut self, sites: Option<Vec<u64>>) -> Result<Self, String> {
+        let Some(mut sites) = sites else {
+            self.resume_park = None;
+            return Ok(self);
+        };
+        if !self.instrumented_events {
+            return Err(
+                "resume_park needs an image whose nodes run the instrumented event runtime"
+                    .to_owned(),
+            );
+        }
+        if !self.draws(FaultKind::Pause) {
+            return Err("resume_park parks after a pause, and pause is excluded".to_owned());
+        }
+        if sites.contains(&u64::MAX) {
+            return Err("a resume_park site must be below u64::MAX".to_owned());
+        }
+        sites.sort_unstable();
+        sites.dedup();
+        self.resume_park = Some(sites);
+        Ok(self)
     }
 
     #[must_use]
@@ -354,6 +380,11 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn resume_park(&self) -> Option<&[u64]> {
+        self.resume_park.as_deref()
+    }
+
+    #[must_use]
     pub fn draws(&self, kind: FaultKind) -> bool {
         !self.excluded.contains(&kind)
     }
@@ -412,14 +443,26 @@ impl FaultVocabulary {
         } else {
             "none"
         };
-        let identifier = format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};checksummed={checksummed};events={events};clock={clock};exclude={excluded}",
+        let resume_park = self
+            .resume_park
+            .as_ref()
+            .map(|sites| {
+                let sites = sites
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(";resume_park={sites}")
+            })
+            .unwrap_or_default();
+        let options = self
+            .options()
+            .map(|options| format!(";options={options}"))
+            .unwrap_or_default();
+        format!(
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};checksummed={checksummed};events={events};clock={clock};exclude={excluded}{options}{resume_park}",
             self.nodes,
-        );
-        match self.options() {
-            Some(options) => format!("{identifier};options={options}"),
-            None => identifier,
-        }
+        )
     }
 
     pub fn from_identifier(identifier: &str) -> Result<Self, String> {
@@ -469,12 +512,29 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("exclude="))
             .ok_or("fault vocabulary has no excluded fault list")?;
-        let options = fields
-            .next()
+        let mut field = fields.next();
+        let options = match field.and_then(|field| field.strip_prefix("options=")) {
+            Some(options) => {
+                field = fields.next();
+                Some(options)
+            }
+            None => None,
+        };
+        let resume_park = field
             .map(|field| {
-                field
-                    .strip_prefix("options=")
-                    .ok_or("fault vocabulary has trailing fields")
+                let sites = field
+                    .strip_prefix("resume_park=")
+                    .ok_or("fault vocabulary has an unknown trailing field")?;
+                if sites.is_empty() {
+                    return Ok(Vec::new());
+                }
+                sites
+                    .split(',')
+                    .map(|site| {
+                        site.parse::<u64>()
+                            .map_err(|error| format!("fault vocabulary resume park site: {error}"))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
             })
             .transpose()?;
         if fields.next().is_some() {
@@ -526,12 +586,16 @@ impl FaultVocabulary {
             .with_clock_faults(clock_faults)
             .excluding(&excluded)
             .with_hooks_replace_waits(hooks_replace_waits)
-            .with_hold_hooks(hold_hooks);
+            .with_hold_hooks(hold_hooks)
+            .with_resume_park(resume_park.clone())?;
         if vocabulary.excluded != excluded {
             return Err("fault vocabulary lists excluded fault kinds out of order".to_owned());
         }
         if vocabulary.options().as_deref() != options {
             return Err("fault vocabulary lists its options out of order or twice".to_owned());
+        }
+        if vocabulary.resume_park != resume_park {
+            return Err("fault vocabulary lists resume park sites out of order".to_owned());
         }
         Ok(vocabulary)
     }
@@ -714,6 +778,85 @@ ready /usr/local/pgsql/bin/pg_isready
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn resume_park_sites_are_pinned_in_the_identifier_only_when_on() {
+        let etcd = FaultVocabulary::parse(ETCD).expect("parse");
+        assert!(etcd.clone().with_resume_park(Some(Vec::new())).is_err());
+        let events = etcd.with_instrumented_events(true);
+        assert!(
+            events
+                .clone()
+                .excluding(&[FaultKind::Pause])
+                .with_resume_park(Some(Vec::new()))
+                .is_err()
+        );
+        let off = events.clone().with_resume_park(None).expect("off");
+        assert_eq!(off, events);
+        assert_eq!(off.resume_park(), None);
+        assert!(!serde_json::to_string(&off).unwrap().contains("resume_park"));
+        let anywhere = events
+            .clone()
+            .with_resume_park(Some(Vec::new()))
+            .expect("on");
+        let sited = events
+            .clone()
+            .with_resume_park(Some(vec![228_994, 7, 228_994]))
+            .expect("on");
+        assert_eq!(anywhere.resume_park(), Some(&[][..]));
+        assert_eq!(sited.resume_park(), Some(&[7, 228_994][..]));
+        assert_eq!(
+            sited.identifier(),
+            format!("{};resume_park=7,228994", events.identifier())
+        );
+        assert_eq!(
+            anywhere.identifier(),
+            format!("{};resume_park=", events.identifier())
+        );
+        for vocabulary in [&off, &anywhere, &sited] {
+            assert_eq!(
+                &FaultVocabulary::from_identifier(&vocabulary.identifier()).expect("resolve"),
+                vocabulary
+            );
+            assert_eq!(
+                &serde_json::from_str::<FaultVocabulary>(
+                    &serde_json::to_string(vocabulary).unwrap()
+                )
+                .unwrap(),
+                vocabulary
+            );
+        }
+        assert!(
+            FaultVocabulary::from_identifier(&format!(
+                "{};resume_park=228994,7",
+                events.identifier()
+            ))
+            .is_err()
+        );
+        assert!(
+            FaultVocabulary::from_identifier(&format!("{};parks=1", events.identifier())).is_err()
+        );
+        let held = sited.clone().with_hold_hooks(true);
+        assert_eq!(
+            held.identifier(),
+            format!(
+                "{};options=hold_hooks;resume_park=7,228994",
+                events.identifier()
+            )
+        );
+        assert_eq!(
+            FaultVocabulary::from_identifier(&held.identifier()).expect("resolve"),
+            held
+        );
+        assert!(
+            FaultVocabulary::from_identifier(&format!(
+                "{};resume_park=7;options=hold_hooks",
+                events.identifier()
+            ))
+            .is_err()
+        );
+        assert!(events.with_resume_park(Some(vec![u64::MAX])).is_err());
     }
 
     #[test]

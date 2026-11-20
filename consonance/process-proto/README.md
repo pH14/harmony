@@ -10,7 +10,9 @@ start, end)` windows.
 The `events` module owns the fixed control and report frames exchanged between
 the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 kill rarity width, the park edge-count range, the optional
-park target (a nonempty range of module offsets), exact command acknowledgements, runtime hello,
+park target (a nonempty range of module offsets), the park's counting law
+(each edge's share of its site's visits, or one per edge from the arm), exact
+command acknowledgements, runtime hello,
 kill provenance, event-park armed and held status, and bucketed edge-coverage status
 without naming a workload policy.
 

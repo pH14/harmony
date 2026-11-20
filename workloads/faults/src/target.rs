@@ -76,6 +76,14 @@ pub enum FaultOperation {
         ticks: NonZeroU16,
     },
     EndFaults(NonZeroU16),
+    EventParkFromArm {
+        node: u16,
+        edges: u32,
+        hold_us: u32,
+        ticks: NonZeroU16,
+        #[serde(default, with = "park_target_serde")]
+        target: Option<ParkTarget>,
+    },
 }
 
 impl FaultOperation {
@@ -93,6 +101,7 @@ impl FaultOperation {
             | Self::DiskCorrupt(_, ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
+            | Self::EventParkFromArm { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
             | Self::Hook(_, ticks)
@@ -127,10 +136,20 @@ impl FaultOperation {
             } => Self::EventPark {
                 node,
                 edges,
-                hold_us: hold_us.min(
-                    u32::from(ticks.get())
-                        .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
-                ),
+                hold_us: fitted_hold_us(hold_us, ticks),
+                ticks,
+                target,
+            },
+            Self::EventParkFromArm {
+                node,
+                edges,
+                hold_us,
+                target,
+                ..
+            } => Self::EventParkFromArm {
+                node,
+                edges,
+                hold_us: fitted_hold_us(hold_us, ticks),
                 ticks,
                 target,
             },
@@ -159,6 +178,13 @@ impl FaultOperation {
             },
         }
     }
+}
+
+fn fitted_hold_us(hold_us: u32, ticks: NonZeroU16) -> u32 {
+    hold_us.min(
+        u32::from(ticks.get())
+            .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+    )
 }
 
 const OPERATION_KEY_WIDTH: usize = 32;
@@ -278,6 +304,24 @@ impl FaultOperation {
             Self::EndFaults(ticks) => {
                 put(&[15]);
                 put(&ticks.get().to_le_bytes());
+            }
+            Self::EventParkFromArm {
+                node,
+                edges,
+                hold_us,
+                ticks,
+                target,
+            } => {
+                put(&[16]);
+                put(&node.to_le_bytes());
+                put(&edges.to_le_bytes());
+                put(&hold_us.to_le_bytes());
+                put(&ticks.get().to_le_bytes());
+                if let Some(target) = target {
+                    put(&[1]);
+                    put(&target.start.to_le_bytes());
+                    put(&target.end.to_le_bytes());
+                }
             }
         }
         out
@@ -538,6 +582,30 @@ fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
     }
 }
 
+fn event_park_delta(
+    node: u16,
+    edges: u32,
+    hold_us: u32,
+    target: Option<ParkTarget>,
+    from_arm: bool,
+    window: (u64, u64),
+) -> ActionDelta {
+    ActionDelta {
+        standing: vec![standing(
+            process_target(
+                node,
+                &Fault::ProcEventPark {
+                    edges,
+                    hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    target,
+                    from_arm,
+                },
+            ),
+            window,
+        )],
+    }
+}
+
 fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> ActionDelta {
     let (start, end) = window;
     let horizon = end.saturating_sub(start);
@@ -555,19 +623,14 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
             hold_us,
             target,
             ..
-        } => ActionDelta {
-            standing: vec![standing(
-                process_target(
-                    node,
-                    &Fault::ProcEventPark {
-                        edges,
-                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
-                        target,
-                    },
-                ),
-                (start, end),
-            )],
-        },
+        } => event_park_delta(node, edges, hold_us, target, false, window),
+        FaultOperation::EventParkFromArm {
+            node,
+            edges,
+            hold_us,
+            target,
+            ..
+        } => event_park_delta(node, edges, hold_us, target, true, window),
         FaultOperation::Kill(node, _) => ActionDelta {
             standing: vec![standing(
                 process_target(node, &Fault::ProcRestart),
@@ -1554,6 +1617,13 @@ mod tests {
                 ticks: ticks(9),
                 target: ParkTarget::new(8, 16),
             },
+            FaultOperation::EventParkFromArm {
+                node: 1,
+                edges: 1,
+                hold_us: 1,
+                ticks: ticks(9),
+                target: None,
+            },
             FaultOperation::Pause(1, ticks(9)),
             FaultOperation::Restart(1, ticks(9)),
             FaultOperation::Hook(4, ticks(9)),
@@ -1717,6 +1787,7 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: None,
+                    from_arm: false,
                 }
             ))
         );
@@ -1741,8 +1812,77 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: ParkTarget::new(0x1000, 0x1004),
+                    from_arm: false,
                 }
             ))
+        );
+        let from_arm = FaultOperation::EventParkFromArm {
+            node: 2,
+            edges: 1,
+            hold_us: 2_000_000,
+            ticks: ticks(500),
+            target: ParkTarget::new(0x1000, 0x1001),
+        };
+        let fault = action_delta(from_arm.into(), window, false)
+            .standing
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!((fault.start, fault.end), (ROOT, ROOT + 500 * TICK));
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    edges: 1,
+                    hold: Span(2_000_000_000),
+                    target: ParkTarget::new(0x1000, 0x1001),
+                    from_arm: true,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn a_park_from_arm_is_its_own_action_in_keys_text_and_binary() {
+        let target = ParkTarget::new(8, 16);
+        let today = FaultOperation::EventPark {
+            node: 1,
+            edges: 3,
+            hold_us: 90_000,
+            ticks: ticks(9),
+            target,
+        };
+        let from_arm = FaultOperation::EventParkFromArm {
+            node: 1,
+            edges: 3,
+            hold_us: 90_000,
+            ticks: ticks(9),
+            target,
+        };
+        assert_ne!(today.key_bytes(), from_arm.key_bytes());
+        assert_eq!(
+            from_arm.with_ticks(ticks(4)),
+            FaultOperation::EventParkFromArm {
+                node: 1,
+                edges: 3,
+                hold_us: 40_000,
+                ticks: ticks(4),
+                target,
+            }
+        );
+        let text = r#"{"operation":{"EventParkFromArm":{"node":1,"edges":3,"hold_us":90000,"ticks":9,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
+        let action: FaultAction = serde_json::from_str(text).unwrap();
+        assert_eq!(action.operation, from_arm);
+        assert_eq!(serde_json::to_string(&action).unwrap(), text);
+        let bytes = postcard::to_allocvec(&(action, 0x55_u8)).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<(FaultAction, u8)>(&bytes).unwrap(),
+            (action, 0x55)
+        );
+        assert_eq!(
+            postcard::to_allocvec(&FaultAction::from(today)).unwrap()[0],
+            9
         );
     }
 

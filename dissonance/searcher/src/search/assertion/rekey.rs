@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{
     catalog::Record,
-    checks::{Checker, Finding},
+    checks::{Checker, Finding, StageFalls},
     compile::{Accumulator, Compiled},
     key::AssertionKey,
     records::RecordedAction,
@@ -39,7 +39,7 @@ pub struct Holders {
     pub keys: Vec<AssertionKey>,
 }
 
-pub const REKEYED_FORMAT: &str = "assertion-rekeyed-v1";
+pub const REKEYED_FORMAT: &str = "assertion-rekeyed-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Rekeyed {
@@ -54,6 +54,7 @@ pub struct Rekeyed {
     pub holders: Vec<Holders>,
     pub snapshots: Vec<u64>,
     pub findings: Vec<Finding>,
+    pub stage_falls: Vec<StageFalls>,
     pub decisions: Vec<Vec<CampaignAdmissionDecision>>,
 }
 
@@ -79,14 +80,16 @@ fn fold(
     mut checker: Option<&mut Checker<'_>>,
 ) -> Step {
     let mut key = None;
+    let departure = checker.is_some().then(|| accumulator.clone());
     for (index, frame) in frames.iter().enumerate() {
         let parent = checker.is_some().then(|| accumulator.clone());
         let observed = strategy.observe(frame, accumulator);
         let stopped = observed.goal || observed.rejected.is_some();
         if (stopped || index + 1 == frames.len())
-            && let (Some(checker), Some(parent)) = (checker.as_deref_mut(), &parent)
+            && let (Some(checker), Some(parent), Some(departure)) =
+                (checker.as_deref_mut(), &parent, &departure)
         {
-            checker.observe(frame, parent);
+            checker.observe_action(frame, parent, departure);
         }
         if stopped {
             return Step::Stopped;
@@ -324,6 +327,7 @@ impl Rekeying<'_> {
             holders,
             snapshots,
             findings: checker.findings(),
+            stage_falls: checker.stage_falls(),
             decisions,
         })
     }

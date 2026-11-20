@@ -79,12 +79,16 @@ so it differs between any two binaries. Archive digests and saved-state reuse us
 `SnapshotState::logical_identity` instead, which keeps the execution hash, so a matching archive
 digest still means the state restores in this execution, and restoring a state still requires the
 hash to match the running machine. `nes-eval` writes `result.json` with format
-`nes-eval-result-v3`, and a native `nes-film` refuses any other format, so a result recorded
-under `nes-eval-result-v2` is filmed only after a rerun of its search. In v3 a `nes-games`
+`nes-eval-result-v4`, and a native `nes-film` refuses any other format, so a result recorded
+under an earlier format is filmed only after a rerun of its search. A `nes-games`
 workload's witness names every `sometimes` declaration in `named_progress.first_seen`, and
 `milestone_witnesses` carries a replay of each tape the run wrote to `milestone-inputs/`.
+The campaign and the witness both count the marks that already hold at power-on as seen at
+execution 0, and the campaign writes an empty tape for each of them, so a v3 witness of a mark
+that holds at power-on no longer matches its replay.
 `nes-film --milestone NAME` films the tape `NAME.json` against its entry there and checks the
-tape's hash, so a milestone is filmed from power-on without resuming a checkpoint. The Super Tilt Bro
+tape's hash, so a milestone is filmed from power-on without resuming a checkpoint. It refuses
+an empty tape with a message that the milestone holds at power-on. The Super Tilt Bro
 campaign result digest covers the complete job result, including preparation
 failures and retained QuickNES snapshots. Replay therefore detects a latent
 endpoint-state change even when its decoded game observations and archive key
@@ -158,16 +162,21 @@ key states produce the same decision digest when the search made the same
 choices, and the first differing mark bounds where they parted. The digest is
 computed whether or not the stream is kept, so it covers runs of any length.
 
-`nes-rekey GAME RUN_DIR [STRATEGY.toml]` reads `records.bin` and `stream.jsonl`,
-checks that the records belong to that stream and catalog, and prints the
-cells, tiers, holders and check findings the run has under the strategy, the
-recorded one by default, with no emulator. A records file cut short by a crash
-reads as its whole jobs. Under the recorded strategy the tool also counts the
+`nes-rekey GAME RUN_DIR [STRATEGY.toml]`, with GAME the `nes-eval` name of any
+game declared through assertions (`smb-strategy`, `mm2-strategy`, `joust` and
+the rest), reads `records.bin` and `stream.jsonl`, checks that the records
+belong to that stream and catalog, and prints the cells, tiers, holders, check
+findings and stage falls (see the searcher README's Checks) the run has under
+the strategy, the recorded one by default, with no emulator. A records file cut
+short by a crash reads as its whole jobs. Under the recorded strategy the tool also counts the
 jobs whose decisions match the stream and compares the holders with the
 entries of `checkpoint.bin`. Every report gives the records' total cost and the count of
 each forced-move length (an action's cost beyond the frames it decoded). A run
 with no `stream.jsonl`, such as a witness-verified one, reports only those
-counts.
+counts. The tool refuses a game with moves when the recorded or the given
+strategy has stages, a latched stage or a `highest` aggregate, because it
+cannot re-key that pair exactly
+([#1062](https://github.com/pH14/harmony/issues/1062)).
 
 ## Chord draw
 
@@ -439,6 +448,8 @@ the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
 `smb_route`, `smb_terminal`, `minimize`, `resume`, `resume_states` and `mixture`. For Super
 Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
 `control_in:7,0`, and `root_input` a tape the game replays before its genesis.
+`smb`, `mm2`, `metroid` and `ice-climbers` take `root_input`, and every other
+game rejects a request that names one.
 For any game, `minimize` runs the campaign in the searcher's minimize mode
 (see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search
 keeps going after its first goal and `victory-input.json` holds the cheapest

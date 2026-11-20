@@ -43,7 +43,8 @@ use crate::{
         FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark, MAX_RECORDED_BUGS,
         MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
         UndecidedChecks, action_cost, bug_outcome, merge_milestones, merge_progress_watermark,
-        milestone_key, milestones, park_threshold_bucket, sample_action, sample_profiled_action,
+        milestone_key, milestones, park_threshold_bucket, resume_park, sample_action,
+        sample_profiled_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -61,9 +62,9 @@ use crate::{
 
 pub(crate) mod settle;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v13";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v14";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v10";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v11";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -975,7 +976,7 @@ impl InputPolicy for FaultWorkload {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
-        _previous: Option<&FaultAction>,
+        previous: Option<&FaultAction>,
         draw: DurationDraw<AssertionKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -985,6 +986,7 @@ impl InputPolicy for FaultWorkload {
             mixture,
             before,
             mutation_seed,
+            previous,
             replay,
             DurationDraw {
                 context: self.keys.context_event_ready(draw.context),
@@ -1047,7 +1049,9 @@ fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
 
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     match &action.operation {
-        FaultOperation::EventKill { node, .. } | FaultOperation::EventPark { node, .. } => 1_u64
+        FaultOperation::EventKill { node, .. }
+        | FaultOperation::EventPark { node, .. }
+        | FaultOperation::EventParkFromArm { node, .. } => 1_u64
             .checked_shl(u32::from(*node))
             .is_some_and(|bit| event_ready & bit != 0),
         _ => true,
@@ -1056,12 +1060,58 @@ fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
 
 const PROFILE_SEED_MIX: u64 = 0x5157_4152_4d5f_6b31;
 
+const RESUME_PARK_SEED_MIX: u64 = 0x7265_7375_6d65_7061;
+
+fn paused_node(action: &FaultAction) -> Option<u16> {
+    match action.operation {
+        FaultOperation::Pause(node, _) => Some(node),
+        _ => None,
+    }
+}
+
+fn parks_from_arm_on(action: Option<&FaultAction>, node: u16) -> bool {
+    matches!(
+        action.map(|action| action.operation),
+        Some(FaultOperation::EventParkFromArm { node: parked, .. }) if parked == node
+    )
+}
+
+fn with_resume_parks(
+    suffix: Vec<FaultAction>,
+    previous: Option<&FaultAction>,
+    sites: &[u64],
+    event_ready: u64,
+    ticks: std::num::NonZeroU16,
+    mutation_seed: u64,
+) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ RESUME_PARK_SEED_MIX);
+    let mut parked = Vec::with_capacity(suffix.len().saturating_mul(2));
+    let mut paused = previous.and_then(paused_node);
+    for action in suffix.iter().map(Some).chain([None]) {
+        if let Some(node) = paused.take()
+            && !parks_from_arm_on(action, node)
+        {
+            let park = resume_park(&mut rand, node, sites, ticks)?;
+            if event_is_ready(&park, event_ready) {
+                parked.push(park);
+            }
+        }
+        if let Some(action) = action {
+            parked.push(*action);
+            paused = paused_node(action);
+        }
+    }
+    Ok(parked)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn held_suffix(
     run: &FaultCampaignRun,
     state: &DrawTables<FaultAction>,
     mixture: MixtureDraw,
     before: Option<&EmpiricalStepCheckpoint>,
     mutation_seed: u64,
+    previous: Option<&FaultAction>,
     replay: bool,
     draw: DurationDraw<u64>,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -1095,6 +1145,9 @@ fn held_suffix(
                 },
             )
         })?;
+    if let Some(sites) = run.vocabulary.resume_park() {
+        suffix = with_resume_parks(suffix, previous, sites, event_ready, ticks, mutation_seed)?;
+    }
     for action in &mut suffix {
         *action = action.with_ticks(ticks);
     }
@@ -1438,15 +1491,21 @@ impl Evaluation for FaultWorkload {
                 .or_default()
                 .armed += 1;
         }
+        let from_arm = matches!(
+            action.action.operation,
+            FaultOperation::EventParkFromArm { .. }
+        );
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
                 *evidence.park_sites.entry(park.site).or_default() += 1;
-                evidence
-                    .park_thresholds
-                    .entry(park_threshold_bucket(park.edges))
-                    .or_default()
-                    .fired += 1;
+                if !from_arm {
+                    evidence
+                        .park_thresholds
+                        .entry(park_threshold_bucket(park.edges))
+                        .or_default()
+                        .fired += 1;
+                }
             }
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
@@ -2481,6 +2540,195 @@ mod tests {
         assert!(
             game.expand_suffix_duration(&run, &tables, mixture, 1, None, out_of_range)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_park_from_arm_follows_every_drawn_pause_only_under_resume_park() {
+        let game = game();
+        let vocabulary = FaultVocabulary::new(3, vec![])
+            .unwrap()
+            .with_instrumented_events(true);
+        let off = FaultCampaignRun::any_bug(vocabulary.clone());
+        let anywhere = FaultCampaignRun::any_bug(
+            vocabulary
+                .clone()
+                .with_resume_park(Some(Vec::new()))
+                .unwrap(),
+        );
+        let sited =
+            FaultCampaignRun::any_bug(vocabulary.with_resume_park(Some(vec![228_994])).unwrap());
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        let draw = DurationDraw {
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready: 0b111,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
+            ),
+            max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
+            duration: NonZeroU64::new(256).unwrap(),
+        };
+        let mut tables =
+            DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("draw tables");
+        let checkpoint = tables.checkpoint().expect("initial checkpoint");
+        let mut schedule = DrawVersionSchedule::default();
+        schedule.require(checkpoint.records, 0);
+        tables.remember_version(&schedule).expect("keep a version");
+        let from_arm = |action: &FaultAction| match action.operation {
+            FaultOperation::EventParkFromArm {
+                node,
+                edges,
+                hold_us,
+                ticks,
+                target,
+            } => Some((node, edges, hold_us, ticks.get(), target)),
+            _ => None,
+        };
+        let mut pauses = 0;
+        let mut exponents = BTreeSet::new();
+        for seed in 0..256 {
+            let today = game
+                .expand_suffix_duration(&off, &tables, mixture, seed, None, draw)
+                .unwrap();
+            assert!(today.iter().all(|action| from_arm(action).is_none()));
+            for (run, site) in [(&anywhere, None), (&sited, Some(228_994))] {
+                let parked = game
+                    .expand_suffix_duration(run, &tables, mixture, seed, None, draw)
+                    .unwrap();
+                let drawn: Vec<_> = parked
+                    .iter()
+                    .filter(|action| from_arm(action).is_none())
+                    .copied()
+                    .collect();
+                assert_eq!(drawn, today);
+                for (index, action) in parked.iter().enumerate() {
+                    if let FaultOperation::Pause(node, _) = action.operation {
+                        pauses += 1;
+                        let (parked_node, edges, hold_us, ticks, target) =
+                            from_arm(&parked[index + 1]).expect("a park follows the pause");
+                        assert_eq!(parked_node, node);
+                        assert_eq!(ticks, 256);
+                        assert!((10_000..=2_560_000).contains(&hold_us));
+                        match site {
+                            Some(site) => {
+                                assert_eq!(edges, 1);
+                                assert_eq!(target, fault_policy::ParkTarget::new(site, site + 1));
+                            }
+                            None => {
+                                assert!(edges.is_power_of_two() && edges <= 1024);
+                                assert_eq!(target, None);
+                                exponents.insert(edges.trailing_zeros());
+                            }
+                        }
+                    }
+                    if from_arm(action).is_some() {
+                        assert!(matches!(
+                            parked[index - 1].operation,
+                            FaultOperation::Pause(..)
+                        ));
+                    }
+                }
+                let replay = game
+                    .expand_suffix_recorded_duration(
+                        run,
+                        &tables,
+                        mixture,
+                        Some(&checkpoint),
+                        seed,
+                        None,
+                        Some(draw),
+                    )
+                    .unwrap();
+                assert_eq!(replay, parked);
+            }
+        }
+        assert!(pauses > 0);
+        assert_eq!(exponents, (0..=10).collect::<BTreeSet<_>>());
+        let pause = FaultAction::from(FaultOperation::Pause(
+            2,
+            std::num::NonZeroU16::new(256).unwrap(),
+        ));
+        let resumed = game
+            .expand_suffix_duration(&anywhere, &tables, mixture, 3, Some(&pause), draw)
+            .unwrap();
+        assert_eq!(from_arm(&resumed[0]).map(|park| park.0), Some(2));
+        let unready = DurationDraw {
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready: 0,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
+            ),
+            ..draw
+        };
+        for seed in 0..32 {
+            assert_eq!(
+                game.expand_suffix_duration(
+                    &anywhere,
+                    &tables,
+                    mixture,
+                    seed,
+                    Some(&pause),
+                    unready
+                )
+                .unwrap(),
+                game.expand_suffix_duration(&off, &tables, mixture, seed, Some(&pause), unready)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn a_pause_already_followed_by_its_park_gets_no_second_one() {
+        let ticks = std::num::NonZeroU16::new(256).unwrap();
+        let pause = |node| FaultAction::from(FaultOperation::Pause(node, ticks));
+        let retained = FaultAction::from(FaultOperation::EventParkFromArm {
+            node: 1,
+            edges: 4,
+            hold_us: 10_000,
+            ticks,
+            target: None,
+        });
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let shape = |actions: &[FaultAction]| {
+            actions
+                .iter()
+                .map(|action| match action.operation {
+                    FaultOperation::Pause(node, _) => format!("P{node}"),
+                    FaultOperation::EventParkFromArm { node, .. } => format!("A{node}"),
+                    FaultOperation::Wait(_) => "W".to_owned(),
+                    _ => "?".to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let suffix = vec![pause(0), wait, pause(1), retained, pause(2)];
+        let parked = with_resume_parks(suffix.clone(), None, &[], u64::MAX, ticks, 7).unwrap();
+        assert_eq!(shape(&parked), "P0 A0 W P1 A1 P2 A2");
+        assert_eq!(parked[4], retained);
+        assert_eq!(
+            parked,
+            with_resume_parks(suffix.clone(), None, &[], u64::MAX, ticks, 7).unwrap()
+        );
+        assert_eq!(
+            shape(
+                &with_resume_parks(suffix.clone(), Some(&pause(1)), &[], 0b010, ticks, 7).unwrap()
+            ),
+            "A1 P0 W P1 A1 P2"
+        );
+        assert_eq!(
+            shape(
+                &with_resume_parks(vec![retained], Some(&pause(1)), &[], u64::MAX, ticks, 7)
+                    .unwrap()
+            ),
+            "A1"
         );
     }
 

@@ -97,6 +97,6 @@ where
     Ok(
         json!({"victory": objective_reached, "disposition": disposition, "milestones": aggregate,
             "diagnostics": G::diagnostics(&evidence),
-            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one", "snapshot_sha256": endpoint.endpoint_sha256()?}),
+            "diagnostics_scope": "one replayed trajectory; execution fields count replayed actions from one, and zero is the tape's power-on root", "snapshot_sha256": endpoint.endpoint_sha256()?}),
     )
 }

@@ -41,6 +41,13 @@ pub struct Stepper {
 }
 
 impl Stepper {
+    pub fn at(x: u8) -> Self {
+        Self {
+            ram: [x, 0],
+            ..Self::default()
+        }
+    }
+
     fn wram(&self) -> [u8; WRAM_SIZE] {
         let mut wram = [0; WRAM_SIZE];
         wram[..2].copy_from_slice(&self.ram);

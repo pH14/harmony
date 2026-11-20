@@ -797,6 +797,13 @@ pub trait Evaluation: TargetExecution {
         evidence: &mut Self::Evidence,
         target: &Self::Target,
     ) -> Result<(), Box<dyn Error>>;
+    fn merge_genesis_evidence(
+        &self,
+        _evidence: &mut Self::Evidence,
+        _target: &Self::Target,
+    ) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn merge_import_evidence(
         &self,
         evidence: &mut Self::Evidence,
@@ -2566,6 +2573,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             self.objectives_reached = self.objectives_reached.saturating_add(1);
             self.objective_witness = Some(Input::default());
         }
+        workload.merge_genesis_evidence(&mut self.evidence, target)?;
         let genesis_key = workload.current_key(target)?;
         let genesis_snapshot = workload.snapshot(target)?;
         let genesis = self

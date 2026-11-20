@@ -54,6 +54,9 @@ impl Action {
                 if let Some(target) = park.target {
                     text.push_str(&format!(" target {:#x}..{:#x}", target.start, target.end));
                 }
+                if park.from_arm {
+                    text.push_str(" from arm");
+                }
                 text
             }
             Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
@@ -1548,6 +1551,7 @@ mod tests {
                     edges: 3,
                     hold_nanos: 8,
                     target: None,
+                    from_arm: false,
                 },
             ),
         ]);
@@ -1561,6 +1565,7 @@ mod tests {
                         edges: 3,
                         hold_nanos: 8,
                         target: None,
+                        from_arm: false,
                         start: 0,
                     },
                 ),
@@ -1582,6 +1587,7 @@ mod tests {
                 edges: 3,
                 hold_nanos: 10_000_000,
                 target: None,
+                from_arm: false,
             },
             0,
         );
@@ -1592,6 +1598,7 @@ mod tests {
                 edges: 3,
                 hold_nanos: 10_000_000,
                 target: None,
+                from_arm: false,
             },
             500_000_000,
         );
@@ -1603,6 +1610,7 @@ mod tests {
                     edges: 3,
                     hold_nanos: 10_000_000,
                     target: None,
+                    from_arm: false,
                     start: 0,
                 }
             )]
@@ -1617,6 +1625,7 @@ mod tests {
                         edges: 3,
                         hold_nanos: 10_000_000,
                         target: None,
+                        from_arm: false,
                         start: 500_000_000,
                     }
                 )
@@ -2219,6 +2228,7 @@ mod tests {
                     edges: 2,
                     hold_nanos: 4,
                     target: None,
+                    from_arm: false,
                     start: 0,
                 }
             )
@@ -2232,11 +2242,12 @@ mod tests {
                     edges: 1,
                     hold_nanos: 4,
                     target: process_proto::events::ParkTarget::new(0x1000, 0x1004),
+                    from_arm: true,
                     start: 0,
                 }
             )
             .describe(),
-            "arm event park node 1 edges 1 hold 4 target 0x1000..0x1004"
+            "arm event park node 1 edges 1 hold 4 target 0x1000..0x1004 from arm"
         );
         assert_eq!(
             Action::DisarmEventPark(0).describe(),

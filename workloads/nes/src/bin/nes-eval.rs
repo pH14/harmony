@@ -207,6 +207,18 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
 }
 
 const SHADOW_GAMES: &[&str] = &["smb", "metroid", "mm2"];
+const ROOT_GAMES: &[&str] = &["smb", "mm2", "metroid", "ice-climbers"];
+
+fn root_input_taken(game: &str, root_input: bool) -> Result<()> {
+    if root_input && !ROOT_GAMES.contains(&game) {
+        return Err(format!(
+            "{game} takes no root_input; the games that do are {}",
+            ROOT_GAMES.join(", ")
+        )
+        .into());
+    }
+    Ok(())
+}
 
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
@@ -254,10 +266,7 @@ fn main() -> Result<()> {
                 return Err("this game takes no stage, ai or whole_game option".into());
             }
             "mm2-strategy"
-                if request.stage.is_some()
-                    || request.ai.is_some()
-                    || !request.whole_game
-                    || request.root_input.is_some() =>
+                if request.stage.is_some() || request.ai.is_some() || !request.whole_game =>
             {
                 return Err("the strategy MM2 runs the whole game from power-on".into());
             }
@@ -297,6 +306,7 @@ fn main() -> Result<()> {
             }
             _ => {}
         }
+        root_input_taken(&request.game, request.root_input.is_some())?;
         if request.shadow && !SHADOW_GAMES.contains(&request.game.as_str()) {
             return Err("only the hand-keyed games with a shadow hook take a shadow key".into());
         }
@@ -687,4 +697,31 @@ fn main() -> Result<()> {
             _ => Err("unsupported game".into()),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_games_that_take_a_root_accept_root_input() {
+        for game in ROOT_GAMES {
+            assert!(root_input_taken(game, true).is_ok(), "{game}");
+        }
+        for game in [
+            "smb-strategy",
+            "mm2-strategy",
+            "metroid-strategy",
+            "twin-dragons",
+            "joust",
+            "castlevania",
+        ] {
+            let error = root_input_taken(game, true).unwrap_err().to_string();
+            assert!(
+                error.starts_with(&format!("{game} takes no root_input")),
+                "{error}"
+            );
+            assert!(root_input_taken(game, false).is_ok(), "{game}");
+        }
+    }
 }

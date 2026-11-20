@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    any::TypeId,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
@@ -9,13 +10,24 @@ use std::{
 
 use machine::nes::ButtonChord;
 use nes_games::workload::{
-    Game, Lowered, NesSnapshot, RECORDS_FILE, REPLAY_RECORDS_FILE, SNAPSHOT_CHECKPOINT_FORMAT,
+    Game, Lowered, NesSnapshot, Never, RECORDS_FILE, REPLAY_RECORDS_FILE,
+    SNAPSHOT_CHECKPOINT_FORMAT,
 };
-use nes_workload::{famidash::Famidash, joust::Joust, zelda::Zelda};
+use nes_games::{mm2::MegaMan2, smb::game::SuperMarioBros};
+use nes_workload::{
+    donkey_kong::DonkeyKong,
+    famidash::{Famidash, LuckyDraw},
+    ice_climbers::IceClimbers,
+    joust::Joust,
+    pac_man::PacMan,
+    punchout::PunchOut,
+    twin_dragons::TwinDragons,
+    zelda::Zelda,
+};
 use searcher::search::{
     assertion::{
-        AssertionKey, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying, StreamIdentity,
-        same_decisions,
+        AssertionKey, Compiled, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying,
+        StreamIdentity, same_decisions,
     },
     campaign::SnapshotCheckpoint,
 };
@@ -46,8 +58,25 @@ fn rekeyed_report(rekeyed: &Rekeyed) -> Value {
         "entries": rekeyed.holders.iter().map(|held| held.ids.len()).sum::<usize>(),
         "tiers": rekeyed.tiers,
         "findings": rekeyed.findings,
+        "stage_falls": rekeyed.stage_falls,
         "holders": rekeyed.holders,
     })
+}
+
+fn exact_rekeying<G: Game>(strategies: [&Compiled; 2]) -> Result<()> {
+    let moves = TypeId::of::<G::Move>() != TypeId::of::<Never>();
+    if moves
+        && strategies
+            .iter()
+            .any(|compiled| !compiled.is_pure() || !compiled.stage_names().is_empty())
+    {
+        return Err(format!(
+            "{} has moves, and a strategy with stages or a `highest` aggregate re-keys exactly only on a game without moves (https://github.com/pH14/harmony/issues/1062)",
+            G::NAME
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
@@ -68,6 +97,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
             "forced_move_frames": forced_move_frames(&recording.actions),
         }));
     }
+    exact_rekeying::<G>([&recorded.compiled, &keyed.compiled])?;
     let stream = fs::read_to_string(run.join("stream.jsonl"))?;
     let mut lines = stream.lines();
     let header: Value = serde_json::from_str(lines.next().ok_or("the stream is empty")?)?;
@@ -183,6 +213,14 @@ fn main() -> Result<()> {
         "joust" => rekey(Joust, run, strategy.as_deref())?,
         "zelda" => rekey(Zelda, run, strategy.as_deref())?,
         "famidash" => rekey(<Famidash>::default(), run, strategy.as_deref())?,
+        "famidash-lucky-draw" => rekey(LuckyDraw::default(), run, strategy.as_deref())?,
+        "twin-dragons" => rekey(TwinDragons, run, strategy.as_deref())?,
+        "punchout" => rekey(PunchOut, run, strategy.as_deref())?,
+        "donkey-kong" => rekey(DonkeyKong, run, strategy.as_deref())?,
+        "ice-climbers" => rekey(IceClimbers::default(), run, strategy.as_deref())?,
+        "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
+        "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
+        "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,
         other => return Err(format!("{other} does not declare assertions").into()),
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -197,7 +235,7 @@ mod tests {
     #[test]
     fn the_rekeyed_report_names_its_format() {
         let rekeyed = Rekeyed {
-            format: "assertion-rekeyed-v1",
+            format: "assertion-rekeyed-v2",
             policy: "assertion_key_test".to_owned(),
             jobs: 1,
             candidates: 2,
@@ -218,11 +256,52 @@ mod tests {
             }],
             snapshots: vec![7],
             findings: Vec::new(),
+            stage_falls: Vec::new(),
             decisions: Vec::new(),
         };
         let report = rekeyed_report(&rekeyed);
-        assert_eq!(report["format"], "assertion-rekeyed-v1");
+        assert_eq!(report["format"], "assertion-rekeyed-v2");
         assert_eq!(report["entries"], 1);
         assert_eq!(report["holders"][0]["identity"], u64::from(u32::MAX) + 1);
+    }
+
+    #[test]
+    fn a_game_with_moves_refuses_a_strategy_that_reads_its_lineage() {
+        let shipped = Lowered::new(LuckyDraw::default(), LuckyDraw::STRATEGY).unwrap();
+        let highest = Lowered::new(
+            LuckyDraw::default(),
+            &format!("identity = \"highest(x)\"\n{}", LuckyDraw::STRATEGY),
+        )
+        .unwrap();
+        let staged = Lowered::new(
+            LuckyDraw::default(),
+            "goal = \"0\"\nabsent = \"menu_wait == 2\"\ncapacity = 1\nspread = [\"menu\", \"menu_wait\", \"x / 32\"]\n[[stage]]\nname = \"waiting\"\ngoal = \"menu_wait == 0\"\n[[stage]]\nname = \"after\"\ngoal = \"0\"\n",
+        )
+        .unwrap();
+        assert!(shipped.compiled.stage_names().is_empty());
+        assert!(shipped.compiled.is_pure());
+        assert!(!highest.compiled.is_pure());
+        assert!(staged.compiled.is_pure());
+        assert_eq!(staged.compiled.stage_names(), ["waiting", "after"]);
+        assert!(exact_rekeying::<LuckyDraw>([&shipped.compiled, &shipped.compiled]).is_ok());
+        for strategies in [
+            [&shipped.compiled, &highest.compiled],
+            [&highest.compiled, &shipped.compiled],
+            [&shipped.compiled, &staged.compiled],
+            [&staged.compiled, &shipped.compiled],
+        ] {
+            let refused = exact_rekeying::<LuckyDraw>(strategies).unwrap_err();
+            assert!(refused.to_string().contains("issues/1062"));
+        }
+        let smb = Lowered::new(
+            SuperMarioBros,
+            &SuperMarioBros::STRATEGY.replace(
+                "identity = \"screen_x\"",
+                "identity = \"highest(screen_x)\"",
+            ),
+        )
+        .unwrap();
+        assert!(!smb.compiled.is_pure());
+        assert!(exact_rekeying::<SuperMarioBros>([&smb.compiled, &smb.compiled]).is_ok());
     }
 }

@@ -335,6 +335,32 @@ int main(void)
         assert(get_word(response, 16) == 0);
     }
 
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM, 3, 1, response);
+    assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM);
+    harmony_instrumentation_event(12);
+    harmony_instrumentation_event(5);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 7);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    harmony_instrumentation_event(11);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 8);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":11,\"edges\":3}}\n") == 0);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM, 1, 1, 12, 13, response);
+    harmony_instrumentation_event(11);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 8);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":12,\"edges\":1}}\n") == 0);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 12, 13, response);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+
     {
         struct sigaction action;
         uint64_t callbacks;

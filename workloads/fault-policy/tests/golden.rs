@@ -217,14 +217,25 @@ fn golden_process_fault_wire_format() {
                 edges: 3,
                 hold: Span(2_000_000),
                 target: None,
+                from_arm: false,
             },
             "02150300000080841e000000000000",
+        ),
+        (
+            Fault::ProcEventPark {
+                edges: 3,
+                hold: Span(2_000_000),
+                target: None,
+                from_arm: true,
+            },
+            "02150300000080841e000000000002",
         ),
         (
             Fault::ProcEventPark {
                 edges: 1,
                 hold: Span(2_000_000),
                 target: ParkTarget::new(0x1000, 0x1004),
+                from_arm: false,
             },
             "02150100000080841e00000000000100100000000000000410000000000000",
         ),

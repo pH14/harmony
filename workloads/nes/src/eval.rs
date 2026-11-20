@@ -107,7 +107,7 @@ struct StreamDigest {
 }
 
 pub const DECISION_MARKS_FILE: &str = "decision-marks.jsonl";
-pub const RESULT_FORMAT: &str = "nes-eval-result-v3";
+pub const RESULT_FORMAT: &str = "nes-eval-result-v4";
 pub const MILESTONE_INPUTS_DIR: &str = "milestone-inputs";
 const DECISION_MARK_EVERY: u64 = 1024;
 const WORKLOAD_FIELDS: [&str; 3] = [

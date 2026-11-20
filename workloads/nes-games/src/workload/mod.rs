@@ -561,6 +561,16 @@ struct Records {
 }
 
 impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
+    fn merge_root(&self, evidence: &mut NesEvidence, target: &NesTarget<G, M>) -> Vec<String> {
+        evidence.name(&self.lowered);
+        let observation = target.observation();
+        if let Some(key) = observation.key {
+            evidence.watermark = evidence.watermark.max(key.progress);
+        }
+        evidence.aggregate.0 |= observation.satisfied.0;
+        evidence.update_first_seen(observation.satisfied, 0, Some(&Input::default()))
+    }
+
     pub fn with_machines(
         game: G,
         strategy: &str,
@@ -1368,11 +1378,21 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
         evidence: &mut NesEvidence,
         target: &NesTarget<G, M>,
     ) -> Result<(), Box<dyn Error>> {
-        evidence.name(&self.lowered);
-        if let Some(key) = target.observation().key {
-            evidence.watermark = evidence.watermark.max(key.progress);
-        }
+        self.merge_root(evidence, target);
         Ok(())
+    }
+
+    fn merge_genesis_evidence(
+        &self,
+        evidence: &mut NesEvidence,
+        target: &NesTarget<G, M>,
+    ) -> Result<(), Box<dyn Error>> {
+        let named = self.merge_root(evidence, target);
+        publish_milestone_inputs(
+            self.milestone_input_dir.as_deref(),
+            named,
+            &Input::<ButtonChord>::default(),
+        )
     }
 
     fn merge_import_evidence(
@@ -1535,7 +1555,7 @@ mod tests {
         .unwrap()
     }
 
-    fn config(minimize: bool) -> CampaignConfig<StairsWorkload> {
+    fn config<G: Game>(minimize: bool) -> CampaignConfig<NesWorkload<G, Stepper>> {
         CampaignConfig {
             campaign_seed: 7,
             workers: 1,
@@ -1953,6 +1973,51 @@ mod tests {
         let tape: Input<ButtonChord> =
             serde_json::from_slice(&std::fs::read(directory.join("far.json")).unwrap()).unwrap();
         assert_eq!(tape, input);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_mark_that_holds_at_power_on_is_seen_at_execution_zero_by_the_campaign_and_the_witness() {
+        let directory =
+            std::env::temp_dir().join(format!("nes-genesis-inputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let workload = NesWorkload::<Ledge, Stepper>::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::at(3))),
+        )
+        .unwrap()
+        .with_milestone_input_dir(directory.clone());
+        let target = workload.new_target().unwrap();
+        let mut witness = NesEvidence::default();
+        workload
+            .merge_snapshot_root_evidence(&mut witness, &target)
+            .unwrap();
+        assert_eq!(
+            named_progress(&witness)["first_seen"]["far"],
+            serde_json::json!({ "execution": 0 })
+        );
+        assert!(!directory.exists());
+        let config = config(false);
+        let mut stream = Vec::new();
+        let coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap();
+        let (report, _) = coordinator.finish(Vec::new()).unwrap();
+        assert_eq!(report.archive.first_seen[0].execution, Some(0));
+        assert_eq!(report.archive.milestones, Satisfied(1));
+        let tape: Input<ButtonChord> =
+            serde_json::from_slice(&std::fs::read(directory.join("far.json")).unwrap()).unwrap();
+        assert_eq!(tape, Input::default());
         std::fs::remove_dir_all(&directory).unwrap();
     }
 

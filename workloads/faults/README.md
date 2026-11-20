@@ -233,6 +233,7 @@ timing:
 | `EndFaults(ticks)` | every standing window still open at the action's start closes there, including each `EventKill` window, fired or not, which disarms a kill that has not fired; the workload then runs undisturbed; never drawn, only applied by the settle phase |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
+| `EventParkFromArm(node, edges, hold, ticks, target)` | as `EventPark`, except that each counted edge counts one, so the thread whose `edges`-th counted edge after the arm comes is held; never drawn on its own, only added after a `Pause` under `resume_park` |
 | `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
 | `KillAll(ticks)` | every node goes down, as in a host crash, and every node starts when the window closes; drawn only for bundles with more than one node |
 | `PowerLoss(node, ticks)` | the node goes down for the window as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
@@ -369,6 +370,27 @@ out-of-memory kills ([#992](https://github.com/pH14/harmony/issues/992))
 confound one seed in each arm. The runs also do not separate the two options.
 rqlite's searches turn both on
 ([harness README](../harness/README.md#rqlite)).
+
+The option `resume_park`, a list of sites, is off when absent. When it is
+present, every `Pause(node, ticks)` in a drawn suffix, and a `Pause` that ends
+the input a suffix extends, is followed by an `EventParkFromArm` on the same
+node, unless the next action already is one. The supervisor continues the node
+when the pause window closes and queues the park's arm command in the same
+step. The runtime's control thread arms the park when it reads that command,
+after it answers any status request sent while the node was stopped, so the
+resumed process runs briefly before the park counts its edges, and a visit to
+the site in that time is not counted. A replay of the input repeats that
+interval. The search's suffix limit can cut a suffix between a `Pause` and its
+park: that job ends at the resume without the park, the settle phase after it
+runs without one, and a suffix drawn from its endpoint starts with one. With
+sites listed, the park aims at one of them, picked uniformly, with `edges` 1.
+With an empty list it counts every edge, with `edges` `2^j` for `j` drawn
+uniformly from 0 through 10. Its hold is drawn as for `EventPark`. These draws
+use their own generator seeded from the job's mutation seed, so every other
+action of the suffix is the one drawn without the option. A park is added only
+on a node whose runtime announced readiness. The option needs an image with
+the instrumented event runtime and `pause` among the drawn kinds, and the
+vocabulary identifier records it with its sites.
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
@@ -690,8 +712,8 @@ draw-table update. Once any site has a weight, half of the drawn
 parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
 range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 6 through 12, each of the eight widths equally likely.
-`park_thresholds` counts, for each `floor(log2(edges))`, the park actions the
-guest ran at that threshold and the landings at that threshold, so the landings
+`park_thresholds` counts, for each `floor(log2(edges))`, the `EventPark`
+actions the guest ran at that threshold and their landings, so the landings
 per action at each threshold show which part of the drawn range a workload's
 executions reach. A park re-arms after each hold, so one action can land more
 than once. On

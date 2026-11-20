@@ -54,6 +54,8 @@ const DISK_ERROR: u8 = 23;
 const DISK_STALL: u8 = 24;
 const DISK_CORRUPT: u8 = 25;
 const CLOCK: u8 = 26;
+const PARK_TARGETED: u8 = 1;
+const PARK_FROM_ARM: u8 = 2;
 pub const CLOCK_RATE_STOPPED_PPM: i32 = -1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -69,6 +71,7 @@ pub enum ProcessAction {
         edges: u32,
         hold_nanos: u64,
         target: Option<events::ParkTarget>,
+        from_arm: bool,
     },
     PowerLoss {
         choice: u64,
@@ -265,14 +268,16 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
             edges,
             hold_nanos,
             target,
+            from_arm,
         } => {
             out.push(EVENT_PARK);
             put_u32(out, edges);
             put_u64(out, hold_nanos);
+            let from_arm = if from_arm { PARK_FROM_ARM } else { 0 };
             match target {
-                None => out.push(0),
+                None => out.push(from_arm),
                 Some(target) => {
-                    out.push(1);
+                    out.push(PARK_TARGETED | from_arm);
                     put_u64(out, target.start);
                     put_u64(out, target.end);
                 }
@@ -323,18 +328,23 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
             if edges == 0 || edges > events::EVENT_PARK_EDGE_LIMIT || hold_nanos == 0 {
                 return Err(WireError::Malformed);
             }
-            let target = match reader.u8()? {
-                0 => None,
-                1 => Some(
+            let flags = reader.u8()?;
+            if flags & !(PARK_TARGETED | PARK_FROM_ARM) != 0 {
+                return Err(WireError::Malformed);
+            }
+            let target = if flags & PARK_TARGETED == 0 {
+                None
+            } else {
+                Some(
                     events::ParkTarget::new(reader.u64()?, reader.u64()?)
                         .ok_or(WireError::Malformed)?,
-                ),
-                _ => return Err(WireError::Malformed),
+                )
             };
             Ok(ProcessAction::EventPark {
                 edges,
                 hold_nanos,
                 target,
+                from_arm: flags & PARK_FROM_ARM != 0,
             })
         }
         POWER_LOSS => Ok(ProcessAction::PowerLoss {
@@ -484,11 +494,13 @@ mod tests {
                 edges: 5,
                 hold_nanos: 2_000_000,
                 target: None,
+                from_arm: false,
             },
             ProcessAction::EventPark {
                 edges: 1,
                 hold_nanos: 2_000_000,
                 target: events::ParkTarget::new(0x40, 0x41),
+                from_arm: false,
             },
             ProcessAction::PowerLoss { choice: 0x0102 },
             ProcessAction::DiskError,
@@ -597,6 +609,7 @@ mod tests {
                         edges,
                         hold_nanos,
                         target: None,
+                        from_arm: false,
                     }
                     .encode()
                 ),
@@ -607,17 +620,34 @@ mod tests {
             edges: events::EVENT_PARK_EDGE_LIMIT,
             hold_nanos: 1,
             target: None,
+            from_arm: false,
         };
         assert_eq!(ProcessAction::decode(&longest.encode()), Some(longest));
         let empty = ProcessAction::EventPark {
             edges: 1,
             hold_nanos: 1,
             target: Some(events::ParkTarget { start: 9, end: 9 }),
+            from_arm: false,
         };
         assert_eq!(ProcessAction::decode(&empty.encode()), None);
         let mut unknown = longest.encode();
-        *unknown.last_mut().expect("presence byte") = 2;
+        *unknown.last_mut().expect("presence byte") = 4;
         assert_eq!(ProcessAction::decode(&unknown), None);
+    }
+
+    #[test]
+    fn a_park_from_arm_sets_its_flag_beside_the_target_flag() {
+        for (target, flags) in [(None, 2), (events::ParkTarget::new(0x40, 0x41), 3)] {
+            let park = ProcessAction::EventPark {
+                edges: 1,
+                hold_nanos: 2_000_000,
+                target,
+                from_arm: true,
+            };
+            let bytes = park.encode();
+            assert_eq!(bytes[13], flags);
+            assert_eq!(ProcessAction::decode(&bytes), Some(park));
+        }
     }
 
     #[test]

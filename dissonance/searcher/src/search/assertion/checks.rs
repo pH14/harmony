@@ -25,19 +25,42 @@ pub enum Finding {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct StageFalls {
+    pub stage: String,
+    pub records: usize,
+}
+
 pub struct Checker<'a> {
     strategy: &'a Compiled,
     records: usize,
     goal_met: bool,
     stage_met: Vec<bool>,
+    falls: Vec<usize>,
     tiers: BTreeMap<u32, usize>,
 }
 
 impl Checker<'_> {
     pub fn observe(&mut self, record: &Record, parent: &Accumulator) {
+        self.observe_action(record, parent, parent);
+    }
+
+    pub fn observe_action(
+        &mut self,
+        record: &Record,
+        parent: &Accumulator,
+        departure: &Accumulator,
+    ) {
         self.records += 1;
-        let observation = self.strategy.observe(record, &mut parent.clone());
+        let mut child = parent.clone();
+        let observation = self.strategy.observe(record, &mut child);
         self.goal_met |= observation.goal;
+        if let (Some(from), Some(to)) = (departure.stage(), child.stage())
+            && to < from
+            && let Some(falls) = self.falls.get_mut(usize::from(to))
+        {
+            *falls += 1;
+        }
         for (met, holds) in self
             .stage_met
             .iter_mut()
@@ -88,6 +111,19 @@ impl Checker<'_> {
         }
         findings
     }
+
+    #[must_use]
+    pub fn stage_falls(&self) -> Vec<StageFalls> {
+        self.strategy
+            .stage_names()
+            .into_iter()
+            .zip(&self.falls)
+            .map(|(stage, &records)| StageFalls {
+                stage: stage.to_owned(),
+                records,
+            })
+            .collect()
+    }
 }
 
 impl Compiled {
@@ -98,6 +134,7 @@ impl Compiled {
             records: 0,
             goal_met: false,
             stage_met: vec![false; self.stage_names().len()],
+            falls: vec![0; self.stage_names().len()],
             tiers: BTreeMap::new(),
         }
     }

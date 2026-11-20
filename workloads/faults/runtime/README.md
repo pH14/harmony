@@ -43,7 +43,10 @@ the loops inside that operation. The count is kept in units of 2^-20, so a
 visit to a site past its millionth visit counts 2^-20. A park command's fourth
 and fifth words give an optional target: a half-open range of module offsets,
 with `(0, 0)` for none. With a target, only edges whose site falls in the range
-count toward `k`, and an empty range makes the command invalid. Before the hold it writes one JSON line through `fuzz_json_data`:
+count toward `k`, and an empty range makes the command invalid. A park
+command of kind 5 takes the same words but counts from its arming: each counted
+edge counts one whatever its site's visit count, so the `k`-th counted edge
+after the arm is held. Kind 2 keeps the visit share. Before the hold it writes one JSON line through `fuzz_json_data`:
 `{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site
