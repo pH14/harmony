@@ -65,7 +65,11 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
     }
 }
 
-type Played<M> = (u64, [u8; WRAM_SIZE], Option<M>);
+struct Played<M> {
+    frames: u64,
+    wram: [u8; WRAM_SIZE],
+    forced: Option<M>,
+}
 
 type Tracked<'a, S> = (&'a S, &'a mut Accumulator, &'a mut NesObservation<S>);
 
@@ -400,7 +404,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             records,
             choices: Vec::new(),
         });
-        Ok((frames, wram, forced))
+        Ok(Played {
+            frames,
+            wram,
+            forced,
+        })
     }
 
     fn play_forced_after(
@@ -416,9 +424,8 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         else {
             return Ok((0, wram));
         };
-        let (frames, wram, _) =
-            self.play_move(parent, (mv, false), departure, wram, accumulator, emitted)?;
-        Ok((frames, wram))
+        let played = self.play_move(parent, (mv, false), departure, wram, accumulator, emitted)?;
+        Ok((played.frames, played.wram))
     }
 
     fn store_action(
@@ -458,7 +465,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         let mut emitted = Vec::new();
         let departure = self.observation.clone();
         let parent = departure.state.clone();
-        let Ok((frames, wram, forced)) = self.play_move(
+        let Ok(played) = self.play_move(
             &parent,
             (mv, true),
             departure,
@@ -468,15 +475,19 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
         ) else {
             return self.fail();
         };
-        let Ok((forced_frames, wram)) =
-            self.play_forced_after(&parent, forced, wram, &mut accumulator, &mut emitted)
-        else {
+        let Ok((forced_frames, wram)) = self.play_forced_after(
+            &parent,
+            played.forced,
+            played.wram,
+            &mut accumulator,
+            &mut emitted,
+        ) else {
             return self.fail();
         };
         self.store_action(
             start,
             emitted,
-            frames.saturating_add(forced_frames),
+            played.frames.saturating_add(forced_frames),
             accumulator,
             wram,
             None,

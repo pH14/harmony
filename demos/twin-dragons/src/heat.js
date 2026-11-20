@@ -15,6 +15,8 @@ export class Heatmap {
     this.runningSince = 0;
     this.work = 0;
     this.peaks = null;
+    this.peakTime = 0;
+    this.peakWork = 0;
     this.pins = new Map();
   }
   clock(now) {
@@ -133,9 +135,10 @@ export class Heatmap {
     if (this.peaks === null) {
       this.peaks = new Map();
       this.peakTime = this.clock(now);
+      this.peakWork = this.work;
       for (const c of this.cells.values()) this.peaks.set(c.level, Math.max(this.peaks.get(c.level) || 0, this.value(c, now)));
     }
-    const peak = this.peaks.get(cell.level) * Math.pow(0.5, (this.clock(now) - this.peakTime) / HALF_LIFE_MS),
+    const peak = this.peaks.get(cell.level) * Math.pow(0.5, (this.work - this.peakWork) / HALF_LIFE_ROLLOUTS + (this.clock(now) - this.peakTime) / HALF_LIFE_MS),
       v = peak > 0 ? Math.min(1, this.value(cell, now) / peak) : 0,
       stops = [
         [64, 124, 181],

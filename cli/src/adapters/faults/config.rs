@@ -187,6 +187,7 @@ pub struct Config {
     pub hooks: BTreeMap<String, Vec<String>>,
     pub explain: Explain,
     pub exclude_faults: Vec<faults_workload::bundle::FaultKind>,
+    pub key: faults_workload::key::KeyRequest,
 }
 
 impl Default for Config {
@@ -213,6 +214,7 @@ impl Default for Config {
             hooks: BTreeMap::new(),
             explain: Explain::default(),
             exclude_faults: Vec::new(),
+            key: faults_workload::key::KeyRequest::default(),
         }
     }
 }
@@ -516,6 +518,38 @@ mod tests {
         assert!(shared("[\"wait\"]").is_err());
         assert!(shared("[\"disk-corrupt\"]").is_err());
         assert!(Config::default().exclude_faults.is_empty());
+    }
+
+    #[test]
+    fn the_key_request_comes_from_workload_options_and_survives_roundtrip() {
+        let shared: crate::config::Config = toml::from_str(
+            "[workload]\npackage = \"faults\"\n[workload.options.key]\nstrategy = \"capacity = 1\\n\"\n",
+        )
+        .unwrap();
+        let config = Config::from_shared(&shared).unwrap();
+        assert_eq!(config.key.strategy(), "capacity = 1\n");
+        assert_eq!(
+            Config::from_shared(&config.shared().unwrap()).unwrap().key,
+            config.key
+        );
+        assert_eq!(
+            Config::default().key.strategy(),
+            faults_workload::key::STRATEGY
+        );
+        let absent: crate::config::Config =
+            toml::from_str("[workload]\npackage = \"faults\"\n").unwrap();
+        let empty: crate::config::Config =
+            toml::from_str("[workload]\npackage = \"faults\"\n[workload.options.key]\n").unwrap();
+        let absent = Config::from_shared(&absent).unwrap().key;
+        assert_eq!(Config::from_shared(&empty).unwrap().key, absent);
+        assert_eq!(absent, faults_workload::key::KeyRequest::default());
+        for field in ["hand", "shadow", "handkey"] {
+            let unknown: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options.key]\n{field} = true\n"
+            ))
+            .unwrap();
+            assert!(Config::from_shared(&unknown).is_err(), "{field}");
+        }
     }
 
     #[test]

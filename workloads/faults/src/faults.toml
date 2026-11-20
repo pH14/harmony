@@ -1,0 +1,23 @@
+capacity = 1
+tier = "sometimes.count"
+spread = [
+    "sometimes.set / 268435456",
+    "min(hooks.finished, 8)",
+    "hooks_running",
+    "event.ready",
+    "kill_fires",
+    "park_fires",
+    "checks_finished",
+    "checks.started > checks.finished",
+    "workload_running",
+    "event.park_held != 0",
+    "event.kill_armed != 0",
+]
+identity = ["alive", "edges / 16384"]
+
+[define]
+hooks_running = "min(max(hooks.started - hooks.finished, 0), 8)"
+kill_fires = "min(event.kill_fires, 8)"
+park_fires = "min(event.park_fires, 8)"
+checks_finished = "min(checks.finished, 8)"
+workload_running = "workload.started > workload.finished"

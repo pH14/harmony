@@ -10,118 +10,23 @@ use serde::{Deserialize, Serialize};
 
 use fault_policy::ParkTarget;
 use searcher::search::{
-    archive::{
-        ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
-    },
+    archive::{ArchiveEntryReport, ProgressPoint, SelectorAccounting, entries_by_suffix},
+    assertion::AssertionKey,
+    campaign::{ArchiveFormat, ArchiveFormatName},
     draw_tables::DrawView,
     rand::RomuDuoJrRand,
 };
 
-use crate::assertion::{AssertionSet, Assertions};
+use crate::assertion::Assertions;
 use crate::bundle::{FaultKind, FaultVocabulary};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, SUPERVISOR_TICK_MICROS};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_goals_reached_tiers_assertion_ids_held_park_armed_kill_places_liveness_edge_buckets_identity_v11";
-pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_planned_ticks";
 
 pub const ACTION_HOST_TICKS: u64 = 256;
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct FaultArchiveKey {
-    pub sometimes: AssertionSet,
-    pub hooks_finished: u64,
-    pub hooks_running: u64,
-    pub alive: u64,
-    pub event_ready: u64,
-    pub event_kill_fires: u64,
-    pub event_park_fires: u64,
-    pub checks_finished: u64,
-    pub checks_running: bool,
-    pub workload_running: bool,
-    pub park_held: bool,
-    pub kill_armed: bool,
-    pub edges: u64,
-}
-
-impl ArchiveKey for FaultArchiveKey {
-    type Place = (
-        AssertionSet,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        bool,
-        bool,
-        bool,
-        bool,
-    );
-    type Progress = u32;
-    type Identity = (u64, u64);
-
-    fn place(self) -> Self::Place {
-        (
-            self.sometimes,
-            self.hooks_finished,
-            self.hooks_running,
-            self.event_ready,
-            self.event_kill_fires,
-            self.event_park_fires,
-            self.checks_finished,
-            self.checks_running,
-            self.workload_running,
-            self.park_held,
-            self.kill_armed,
-        )
-    }
-
-    fn progress(self) -> Self::Progress {
-        self.sometimes.count
-    }
-
-    fn identity(self) -> Self::Identity {
-        (self.alive, self.edges)
-    }
-
-    fn capacity() -> usize {
-        1
-    }
-
-    type Lineage = ();
-
-    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-        self
-    }
-
-    fn record(_lineage: &mut Self::Lineage, _key: Self) {}
-}
-
-#[must_use]
-pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
-    FaultArchiveKey {
-        sometimes: observations.assertions.key(),
-        hooks_finished: observations.hooks_finished.min(HOOKS_FINISHED_KEY_CAP),
-        hooks_running: observations
-            .hooks_started
-            .saturating_sub(observations.hooks_finished)
-            .min(HOOKS_FINISHED_KEY_CAP),
-        alive: observations.alive,
-        event_ready: observations.event_ready,
-        event_kill_fires: observations.event_kill_fires.min(HOOKS_FINISHED_KEY_CAP),
-        event_park_fires: observations.event_park_fires.min(HOOKS_FINISHED_KEY_CAP),
-        checks_finished: observations.checks_finished.min(HOOKS_FINISHED_KEY_CAP),
-        checks_running: observations.checks_started > observations.checks_finished,
-        workload_running: observations.workload_started > observations.workload_finished,
-        park_held: observations.event_park_held != 0,
-        kill_armed: observations.event_kill_armed != 0,
-        edges: observations.edge_digest,
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultMilestones {
@@ -440,8 +345,7 @@ fn park_hold_us(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u32, Box<
 }
 
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
-pub type FaultArchiveEntryReport =
-    ArchiveEntryReport<FaultAction, FaultArchiveKey, FaultMilestones>;
+pub type FaultArchiveEntryReport = ArchiveEntryReport<FaultAction, AssertionKey, FaultMilestones>;
 pub type FaultInput = searcher::search::archive::Input<FaultAction>;
 
 pub const MAX_RECORDED_BUGS: usize = 64;
@@ -477,8 +381,18 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     )
 }
 
+pub const ARCHIVE_FORMAT: &str = "faults-archive-v1";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FaultArchive;
+
+impl ArchiveFormatName for FaultArchive {
+    const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultArchiveReport {
+    pub format: ArchiveFormat<FaultArchive>,
     pub seed: u64,
     pub root_seal: u64,
     pub executions: u64,
@@ -564,131 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn the_key_is_the_sites_the_progress_and_the_survivors() {
-        let key = archive_key(&endpoint(&[0, 5], 3, 0b11));
-        assert_eq!(
-            key,
-            FaultArchiveKey {
-                sometimes: AssertionSet::of(["0", "5"]),
-                hooks_finished: 3,
-                hooks_running: 0,
-                alive: 0b11,
-                ..FaultArchiveKey::default()
-            }
-        );
-    }
-
-    #[test]
-    fn raw_event_sites_remain_diagnostic_only() {
-        let first = FaultObservations {
-            event_kill_site: 41,
-            event_kill_fires: 1,
-            ..FaultObservations::default()
-        };
-        let second = FaultObservations {
-            event_kill_site: 999,
-            ..first.clone()
-        };
-        assert_eq!(archive_key(&first), archive_key(&second));
-        assert_ne!(first.event_kill_site, second.event_kill_site);
-    }
-
-    #[test]
-    fn hooks_still_running_open_their_own_cell() {
-        let overlapping = FaultObservations {
-            hooks_started: 2,
-            hooks_finished: 1,
-            alive: 0b1,
-            ..FaultObservations::default()
-        };
-        let alone = FaultObservations {
-            hooks_started: 1,
-            hooks_finished: 1,
-            alive: 0b1,
-            ..FaultObservations::default()
-        };
-        assert_ne!(archive_key(&overlapping), archive_key(&alone));
-        assert_eq!(archive_key(&overlapping).hooks_running, 1);
-        let many = FaultObservations {
-            hooks_started: 100,
-            ..FaultObservations::default()
-        };
-        assert_eq!(archive_key(&many).hooks_running, HOOKS_FINISHED_KEY_CAP);
-    }
-
-    #[test]
-    fn repeated_hooks_stop_opening_cells_past_the_cap() {
-        let at_cap = archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP, 0b1));
-        let past = archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP + 1, 0b1));
-        let far_past = archive_key(&endpoint(&[1], 100, 0b1));
-        assert_eq!(at_cap, past);
-        assert_eq!(at_cap, far_past);
-        assert_ne!(
-            archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP - 1, 0b1)),
-            at_cap
-        );
-        assert_eq!(
-            milestones(&endpoint(&[1], 100, 0b1)).hooks_finished,
-            100,
-            "the milestone keeps the true count"
-        );
-    }
-
-    #[test]
-    fn an_in_flight_check_opens_its_own_cell() {
-        let completed = archive_key(&FaultObservations {
-            checks_started: 1,
-            checks_finished: 1,
-            ..FaultObservations::default()
-        });
-        let running = archive_key(&FaultObservations {
-            checks_started: 2,
-            checks_finished: 1,
-            ..FaultObservations::default()
-        });
-        assert_ne!(completed, running);
-        assert!(!completed.checks_running);
-        assert!(running.checks_running);
-    }
-
-    #[test]
-    fn a_held_park_thread_and_an_armed_event_kill_each_open_their_own_place() {
-        let quiet = FaultObservations {
-            alive: 0b11,
-            ..FaultObservations::default()
-        };
-        let held = FaultObservations {
-            event_park_held: 0b10,
-            ..quiet.clone()
-        };
-        let armed = FaultObservations {
-            event_kill_armed: 0b01,
-            ..quiet.clone()
-        };
-        let places = [&quiet, &held, &armed]
-            .map(|observations| archive_key(observations).place())
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(places.len(), 3);
-        assert!(archive_key(&held).park_held);
-        assert!(archive_key(&armed).kill_armed);
-        let other_node = FaultObservations {
-            event_park_held: 0b01,
-            ..quiet
-        };
-        assert_eq!(archive_key(&other_node), archive_key(&held));
-    }
-
-    #[test]
-    fn liveness_is_the_holder_identity_inside_one_place() {
-        let survived = archive_key(&endpoint(&[1], 2, 0b11));
-        let lost_a_node = archive_key(&endpoint(&[1], 2, 0b01));
-        assert_ne!(survived.identity(), lost_a_node.identity());
-        assert_eq!(survived.place(), lost_a_node.place());
-        assert_eq!(FaultArchiveKey::capacity(), 1);
-    }
-
-    #[test]
     fn park_thresholds_bucket_by_power_of_two() {
         assert_eq!(park_threshold_bucket(0), 0);
         assert_eq!(park_threshold_bucket(1), 0);
@@ -698,41 +487,6 @@ mod tests {
             park_threshold_bucket(u64::from(fault_policy::EVENT_PARK_EDGE_LIMIT)),
             24
         );
-    }
-
-    #[test]
-    fn edge_bucket_coverage_separates_identities_inside_one_place() {
-        let before = archive_key(&endpoint(&[1], 2, 0b11));
-        let crossed = archive_key(&FaultObservations {
-            edge_crossings: 3,
-            edge_digest: 0x5eed,
-            ..endpoint(&[1], 2, 0b11)
-        });
-        assert_eq!(crossed.edges, 0x5eed);
-        assert_eq!(before.place(), crossed.place());
-        assert_ne!(before.identity(), crossed.identity());
-    }
-
-    #[test]
-    fn hook_progress_separates_places_inside_one_tier() {
-        let early = archive_key(&endpoint(&[1], 1, 0b1));
-        let late = archive_key(&endpoint(&[1], 4, 0b1));
-        assert_eq!(early.progress(), late.progress());
-        assert_ne!(early.place(), late.place());
-    }
-
-    #[test]
-    fn the_goals_reached_are_the_progress_tier() {
-        let none = archive_key(&endpoint(&[], 0, 0b1));
-        let one = archive_key(&endpoint(&[4], 0, 0b1));
-        let other_one = archive_key(&endpoint(&[7], 0, 0b1));
-        let two = archive_key(&endpoint(&[4, 7], 0, 0b1));
-        assert_eq!(none.progress(), 0);
-        assert_eq!(one.progress(), 1);
-        assert_eq!(two.progress(), 2);
-        assert_eq!(one.progress(), other_one.progress());
-        assert_ne!(one.place(), other_one.place());
-        assert!(two.progress() > one.progress());
     }
 
     #[test]
@@ -1310,6 +1064,29 @@ mod tests {
         assert_eq!(
             action_cost(&FaultOperation::Wait(std::num::NonZeroU16::new(8192).unwrap()).into()),
             8192 + ACTION_HOST_TICKS
+        );
+    }
+
+    #[test]
+    fn an_archive_without_this_format_name_is_refused() {
+        use searcher::search::campaign::ArchiveSource;
+        let refused = |text: &str| {
+            ArchiveSource::<FaultArchiveReport>::from_bytes(text.as_bytes())
+                .err()
+                .expect("the archive is refused")
+                .to_string()
+        };
+        let missing = refused("{}");
+        assert!(
+            missing.contains("archive names no format; this build reads faults-archive-v1"),
+            "{missing}"
+        );
+        let other = refused("{\"format\":\"faults-archive-v0\"}");
+        assert!(
+            other.contains(
+                "archive format is faults-archive-v0; this build reads faults-archive-v1"
+            ),
+            "{other}"
         );
     }
 }

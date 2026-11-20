@@ -13,13 +13,14 @@ use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
 
 use searcher::{
     search::{
-        archive::RetentionPolicy,
+        archive::{KeyShape, RetentionPolicy},
+        assertion::AssertionKey,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
-            CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
-            ThreadPlacement, WorkloadPolicies, default_window, postcard_value_sha256,
-            run_campaign_checkpointed_with_options,
+            ArchiveFormat, ArchiveReportState, CampaignActionResult, CampaignCandidate,
+            CampaignConfig, CampaignExecutionOptions, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting, SnapshotCheckpoint,
+            TargetExecution, ThreadPlacement, WorkloadPolicies, default_window,
+            postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
         choice::{ChoicePlan, ChoiceSite},
         cost::ShrinkCost,
@@ -38,12 +39,11 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, DrawProfile, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
-        FaultFailureRecord, FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark,
-        KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS, MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS,
-        ParkThresholds, REPLACEMENT_IDENTIFIER, UndecidedChecks, action_cost, archive_key,
-        bug_outcome, merge_milestones, merge_progress_watermark, milestone_key, milestones,
-        park_threshold_bucket, sample_action, sample_profiled_action,
+        DURATION_IDENTIFIER, DrawProfile, FaultArchiveReport, FaultBugRecord, FaultFailureRecord,
+        FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark, MAX_RECORDED_BUGS,
+        MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
+        UndecidedChecks, action_cost, bug_outcome, merge_milestones, merge_progress_watermark,
+        milestone_key, milestones, park_threshold_bucket, sample_action, sample_profiled_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -52,15 +52,16 @@ use crate::{
         validate_snapshot_prefix_certificates,
     },
     guest::{GUEST_SITE, GuestChoices},
+    key::FaultKeys,
     shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v12";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v13";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v9";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v10";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -103,6 +104,7 @@ impl FaultCampaignRun {
 }
 
 pub struct FaultWorkload {
+    keys: Arc<FaultKeys>,
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     config: FaultConfig,
@@ -113,8 +115,14 @@ pub struct FaultWorkload {
 }
 
 impl FaultWorkload {
-    pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
+    pub fn new(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &FaultConfig,
+        keys: FaultKeys,
+    ) -> Result<Self, String> {
         Ok(Self {
+            keys: Arc::new(keys),
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             config: config.clone(),
@@ -150,6 +158,15 @@ impl FaultWorkload {
     #[must_use]
     pub fn image_identity(&self) -> &str {
         &self.identity
+    }
+
+    #[must_use]
+    pub fn keys(&self) -> &FaultKeys {
+        &self.keys
+    }
+
+    pub fn key_of(&self, observations: &FaultObservations) -> Option<AssertionKey> {
+        self.keys.key(observations)
     }
 }
 
@@ -278,6 +295,7 @@ fn kvm_result_endpoint(
     result: &FaultCampaignJobResult,
     actions: &[FaultAction],
     observation: &FaultObservations,
+    expected: Option<AssertionKey>,
     fresh_hash: impl FnOnce() -> Result<[u8; 32], String>,
 ) -> Result<FaultEndpointCertificate, Box<dyn Error>> {
     if let Some(last) = result.actions.last()
@@ -292,7 +310,7 @@ fn kvm_result_endpoint(
             || candidate.snapshot.failed
             || !candidate.snapshot.history.matches_actions(actions)
             || &candidate.snapshot.observation != observation
-            || candidate.key != archive_key(observation)
+            || Some(candidate.key) != expected
         {
             return Err("the final candidate does not describe the job endpoint".into());
         }
@@ -502,6 +520,7 @@ fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultA
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
+    key_of: impl Fn(&FaultObservations) -> Option<AssertionKey>,
     run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
@@ -559,8 +578,8 @@ pub(crate) fn execute_job(
         };
         let candidate = match captured {
             Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
-                Some(CampaignCandidate {
-                    key: archive_key(target.observation()),
+                key_of(target.observation()).map(|key| CampaignCandidate {
+                    key,
                     viable: true,
                     snapshot,
                 })
@@ -591,7 +610,7 @@ impl CampaignTypes for FaultWorkload {
     type JobObservation = crate::job_observation::FaultJobObservation;
     type Target = FaultTarget;
     type Action = FaultAction;
-    type Key = FaultArchiveKey;
+    type Key = AssertionKey;
     type Milestones = FaultMilestones;
     type Progress = FaultProgressWatermark;
     type Snapshot = FaultSnapshot;
@@ -669,9 +688,13 @@ impl Reporting for FaultWorkload {
         } else if target.failed() {
             FaultEndpointCertificate::KvmUnavailableAfterFailure
         } else {
-            kvm_result_endpoint(result, target.actions(), target.observation(), || {
-                target.state_hash_current()
-            })?
+            kvm_result_endpoint(
+                result,
+                target.actions(),
+                target.observation(),
+                self.keys.key(target.observation()),
+                || target.state_hash_current(),
+            )?
         };
         let history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
             Some(target.event_history_current()?)
@@ -695,6 +718,7 @@ impl Reporting for FaultWorkload {
         state: ArchiveReportState<Self>,
     ) -> FaultArchiveReport {
         FaultArchiveReport {
+            format: ArchiveFormat::default(),
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
             executions: state.executions,
@@ -734,7 +758,6 @@ impl InputPolicy for FaultWorkload {
     }
     fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
@@ -743,6 +766,10 @@ impl InputPolicy for FaultWorkload {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .chain([
+            (
+                KEY_POLICY_FIELD.to_owned(),
+                self.keys.compiled().policy_identifier().to_owned(),
+            ),
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
@@ -788,20 +815,11 @@ impl InputPolicy for FaultWorkload {
     fn duration_request(
         &self,
         _run: &FaultCampaignRun,
-        parent: FaultArchiveKey,
+        parent: AssertionKey,
         remaining_work: Option<NonZeroU64>,
-    ) -> Option<DurationRequest<FaultArchiveKey>> {
+    ) -> Option<DurationRequest<AssertionKey>> {
         Some(DurationRequest {
-            context: FaultArchiveKey {
-                alive: parent.alive,
-                event_ready: parent.event_ready,
-                hooks_running: u64::from(parent.hooks_running > 0),
-                event_kill_fires: u64::from(parent.event_kill_fires > 0),
-                event_park_fires: u64::from(parent.event_park_fires > 0),
-                workload_running: parent.workload_running,
-                checks_finished: u64::from(parent.checks_finished > 0),
-                ..FaultArchiveKey::default()
-            },
+            context: self.keys.context(parent),
             max_duration: NonZeroU64::new(
                 remaining_work
                     .map_or(ADAPTIVE_DURATION_MAX_TICKS, NonZeroU64::get)
@@ -819,7 +837,7 @@ impl InputPolicy for FaultWorkload {
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         previous: Option<&FaultAction>,
-        draw: Option<DurationDraw<FaultArchiveKey>>,
+        draw: Option<DurationDraw<AssertionKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         self.expand_duration_recorded_or_live(
             run,
@@ -842,10 +860,22 @@ impl InputPolicy for FaultWorkload {
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         _previous: Option<&FaultAction>,
-        draw: DurationDraw<FaultArchiveKey>,
+        draw: DurationDraw<AssertionKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        held_suffix(run, state, mixture, before, mutation_seed, replay, draw)
+        held_suffix(
+            run,
+            state,
+            mixture,
+            before,
+            mutation_seed,
+            replay,
+            DurationDraw {
+                context: self.keys.context_event_ready(draw.context),
+                max_duration: draw.max_duration,
+                duration: draw.duration,
+            },
+        )
     }
 
     fn duration_of_action(
@@ -917,11 +947,11 @@ fn held_suffix(
     before: Option<&EmpiricalStepCheckpoint>,
     mutation_seed: u64,
     replay: bool,
-    draw: DurationDraw<FaultArchiveKey>,
+    draw: DurationDraw<u64>,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("action duration must be positive")?;
-    let event_ready = draw.context.event_ready;
+    let event_ready = draw.context;
     let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(
         mutation_seed ^ PROFILE_SEED_MIX,
     ))?;
@@ -1116,17 +1146,18 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job_certified(
         &self,
-        run: &FaultCampaignRun,
-        target: &mut FaultTarget,
-        origin_snapshot: &FaultSnapshot,
-        replay: &[FaultAction],
+        run: &Self::Run,
+        target: &mut Self::Target,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
         replay_certificates: &[Option<[u8; 32]>],
-        parent_milestones: FaultMilestones,
-        suffix: &[FaultAction],
+        parent_milestones: Self::Milestones,
+        suffix: &[Self::Action],
         _retention: RetentionPolicy,
         stop: searcher::search::rollout::RolloutStop,
-    ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
+            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1140,16 +1171,17 @@ impl TargetExecution for FaultWorkload {
 
     fn execute_job(
         &self,
-        run: &FaultCampaignRun,
-        target: &mut FaultTarget,
-        origin_snapshot: &FaultSnapshot,
-        replay: &[FaultAction],
-        parent_milestones: FaultMilestones,
-        suffix: &[FaultAction],
+        run: &Self::Run,
+        target: &mut Self::Target,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
+        parent_milestones: Self::Milestones,
+        suffix: &[Self::Action],
         _retention: RetentionPolicy,
         stop: searcher::search::rollout::RolloutStop,
-    ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
+            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1184,15 +1216,20 @@ impl Evaluation for FaultWorkload {
         Ok(outcome(run, target).objective_reached)
     }
 
-    fn current_key(&self, target: &FaultTarget) -> Result<FaultArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.observation()))
+    fn key_shape(&self) -> KeyShape {
+        self.keys.compiled().shape()
+    }
+
+    fn current_key(&self, target: &FaultTarget) -> Result<AssertionKey, Box<dyn Error>> {
+        self.key_of(target.observation())
+            .ok_or_else(|| "the faults strategy gives this state no key".into())
     }
 
     fn complete_candidate_key(
         &self,
-        key: FaultArchiveKey,
+        key: AssertionKey,
         _snapshot: &FaultSnapshot,
-    ) -> Result<FaultArchiveKey, Box<dyn Error>> {
+    ) -> Result<AssertionKey, Box<dyn Error>> {
         Ok(key)
     }
 
@@ -1417,6 +1454,17 @@ pub(crate) fn fixture_run() -> FaultCampaignRun {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_keys() -> FaultKeys {
+    FaultKeys::new(crate::key::STRATEGY, 3).expect("the shipped strategy compiles")
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_key(observations: &FaultObservations) -> Option<AssertionKey> {
+    static KEYS: OnceLock<FaultKeys> = OnceLock::new();
+    KEYS.get_or_init(fixture_keys).key(observations)
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_workload(
     kernel: &[u8],
     initramfs: &[u8],
@@ -1439,6 +1487,7 @@ pub(crate) fn fixture_workload(
         )
     };
     FaultWorkload {
+        keys: Arc::new(fixture_keys()),
         kernel: kernel.to_vec(),
         initramfs: initramfs.to_vec(),
         config: config.clone(),
@@ -1452,13 +1501,8 @@ pub(crate) fn fixture_workload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assertion::AssertionSet;
     use crate::consonance::{DEFAULT_RAM_MIB, GuestBackend};
     use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
-    use searcher::search::{
-        archive::{SelectorDraw, SelectorPath},
-        campaign::{CampaignJobRecord, CampaignStreamRecord},
-    };
 
     #[test]
     fn endpoint_certificate_distinguishes_state_and_unavailability() {
@@ -1568,7 +1612,7 @@ mod tests {
                     disposition: ExecutionDisposition::Runnable,
                 },
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(&FaultObservations::default()),
+                    key: fixture_key(&FaultObservations::default()).unwrap(),
                     viable: true,
                     snapshot,
                 }),
@@ -1577,10 +1621,16 @@ mod tests {
             }],
         };
         let mut fresh_calls = 0;
-        let reused = kvm_result_endpoint(&result, &[action], &FaultObservations::default(), || {
-            fresh_calls += 1;
-            Ok([99; 32])
-        })
+        let reused = kvm_result_endpoint(
+            &result,
+            &[action],
+            &FaultObservations::default(),
+            fixture_key(&FaultObservations::default()),
+            || {
+                fresh_calls += 1;
+                Ok([99; 32])
+            },
+        )
         .unwrap();
         assert_eq!(fresh_calls, 0);
         let fresh = kvm_result_endpoint(
@@ -1591,6 +1641,7 @@ mod tests {
             },
             &[action],
             &FaultObservations::default(),
+            None,
             || {
                 fresh_calls += 1;
                 Ok([17; 32])
@@ -1611,14 +1662,24 @@ mod tests {
             .snapshot
             .endpoint = None;
         assert!(
-            kvm_result_endpoint(&malformed, &[action], &FaultObservations::default(), || Ok(
-                [17; 32]
-            ))
+            kvm_result_endpoint(
+                &malformed,
+                &[action],
+                &FaultObservations::default(),
+                fixture_key(&FaultObservations::default()),
+                || Ok([17; 32])
+            )
             .is_err()
         );
         assert!(
-            kvm_result_endpoint(&result, &[], &FaultObservations::default(), || Ok([17; 32]))
-                .is_err()
+            kvm_result_endpoint(
+                &result,
+                &[],
+                &FaultObservations::default(),
+                fixture_key(&FaultObservations::default()),
+                || Ok([17; 32])
+            )
+            .is_err()
         );
     }
 
@@ -1698,81 +1759,6 @@ mod tests {
         let mut malformed = serde_json::to_value(&snapshot.history).unwrap();
         malformed[1][1]["certificate"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
-    }
-
-    #[test]
-    fn campaign_job_record_round_trips_assertion_digest() {
-        #[derive(Serialize)]
-        struct NativeAssertionSet {
-            count: u32,
-            digest: u128,
-        }
-
-        for digest in [0, (1_u128 << 127) | 7] {
-            let key = FaultArchiveKey {
-                sometimes: AssertionSet { count: 1, digest },
-                ..FaultArchiveKey::default()
-            };
-            assert_eq!(
-                postcard::to_allocvec(&key.sometimes).unwrap(),
-                postcard::to_allocvec(&NativeAssertionSet { count: 1, digest }).unwrap()
-            );
-            let record = CampaignStreamRecord::<(), FaultArchiveKey>::Job(CampaignJobRecord {
-                sequence: 1,
-                reservation: 0,
-                parent_id: 0,
-                continuation_energy: None,
-                mutation_seed: 1,
-                execution_work: 1,
-                result_sha256: "result".to_owned(),
-                decisions: Vec::new(),
-                mixture_weight: 0,
-                splice_weight: 0,
-                splice: None,
-                selector: SelectorDraw {
-                    path: SelectorPath::Tiers,
-                    tier_rank: Some(0),
-                    best_preference: None,
-                    fall_through: false,
-                },
-                draw_checkpoint_before: None,
-                draw_checkpoint_after: None,
-                duration_draw: Some(DurationDraw {
-                    context: key,
-                    max_duration: NonZeroU64::MIN,
-                    duration: NonZeroU64::MIN,
-                }),
-                duration_admission_sequence_at_draw: None,
-                duration_remaining_work: None,
-                duration_checkpoint_at_draw: None,
-                duration_checkpoint_before: None,
-                duration_checkpoint_after: None,
-                suffix_limit: None,
-                ceiling: None,
-                incumbent: None,
-                shrink: None,
-                choices: None,
-            });
-            let line = serde_json::to_string(&record).unwrap();
-            assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
-            let decoded: CampaignStreamRecord<(), FaultArchiveKey> =
-                serde_json::from_str(&line).unwrap();
-            assert_eq!(decoded, record);
-            if digest == 0 {
-                for noncanonical in ["+0", "00"] {
-                    let changed = line.replacen(
-                        "\"digest\":\"0\"",
-                        &format!("\"digest\":\"{noncanonical}\""),
-                        1,
-                    );
-                    assert_ne!(changed, line);
-                    assert!(
-                        serde_json::from_str::<CampaignStreamRecord<(), FaultArchiveKey>>(&changed)
-                            .is_err()
-                    );
-                }
-            }
-        }
     }
 
     fn config(knobs: &[&str]) -> FaultConfig {
@@ -2212,12 +2198,16 @@ mod tests {
                 .unwrap()
                 .with_instrumented_events(true),
         );
-        let parent = FaultArchiveKey {
-            alive: 7,
-            ..FaultArchiveKey::default()
+        let key = |alive| {
+            game.key_of(&FaultObservations {
+                alive,
+                ..FaultObservations::default()
+            })
+            .unwrap()
         };
+        let parent = key(7);
         let request = game.duration_request(&run, parent, None).unwrap();
-        let down = FaultArchiveKey { alive: 3, ..parent };
+        let down = key(3);
         assert_ne!(
             request.context,
             game.duration_request(&run, down, None).unwrap().context
@@ -2252,10 +2242,13 @@ mod tests {
             splice_weight: 0,
         };
         let draw = DurationDraw {
-            context: FaultArchiveKey {
-                event_ready: 1,
-                ..FaultArchiveKey::default()
-            },
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready: 1,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
+            ),
             max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
             duration: NonZeroU64::new(256).unwrap(),
         };

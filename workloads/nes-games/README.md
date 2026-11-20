@@ -247,23 +247,26 @@ does: the target plays the forced move in the same action, reports both
 arrivals, and adds the forced frames to the action's cost, and films do the
 same.
 
-A move is one action, and it ends at its last step or at the first step whose
-observation stops. `walk_move` decodes and observes every step of a forced or
-chosen move from the accumulator as it stood when the move departed, so a goal
-or reject that reads `highest(...)` or a stage latch sees the move's earlier
-steps only through that state. A middle step is an interior frame, observed
-with `action_end` 0, and it ends the move only when that observation reaches a
-goal or a reject; it is then observed again with 1, and the move ends there
-even when that second observation no longer stops. The step that ends the move
-is its arrival: the accumulator advances there, the action reports that
-observation, the records file keeps the steps up to it, and the action's cost
-is the frames pressed up to that step. A move that ends before its last step
-hands off to no forced move. A step that does not end the move leaves the
-accumulator and the key as they were. The target plays at most one forced move
-after a chord or a chosen move, so the last step of a forced move ends the
-action, and the last step of a chosen move ends it unless that arrival declares
-a forced move, which then plays in the same action (`Moves::ends_move`). Films
-cut a move at the same step.
+A move is one action, and a forced move that follows an input or a chosen move
+plays in that same action. A move ends at its last step or at the first step
+whose observation stops. `walk_move` decodes and observes every step of a
+forced or chosen move from the accumulator as it stood when the move departed,
+so a goal or reject that reads `highest(...)` or a stage latch sees the move's
+earlier steps only through that state. A middle step is an interior frame,
+observed with `action_end` 0, and it ends the move only when that observation
+reaches a goal or a reject; it is then observed again with 1, and the move ends
+there even when that second observation no longer stops. A goal that requires
+`action_end` therefore holds only at the frame where the action is kept, never
+at a middle step the move passes through. The step that ends the move is its
+arrival: the accumulator advances there, the action reports that observation,
+the records file keeps the steps up to it, and the action's cost is the frames
+pressed up to that step. A move that ends before its last step hands off to no
+forced move. A step that does not end the move leaves the accumulator and the
+key as they were. The target plays at most one forced move after a chord or a
+chosen move, so the last step of a forced move ends the action, and the last
+step of a chosen move ends it unless that arrival declares a forced move, which
+then plays in the same action (`Moves::ends_move`). Films cut a move at the
+same step.
 
 `offered` is a bit mask over the `options` slice, bit i for `options[i]`, so an
 offer holds at most 64 options (`MAX_OFFER_OPTIONS`; `Lowered::new` refuses a

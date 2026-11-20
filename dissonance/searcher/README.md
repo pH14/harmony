@@ -694,26 +694,30 @@ in its last slot, and it is 1 on the root state and on the last frame of each
 action as recorded, the frame whose state the target keeps, and 0 on every
 other frame. `Compiled::observe_ending` decides the flag and returns it with
 the observation. A frame ends the action when the caller says so (the last
-frame of the action's input, a cut at an offer, the last step of a move) or
-when its observation with 0 reaches a goal or a rejection; such a frame is
-observed again with 1 from the accumulator before it, and stays the action's
-end even when that second observation no longer stops, as an ordinary kept
-state. A strategy that does not read `action_end` keeps its first observation.
-Each producer of keys, the target, its film and its shadow lane, continues only
-on the returned flag: after a frame that ends the action the target cuts the
-input there, a move ends at that step and hands off to no forced move, and a
-film renders no more of that action. A move is one action: the target's move
-walker observes every step from the accumulator at the move's departure, its
-middle steps are interior frames observed with 0, and a middle step ends the
-move only when that observation stops. The target writes the decided flag into
-each recorded frame and into the genesis record of the records header, the
-assertion records format is `assertion-records-v6` for that slot, a records
-file of an earlier format is refused by its format string, and `Rekeying` reads
-the recorded flags instead of deciding them again. A latched stage whose goal
-includes `action_end` passes only on a kept state, as the hand plans latch from
-the parent key, so a value that crosses a threshold inside an action and ends
-below it does not pass the stage. A catalog holds at most one signal fewer than
-a record because of this slot.
+frame of the action's input or a cut at an offer, when no forced move departs
+from that frame, or the last step of a move that no forced move follows in the
+same action) or when its observation with 0 reaches
+a goal or a rejection; such a frame is observed again with 1 from the
+accumulator before it, and stays the action's end even when that second
+observation no longer stops, as an ordinary kept state. A strategy that does
+not read `action_end` keeps its first observation. Each producer of keys, the
+target, its film and its shadow lane, continues only on the returned flag:
+after a frame that ends the action the target cuts the input there, a move ends
+at that step and hands off to no forced move, and a film renders no more of
+that action. A move is one action, and a forced move that follows an input or a
+chosen move plays in that same action. The target's move walker observes every
+step from the accumulator at the move's departure, its middle steps are
+interior frames observed with 0, and a middle step ends the move only when that
+observation stops, so a goal that requires `action_end` holds only at the frame
+where the action is kept. The target writes the decided flag into each recorded
+frame and into the genesis record of the records header, the assertion records
+format is `assertion-records-v6` for that slot, a records file of an earlier
+format is refused by its format string, and `Rekeying` reads the recorded flags
+instead of deciding them again. A latched stage whose goal includes
+`action_end` passes only on a kept state, as the hand plans latch from the
+parent key, so a value that crosses a threshold inside an action and ends below
+it does not pass the stage. A catalog holds at most one signal fewer than a
+record because of this slot.
 
 Two lineage features read along the parent chain, and both are Antithesis's.
 The aggregate `highest(x)` is the Antithesis watermark: the largest value of
@@ -1491,7 +1495,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v20`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v21`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same
