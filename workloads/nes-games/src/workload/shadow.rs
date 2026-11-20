@@ -12,7 +12,7 @@ use std::{
 
 use machine::nes::WRAM_SIZE;
 
-use super::{Game, Lowered};
+use super::{Game, Lowered, Moves};
 use crate::search::{
     archive::ArchiveKey,
     assertion::{ShadowCursor, ShadowReport, ShadowTable},
@@ -141,6 +141,7 @@ struct Current<S, H: ArchiveKey> {
     position: Option<Position<S, H>>,
     pending: Option<u64>,
     awaiting: bool,
+    departed: bool,
 }
 
 struct Threaded<G: Game, H: ArchiveKey> {
@@ -156,6 +157,7 @@ impl<G: Game, H: ArchiveKey> Threaded<G, H> {
                 position: None,
                 pending: None,
                 awaiting: false,
+                departed: false,
             }),
         }
     }
@@ -169,17 +171,21 @@ where
         &self,
         previous: Option<&G::State>,
         ram: &[u8],
+        ends: impl FnOnce(&G::State, &Moves<G::Move>) -> bool,
         cursor: &mut ShadowCursor<H>,
-    ) -> G::State {
+    ) -> (G::State, bool, bool) {
         let lowered = &self.shadow.lowered;
         let state = lowered.game.decode(previous, ram);
-        cursor.observe(&lowered.compiled, &lowered.record(&state).0);
-        state
+        let moves = lowered.game.moves(&state);
+        let mut record = lowered.record(&state).0;
+        let ends = cursor.observe_ending(&lowered.compiled, &mut record, ends(&state, &moves));
+        let departs = moves.forced_after(ends).is_some();
+        (state, ends, departs)
     }
 
     fn begin(&self, ram: &[u8]) -> Position<G::State, H> {
         let mut cursor = ShadowCursor::default();
-        let state = self.arrive(None, ram, &mut cursor);
+        let (state, ..) = self.arrive(None, ram, |_, _| true, &mut cursor);
         Position { state, cursor }
     }
 }
@@ -198,6 +204,7 @@ where
             current.position = Some(position);
             current.pending = None;
             current.awaiting = false;
+            current.departed = false;
         }
     }
 
@@ -205,14 +212,28 @@ where
         let Ok(mut current) = self.current.lock() else {
             return;
         };
+        let current = &mut *current;
         current.pending = None;
+        current.departed = false;
         if current.awaiting {
             self.shadow.table.unobserved();
         }
         current.awaiting = true;
-        if let Some(position) = current.position.as_mut() {
-            for wram in frames {
-                position.state = self.arrive(Some(&position.state), wram, &mut position.cursor);
+        let Some(position) = current.position.as_mut() else {
+            return;
+        };
+        for (index, wram) in frames.iter().enumerate() {
+            let last_frame = index + 1 == frames.len();
+            let (state, ends, departs) = self.arrive(
+                Some(&position.state),
+                wram,
+                |_, moves| moves.ends_input(last_frame),
+                &mut position.cursor,
+            );
+            position.state = state;
+            if ends || departs {
+                current.departed = departs;
+                break;
             }
         }
     }
@@ -221,18 +242,40 @@ where
         let Ok(mut current) = self.current.lock() else {
             return;
         };
+        let current = &mut *current;
         current.pending = None;
         current.awaiting = true;
-        let (Some(position), Some((arrival, interior))) =
-            (current.position.as_mut(), steps.split_last())
-        else {
+        let game = &self.shadow.lowered.game;
+        let departed = std::mem::take(&mut current.departed);
+        let Some(position) = current.position.as_mut().filter(|_| departed) else {
             return;
         };
-        let game = &self.shadow.lowered.game;
-        for wram in interior {
-            position.state = game.decode(Some(&position.state), wram);
+        let Some(mut mv) = game.moves(&position.state).forced else {
+            return;
+        };
+        let departure = position.cursor.clone();
+        for wram in steps {
+            let Some(step) = game.play(mv, &position.state) else {
+                break;
+            };
+            let mut cursor = departure.clone();
+            let (state, ends, _) = self.arrive(
+                Some(&position.state),
+                wram,
+                |state, moves| {
+                    let last_step = step
+                        .rest
+                        .is_none_or(|next| game.play(next, state).is_none());
+                    moves.ends_move(last_step, false)
+                },
+                &mut cursor,
+            );
+            *position = Position { state, cursor };
+            match step.rest {
+                Some(next) if !ends => mv = next,
+                _ => break,
+            }
         }
-        position.state = self.arrive(Some(&position.state), arrival, &mut position.cursor);
     }
 
     fn saved(&self) -> ShadowToken {
@@ -273,6 +316,7 @@ where
             current.position = Some(position);
             current.pending = pending;
             current.awaiting = false;
+            current.departed = false;
         }
     }
 
@@ -364,12 +408,23 @@ mod tests {
         nes::{ButtonChord, reproducer},
     };
 
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
     use crate::{
-        search::assertion::{Accumulator, AssertionKey},
+        search::{
+            assertion::{
+                Accumulator, AssertionKey, Disagreements, RecordedAction, RecordedJob, Recording,
+                RecordsWriter, Rekeying, StreamIdentity,
+            },
+            campaign::CampaignAdmissionDecision,
+        },
         target::Target,
         workload::{
-            fixture::{LEFT, Ledge, LedgeKey, RIGHT, Spot, Stairs, Stepper, WARP},
+            NesObservation,
+            fixture::{
+                LEFT, Landing, Ledge, LedgeKey, RIGHT, Spot, Stairs, Stepper, Switchback, WARP,
+            },
             target::{NesTarget, read_wram},
         },
     };
@@ -770,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn a_forced_move_decodes_its_interior_steps_in_a_chain_and_observes_only_the_arrival() {
+    fn a_forced_move_observes_each_step_from_its_departure_and_keeps_the_arrival() {
         let shadow = Shadow::<Stairs, AssertionKey>::new(Stairs).unwrap();
         let mut lockstep = Lockstep::new(shadow.hook());
         let identities: Vec<Vec<i64>> = [(RIGHT, 6), (RIGHT, 1), (LEFT, 2), (WARP, 1), (RIGHT, 6)]
@@ -788,6 +843,489 @@ mod tests {
         assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
         assert_eq!(report.keyed_states, 6);
         assert_eq!(report.unobserved, 0);
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct Kept {
+        state: Landing,
+        key: Option<AssertionKey>,
+        stops: bool,
+    }
+
+    impl Kept {
+        fn of(observation: &NesObservation<Landing>) -> Self {
+            Self {
+                state: observation.state,
+                key: observation.key,
+                stops: observation.stops(),
+            }
+        }
+    }
+
+    fn shown(key: Option<AssertionKey>) -> String {
+        key.map_or_else(
+            || "no key".to_owned(),
+            |key| {
+                format!(
+                    "key (progress {}, place {}, identity {})",
+                    key.progress,
+                    key.place.get(),
+                    key.identity
+                )
+            },
+        )
+    }
+
+    fn kept(kept: &Kept) -> String {
+        format!(
+            "x {} dwell {} {}",
+            kept.state.x,
+            kept.state.dwell,
+            keyed((kept.key, kept.stops))
+        )
+    }
+
+    fn keyed((key, stops): (Option<AssertionKey>, bool)) -> String {
+        format!("{}{}", shown(key), if stops { " stops" } else { "" })
+    }
+
+    fn film_of<G: Game<State = Landing>>(lowered: &Arc<Lowered<G>>, tape: &[ButtonChord]) -> Kept {
+        let mut film = NesTarget::from_machine(Arc::clone(lowered), Stepper::default()).unwrap();
+        let (_, filmed) = film
+            .render_observed(
+                tape,
+                u32::from(tape.is_empty()),
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        Kept::of(&filmed)
+    }
+
+    struct Producers<G: Game<State = Landing>> {
+        game: G,
+        lowered: Arc<Lowered<G>>,
+        live: NesTarget<G, Stepper>,
+        hand: Stepper,
+        at: SnapId,
+        hook: ShadowHook<AssertionKey>,
+        tape: Vec<ButtonChord>,
+        actions: Vec<RecordedAction<ButtonChord>>,
+        jobs: Vec<RecordedJob>,
+        cuts: Vec<u64>,
+        live_kept: Vec<Kept>,
+        shadow_keys: Vec<Option<AssertionKey>>,
+        filmed: Vec<Kept>,
+    }
+
+    impl<G: Game<State = Landing>> Producers<G> {
+        fn new(game: G, strategy: &str) -> (Arc<Shadow<G, AssertionKey>>, Self) {
+            let shadow = Shadow::<G, AssertionKey>::with_strategy(game.clone(), strategy).unwrap();
+            let lowered = Arc::new(Lowered::new(game.clone(), strategy).unwrap());
+            let mut live =
+                NesTarget::from_machine(Arc::clone(&lowered), Stepper::default()).unwrap();
+            live.record_frames(true);
+            let mut hand = Stepper::default();
+            let at = hand.snapshot().unwrap();
+            let hook = shadow.hook();
+            hook.start(&read_wram(&hand).unwrap());
+            let genesis = Kept::of(live.observation());
+            hook.observe(genesis.key);
+            let shadow_key = hook.key();
+            let genesis_film = film_of(&lowered, &[]);
+            let producers = Self {
+                game,
+                lowered,
+                live,
+                hand,
+                at,
+                hook,
+                tape: Vec::new(),
+                actions: Vec::new(),
+                jobs: Vec::new(),
+                cuts: vec![0],
+                live_kept: vec![genesis],
+                shadow_keys: vec![shadow_key],
+                filmed: vec![genesis_film],
+            };
+            (shadow, producers)
+        }
+
+        fn press(&mut self, chord: ButtonChord) -> Vec<[u8; WRAM_SIZE]> {
+            self.hand
+                .branch(self.at, &reproducer(std::slice::from_ref(&chord)))
+                .unwrap();
+            self.hand.run(StopConditions::default(), None).unwrap();
+            self.at = self.hand.snapshot().unwrap();
+            self.hand.frames().to_vec()
+        }
+
+        fn resync(&mut self, wram: &[u8; WRAM_SIZE]) {
+            self.at = self.hand.import(&wram[..2].to_vec()).unwrap();
+        }
+
+        fn apply(&mut self, buttons: u8, hold: u8) {
+            let chord = ButtonChord::new(buttons, hold);
+            let start = self.live.observation().frame_count;
+            self.live.apply(&chord);
+            let emitted = self.live.last_action_observations().to_vec();
+            let arrival = emitted.last().unwrap().observation.clone();
+            let departure = emitted
+                .len()
+                .checked_sub(2)
+                .map(|index| emitted[index].observation.clone())
+                .filter(|departure| self.game.moves(&departure.state).forced.is_some());
+            self.tape.push(chord);
+            let whole = self.press(chord);
+            self.hook.advance(&whole);
+            if let Some(departure) = departure {
+                let input = usize::try_from(departure.frame_count - start).unwrap();
+                self.resync(&whole[input - 1]);
+                let mut next = self.game.moves(&departure.state).forced;
+                let mut state = departure.state;
+                let mut steps = Vec::new();
+                while let Some(step) = next.and_then(|mv| self.game.play(mv, &state)) {
+                    let wram = *self.press(step.chord).last().unwrap();
+                    state = self.game.decode(Some(&state), &wram);
+                    steps.push(wram);
+                    next = step.rest;
+                }
+                self.hook.forced(&steps);
+            }
+            let wram = *self.live.wram();
+            self.resync(&wram);
+            self.hook.observe(arrival.key);
+            self.shadow_keys.push(self.hook.key());
+            self.live_kept.push(Kept::of(&arrival));
+            self.cuts.push(arrival.frame_count);
+            self.filmed.push(film_of(&self.lowered, &self.tape));
+            let sequence = u64::try_from(self.tape.len()).unwrap();
+            self.actions.push(RecordedAction {
+                sequence,
+                action: chord,
+                failed: false,
+                cost: emitted.iter().map(|observation| observation.cost).sum(),
+                frames: emitted
+                    .iter()
+                    .flat_map(|observation| observation.records.iter().copied())
+                    .collect(),
+                choices: Vec::new(),
+            });
+            self.jobs.push(RecordedJob {
+                sequence,
+                parent_id: sequence - 1,
+                decisions: (!arrival.stops())
+                    .then_some(CampaignAdmissionDecision::Retained { id: sequence })
+                    .into_iter()
+                    .collect(),
+            });
+        }
+
+        fn recording(&self) -> Recording<ButtonChord> {
+            static FILES: AtomicU64 = AtomicU64::new(0);
+            let header = self
+                .lowered
+                .records_header(
+                    StreamIdentity {
+                        campaign_seed: 1,
+                        workload_identity_sha256: G::NAME.to_owned(),
+                    },
+                    &self.live_kept[0].state,
+                )
+                .unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "nes-producers-records-{}-{}.bin",
+                std::process::id(),
+                FILES.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut writer = RecordsWriter::create(&path, &header).unwrap();
+            for action in &self.actions {
+                writer.push(action).unwrap();
+            }
+            writer.finish().unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let recording = Recording::from_bytes(&bytes).unwrap();
+            assert!(
+                recording.header.genesis.action_end(),
+                "the loaded genesis record has no action_end"
+            );
+            for action in &recording.actions {
+                let marked: Vec<bool> = action
+                    .frames
+                    .iter()
+                    .map(|frame| frame.action_end())
+                    .collect();
+                let last: Vec<bool> = (0..marked.len())
+                    .map(|index| index + 1 == marked.len())
+                    .collect();
+                assert_eq!(
+                    marked, last,
+                    "action_end marks of the loaded frames of action {}",
+                    action.sequence
+                );
+            }
+            recording
+        }
+
+        fn rekeyed(&self, recording: &Self) -> Vec<(Option<AssertionKey>, bool)> {
+            let records = recording.recording();
+            let strategy = &self.lowered.compiled;
+            let rekeyed = Rekeying {
+                recorded: &recording.lowered.compiled,
+                strategy,
+                entry_limit: 256,
+            }
+            .run(&records.header.genesis, &recording.jobs, &records.actions)
+            .unwrap_or_else(|error| panic!("rekey of {:?}: {error}", recording.tape));
+            let mut accumulator = Accumulator::default();
+            let genesis = strategy.observe(&records.header.genesis, &mut accumulator);
+            let mut folded = vec![(genesis.key, genesis.goal || genesis.rejected.is_some())];
+            for action in &records.actions {
+                let mut last = None;
+                for (index, frame) in action.frames.iter().enumerate() {
+                    let observed = strategy.observe(frame, &mut accumulator);
+                    let stops = observed.goal || observed.rejected.is_some();
+                    assert!(
+                        !stops || index + 1 == action.frames.len(),
+                        "rekey of {:?} stops at frame {} of the {} frames of action {}",
+                        recording.tape,
+                        index + 1,
+                        action.frames.len(),
+                        action.sequence
+                    );
+                    last = Some((observed.key, stops));
+                }
+                folded.push(
+                    last.unwrap_or_else(|| panic!("action {} has no frames", action.sequence)),
+                );
+            }
+            let held: BTreeMap<u64, AssertionKey> = rekeyed
+                .holders
+                .iter()
+                .flat_map(|held| held.ids.iter().copied().zip(held.keys.iter().copied()))
+                .collect();
+            let admitted: Vec<Option<AssertionKey>> = std::iter::once(held.get(&0).copied())
+                .chain(rekeyed.decisions.iter().map(|made| match made.as_slice() {
+                    [] => None,
+                    [
+                        CampaignAdmissionDecision::Retained { id }
+                        | CampaignAdmissionDecision::Duplicate { id },
+                    ] => Some(held[id]),
+                    other => panic!("rekey of {:?} made {other:?}", recording.tape),
+                }))
+                .collect();
+            let candidates: Vec<Option<AssertionKey>> = folded
+                .iter()
+                .map(|&(key, stops)| key.filter(|_| !stops))
+                .collect();
+            assert_eq!(
+                admitted, candidates,
+                "rekey of {:?}: the keys it admits against the keys of the loaded records",
+                recording.tape
+            );
+            folded
+        }
+    }
+
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static [(u8, u8)],
+        &'static [(u8, bool)],
+    );
+
+    const PLAIN: &str =
+        "capacity = 16\nspread = \"room\"\ngoal = \"x == 99\"\nidentity = [\"x\", \"dwell\"]\n";
+
+    fn agree<G: Game<State = Landing>>(game: &G, (_, lines, tape, reached): &Case) {
+        let strategy = format!("capacity = 16\nspread = \"room\"\n{lines}\n");
+        let strategy = if strategy.contains("identity") {
+            strategy
+        } else {
+            format!("{strategy}identity = [\"x\", \"dwell\"]\n")
+        };
+        let (shadow, mut producers) = Producers::new(game.clone(), &strategy);
+        let (_, mut plain) = Producers::new(game.clone(), PLAIN);
+        for &(buttons, hold) in *tape {
+            if producers.live.observation().stops() {
+                break;
+            }
+            producers.apply(buttons, hold);
+            plain.apply(buttons, hold);
+        }
+        let ends: Vec<(u8, bool)> = producers.live_kept[1..]
+            .iter()
+            .map(|kept| (kept.state.x, kept.stops))
+            .collect();
+        assert_eq!(ends, *reached, "where the live target keeps each action");
+        let rekeyed = producers.rekeyed(&producers);
+        let across = (plain.cuts == producers.cuts).then(|| producers.rekeyed(&plain));
+        for (index, live) in producers.live_kept.iter().enumerate() {
+            let at = format!("kept state {index} after {:?}", &producers.tape[..index]);
+            let shadow = producers.shadow_keys[index];
+            assert!(
+                shadow == live.key,
+                "{at}: shadow {}, live {}",
+                shown(shadow),
+                kept(live)
+            );
+            let filmed = &producers.filmed[index];
+            assert!(
+                filmed == live,
+                "{at}: film {}, live {}",
+                kept(filmed),
+                kept(live)
+            );
+            assert!(
+                rekeyed[index] == (live.key, live.stops),
+                "{at}: rekey {}, live {}",
+                keyed(rekeyed[index]),
+                kept(live)
+            );
+            if let Some(across) = &across {
+                assert!(
+                    across[index] == (live.key, live.stops),
+                    "{at}: rekey of the records kept under another strategy {}, live {}",
+                    keyed(across[index]),
+                    kept(live)
+                );
+            }
+        }
+        let report = shadow.report().unwrap();
+        assert_eq!(
+            Disagreements {
+                capacity: false,
+                ..report.disagreements
+            },
+            Disagreements::default(),
+            "the shadow report"
+        );
+    }
+
+    fn disagreements<G: Game<State = Landing>>(game: &G, cases: &[Case]) -> Vec<String> {
+        cases
+            .iter()
+            .filter_map(|case| {
+                catch_unwind(AssertUnwindSafe(|| agree(game, case)))
+                    .err()
+                    .map(|panic| {
+                        let message = panic
+                            .downcast_ref::<String>()
+                            .cloned()
+                            .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+                            .unwrap_or_default();
+                        format!("{} ({}): {message}", case.0, G::NAME)
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_live_target_the_shadow_rekey_and_film_agree_on_every_kept_state() {
+        let stairs: &[Case] = &[
+            (
+                "ordinary stop",
+                "goal = \"x == 2\"",
+                &[(RIGHT, 4)],
+                &[(2, true)],
+            ),
+            (
+                "stop at an action end",
+                "goal = \"action_end and x == 3\"",
+                &[(RIGHT, 2), (RIGHT, 1), (RIGHT, 1)],
+                &[(2, false), (3, true)],
+            ),
+            (
+                "revoked stop",
+                "goal = \"x == 2 and not action_end\"\nidentity = \"highest(action_end and x == 2)\"",
+                &[(RIGHT, 4), (RIGHT, 1)],
+                &[(2, false), (3, false)],
+            ),
+            (
+                "forced move after a departure",
+                "goal = \"room >= 9\"\nidentity = \"highest(action_end and x == 6)\"",
+                &[(RIGHT, 6), (RIGHT, 1), (LEFT, 2)],
+                &[(7, false), (8, false), (7, false)],
+            ),
+            (
+                "action_end goal at a middle step of a move",
+                "goal = \"action_end and x == 8\"",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(7, false), (8, true)],
+            ),
+            (
+                "plain goal at a middle step of a move",
+                "goal = \"x == 8\"\nidentity = \"highest(action_end and x == 7)\"",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(8, true)],
+            ),
+            (
+                "middle step of a move",
+                "goal = \"x == 99\"\nidentity = \"highest(action_end and x == 8)\"",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(7, false), (8, false)],
+            ),
+            (
+                "genesis",
+                "goal = \"highest(action_end and x == 0) and x == 1\"",
+                &[(RIGHT, 1)],
+                &[(1, true)],
+            ),
+            (
+                "film of a forced move",
+                "goal = \"highest(action_end and x == 2) and x == 6\"",
+                &[(RIGHT, 6), (RIGHT, 3)],
+                &[(7, false), (10, false)],
+            ),
+            (
+                "revoked stop at a middle step of a move",
+                "goal = \"x == 8 and not action_end\"\nidentity = \"highest(action_end and x == 8)\"",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(8, false), (9, false)],
+            ),
+            (
+                "revoked stop at a forced move's departure",
+                "goal = \"x == 6 and not action_end\"\nidentity = \"highest(action_end and x == 6)\"",
+                &[(RIGHT, 6), (RIGHT, 1)],
+                &[(6, false), (7, false)],
+            ),
+        ];
+        let switchback: &[Case] = &[(
+            "forced move that arrives where another forced move starts",
+            "goal = \"x == 99\"\nidentity = \"highest(action_end and x == 4)\"",
+            &[(RIGHT, 4), (RIGHT, 1)],
+            &[(4, false), (5, false)],
+        )];
+        let mut failures = disagreements(&Stairs, stairs);
+        failures.extend(disagreements(&Switchback, switchback));
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn a_records_header_keeps_the_genesis_action_end_for_a_rekey_under_the_same_strategy() {
+        let (_, mut producers) = Producers::new(
+            Stairs,
+            "capacity = 16\nspread = \"room\"\ngoal = \"highest(action_end and x == 0) and x == 1\"\nidentity = [\"x\", \"dwell\"]\n",
+        );
+        producers.apply(RIGHT, 1);
+        assert!(producers.live.observation().goal);
+        let recording = producers.recording();
+        assert_eq!(
+            recording.header.genesis,
+            producers
+                .lowered
+                .genesis_record(&producers.live_kept[0].state)
+        );
+        assert_eq!(
+            producers.rekeyed(&producers),
+            producers
+                .live_kept
+                .iter()
+                .map(|kept| (kept.key, kept.stops))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

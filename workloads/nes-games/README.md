@@ -235,16 +235,26 @@ does: the target plays the forced move in the same action, reports both
 arrivals, and adds the forced frames to the action's cost, and films do the
 same.
 
-A move ends at the first step where the strategy's observation stops. After
-each step of a forced or chosen move the target decodes the state and observes
-it from the accumulator as it stood when the move departed, so a goal or
-reject that reads `highest(...)` or a stage latch sees the move's earlier
-steps only through that state. If the observation reaches a goal or a reject,
-that step is the move's arrival: the accumulator advances there, the action
-reports that observation, the records file keeps the steps up to it, and the
-action's cost is the frames pressed up to that step. A move that stops this way
-hands off to no forced move. A step that does not stop leaves the accumulator
-and the key as they were. Films cut a move at the same step.
+A move is one action, and a forced move that follows an input or a chosen move
+plays in that same action. A move ends at its last step or at the first step
+whose observation stops. `walk_move` decodes and observes every step of a
+forced or chosen move from the accumulator as it stood when the move departed,
+so a goal or reject that reads `highest(...)` or a stage latch sees the move's
+earlier steps only through that state. A middle step is an interior frame,
+observed with `action_end` 0, and it ends the move only when that observation
+reaches a goal or a reject; it is then observed again with 1, and the move ends
+there even when that second observation no longer stops. A goal that requires
+`action_end` therefore holds only at the frame where the action is kept, never
+at a middle step the move passes through. The step that ends the move is its
+arrival: the accumulator advances there, the action reports that observation,
+the records file keeps the steps up to it, and the action's cost is the frames
+pressed up to that step. A move that ends before its last step hands off to no
+forced move. A step that does not end the move leaves the accumulator and the
+key as they were. The target plays at most one forced move after a chord or a
+chosen move, so the last step of a forced move ends the action, and the last
+step of a chosen move ends it unless that arrival declares a forced move, which
+then plays in the same action (`Moves::ends_move`). Films cut a move at the
+same step.
 
 `offered` is a bit mask over the `options` slice, bit i for `options[i]`, so an
 offer holds at most 64 options (`MAX_OFFER_OPTIONS`; `Lowered::new` refuses a
@@ -347,12 +357,26 @@ are rebuilt by replay when a run resumes from them under another.
 
 A strategy with `highest` or a latched stage keys a frame from its path, so the
 target advances the accumulator at every observed frame, `NesSnapshot` and the
-snapshot checkpoint carry it, and a restore puts it back; the frames inside a
-forced move are decoded but not observed. `workload/shadow.rs` compares a
+snapshot checkpoint carry it, and a restore puts it back; `walk_move` observes
+every step of a move from the accumulator at the move's departure. The genesis
+and a restored state have `action_end` set. On every other frame the target,
+the film replay and the shadow lane decide the flag with
+`Compiled::observe_ending` and continue only on the flag it returns.
+`Moves::ends_input` and `Moves::ends_move` say whether the state ends the
+action by position (the last input frame or an offer cut, or the last step of a
+move, and never a state with a forced move left to play), and
+`Compiled::observe_ending` also ends the action at a frame whose observation
+with 0 stops. After a frame that ends the action
+the target cuts the input there, a move stops at that step, no forced move
+starts, and a film renders no more of that action, so a film of an input that
+stops inside a chord ends at the stopping frame. The target records the decided
+flag with each frame and with the genesis in the records header, so `Rekeying`
+reads it from the records. `workload/shadow.rs` compares a
 hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy and
 `hook` gives the hand target a `ShadowHook`, which it calls with the genesis
-RAM (`start`), the frames of each action up to the departure of a forced move
-(`advance`), the RAM after each step chord of the forced move (`forced`), each
+RAM (`start`), the frames of each action (`advance`), of which the shadow
+observes those up to the first that ends the action or departs on a forced
+move, the RAM after each step chord of the forced move (`forced`), each
 snapshot it takes (`saved`, which returns a `ShadowToken` the hand snapshot
 keeps) and restores (`restored`, with a reference to that token, or `None`
 where the snapshot has none), and its raw key, or `None` where it has none,
@@ -366,8 +390,9 @@ that a `reject` line matches with no strategy key, since the strategy target
 ends there as a doomed terminal, and keys a goal frame, even one a `reject`
 line matches, since the strategy target ends it as a terminal objective. The
 strategy target archives neither frame, since a rollout admits only runnable
-states. A forced move cut short at a goal or reject passes `hook.forced` the
-steps up to the stopping frame, the last being where it stopped. The report
+states. The shadow walks the steps `hook.forced` passes as `walk_move` does,
+each observed from the departure, up to the first step that ends the move, and
+ignores any after it. The report
 counts an action applied before the previous action's state was observed as
 `unobserved`; a state that ends a path, observed and then left by a restore,
 counts nothing there. A restore brings back the cursor saved under its token,
@@ -380,9 +405,9 @@ hook forgets the cursor saved under it, so the saved cursors are those of the
 snapshots still alive. The handle holds a weak reference to its `Shadow`, which
 keeps the cursors in a `Mutex` behind the `Arc` its hooks share, so a snapshot
 can drop on any worker. The hook decodes each frame from the one before,
-decodes a forced move's steps in a chain as the target does and observes only
-the arrival, advances its own accumulator at the observed frames, completes the
-raw key against the previous one with `ArchiveKey::complete`, and counts the
+decodes a forced move's steps in a chain as the target does and observes each
+from the departure, advances its own accumulator at each frame of an action and
+at a move's arrival, completes the raw key against the previous one with `ArchiveKey::complete`, and counts the
 pair in the searcher's `ShadowTable`. The first `observe` after a save or a
 restore, with no action between, replaces the cursor saved under that token
 while the token lives, so a candidate whose snapshot an admission probe

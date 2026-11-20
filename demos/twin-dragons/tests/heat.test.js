@@ -63,6 +63,18 @@ test("colors compare each cell with the hottest cell of its own level", () => {
   heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
   assert.deepEqual(heat.color(cool, 0), [245, 89, 62], "Colors follow new visits");
 });
+test("colors depend on the heat alone, not on when the hottest cell was last found", () => {
+  const heat = new Heatmap(), maps = new Map([[0, { width: 512, height: 240 }]]);
+  for (let i = 0; i < 5; i++) heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 100);
+  heat.visit({ observation: { level: 0, x: 120, y: 184 }, retained: null }, 100);
+  const cells = [...heat.cells.values()], colors = (now) => cells.map((c) => heat.color(c, now));
+  const before = colors(100);
+  heat.visitMotion(Array(4000).fill(Uint16Array.from([0, NO_ROOM, 0, 0, 0])), maps, 100);
+  assert.deepEqual(colors(100), before, "Rollouts that visit no cell cool every cell alike");
+  assert.deepEqual(colors(3000), before, "Running time cools every cell alike");
+  heat.visit({ observation: { level: 0, x: 400, y: 40 }, retained: null }, 100);
+  assert.deepEqual(colors(100), before, "A visit elsewhere leaves the colors of other cells unchanged");
+});
 test("visible and selected route numbers survive arrivals and bounded history", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: "1:0" },
