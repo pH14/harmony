@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    any::TypeId,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
@@ -9,7 +10,8 @@ use std::{
 
 use machine::nes::ButtonChord;
 use nes_games::workload::{
-    Game, Lowered, NesSnapshot, RECORDS_FILE, REPLAY_RECORDS_FILE, SNAPSHOT_CHECKPOINT_FORMAT,
+    Game, Lowered, NesSnapshot, Never, RECORDS_FILE, REPLAY_RECORDS_FILE,
+    SNAPSHOT_CHECKPOINT_FORMAT,
 };
 use nes_games::{mm2::MegaMan2, smb::game::SuperMarioBros};
 use nes_workload::{
@@ -24,8 +26,8 @@ use nes_workload::{
 };
 use searcher::search::{
     assertion::{
-        AssertionKey, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying, StreamIdentity,
-        same_decisions,
+        AssertionKey, Compiled, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying,
+        StreamIdentity, same_decisions,
     },
     campaign::SnapshotCheckpoint,
 };
@@ -61,6 +63,18 @@ fn rekeyed_report(rekeyed: &Rekeyed) -> Value {
     })
 }
 
+fn exact_rekeying<G: Game>(strategies: [&Compiled; 2]) -> Result<()> {
+    let moves = TypeId::of::<G::Move>() != TypeId::of::<Never>();
+    if moves && strategies.iter().any(|compiled| !compiled.is_pure()) {
+        return Err(format!(
+            "{} has moves, and a strategy with a latched stage or a `highest` aggregate re-keys exactly only on a game without moves (https://github.com/pH14/harmony/issues/1062)",
+            G::NAME
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
     let recording = Recording::<ButtonChord>::from_bytes(&fs::read(run.join(RECORDS_FILE))?)?;
     let recorded = Lowered::new(game.clone(), &recording.header.strategy)?;
@@ -79,6 +93,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
             "forced_move_frames": forced_move_frames(&recording.actions),
         }));
     }
+    exact_rekeying::<G>([&recorded.compiled, &keyed.compiled])?;
     let stream = fs::read_to_string(run.join("stream.jsonl"))?;
     let mut lines = stream.lines();
     let header: Value = serde_json::from_str(lines.next().ok_or("the stream is empty")?)?;
@@ -244,5 +259,35 @@ mod tests {
         assert_eq!(report["format"], "assertion-rekeyed-v2");
         assert_eq!(report["entries"], 1);
         assert_eq!(report["holders"][0]["identity"], u64::from(u32::MAX) + 1);
+    }
+
+    #[test]
+    fn a_game_with_moves_refuses_a_strategy_that_reads_its_lineage() {
+        let shipped = Lowered::new(LuckyDraw::default(), LuckyDraw::STRATEGY).unwrap();
+        let highest = Lowered::new(
+            LuckyDraw::default(),
+            &format!("identity = \"highest(x)\"\n{}", LuckyDraw::STRATEGY),
+        )
+        .unwrap();
+        assert!(shipped.compiled.is_pure());
+        assert!(!highest.compiled.is_pure());
+        assert!(exact_rekeying::<LuckyDraw>([&shipped.compiled, &shipped.compiled]).is_ok());
+        for strategies in [
+            [&shipped.compiled, &highest.compiled],
+            [&highest.compiled, &shipped.compiled],
+        ] {
+            let refused = exact_rekeying::<LuckyDraw>(strategies).unwrap_err();
+            assert!(refused.to_string().contains("issues/1062"));
+        }
+        let smb = Lowered::new(
+            SuperMarioBros,
+            &SuperMarioBros::STRATEGY.replace(
+                "identity = \"screen_x\"",
+                "identity = \"highest(screen_x)\"",
+            ),
+        )
+        .unwrap();
+        assert!(!smb.compiled.is_pure());
+        assert!(exact_rekeying::<SuperMarioBros>([&smb.compiled, &smb.compiled]).is_ok());
     }
 }
