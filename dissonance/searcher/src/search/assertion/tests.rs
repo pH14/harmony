@@ -959,6 +959,85 @@ fn checks_find_a_goal_the_ranges_rule_out_and_a_step_that_thins_the_leading_tier
     assert_eq!(staged(8), []);
 }
 
+#[test]
+fn the_checker_counts_the_records_whose_stage_falls_below_their_parents() {
+    let catalog = catalog();
+    let compiled = Compiled::parse(
+        r#"
+        spread = "position"
+        [[stage]]
+        goal = "far room"
+        [[stage]]
+        name = "sword"
+        goal = "'items.sword'"
+        latch = true
+        [[stage]]
+        goal = "items"
+        "#,
+        &catalog,
+    )
+    .unwrap();
+    let parent = |state: Walk| {
+        let mut accumulator = Accumulator::default();
+        let _ = compiled.observe(&record(state), &mut accumulator);
+        accumulator
+    };
+    let sword = parent(Walk {
+        room: 6,
+        items: 0b001,
+        ..Walk::default()
+    });
+    let far = parent(Walk {
+        room: 6,
+        ..Walk::default()
+    });
+    assert_eq!((sword.stage(), far.stage()), (Some(2), Some(1)));
+    let back = record(Walk {
+        room: 1,
+        ..Walk::default()
+    });
+    let dropped = record(Walk {
+        room: 6,
+        ..Walk::default()
+    });
+    let ahead = record(Walk {
+        room: 6,
+        items: 0b001,
+        ..Walk::default()
+    });
+    let start = Accumulator::default();
+    let mut checker = compiled.checker();
+    for (record, parent) in [
+        (&back, &sword),
+        (&back, &far),
+        (&dropped, &sword),
+        (&ahead, &far),
+        (&back, &start),
+    ] {
+        checker.observe(record, parent);
+    }
+    let mut fallen = sword.clone();
+    let _ = compiled.observe(&back, &mut fallen);
+    assert_eq!(fallen.stage(), Some(0));
+    checker.observe_action(&back, &fallen, &sword);
+    checker.observe(&back, &fallen);
+    let falls = |stage: &str, records| StageFalls {
+        stage: stage.to_owned(),
+        records,
+    };
+    assert_eq!(
+        checker.stage_falls(),
+        [falls("far room", 3), falls("sword", 0), falls("items", 0)]
+    );
+    assert!(
+        Compiled::parse("spread = \"position\"", &catalog)
+            .unwrap()
+            .checker()
+            .stage_falls()
+            .is_empty()
+    );
+}
+
 fn walk_frames(room: u8, from: u8, to: u8) -> Vec<Record> {
     [from, to]
         .into_iter()

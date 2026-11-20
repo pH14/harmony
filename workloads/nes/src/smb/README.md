@@ -118,7 +118,13 @@ The `warps_1_2_to_4_vine_area_4_2_to_8` route follows the warp zones: 1-1; 1-2 t
 its warp zone (WarpZoneControl, `$06D6`, = 4) and the pipe to 4-1; 4-1; 4-2 to
 the vine, to the vine area's warp zone (`$06D6` = 6) and the pipe to 8-1; 8-1,
 8-2, 8-3; 8-4 until the ending; and the ending. Warp-zone stages use the band as
-their objective and pipe stages have one tier.
+their objective and pipe stages have one tier. In the strategy file
+`smb_warps.toml` the two warp-zone goals read values that hold only in one
+room, `vine >= 8` and `warp_zone == 4`, and neither stage is latched, so a
+state can fall back to them; `latch = true` on both waits on the nes-rekey
+stage-fall count from the first records run that passes them
+([#1052](https://github.com/pH14/harmony/issues/1052)), and until then
+`smb_warps.toml` is not used for a scored line.
 
 4-2's underground area (room (2,1)) holds a brick with the vine at column 64,
 row 3, above hidden coin blocks at (63,6), (64,5), (65,6) and (66,7). The vine
