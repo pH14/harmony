@@ -1878,13 +1878,18 @@ mod moves {
 
     #[cfg(unix)]
     #[test]
-    fn a_film_cuts_a_move_at_the_step_where_its_observation_stops() {
+    fn a_film_renders_the_frames_the_target_plays_and_cuts_a_move_where_it_stops() {
         let film = |strategy: &str, actions: &[ButtonChord]| {
+            let mut replay = trail(strategy);
+            for action in actions {
+                replay.apply(action);
+            }
             let mut target = trail(strategy);
             let (mut video, mut audio) = (Vec::new(), Vec::new());
             let (metadata, endpoint) = target
                 .render_input(actions, 0, 0, &mut video, &mut audio)
                 .expect("a film");
+            assert_eq!(metadata.frames, replay.observation().frame_count);
             let last = video.chunks(3).last().map(<[u8]>::to_vec);
             (metadata.frames, endpoint, last)
         };
