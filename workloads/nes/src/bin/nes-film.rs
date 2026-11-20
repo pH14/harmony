@@ -20,7 +20,6 @@ use nes_workload::{
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
-    mm2::{MegaMan2, Mm2Workload},
     pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
@@ -462,28 +461,8 @@ fn main() -> Result<()> {
                 identity,
             )
         }
-        "mm2-strategy" => {
-            if args.ai.is_some() {
-                return Err("Mega Man 2 takes no ai option".into());
-            }
-            produce(
-                strategic(
-                    Mm2Workload::new(
-                        MegaMan2,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
-                &args,
-                identity,
-            )
-        }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man, Joust and strategy Mega Man 2 scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man and Joust scenarios"
                 .into(),
         ),
     }
