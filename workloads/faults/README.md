@@ -374,16 +374,22 @@ rqlite's searches turn both on
 The option `resume_park`, a list of sites, is off when absent. When it is
 present, every `Pause(node, ticks)` in a drawn suffix, and a `Pause` that ends
 the input a suffix extends, is followed by an `EventParkFromArm` on the same
-node, unless the next action already is one. The supervisor continues the
-node when the pause window closes and arms the park in the same step, so the
-park lands on the resumed process's first counted edges. With sites listed,
-the park aims at one of them, picked uniformly, with `edges` 1. With an empty
-list it counts every edge, with `edges` `2^j` for `j` drawn uniformly from 0
-through 10. Its hold is drawn as for `EventPark`. These draws use their own
-generator seeded from the job's mutation seed, so every other action of the
-suffix is the one drawn without the option. A park is added only on a node
-whose runtime announced readiness. The option needs an image with the
-instrumented event runtime and `pause` among the drawn kinds, and the
+node, unless the next action already is one. The supervisor continues the node
+when the pause window closes and queues the park's arm command in the same
+step. The runtime's control thread arms the park when it reads that command,
+after it answers any status request sent while the node was stopped, so the
+resumed process runs briefly before the park counts its edges, and a visit to
+the site in that time is not counted. A replay of the input repeats that
+interval. The search's suffix limit can cut a suffix between a `Pause` and its
+park: that job ends at the resume without the park, the settle phase after it
+runs without one, and a suffix drawn from its endpoint starts with one. With
+sites listed, the park aims at one of them, picked uniformly, with `edges` 1.
+With an empty list it counts every edge, with `edges` `2^j` for `j` drawn
+uniformly from 0 through 10. Its hold is drawn as for `EventPark`. These draws
+use their own generator seeded from the job's mutation seed, so every other
+action of the suffix is the one drawn without the option. A park is added only
+on a node whose runtime announced readiness. The option needs an image with
+the instrumented event runtime and `pause` among the drawn kinds, and the
 vocabulary identifier records it with its sites.
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
