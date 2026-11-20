@@ -187,19 +187,28 @@ RUN bad() { echo "$1" >&2; exit 1; } \
     && : > /opt/harmony/rqlited-flags \
     && case "${RQLITE_RAFT_SNAP}" in \
         "") ;; \
-        0*|*[!0-9]*) bad "RQLITE_RAFT_SNAP must be a positive entry count: ${RQLITE_RAFT_SNAP}" ;; \
+        0*|*[!0-9]*|???????????????????*) bad "RQLITE_RAFT_SNAP must be a positive entry count of at most 18 digits: ${RQLITE_RAFT_SNAP}" ;; \
         *) printf -- '-raft-snap %s\n' "${RQLITE_RAFT_SNAP}" >> /opt/harmony/rqlited-flags ;; \
     esac \
-    && message="RQLITE_RAFT_SNAP_INT must be a positive Go duration such as 1s or 1m30s: ${RQLITE_RAFT_SNAP_INT}" \
+    && message="RQLITE_RAFT_SNAP_INT must be a positive duration below 2562047h in whole ns, us, ms, s, m or h, such as 1s or 1m30s: ${RQLITE_RAFT_SNAP_INT}" \
     && rest="${RQLITE_RAFT_SNAP_INT}" \
-    && case "${rest}" in ""|*[1-9]*) ;; *) bad "${message}" ;; esac \
+    && total=0 \
     && while [ -n "${rest}" ]; do \
-        number="${rest%%[!0-9.]*}"; \
-        case "${number}" in ""|.|*.*.*) bad "${message}" ;; esac; \
-        rest="${rest#"${number}"}"; \
-        case "${rest}" in ns*|us*|ms*) rest="${rest#??}" ;; [hms]*) rest="${rest#?}" ;; *) bad "${message}" ;; esac; \
+        digits="${rest%%[!0-9]*}"; \
+        rest="${rest#"${digits}"}"; \
+        number="${digits#"${digits%%[!0]*}"}"; \
+        case "${digits}" in ""|???????????*) bad "${message}" ;; esac; \
+        case "${rest}" in \
+            ns*) scale=1 ;; us*) scale=1000 ;; ms*) scale=1000000 ;; \
+            h*) scale=3600000000000 ;; m*) scale=60000000000 ;; s*) scale=1000000000 ;; \
+            *) bad "${message}" ;; \
+        esac; \
+        case "${rest}" in ns*|us*|ms*) rest="${rest#??}" ;; *) rest="${rest#?}" ;; esac; \
+        [ "$(( ${number:-0} <= (9223372036854775807 - total) / scale ))" = 1 ] || bad "${message}"; \
+        total=$(( total + ${number:-0} * scale )); \
     done \
     && if [ -n "${RQLITE_RAFT_SNAP_INT}" ]; then \
+        [ "${total}" -gt 0 ] || bad "${message}"; \
         printf -- '-raft-snap-int %s\n' "${RQLITE_RAFT_SNAP_INT}" >> /opt/harmony/rqlited-flags; \
     fi
 

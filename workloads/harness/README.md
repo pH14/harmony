@@ -605,12 +605,13 @@ After a snapshot rqlited keeps 1.25 times the entry threshold in the log, so
 with the default a follower installs the leader's snapshot only when it falls
 10,240 entries behind, which a search's executions do not reach. Build with
 `--build-arg RQLITE_RAFT_SNAP=N` to pass `-raft-snap N` and
-`--build-arg RQLITE_RAFT_SNAP_INT=D` to pass `-raft-snap-int D` (a Go
-duration such as `1s`) to every node. The `bundle` workload commits about 7
-entries a second, so with `RQLITE_RAFT_SNAP=64` and `RQLITE_RAFT_SNAP_INT=1s`
-each node snapshots about every 10 seconds, and a follower that misses more
-than 80 entries, about 12 seconds of writes, catches up by installing the
-leader's snapshot.
+`--build-arg RQLITE_RAFT_SNAP_INT=D` to pass `-raft-snap-int D` (whole
+numbers of `ns`, `us`, `ms`, `s`, `m` or `h`, such as `1s` or `1m30s`) to every
+node; the build rejects any other value. In a guest the `bundle` workload
+commits about 7 entries a second, so with `RQLITE_RAFT_SNAP=64` and
+`RQLITE_RAFT_SNAP_INT=1s` each node snapshots about every 10 seconds, and a
+follower that misses more than 80 entries, about 12 seconds of writes, catches
+up by installing the leader's snapshot.
 
 Search either bundle with both hook options of the
 [faults package](../faults/README.md) on:
