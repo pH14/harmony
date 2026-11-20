@@ -4,16 +4,12 @@ use std::error::Error;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::{
     castlevania::target::CastlevaniaSnapshot,
-    ice_climbers::target::IceClimbersSnapshot,
     metroid::target::MetroidSnapshot,
     mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
-    pac_man::target::PacManSnapshot,
-    punchout::target::PunchOutSnapshot,
     search::{
         archive::{Input, RetentionPolicy},
         campaign::Workload,
@@ -21,45 +17,40 @@ use crate::{
     },
     smb::target::SmbSnapshot,
     stb::target::StbSnapshot,
-    twin_dragons::target::TwinDragonsSnapshot,
 };
-use nes_games::donkey_kong::target::DonkeyKongSnapshot;
 
 pub trait EndpointIdentity: Serialize {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>>;
+}
+
+impl EndpointIdentity for CastlevaniaSnapshot {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        postcard_sha256(self)
+        self.endpoint_identity_sha256()
     }
 }
 
-impl EndpointIdentity for CastlevaniaSnapshot {}
+impl EndpointIdentity for MetroidSnapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.endpoint_identity_sha256()
+    }
+}
 
-impl EndpointIdentity for DonkeyKongSnapshot {}
+impl EndpointIdentity for Mm2Snapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.endpoint_identity_sha256()
+    }
+}
 
-impl EndpointIdentity for IceClimbersSnapshot {}
-
-impl EndpointIdentity for MetroidSnapshot {}
-
-impl EndpointIdentity for Mm2Snapshot {}
-
-impl EndpointIdentity for PacManSnapshot {}
-
-impl EndpointIdentity for PunchOutSnapshot {}
-
-impl EndpointIdentity for StbSnapshot {}
-
-impl EndpointIdentity for TwinDragonsSnapshot {}
+impl EndpointIdentity for StbSnapshot {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        self.endpoint_identity_sha256()
+    }
+}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        self.snapshot_identity_sha256()
+        self.endpoint_identity_sha256()
     }
-}
-
-pub fn postcard_sha256(value: &(impl Serialize + ?Sized)) -> Result<String, Box<dyn Error>> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(postcard::to_allocvec(value)?)
-    ))
 }
 
 pub fn replay_witness<G: Workload>(

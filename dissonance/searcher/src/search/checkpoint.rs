@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub mod image;
 pub(crate) mod publisher;
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v18";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v21";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedCheckpoint {
@@ -438,7 +438,10 @@ impl CheckpointReader {
         let mut bytes = fs::read(path)?;
         let (format, _): (String, _) = postcard::take_from_bytes(&bytes)?;
         if format != SEARCH_CHECKPOINT_FORMAT {
-            return Err("search checkpoint format is not recognized".into());
+            return Err(format!(
+                "search checkpoint format is {format}; this build reads {SEARCH_CHECKPOINT_FORMAT}"
+            )
+            .into());
         }
         let payload_len = bytes
             .len()
@@ -835,6 +838,7 @@ mod tests {
             "dissonance-search-checkpoint-v15",
             "dissonance-search-checkpoint-v16",
             "dissonance-search-checkpoint-v17",
+            "dissonance-search-checkpoint-v18",
         ] {
             let mut old = header(10, "interval");
             old.format = format.into();
@@ -842,7 +846,9 @@ mod tests {
             fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
             assert_eq!(
                 CheckpointReader::open(&path).err().unwrap().to_string(),
-                "search checkpoint format is not recognized"
+                format!(
+                    "search checkpoint format is {format}; this build reads {SEARCH_CHECKPOINT_FORMAT}"
+                )
             );
         }
         fs::remove_dir_all(&directory).unwrap();
@@ -1046,7 +1052,7 @@ mod tests {
             .expect("another format is refused");
         assert_eq!(
             refused.to_string(),
-            "search checkpoint format is not recognized"
+            "search checkpoint format is dissonance-search-checkpoint-v9; this build reads dissonance-search-checkpoint-v21"
         );
         fs::remove_dir_all(&directory).expect("remove the directory");
     }

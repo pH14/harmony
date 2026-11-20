@@ -2,7 +2,7 @@
 
 use crate::{
     Key, actions, backtrack, chain, crossing, deadline, deadline_actions, delayed, fork, graph,
-    map, maze, passive_clock, picks, resource, route, targets, trap,
+    map, maze, passive_clock, picks, resource, ridge, route, stairs, targets, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,8 @@ pub enum World {
     Targets(targets::Config),
     Fork(fork::Config),
     Picks(picks::Config),
+    Ridge(ridge::Config),
+    Stairs(stairs::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -52,6 +54,8 @@ pub enum State {
     Targets(targets::State),
     Fork(fork::State),
     Picks(picks::State),
+    Ridge(ridge::State),
+    Stairs(stairs::State),
 }
 
 impl World {
@@ -74,6 +78,8 @@ impl World {
             Self::Targets(w) => w.validate(),
             Self::Fork(w) => w.validate(),
             Self::Picks(w) => w.validate(),
+            Self::Ridge(w) => w.validate(),
+            Self::Stairs(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -100,6 +106,8 @@ impl World {
                 (Self::Targets(w), State::Targets(s)) => w.state_is_bounded(s),
                 (Self::Fork(w), State::Fork(s)) => w.state_is_bounded(s),
                 (Self::Picks(w), State::Picks(s)) => w.state_is_bounded(s),
+                (Self::Ridge(w), State::Ridge(s)) => w.state_is_bounded(s),
+                (Self::Stairs(w), State::Stairs(s)) => w.state_is_bounded(s),
                 _ => false,
             }
     }
@@ -122,6 +130,8 @@ impl World {
             Self::Targets(w) => State::Targets(w.initial()),
             Self::Fork(w) => State::Fork(w.initial()),
             Self::Picks(w) => State::Picks(w.initial()),
+            Self::Ridge(w) => State::Ridge(w.initial()),
+            Self::Stairs(w) => State::Stairs(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -147,6 +157,8 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => State::Targets(w.step(s, action)),
             (Self::Fork(w), State::Fork(s)) => State::Fork(w.step(s, action)),
             (Self::Picks(w), State::Picks(s)) => State::Picks(w.step(s, action)),
+            (Self::Ridge(w), State::Ridge(s)) => State::Ridge(w.step(s, action)),
+            (Self::Stairs(w), State::Stairs(s)) => State::Stairs(w.step(s, action)),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -169,6 +181,8 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => w.goal(s),
             (Self::Fork(w), State::Fork(s)) => w.goal(s),
             (Self::Picks(w), State::Picks(s)) => w.goal(s),
+            (Self::Ridge(w), State::Ridge(s)) => w.goal(s),
+            (Self::Stairs(w), State::Stairs(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -191,6 +205,8 @@ impl World {
             Self::Targets(w) => w.reachable(),
             Self::Fork(w) => w.reachable(),
             Self::Picks(w) => w.reachable(),
+            Self::Ridge(w) => w.reachable(),
+            Self::Stairs(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -212,6 +228,8 @@ impl World {
             (Self::Targets(w), State::Targets(s)) => w.key(s, broken),
             (Self::Fork(w), State::Fork(s)) => w.key(s, broken),
             (Self::Picks(w), State::Picks(s)) => w.key(s),
+            (Self::Ridge(w), State::Ridge(s)) => w.shared_key(s),
+            (Self::Stairs(w), State::Stairs(s)) => w.key(s),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -222,11 +240,17 @@ impl World {
             "transitions"
         }
     }
-    pub fn action_cost_fn(&self) -> fn(&u8) -> u64 {
+    pub fn planned_cost_fn(&self) -> fn(&u8) -> u64 {
         if matches!(self, Self::PassiveClock(_)) {
             |a| u64::from(*a)
         } else {
             |_| 1
+        }
+    }
+    pub fn step_work(&self, state: State, action: u8) -> u64 {
+        match (self, state) {
+            (Self::Stairs(w), State::Stairs(s)) => 1 + u64::from(w.forced_steps(s, action)),
+            _ => (self.planned_cost_fn())(&action),
         }
     }
     pub fn layout(&self) -> serde_json::Value {

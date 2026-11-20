@@ -7,24 +7,27 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use machine::quicknes::QuickNesMachine;
+use nes_games::workload::{Game, NesRun, NesWorkload};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
-    donkey_kong::campaign::{DonkeyKongCampaignRun, DonkeyKongGame},
+    donkey_kong::{DonkeyKong, DonkeyKongWorkload},
+    eval::RESULT_FORMAT,
     famidash::{
         Famidash, FamidashGame,
         levels::{Side, Stage},
     },
     film::{Capture, FilmMetadata, Filmable, Reel},
-    ice_climbers::campaign::{IceClimbersCampaignRun, IceClimbersGame},
+    ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
-    pac_man::campaign::{PacManCampaignRun, PacManGame},
-    punchout::campaign::{PunchOutCampaignRun, PunchOutGame},
+    pac_man::{PacMan, PacManWorkload},
+    punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
     stb::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
-    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
+    twin_dragons::{TwinDragons, TwinDragonsWorkload},
     witness::replay_witness,
     zelda::{Zelda, ZeldaGame},
 };
@@ -51,6 +54,7 @@ struct Args {
     tail_frames: u32,
     max_frames: u64,
     recorded_backend: String,
+    strategy: Option<PathBuf>,
 }
 
 impl Args {
@@ -69,6 +73,7 @@ impl Args {
         let mut tail_frames = DEFAULT_TAIL_FRAMES;
         let mut max_frames = DEFAULT_MAX_FRAMES;
         let mut recorded_backend = "native".to_owned();
+        let mut strategy = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             let value = args
@@ -95,6 +100,7 @@ impl Args {
                 "--tail-frames" => tail_frames = text()?.parse()?,
                 "--max-frames" => max_frames = text()?.replace('_', "").parse()?,
                 "--recorded-backend" => recorded_backend = text()?,
+                "--strategy" => strategy = Some(PathBuf::from(&value)),
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -113,6 +119,7 @@ impl Args {
             tail_frames,
             max_frames,
             recorded_backend,
+            strategy,
         };
         if u64::from(args.tail_frames) >= args.max_frames {
             return Err("the frame budget must leave room for more than the tail".into());
@@ -133,6 +140,16 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn strategic<G: Game>(
+    workload: NesWorkload<G, QuickNesMachine>,
+    args: &Args,
+) -> Result<NesWorkload<G, QuickNesMachine>> {
+    match &args.strategy {
+        Some(path) => workload.with_strategy(&fs::read_to_string(path)?),
+        None => Ok(workload),
+    }
+}
+
 fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> Result<()> {
     let input_bytes = fs::read(&args.input)?;
     let input: Input<G::Action> = serde_json::from_slice(&input_bytes)?;
@@ -143,6 +160,14 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     let native = args.recorded_backend == "native";
     let replayed = replay_witness(&game, &run, &input)?;
     if native {
+        let format = recorded.get("format").and_then(Value::as_str);
+        if format != Some(RESULT_FORMAT) {
+            return Err(format!(
+                "the recorded result has format {}; this nes-film checks witnesses in {RESULT_FORMAT}, so rerun the search with this nes-eval",
+                format.unwrap_or("none")
+            )
+            .into());
+        }
         let expected = recorded
             .get("witness")
             .ok_or("the recorded result carries no witness evidence")?;
@@ -248,11 +273,17 @@ fn main() -> Result<()> {
     }
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(&args.core, &args.core_sha256)?;
-    let identity = json!({
+    let mut identity = json!({
         "game": args.game,
         "ai": args.ai,
         "prepared_execution_sha256": execution_sha256,
     });
+    if let Some(path) = &args.strategy {
+        if matches!(args.game.as_str(), "stb" | "castlevania") {
+            return Err("only games declared through assertions take a strategy".into());
+        }
+        identity["strategy_sha256"] = json!(sha256(&fs::read(path)?));
+    }
     match args.game.as_str() {
         "stb" => {
             let ai = match args.ai.as_deref().unwrap_or("hard") {
@@ -273,8 +304,17 @@ fn main() -> Result<()> {
                 return Err("Twin Dragons takes no ai option".into());
             }
             produce(
-                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                TwinDragonsCampaignRun,
+                strategic(
+                    TwinDragonsWorkload::new(
+                        TwinDragons,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -295,8 +335,17 @@ fn main() -> Result<()> {
                 return Err("Punch-Out!! takes no ai option".into());
             }
             produce(
-                PunchOutGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                PunchOutCampaignRun,
+                strategic(
+                    PunchOutWorkload::new(
+                        PunchOut,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -309,14 +358,17 @@ fn main() -> Result<()> {
                 Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
             let stage = Stage::new(side, args.level, args.goal.unwrap_or(args.level))?;
             produce(
-                FamidashGame::new(
-                    Famidash::new(stage),
-                    &rom,
-                    &args.core,
-                    &args.core_sha256,
-                    &execution_sha256,
+                strategic(
+                    FamidashGame::new(
+                        Famidash::new(stage),
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
                 )?,
-                nes_games::workload::NesRun,
+                NesRun,
                 &args,
                 identity,
             )
@@ -326,8 +378,11 @@ fn main() -> Result<()> {
                 return Err("Zelda takes no ai option".into());
             }
             produce(
-                ZeldaGame::new(Zelda, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
-                nes_games::workload::NesRun,
+                strategic(
+                    ZeldaGame::new(Zelda, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -337,8 +392,17 @@ fn main() -> Result<()> {
                 return Err("Donkey Kong takes no ai option".into());
             }
             produce(
-                DonkeyKongGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                DonkeyKongCampaignRun,
+                strategic(
+                    DonkeyKongWorkload::new(
+                        DonkeyKong,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -348,8 +412,17 @@ fn main() -> Result<()> {
                 return Err("Ice Climbers takes no ai option".into());
             }
             produce(
-                IceClimbersGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                IceClimbersCampaignRun,
+                strategic(
+                    IceClimbersWorkload::new(
+                        IceClimbers::default(),
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -359,8 +432,17 @@ fn main() -> Result<()> {
                 return Err("Pac-Man takes no ai option".into());
             }
             produce(
-                PacManGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
-                PacManCampaignRun,
+                strategic(
+                    PacManWorkload::new(
+                        PacMan,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -370,8 +452,11 @@ fn main() -> Result<()> {
                 return Err("Joust takes no ai option".into());
             }
             produce(
-                JoustGame::new(Joust, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
-                nes_games::workload::NesRun,
+                strategic(
+                    JoustGame::new(Joust, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
+                    &args,
+                )?,
+                NesRun,
                 &args,
                 identity,
             )
@@ -435,6 +520,17 @@ mod tests {
                 .ai
                 .as_deref(),
             Some("easy")
+        );
+    }
+
+    #[test]
+    fn a_recorded_strategy_is_optional() {
+        assert_eq!(Args::parse_from(required(&[])).unwrap().strategy, None);
+        assert_eq!(
+            Args::parse_from(required(&["--strategy", "strategy.toml"]))
+                .unwrap()
+                .strategy,
+            Some(std::path::PathBuf::from("strategy.toml"))
         );
     }
 

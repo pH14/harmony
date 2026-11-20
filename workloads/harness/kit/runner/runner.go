@@ -102,8 +102,6 @@ var errAbandoned = errors.New("adapter did not return after its deadline")
 
 const abandonGrace = time.Second
 
-func draw(n uint64) uint64 { return sdk.Below(n) }
-
 func Run(ctx context.Context, adapter Adapter, config Config) error {
 	fam := adapter.Family()
 	journal, err := history.Create(config.Dir, "drive", sdk.Random)
@@ -157,7 +155,7 @@ func process(ctx context.Context, adapter Adapter, fam family.Family, recorder f
 			}
 			client = connected
 		}
-		op := generator.Next(draw, value)
+		op := generator.Next(sdk.Below, value)
 		index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 		if err != nil {
 			return err
@@ -226,7 +224,7 @@ func pause(ctx context.Context, config Config) {
 	if config.MaxPause <= 0 {
 		return
 	}
-	wait := time.Duration(draw(uint64(config.MaxPause/time.Millisecond)+1)) * time.Millisecond
+	wait := time.Duration(sdk.Below("runner.pause", uint64(config.MaxPause/time.Millisecond)+1)) * time.Millisecond
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {

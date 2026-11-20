@@ -3,7 +3,7 @@
 use std::{cell::RefCell, fmt, ops::Range};
 
 #[cfg(unix)]
-use machine::quicknes::QuickNesMachine;
+use machine::quicknes::{QuickNesMachine, VideoFrame};
 use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -26,6 +26,20 @@ pub trait SnapshotState:
     fn logical_identity(&self) -> Result<Self, MachineError> {
         Ok(self.clone())
     }
+
+    fn endpoint_identity(&self) -> Result<Self, MachineError> {
+        self.logical_identity()
+    }
+}
+
+pub fn endpoint_identity_sha256<T: Clone + Serialize, P: SnapshotState>(
+    snapshot: &T,
+    emulator_state: impl FnOnce(&mut T) -> &mut P,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut identity = snapshot.clone();
+    let state = emulator_state(&mut identity);
+    *state = state.endpoint_identity()?;
+    crate::search::campaign::postcard_value_sha256(&identity)
 }
 
 pub trait WorkRamCopy:
@@ -76,6 +90,18 @@ impl SnapshotState for Vec<u8> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         budget.array::<u8>(self.capacity())
     }
+
+    fn endpoint_identity(&self) -> Result<Self, MachineError> {
+        let mut identity = self.clone();
+        if let Ok((_, header_len)) = packed_preamble(self)
+            && let Some(header) = identity
+                .get_mut(PACKED_PREAMBLE_LEN..)
+                .and_then(|rest| rest.get_mut(..header_len))
+        {
+            machine::nes::clear_execution_sha256(header);
+        }
+        Ok(identity)
+    }
 }
 
 pub trait NesBackend<P>: Machine
@@ -122,6 +148,36 @@ pub trait NesMemory {
     fn read_save_ram(&self) -> Result<Vec<u8>, MachineError>;
 
     fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError>;
+}
+
+#[cfg(unix)]
+pub trait FilmMachine {
+    fn set_video_capture(&mut self, enabled: bool);
+
+    fn set_audio_capture(&mut self, enabled: bool);
+
+    fn take_video_frame(&mut self) -> Option<VideoFrame>;
+
+    fn take_audio_samples(&mut self) -> Vec<i16>;
+}
+
+#[cfg(unix)]
+impl FilmMachine for QuickNesMachine {
+    fn set_video_capture(&mut self, enabled: bool) {
+        QuickNesMachine::set_video_capture(self, enabled);
+    }
+
+    fn set_audio_capture(&mut self, enabled: bool) {
+        QuickNesMachine::set_audio_capture(self, enabled);
+    }
+
+    fn take_video_frame(&mut self) -> Option<VideoFrame> {
+        QuickNesMachine::take_video_frame(self)
+    }
+
+    fn take_audio_samples(&mut self) -> Vec<i16> {
+        QuickNesMachine::take_audio_samples(self)
+    }
 }
 
 #[cfg(unix)]
@@ -194,17 +250,51 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
     }
 }
 
+const PACKED_MARKER: &[u8; 4] = b"QNP2";
+const PACKED_PREAMBLE_LEN: usize = 12;
+
 pub fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
-    let declared = u32::try_from(state.len())
-        .map_err(|_| MachineError::Backend("snapshot is too large to compress".to_owned()))?;
+    let too_large = || MachineError::Backend("snapshot is too large to compress".to_owned());
+    let declared = u32::try_from(state.len()).map_err(|_| too_large())?;
+    let header_len = state.len() - machine::nes::core_state(state).len();
+    let (header, core) = state.split_at(header_len);
+    let header_declared = u32::try_from(header_len).map_err(|_| too_large())?;
     PACKED_STATE.with_borrow_mut(|packed| {
-        packed.resize(4 + lz4_flex::block::get_maximum_output_size(state.len()), 0);
-        packed[..4].copy_from_slice(&declared.to_le_bytes());
-        let written = lz4_flex::block::compress_into(state, &mut packed[4..]).map_err(|error| {
-            MachineError::Backend(format!("snapshot does not compress: {error}"))
-        })?;
-        Ok(packed[..4 + written].to_vec())
+        let block_start = PACKED_PREAMBLE_LEN + header_len;
+        packed.resize(
+            block_start + lz4_flex::block::get_maximum_output_size(core.len()),
+            0,
+        );
+        packed[..4].copy_from_slice(PACKED_MARKER);
+        packed[4..8].copy_from_slice(&declared.to_le_bytes());
+        packed[8..12].copy_from_slice(&header_declared.to_le_bytes());
+        packed[PACKED_PREAMBLE_LEN..block_start].copy_from_slice(header);
+        let written =
+            lz4_flex::block::compress_into(core, &mut packed[block_start..]).map_err(|error| {
+                MachineError::Backend(format!("snapshot does not compress: {error}"))
+            })?;
+        Ok(packed[..block_start + written].to_vec())
     })
+}
+
+pub fn packed_state_len(packed: &[u8]) -> Result<usize, MachineError> {
+    Ok(packed_preamble(packed)?.0)
+}
+
+fn packed_preamble(packed: &[u8]) -> Result<(usize, usize), MachineError> {
+    if packed.get(..4) != Some(PACKED_MARKER.as_slice()) || packed.len() < PACKED_PREAMBLE_LEN {
+        return Err(MachineError::Backend(
+            "snapshot is not a packed QuickNES state of format 2".to_owned(),
+        ));
+    }
+    let field = |range: Range<usize>| {
+        packed[range]
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_| MachineError::MalformedEnv)
+            .and_then(|value| usize::try_from(value).map_err(|_| MachineError::MalformedEnv))
+    };
+    Ok((field(4..8)?, field(8..12)?))
 }
 
 #[cfg(unix)]
@@ -233,17 +323,25 @@ pub fn unpack_state_into(
 ) -> Result<(), MachineError> {
     let undecodable =
         |error| MachineError::Backend(format!("snapshot does not decompress: {error}"));
-    let (declared, block) = lz4_flex::block::uncompressed_size(packed).map_err(undecodable)?;
+    let (declared, header_len) = packed_preamble(packed)?;
     if declared != expected {
         return Err(MachineError::Backend(format!(
             "snapshot declares {declared} bytes; this core's states are {expected}"
         )));
     }
+    let block_start = PACKED_PREAMBLE_LEN
+        .checked_add(header_len)
+        .filter(|start| header_len <= expected && *start <= packed.len())
+        .ok_or_else(|| MachineError::Backend("snapshot header is truncated".to_owned()))?;
     state.resize(expected, 0);
-    let written = lz4_flex::block::decompress_into(block, state).map_err(undecodable)?;
-    if written != expected {
+    state[..header_len].copy_from_slice(&packed[PACKED_PREAMBLE_LEN..block_start]);
+    let written =
+        lz4_flex::block::decompress_into(&packed[block_start..], &mut state[header_len..])
+            .map_err(undecodable)?;
+    if header_len + written != expected {
         return Err(MachineError::Backend(format!(
-            "snapshot decompresses to {written} bytes; this core's states are {expected}"
+            "snapshot decompresses to {} bytes; this core's states are {expected}",
+            header_len + written
         )));
     }
     Ok(())
@@ -307,9 +405,15 @@ impl NesBackend<machine::consonance::ConsonancePortable>
 
 #[cfg(all(test, unix))]
 mod tests {
-    use machine::{Machine, quicknes::QuickNesMachine};
+    use machine::{Machine, nes::STATE_HEADER_LEN, quicknes::QuickNesMachine};
 
-    use super::NesBackend;
+    use super::{NesBackend, pack_quicknes_state, packed_state_len, unpack_state_into};
+
+    fn unpacked(packed: &[u8], len: usize) -> Vec<u8> {
+        let mut state = Vec::new();
+        unpack_state_into(packed, len, &mut state).expect("unpack");
+        state
+    }
 
     #[test]
     fn native_snapshots_store_a_compressed_state_that_restores_exactly() {
@@ -318,17 +422,31 @@ mod tests {
         let state = machine.take_snapshot(held).expect("raw state");
         let held = machine.import_snapshot(&state);
         let stored = machine.export_nes(held, None).expect("export");
-        assert_eq!(stored, lz4_flex::block::compress_prepend_size(&state));
+        assert_eq!(&stored[..4], b"QNP2");
+        assert_eq!(packed_state_len(&stored).expect("length"), state.len());
+        assert_eq!(
+            &stored[12..12 + STATE_HEADER_LEN],
+            &state[..STATE_HEADER_LEN]
+        );
+        assert_eq!(unpacked(&stored, state.len()), state);
         assert!(stored.len() < state.len());
         assert_eq!(stored.capacity(), stored.len());
         let restored = machine.import_nes(&stored).expect("import");
         assert_eq!(machine.take_snapshot(restored).expect("raw state"), state);
         assert!(machine.import_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
+        assert!(
+            machine
+                .import_nes(&lz4_flex::block::compress_prepend_size(&state))
+                .is_err()
+        );
         let mut oversized = stored.clone();
-        oversized[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        oversized[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(machine.import_nes(&oversized).is_err());
-        let mut short = lz4_flex::block::compress_prepend_size(&state[..state.len() - 1]);
-        short[..4].copy_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
+        let mut long_header = stored.clone();
+        long_header[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(machine.import_nes(&long_header).is_err());
+        let mut short = pack_quicknes_state(&state[..state.len() - 1]).expect("pack");
+        short[4..8].copy_from_slice(&u32::try_from(state.len()).unwrap().to_le_bytes());
         assert!(machine.import_nes(&short).is_err());
     }
 
@@ -339,12 +457,42 @@ mod tests {
         let captured = machine.capture_nes(None).expect("capture");
         let held = machine.snapshot().expect("snapshot");
         let raw = machine.take_snapshot(held).expect("raw state");
-        assert_eq!(captured, lz4_flex::block::compress_prepend_size(&raw));
+        assert_eq!(captured, pack_quicknes_state(&raw).expect("pack"));
         machine.poke_wram(0x10, 9).unwrap();
         machine.restore_nes(&captured).expect("restore");
         assert_eq!(machine.read_wram().expect("wram")[0x10], 7);
         assert_eq!(machine.capture_nes(None).expect("capture"), captured);
         assert!(machine.restore_nes(&vec![4, 0, 0, 0, 0xf0]).is_err());
         assert_eq!(machine.capture_nes(None).expect("capture"), captured);
+    }
+
+    #[test]
+    fn equal_core_states_pack_to_equal_lengths_under_different_execution_hashes() {
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
+        let held = machine.snapshot().expect("snapshot");
+        let own = machine.take_snapshot(held).expect("raw state");
+        let mut foreign = own.clone();
+        for (index, byte) in foreign[112..176].iter_mut().enumerate() {
+            *byte = b"0123456789abcdef"[(index * 7 + index / 5) % 16];
+        }
+        assert_ne!(own[112..176], foreign[112..176]);
+        assert_eq!(own[STATE_HEADER_LEN..], foreign[STATE_HEADER_LEN..]);
+        let packed_own = pack_quicknes_state(&own).expect("pack");
+        let packed_foreign = pack_quicknes_state(&foreign).expect("pack");
+        assert_eq!(packed_own.len(), packed_foreign.len());
+        assert_eq!(unpacked(&packed_own, own.len()), own);
+        assert_eq!(unpacked(&packed_foreign, foreign.len()), foreign);
+        machine
+            .restore_nes(&packed_own)
+            .expect("own build restores");
+        assert!(machine.restore_nes(&packed_foreign).is_err());
+    }
+
+    #[test]
+    fn a_state_without_the_machine_header_packs_whole() {
+        let state = vec![7_u8; 300];
+        let packed = pack_quicknes_state(&state).expect("pack");
+        assert_eq!(&packed[8..12], &0_u32.to_le_bytes());
+        assert_eq!(unpacked(&packed, state.len()), state);
     }
 }

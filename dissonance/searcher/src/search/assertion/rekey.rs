@@ -34,13 +34,16 @@ pub struct Tier {
 pub struct Holders {
     pub progress: u32,
     pub place: u64,
-    pub identity: u32,
+    pub identity: u64,
     pub ids: Vec<u64>,
     pub keys: Vec<AssertionKey>,
 }
 
+pub const REKEYED_FORMAT: &str = "assertion-rekeyed-v1";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct Rekeyed {
+    pub format: &'static str,
     pub policy: String,
     pub jobs: usize,
     pub candidates: usize,
@@ -105,13 +108,12 @@ impl Rekeying<'_> {
         genesis: &Record,
         jobs: &[RecordedJob],
         actions: &[RecordedAction<A>],
-        action_cost: fn(&A) -> u64,
     ) -> Result<Rekeyed, Box<dyn Error>>
     where
         A: Clone + Debug + Eq + Ord + Serialize + DeserializeOwned,
     {
         let mut archive: Archive<A, AssertionKey, (), ()> =
-            Archive::with_shape(action_cost, self.strategy.shape());
+            Archive::with_shape(self.strategy.shape());
         archive.max_entries = self.entry_limit;
         let mut recorded = Accumulator::default();
         let _ = self.recorded.observe(genesis, &mut recorded);
@@ -128,6 +130,7 @@ impl Rekeying<'_> {
                     suffix: Vec::new(),
                     key: genesis_key,
                     milestones: (),
+                    cost: 0,
                 },
                 (),
             )?
@@ -203,6 +206,7 @@ impl Rekeying<'_> {
                             suffix: suffix.as_slice(),
                             key,
                             milestones: (),
+                            cost: pending.iter().map(|index| actions[*index].cost).sum(),
                         },
                         (),
                         Some(&certificates),
@@ -301,6 +305,7 @@ impl Rekeying<'_> {
             .map(|(id, ())| id)
             .collect();
         Ok(Rekeyed {
+            format: REKEYED_FORMAT,
             policy: self.strategy.policy_identifier().to_owned(),
             jobs: jobs.len(),
             candidates,

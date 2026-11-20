@@ -29,7 +29,7 @@ impl ArchiveKey for Key {
 }
 
 fn selection(c: &mut Criterion, tiers: u64) {
-    let mut archive = Archive::<u64, Key, (), ()>::new(|_| 1);
+    let mut archive = Archive::<u64, Key, (), ()>::new();
     for tier in 0..tiers {
         archive
             .insert(
@@ -39,6 +39,7 @@ fn selection(c: &mut Criterion, tiers: u64) {
                     suffix: vec![tier],
                     key: Key(tier),
                     milestones: (),
+                    cost: 1,
                 },
                 (),
             )

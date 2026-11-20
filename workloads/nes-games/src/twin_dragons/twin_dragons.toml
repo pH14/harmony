@@ -1,0 +1,11 @@
+goal = "victory"
+absent = "dead or victory or stage == 0"
+reject = "dead"
+capacity = 1
+tier = ["cleared"]
+spread = ["cleared", "stage", "x / 32", "y / 32"]
+identity = ["x / 16", "y / 16"]
+prefer = [["health: more"]]
+
+[define]
+stage = "if in_play then 255 else if playing and at_goal then 1 + min(timer / 32, 3) else if loading then 5 + timer / 32 else if playing and not loaded then 254 else 0"

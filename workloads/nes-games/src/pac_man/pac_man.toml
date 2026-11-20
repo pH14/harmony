@@ -1,0 +1,7 @@
+goal = "maze_200"
+absent = "not playing"
+reject = ["game_over", "demo"]
+capacity = 1
+tier = ["mazes_cleared", "dots_eaten"]
+spread = ["x / 8", "y / 8", "powered"]
+prefer = [["lives: more", "score: more"]]

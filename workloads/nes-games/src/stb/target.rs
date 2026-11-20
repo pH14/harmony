@@ -196,6 +196,10 @@ pub struct StbSnapshot {
 }
 
 impl StbSnapshot {
+    pub fn endpoint_identity_sha256(&self) -> Result<String, Box<dyn std::error::Error>> {
+        crate::nes_backend::endpoint_identity_sha256(self, |snapshot| &mut snapshot.emulator_state)
+    }
+
     #[must_use]
     pub fn state(&self) -> StbMechanicalState {
         self.observation.decoded

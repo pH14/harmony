@@ -89,8 +89,6 @@ pub struct StageLines {
     pub step: Option<Steps>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub latch: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub carry: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub absent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

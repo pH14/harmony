@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod catalog;
+mod choice;
 mod codec;
 mod envcodec;
 mod error;
@@ -13,6 +14,9 @@ mod seeded;
 mod standing;
 
 pub use catalog::{Answer, BlockOp, DecisionClass, DecisionPoint, Fault, FlowEvent};
+pub use choice::{
+    CHOICE_NAMESPACE, ChoiceQuestion, MAX_CHOICE_SITE_LEN, choice_answer, choice_site,
+};
 pub use envcodec::EnvCodec;
 pub use error::EnvError;
 pub use host::{Action, BitMask, HostFault, Moment, Ratio};
@@ -25,7 +29,7 @@ pub use standing::{
     encode_standing, encode_windows, parse_standing,
 };
 
-pub const CATALOG_VERSION: u16 = 7;
+pub const CATALOG_VERSION: u16 = 8;
 
 pub const MAX_SUPPLY_LEN: u32 = 1 << 20;
 

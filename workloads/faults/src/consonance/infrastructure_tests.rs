@@ -65,6 +65,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
         )?)),
         root: None,
         boot_cache: None,
+        answers: Vec::new(),
     };
     let mut target = FaultTarget::fresh(&[], &initramfs, &config)?;
     let root = target
@@ -85,6 +86,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
     supervisor.read_exact(&mut acknowledgement)?;
     assert_eq!(&acknowledgement, b"A");
     let result = crate::campaign::execute_job(
+        crate::campaign::fixture_key,
         &crate::campaign::fixture_run(),
         &mut target,
         &root,

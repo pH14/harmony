@@ -471,13 +471,14 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
         } else {
             None
         };
+        let cost = game.shrink_cost(action, target, &observations);
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
             outcome,
             candidate,
-            cost: game.shrink_cost(action, target),
+            cost,
             bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
@@ -778,7 +779,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
-    fn action_cost_fn(&self) -> fn(&MetroidAction) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&MetroidAction) -> u64 {
         MetroidAction::planned_frames
     }
 
@@ -1318,7 +1319,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "snapshot checkpoint format is not recognized"
+            format!(
+                "snapshot checkpoint format is metroid-quicknes-snapshot-checkpoint-v12; this build reads {SNAPSHOT_CHECKPOINT_FORMAT}"
+            )
         );
     }
 

@@ -130,6 +130,7 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         observation,
         console: "saved console".into(),
         settlement: false,
+        choices: 0,
     });
     let recorded = serde_json::json!({
         "package": "faults", "mode": "search", "image_sha256": "image", "kernel_sha256": "kernel",

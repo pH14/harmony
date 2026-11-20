@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -23,10 +24,11 @@ import (
 )
 
 const (
-	upsertSQL = "INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
-	casSQL    = "UPDATE kv SET v = ? WHERE k = ? AND v = ?"
+	upsertSQL = "INSERT INTO kv(k, v, n, h) VALUES(?, ?, 1, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v, n = n + 1, h = (h + excluded.h) % 4503599627370496"
+	casSQL    = "UPDATE kv SET v = ?, n = n + 1, h = (h + ?) % 4503599627370496 WHERE k = ? AND v = ?"
 	readSQL   = "SELECT v FROM kv WHERE k = ?"
-	keysSQL   = "SELECT k, v FROM kv"
+	keysSQL   = "SELECT k, v, n, h FROM kv"
+	digestMod = 1 << 52
 	appendSQL = "INSERT INTO log(v) VALUES(?)"
 	scanSQL   = "SELECT v FROM log ORDER BY id"
 	fenceSQL  = "UPDATE ready SET n = n + 1 WHERE k = 1"
@@ -43,7 +45,7 @@ var nodes = []string{
 var nodeNames = []string{"n1", "n2", "n3"}
 
 var readySQL = [][]any{
-	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT)"},
+	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT, n INTEGER NOT NULL DEFAULT 0, h INTEGER NOT NULL DEFAULT 0)"},
 	{"CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, v TEXT)"},
 	{"CREATE TABLE IF NOT EXISTS ready (k INTEGER PRIMARY KEY, n INTEGER)"},
 	{"INSERT INTO ready(k, n) VALUES(1, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1"},
@@ -100,7 +102,7 @@ func (a adapter) Connect(_ context.Context, _ int) (runner.Client, error) {
 	if a.forward {
 		return forwardClient{}, nil
 	}
-	return newClient(nodes[sdk.Below(uint64(len(nodes)))]), nil
+	return newClient(nodes[sdk.Below("rqlite.connect", uint64(len(nodes)))]), nil
 }
 
 type forwardClient struct{}
@@ -108,7 +110,7 @@ type forwardClient struct{}
 func (forwardClient) Close() {}
 
 func (forwardClient) Invoke(ctx context.Context, op family.Op) (any, error) {
-	c := newClient(nodes[sdk.Below(uint64(len(nodes)))])
+	c := newClient(nodes[sdk.Below("rqlite.forward", uint64(len(nodes)))])
 	c.forward = true
 	defer c.Close()
 	switch op.F {
@@ -141,7 +143,7 @@ func pinnedClient(ctx context.Context, node string) (*client, error) {
 	if at < 0 {
 		return nil, fmt.Errorf("unknown node %q", node)
 	}
-	leader := newClient(nodes[sdk.Below(uint64(len(nodes)))])
+	leader := newClient(nodes[sdk.Below("rqlite.fence", uint64(len(nodes)))])
 	defer leader.Close()
 	resp, status, err := leader.post(ctx, "/db/execute?raft_index", [][]any{{fenceSQL}})
 	if err != nil {
@@ -285,11 +287,12 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	}
 	switch op.F {
 	case family.RegisterWrite:
-		_, err := c.execute(ctx, [][]any{{upsertSQL, k, op.V.(string)}})
+		value := op.V.(string)
+		_, err := c.execute(ctx, [][]any{{upsertSQL, k, value, digest(value)}})
 		return nil, err
 	case family.RegisterCAS:
 		pair := op.V.([]string)
-		res, err := c.execute(ctx, [][]any{{casSQL, pair[1], k, pair[0]}})
+		res, err := c.execute(ctx, [][]any{{casSQL, pair[1], digest(pair[1]), k, pair[0]}})
 		if err != nil {
 			return nil, err
 		}
@@ -356,7 +359,15 @@ func (c *client) read(ctx context.Context, k int64, level string) (any, error) {
 	return nil, fmt.Errorf("query: %d rows for one key", len(res.Values))
 }
 
-// A row has no version, so a copy holds the value alone.
+func digest(value string) int64 {
+	hash := fnv.New64a()
+	hash.Write([]byte(value))
+	return int64(hash.Sum64() % digestMod)
+}
+
+// A row counts the writes applied to it and sums a hash of each written value,
+// so a write one node applied alone still shows after the key is written again,
+// even when a retry of that write evens the counts.
 func (c *client) replicas(ctx context.Context, keys []string) (map[string]family.Copy, error) {
 	resp, status, err := c.post(ctx, "/db/query?level=none", [][]any{{keysSQL}})
 	if err != nil {
@@ -380,7 +391,7 @@ func (c *client) replicas(ctx context.Context, keys []string) (map[string]family
 		copies[name] = family.Copy{}
 	}
 	for _, row := range res.Values {
-		if len(row) != 2 {
+		if len(row) != 4 {
 			return nil, fmt.Errorf("query: row has %d columns", len(row))
 		}
 		k, ok := row[0].(float64)
@@ -391,10 +402,20 @@ func (c *client) replicas(ctx context.Context, keys []string) (map[string]family
 		if _, wanted := copies[name]; !wanted {
 			continue
 		}
+		writes, ok := row[2].(float64)
+		if !ok {
+			return nil, fmt.Errorf("query: write count %v has type %T", row[2], row[2])
+		}
+		sum, ok := row[3].(float64)
+		if !ok {
+			return nil, fmt.Errorf("query: write digest %v has type %T", row[3], row[3])
+		}
+		meta := map[string]uint64{"writes": uint64(writes), "digest": uint64(sum)}
 		switch value := row[1].(type) {
 		case nil:
+			copies[name] = family.Copy{Meta: meta}
 		case string:
-			copies[name] = family.Copy{Value: &value}
+			copies[name] = family.Copy{Value: &value, Meta: meta}
 		default:
 			return nil, fmt.Errorf("query: value %v has type %T", value, value)
 		}

@@ -1393,9 +1393,15 @@ mod tests {
             }))
         });
         let packed = [
-            (41, lz4_flex::block::compress_prepend_size(&[11])),
+            (
+                41,
+                nes_games::nes_backend::pack_quicknes_state(&[11]).unwrap(),
+            ),
             (42, vec![1]),
-            (43, lz4_flex::block::compress_prepend_size(&[22])),
+            (
+                43,
+                nes_games::nes_backend::pack_quicknes_state(&[22]).unwrap(),
+            ),
         ];
         let mut decodes = 0;
         let result = super::observe_packed(&packed, &observe, |bytes| {
@@ -1424,10 +1430,19 @@ mod tests {
             }))
         });
         let packed = [
-            (91, lz4_flex::block::compress_prepend_size(&[11])),
+            (
+                91,
+                nes_games::nes_backend::pack_quicknes_state(&[11]).unwrap(),
+            ),
             (12, vec![1]),
-            (83, lz4_flex::block::compress_prepend_size(&[33])),
-            (44, lz4_flex::block::compress_prepend_size(&[22])),
+            (
+                83,
+                nes_games::nes_backend::pack_quicknes_state(&[33]).unwrap(),
+            ),
+            (
+                44,
+                nes_games::nes_backend::pack_quicknes_state(&[22]).unwrap(),
+            ),
         ];
         let json: serde_json::Value = serde_json::from_str(&super::glance_json(
             Stats::default(),
@@ -1558,7 +1573,7 @@ mod tests {
     #[test]
     fn live_resident_root_skips_evicted_genesis_metadata_and_rejects_missing_snapshots() {
         use crate::search::archive::{Archive, ArchiveCandidate};
-        let mut archive = Archive::<u8, ResidentKey, (), u8>::new(|_| 1);
+        let mut archive = Archive::<u8, ResidentKey, (), u8>::new();
         archive.max_entries = 1;
         let first = archive
             .insert(
@@ -1568,6 +1583,7 @@ mod tests {
                     suffix: vec![0],
                     key: ResidentKey(0),
                     milestones: (),
+                    cost: 1,
                 },
                 11,
             )
@@ -1583,6 +1599,7 @@ mod tests {
                     suffix: vec![1],
                     key: ResidentKey(1),
                     milestones: (),
+                    cost: 1,
                 },
                 22,
             )

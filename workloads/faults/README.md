@@ -295,6 +295,52 @@ corrupts. The guest kernel's `getrandom` state is restored with
 the snapshot and is not reseeded, so decisions drawn from it repeat across
 continuations.
 
+A guest driver's `sdk.Below(site, n)` asks a choice under fault-policy's
+`CHOICE_NAMESPACE` ([harness kit](../harness/README.md)), and the package
+answers it (ours). The faults workload offers the searcher one choice site,
+`guest`, so every drawn job carries the searcher's `ChoicePlan` with its
+CONTRARY rate, hold probability and untried ordinal. The `guest` site declares
+no rate of its own (`ChoiceSite::with_contrary`), so the plan's `declared`
+list is empty. Because a guest asks at
+moments and with option counts only the guest knows, and an action must stay
+`Copy`, an action stores the plan rather than its answers: `execute_job`
+stamps each freshly drawn suffix action with `GuestChoices` (the plan's two
+rates, an answer seed mixed from the plan's seed and the action's index, and
+the untried ordinal on the first action it stamps). A suffix action copied from
+the archive, by an empirical step or a splice, keeps its recorded
+`GuestChoices` as it keeps its 64-bit `choice`, so it replays its recorded
+answers and still matches its archived twin when the search skips a duplicate
+draw. The question is not a local
+service, so it stops at an explicit decision. `run_action` answers it with the
+searcher's `Chooser` built from the action's `GuestChoices`, numbering the
+guest's sites in the order the action first asks them, and hold memory starts
+empty at each action. An action without `GuestChoices`, such as one from a
+recording made before this field existed, answers every choice with the guest's
+own draw, so old recordings replay unchanged. Replay asks the same `Chooser`
+again, and a deterministic guest asks the same questions, so it regenerates the
+same answers. The standing handler answers the namespace `Nominal`, so the
+debug terminal takes every default. In text, an action without `GuestChoices`
+omits the field; the binary encoding that history digests and snapshot records
+use always carries it.
+
+A recorded input can pin answers: `{"actions": [...], "answers": [{"step": 3,
+"choice": 12, "label": 1}]}` replaces the answer to guest choice 12 (counting
+from 0 within the action) of step 3 (counting actions from 1, as replay steps
+do), and an answer without `label` takes the default. Each answer is a
+fault-policy `RecordedEnv` override, one `Answer` per `Moment`, where a guest
+choice's moment is its ordinal within the action. The `Chooser` is still asked
+at an answered choice, so the answers after it keep their stream. Answers are
+part of the target identity, `branch` moves them onto its continuation,
+`search --from` keeps those within its prefix, its `bug-N.json`, `hang-N.json`,
+`failure-N.json` and `first-bug-input.json` carry the answers within their
+actions, and `shrink` refuses a run that has them. Each replay step counts its guest
+choices (`choices`, absent when zero), and `debug run`, `replay` and `branch`
+write every choice to `choices.jsonl` beside `report.json`: the run, step,
+choice ordinal, decision moment, guest clock, site, option count, default,
+what the `Chooser` took, the label applied, and `answered` when an input
+answer replaced it. A search writes no per-choice records; an action served
+from the snapshot cache has none either.
+
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
 recorded resolution before the guest sees it. Worker and UML sessions carry
@@ -973,7 +1019,12 @@ count as a rediscovery.
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
-([`report`](src/report.rs)). Each `bug-N.json` carries the action list and the
+([`report`](src/report.rs)). A campaign records its first 64 bugs. After that
+it records a bug only when it violates a property that no recorded bug
+violates, so a campaign records at most 64 bugs plus one for each property
+first violated after the 64th, and a long campaign whose first bugs share one
+property still keeps the input of a later bug of another. Each `bug-N.json`
+carries the action list and the
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
 finding's actions when one exists; otherwise it holds the first recorded
@@ -981,14 +1032,82 @@ candidate's actions. Each `hang-N.json` and `failure-N.json` has the same
 `actions` and `standing` fields, so `harmony debug run --actions` and replay
 accept it as input.
 
-`FaultArchiveKey` has a place, a progress, and a holder identity. The place is
-the passed assertion set and every lifecycle count except liveness, plus two
+The archive key is a strategy key compiled by the searcher's assertion keys
+(`dissonance/searcher/src/search/assertion`). [`key.rs`](src/key.rs) declares
+18 values from each state's observations into a catalog, and the strategy
+[`faults.toml`](src/faults.toml) keys them. The declarations are:
+
+- `sometimes.count`, the number of Sometimes and Reachable assertions passed,
+  and `sometimes.set`, the top 62 bits of the digest of their sorted ids. SDK
+  catalog points and JSON assertions both arrive at run time, so the catalog
+  carries the passed set as these two aggregates rather than one value per
+  point.
+- `always.violated`, the number of violated assertions.
+- `alive` and `event.ready`, the node masks.
+- `edges`, the top 62 bits of the edge digest, and `edges.crossed`.
+- `ticks` and the lifecycle counters `hooks.started`, `hooks.finished`,
+  `checks.started`, `checks.finished`, `workload.started`,
+  `workload.finished`, `event.kill_fires`, `event.park_fires`,
+  `event.park_held` and `event.kill_armed`.
+
+The shipped strategy's tier is the passed count. Its place is the
+passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
 event park on any node, and an event kill armed on any node. Liveness and the
-edge digest are the holder identity inside the place. The progress is the
-number of Sometimes and Reachable assertions the state has passed. The
-selector's tiers rank states by that count and draw most parents from the
-states that passed the most. Places inside a tier rank by their draw counts.
+edge digest are the holder identity inside the place. The selector's tiers
+rank states by the passed count and draw most parents from the states that
+passed the most. Places inside a tier rank by their draw counts.
+
+The place and the identity are each a 64-bit product of their lanes' ranges,
+so the shipped strategy keeps these widths:
+
+| Value | Kept | Saturates at |
+|---|---|---|
+| `sometimes.set` | top 34 bits of the 128-bit digest | not applicable |
+| `edges` | top 48 bits of the 64-bit edge digest | not applicable |
+| `sometimes.count`, `always.violated` | exact | 65,535 |
+| lifecycle counters | exact | 2^62 − 1 |
+| lifecycle place lanes | exact | 8 |
+
+Two distinct passed sets share a place, and two distinct edge digests share
+an identity, when their kept bits agree. Among n distinct values of a w-bit
+fingerprint the expected number of colliding pairs is about n^2 / 2^(w+1):
+about 0.07 for 50,000 passed sets at 34 bits, and about 4 in a million for
+50,000 edge digests at 48 bits.
+
+The node count has these limits:
+
+| Limit | Nodes | Checked by |
+|---|---|---|
+| platform supervisor | 64 | `FaultVocabulary` |
+| duration context, strategy reads `alive` and `event.ready` | 29 | `FaultKeys::new` |
+| duration context, strategy reads one of them | 59 | `FaultKeys::new` |
+| duration context, strategy reads neither | the supervisor's 64 | `FaultVocabulary` |
+| strategy reads `alive` or `event.ready` in any line | 62, the width of a declared value | `FaultKeys::new` |
+| shipped strategy's place width | 10 | the strategy compile |
+
+A strategy for a bundle of more than 10 nodes drops or coarsens place lanes.
+When a strategy's lanes do not fit the bundle, the error names the largest node
+count that strategy keys.
+The 62-node check looks for the lane names `alive` and `event.ready` in the
+strategy text, so above 62 nodes a strategy that mentions either name anywhere
+is refused, whether or not its compiled lines read that lane.
+
+The duration context is a function of the parent key alone, because replay
+validates the recorded context. It is read from the key's lanes named
+`hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
+`checks_finished`, `workload_running` and the identity lane `alive`; a
+strategy without one of them leaves that part of the context zero, and packs
+no bits for a node mask it does not read. A strategy
+with stages, a reject line or aggregates is refused, because the workload
+keeps no accumulator and draws its tier directly.
+
+[`strategy-keys.json`](src/key/strategy-keys.json) records the key and
+duration context the shipped strategy gives 64 sampled states for each of 1,
+3, 8 and 10 nodes, and a test checks that the strategy still gives them.
+
+`workload.options.key.strategy` in a search config replaces the shipped
+strategy text. The key table accepts no other field.
 
 The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
 needs Linux. The action model, the bundle

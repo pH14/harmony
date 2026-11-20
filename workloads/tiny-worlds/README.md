@@ -51,7 +51,18 @@ searcher `AssertionKey`; an optional `strategy` field replaces the shipped file
 with the given TOML text. Under `keep: capacity_two` the shipped strategy is
 read with `capacity = 2` and its first preference list only. The strategy's
 policy identifier is recorded as the `tiny_key` workload policy, and the report
-gives it as `policy`.
+gives it as `policy`. `shadow: true` with `key: hand` runs the hand campaign
+unchanged and keys every state under the strategy beside it (the shipped file,
+or the `strategy` text); the report's `shadow` field holds the comparison.
+Scaled runs and root jobs refuse a shadow.
+
+Ordinary reports give `decision_stream_sha256` and `decision_stream_records`
+beside `stream_sha256`. They cover the stream's job and skip records, without
+the header and without `result_sha256`, the draw checkpoints and the duration
+draw's `context`, the fields that differ between two keys making the same
+decisions (the rule `nes-eval` uses). The digest is the SHA-256 of the postcard
+encoding of the records' canonical JSON, concatenated. Two runs of one seed
+under keys that order states alike give equal digests.
 
 An optional `search` object selects existing campaign policies without changing
 the world: `mixture` accepts the identifiers documented in the searcher
@@ -137,6 +148,8 @@ representation or action choice affects the same world transitions.
 | `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 | `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
 | `picks` | Make `depth` state-dependent picks in a row; an offered wrong pick ends the run. | None: `broken` changes nothing, and `draw` selects the flat draw or driver choices. |
+| `ridge` | Climb a line to its summit; a wrong action slides back to the last camp pitched, and a camp is pitched at a site every `spacing` positions. | Uses the same representation in both settings. |
+| `stairs` | Walk a line to its end; an action that reaches a stair runs a forced climb within it, and a wrong action slides back to the last landing. | Uses the same representation in both settings. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -364,8 +377,27 @@ already computed: `map.at_goal` and `map.spot` read the layout, and
 values (`chain.stage`, `chain.charge`, `chain.family`, `chain.ranked`,
 `chain.carry`) and the resource, route, delayed and trap values of the current
 stage, with the other families' values zero. Families without a strategy (maze,
-actions, deadline, deadline actions, graph, targets, and chains holding them)
-reject `key: strategy`.
+actions, deadline, deadline actions, graph, targets, picks, and chains holding
+them) reject `key: strategy`.
+
+A strategy with `highest` or a latched stage keys a state from its path. Each
+keying keeps a lane in the target: `Keying::arrive` advances it at genesis, at
+every reset and after every transition, snapshots carry it, and a restore puts
+it back, so a state reached from a snapshot keys as it would on the path that
+made the snapshot. The strategy's lane is its `Accumulator` and the key
+`Compiled::observe` gave, or that its `reject` line matched a state that is not
+the world's goal. The world's goal (`World::goal`) is the one goal signal: the
+campaign's objective, the rejection rule and the shadow all read it, whatever
+the strategy's own `goal` line says. A rejected state ends its path as doomed
+(`Keying::rejected`), as in `NesTarget`, so the archive never keys it; a hand
+key's lane is empty, since the campaign completes a hand key against its parent
+with `ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying,
+and its lane adds a searcher `ShadowCursor`: at each arrival the cursor
+observes the state's record under the strategy with the world's goal as its
+objective (`observe_with_objective`), takes no hand key where the hand keying
+ends the path, completes the raw hand key against the previous one and counts
+the pair in a `ShadowTable`. The report's `shadow` is the table's
+`ShadowReport`, taken after the run and before verification replays it.
 
 Each file in `strategies/` writes its family's hand key in the strategy
 language, with the same capacity and two preference lists. Every family key
@@ -455,6 +487,70 @@ live route until the live route passes them. The control keys every side room
 as its position. `evidence.fork_first` gives the first work on the live route,
 past the dead route's last position, and at the goal.
 
+## Ridge
+
+The ridge world tests lineage keys. A line of `length` positions leads to the
+summit. At each position the pattern gives the climbing action (two bits per
+position, 3 read as 0): it climbs one position, and any other action of 0 to 2
+slides back to the last camp pitched. Action 3 pitches a camp at a site (every
+`spacing` positions) above the current camp, and rests in place elsewhere.
+Positions from `ridge` on are the ridge.
+
+The hand key `ridge::Key` reads its parent through `ArchiveKey::complete`. Its
+tier is 2 at the summit and 1 once the path has reached the ridge, kept when a
+slide falls below it; its place is the position; its identity is the highest
+position since the camp last changed; and its one preference favours the higher
+camp within a tier, with capacity 1. `strategies/ridge.toml` states the same
+key with a latched `ridge` stage, `highest(ridge.position, ridge.camp)` and
+`prefer = [["ridge.camp: more"]]`. Hand runs key the family with `ridge::Hand`
+under `keep: portfolio` only. `ridge::tests` checks that the strategy and the
+shadow runs give the hand run's decision stream, work and executions, and that
+the shadow reports no disagreement while the lineage changes hand keys. With a
+`reject` line prepended to the strategy, it also checks that a strategy run
+ends its paths at the rejected state with the decision stream of a hand keying
+that ends them there, that the shadow agrees on that state, and that it counts
+an `absent` disagreement where only one side ends the path. With `reject =
+"goal"` and no `goal` line, the world's goal keeps its key in the strategy and
+in the shadow, and the strategy run gives the shipped strategy's decision
+stream.
+
+## Stairs
+
+The stairs world gives a tiny world a forced move, shaped like the `Stairs`
+fixture game in `nes-games`. A line of `length` positions leads to the goal. At
+each position the pattern gives the walking action (two bits per position): it
+steps forward one position, and any other action slides back to the last
+landing. Every `spacing`-th position below `length` is a stair. An action that
+reaches a stair runs a forced climb of `climb` steps within the same action and
+ends on the landing above it, so the stair and the positions it climbs past are
+never resting states. A climb that would pass `length` stops at the goal and is
+cut short. The tier counts the stairs climbed, and the place is the position.
+
+A nonzero `walkway` gives every stair whose climb is not cut short a second way
+up: from the position below the stair, the action after the walking action (mod
+4) steps onto a walkway in the stair's tier, and `walkway` minus one more
+steps, each the stair's pattern action, arrive on the climb's landing. Any
+other action on the walkway slides back to the landing below the stair. The
+walkway takes `walkway` actions with no forced steps, so it plans and records
+`walkway` transitions, while the climb plans one and records one plus `climb`.
+With `walkway` from 2 to `climb`, planned cost ranks the climb's landing below
+the walkway's and record cost ranks it above, so the two costs keep different
+holders of the landing. A walkway state's place is its stair's position plus 32
+times its step.
+
+Execution work counts each forced step, so the action that reaches a stair does
+one transition of work plus its forced steps. Its planned cost is one
+transition. The workload's `action_cost` is the work of the transition the
+action's observation records, so the archive charges the record cost, forced
+steps included, while the planning clock still counts one. The report's `stairs`
+object counts the final archive entries (`entries`), the entries whose input
+ran a forced climb, so that its record cost is above its planned cost
+(`entries_with_forced_steps`), the entries whose input ran a climb cut short at
+the goal (`entries_cut_short`), the entries whose input completed a walkway
+(`entries_with_walkway`), and the entries whose cost total, the summed
+`action_cost` the archive charged along the input, equals the input's record
+cost (`entries_charged_record_cost`).
+
 ## Twelve picks
 
 The picks world exercises driver choices (searcher README, "Driver choices").
@@ -505,6 +601,8 @@ family's and passive clock's reachability hold by construction.
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
 | Picks | `depth` 1–16; any `seed`; `default_right` 0–`depth`; `draw` is `flat` or `{"choices": POLICY}`. Reachability holds by construction. |
+| Ridge | `length` 2–31; `spacing` and `ridge` 1 to one below `length`; `pattern` encodes two-bit actions per position. Not a chain stage. |
+| Stairs | `length` 3–31; `spacing` 2 to one below `length`; `climb` 1 to one below `spacing`; `walkway` 0 or 2 to `climb`; `pattern` encodes two-bit actions per position. Not a chain stage. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 

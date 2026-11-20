@@ -79,7 +79,7 @@ PUNCHOUT_OPPONENTS = [
     "super_macho_man",
     "mr_dream",
 ]
-PUNCHOUT_MILESTONES = [f"{opponent}_defeated" for opponent in PUNCHOUT_OPPONENTS]
+PUNCHOUT_MILESTONES = [f"defeated_{opponent}" for opponent in PUNCHOUT_OPPONENTS]
 
 ZELDA_MILESTONES = (
     ["wooden_sword", "white_sword", "magic_sword"]

@@ -4,6 +4,7 @@ use crate::{
     famidash::{
         game::{Famidash, FamidashState},
         levels::{Side, Stage},
+        lucky_draw::{LuckyDraw, LuckyDrawState},
     },
     search::draw::DrawMixture,
     workload::Arcade,
@@ -104,6 +105,26 @@ impl<const GROUP: usize> Arcade for Famidash<GROUP> {
             level,
             ..group_stage(GROUP)
         })
+    }
+}
+
+impl Arcade for LuckyDraw {
+    type View = View;
+
+    fn mixture() -> DrawMixture {
+        DrawMixture::AlphabetOnly
+    }
+
+    fn view(state: &LuckyDrawState) -> View {
+        view(state.famidash)
+    }
+
+    fn motion(state: &LuckyDrawState) -> [u16; 4] {
+        <Famidash<3>>::motion(&state.famidash)
+    }
+
+    fn cleared(state: &LuckyDrawState) -> u8 {
+        state.famidash.cleared()
     }
 }
 

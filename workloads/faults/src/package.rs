@@ -5,6 +5,7 @@ use std::{error::Error, fs, path::PathBuf, sync::Arc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::guest::{GuestAnswer, GuestChoice};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
@@ -20,6 +21,8 @@ pub struct Options {
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
     pub boot_cache: Option<PathBuf>,
+    pub key: crate::key::KeyRequest,
+    pub answers: Vec<GuestAnswer>,
 }
 
 impl Options {
@@ -77,6 +80,8 @@ pub struct ReplayStep {
     pub observation: FaultObservations,
     pub console: String,
     pub settlement: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub choices: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,6 +102,8 @@ pub struct ReplaySummary {
     pub event_park_fires: u64,
     pub check: Option<crate::target::CheckEvidence>,
     pub timeline: Vec<ReplayStep>,
+    #[serde(skip)]
+    pub choices: Vec<GuestChoice>,
 }
 
 #[cfg(any(
@@ -170,6 +177,7 @@ impl ReplaySummary {
             event_park_fires: observation.event_park_fires,
             check: observation.check.clone(),
             timeline: Vec::new(),
+            choices: Vec::new(),
         }
     }
 }
@@ -276,6 +284,18 @@ impl Report {
     pub fn write(&self, directory: &std::path::Path) -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(directory)?;
         serde_json::to_writer_pretty(fs::File::create(directory.join("report.json"))?, self)?;
+        if self.replays.iter().any(|replay| !replay.choices.is_empty()) {
+            let mut lines = Vec::new();
+            for replay in &self.replays {
+                for choice in &replay.choices {
+                    let mut line = serde_json::to_value(choice)?;
+                    line["run"] = replay.run.into();
+                    serde_json::to_writer(&mut lines, &line)?;
+                    lines.push(b'\n');
+                }
+            }
+            fs::write(directory.join("choices.jsonl"), lines)?;
+        }
         Ok(())
     }
 }
@@ -297,18 +317,37 @@ pub struct Artifacts {
 #[serde(untagged)]
 enum RecordedInput {
     Actions(Vec<FaultAction>),
-    Report { actions: Vec<FaultAction> },
+    Report {
+        actions: Vec<FaultAction>,
+        #[serde(default)]
+        answers: Vec<GuestAnswer>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedActions {
     pub actions: Vec<FaultAction>,
+    pub answers: Vec<GuestAnswer>,
+}
+
+pub fn recorded_input(
+    actions: &[FaultAction],
+    answers: &[GuestAnswer],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let answers = crate::guest::answers_through(answers, actions.len());
+    Ok(if answers.is_empty() {
+        serde_json::to_vec_pretty(actions)?
+    } else {
+        serde_json::to_vec_pretty(&serde_json::json!({ "actions": actions, "answers": answers }))?
+    })
 }
 
 pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error>> {
-    let actions = match serde_json::from_str::<RecordedInput>(text)? {
-        RecordedInput::Actions(actions) | RecordedInput::Report { actions } => actions,
+    let (actions, answers) = match serde_json::from_str::<RecordedInput>(text)? {
+        RecordedInput::Actions(actions) => (actions, Vec::new()),
+        RecordedInput::Report { actions, answers } => (actions, answers),
     };
+    crate::guest::GuestAnswers::new(&answers)?;
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
     }
@@ -339,7 +378,7 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             _ => {}
         }
     }
-    Ok(RecordedActions { actions })
+    Ok(RecordedActions { actions, answers })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -386,12 +425,14 @@ mod live {
         Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
         StateHashEncoding, first_confirmed_bug, replay_confirms_bug, replay_needs_settle,
     };
+
     use crate::{
         bundle::FaultVocabulary,
         campaign::{
             FaultCampaignConfig, FaultCampaignRun, FaultWorkload, run_fault_campaign_with_plan,
         },
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
+        key::FaultKeys,
         report::{
             BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
             write_hang_reports,
@@ -476,6 +517,7 @@ mod live {
             backend,
             root: options.root.clone(),
             boot_cache: options.boot_cache.clone(),
+            answers: options.answers.clone(),
         })
     }
 
@@ -505,6 +547,7 @@ mod live {
         interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
+        let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
@@ -520,7 +563,7 @@ mod live {
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
@@ -610,8 +653,20 @@ mod live {
             .map(|root| crate::consonance::root_standing(root))
             .transpose()?
             .unwrap_or_default();
-        let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
-        let hangs = write_hang_reports(windows, &inherited, &archive.hangs, &options.output)?;
+        let written = write_bug_reports(
+            windows,
+            &inherited,
+            &options.answers,
+            &archive.bugs,
+            &options.output,
+        )?;
+        let hangs = write_hang_reports(
+            windows,
+            &inherited,
+            &options.answers,
+            &archive.hangs,
+            &options.output,
+        )?;
         for hang in &hangs {
             eprintln!(
                 "hung job at execution {} saved to {}",
@@ -619,8 +674,13 @@ mod live {
                 options.output.join(hang.file_name()).display()
             );
         }
-        let failures =
-            write_failure_reports(windows, &inherited, &archive.failures, &options.output)?;
+        let failures = write_failure_reports(
+            windows,
+            &inherited,
+            &options.answers,
+            &archive.failures,
+            &options.output,
+        )?;
         for failure in &failures {
             eprintln!(
                 "failed execution {} saved to {}",
@@ -631,7 +691,7 @@ mod live {
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
-                serde_json::to_vec_pretty(&first.actions)?,
+                super::recorded_input(&first.actions, &options.answers)?,
             )?;
         }
         let summary = json!({
@@ -737,7 +797,7 @@ mod live {
         if let Some(first) = report.bugs.iter().find(|bug| bug.confirmed) {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
-                serde_json::to_vec_pretty(&first.actions)?,
+                super::recorded_input(&first.actions, &options.answers)?,
             )?;
         }
         report.wall_seconds = started.elapsed().as_secs();
@@ -824,11 +884,18 @@ mod live {
         jobs: usize,
         observe: impl FnMut(ShrinkEvent<'_, FaultAction>) -> Result<(), Box<dyn Error>> + Send,
     ) -> Result<Shrunk, Box<dyn Error>> {
+        if !options.answers.is_empty() {
+            return Err(
+                "a run with guest answers cannot be shrunk, because each answer names a step of its action list"
+                    .into(),
+            );
+        }
         let config = config(options)?;
         let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(memory.budget));
-        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+        let keys = FaultKeys::new(options.key.strategy(), run.vocabulary.nodes())?;
+        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)));
         let workers = memory.workers;
         let mut settings = ShrinkConfig::new(run, options.seed);
@@ -883,16 +950,20 @@ mod live {
             observation: target.observation().clone(),
             console: target.console_evidence()?,
             settlement: false,
+            choices: 0,
         }];
+        let mut choices = Vec::new();
         visit(0, target)?;
         for (index, action) in actions.iter().enumerate() {
             target.apply_replayed(*action);
+            choices.extend_from_slice(target.last_action_choices());
             timeline.push(super::ReplayStep {
                 step: index as u64 + 1,
                 action: Some(*action),
                 observation: target.observation().clone(),
                 console: target.console_evidence()?,
                 settlement: false,
+                choices: target.last_action_choices().len() as u64,
             });
             if target.actions().len() != index + 1 {
                 break;
@@ -914,12 +985,14 @@ mod live {
                     .map_or(std::num::NonZeroU16::MIN, |action| action.coverage_quantum),
             );
             target.apply_replayed(action);
+            choices.extend_from_slice(target.last_action_choices());
             timeline.push(super::ReplayStep {
                 step: target.actions().len() as u64,
                 action: Some(action),
                 observation: target.observation().clone(),
                 console: target.console_evidence()?,
                 settlement: true,
+                choices: target.last_action_choices().len() as u64,
             });
             if target.actions().len() == before {
                 break;
@@ -947,6 +1020,7 @@ mod live {
             target.guest_horizons_run(),
         );
         summary.timeline = timeline;
+        summary.choices = choices;
         summary.settle_actions = settle_actions;
         summary.settle_ticks = settle_ticks;
         Ok(summary)
@@ -1245,6 +1319,8 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: crate::key::KeyRequest::default(),
+            answers: Vec::new(),
         }
     }
 
@@ -1354,12 +1430,61 @@ mod tests {
             parse_recorded_input(&bare).expect("bare"),
             RecordedActions {
                 actions: actions.clone(),
+                answers: Vec::new(),
             }
         );
         let report = serde_json::json!({ "bug": 1, "actions": actions }).to_string();
         assert_eq!(
             parse_recorded_input(&report).expect("report").actions,
             actions
+        );
+        let answered = serde_json::json!({
+            "actions": actions,
+            "answers": [{"step": 2, "choice": 5, "label": 3}, {"step": 1, "choice": 0}],
+        })
+        .to_string();
+        assert_eq!(
+            parse_recorded_input(&answered).expect("answers").answers,
+            vec![
+                GuestAnswer {
+                    step: 2,
+                    choice: 5,
+                    label: Some(3),
+                },
+                GuestAnswer {
+                    step: 1,
+                    choice: 0,
+                    label: None,
+                },
+            ]
+        );
+        let root_step = serde_json::json!({
+            "actions": actions,
+            "answers": [{"step": 0, "choice": 0, "label": 1}],
+        })
+        .to_string();
+        assert!(parse_recorded_input(&root_step).is_err());
+        let kept = GuestAnswer {
+            step: 2,
+            choice: 0,
+            label: Some(1),
+        };
+        let beyond = GuestAnswer {
+            step: 3,
+            choice: 0,
+            label: None,
+        };
+        let written = recorded_input(&actions, &[kept, beyond]).expect("write");
+        assert_eq!(
+            parse_recorded_input(std::str::from_utf8(&written).unwrap()).expect("written"),
+            RecordedActions {
+                actions: actions.clone(),
+                answers: vec![kept],
+            }
+        );
+        assert_eq!(
+            recorded_input(&actions, &[beyond]).expect("bare"),
+            serde_json::to_vec_pretty(&actions).unwrap()
         );
         assert!(parse_recorded_input(r#"[{"Kill":0}]"#).is_err());
         assert!(parse_recorded_input("[]").is_err());
@@ -1397,6 +1522,7 @@ mod tests {
         ReplaySummary {
             check: None,
             timeline: Vec::new(),
+            choices: Vec::new(),
             run: 1,
             bug,
             stop,

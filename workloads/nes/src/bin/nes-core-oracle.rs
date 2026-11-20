@@ -34,8 +34,8 @@ struct Game {
 fn game(name: &str) -> Result<Game, Box<dyn Error>> {
     Ok(match name {
         "twin-dragons" => Game {
-            setup: twin_dragons::target::setup_tape(),
-            chords: twin_dragons::archive::CHORDS,
+            setup: twin_dragons::TwinDragons.setup(),
+            chords: twin_dragons::TwinDragons::CHORDS,
             cartridge_ram: false,
         },
         "famidash" => Game {
@@ -67,8 +67,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "punchout" => Game {
-            setup: punchout::target::setup_tape(),
-            chords: punchout::archive::CHORDS,
+            setup: punchout::PunchOut.setup(),
+            chords: punchout::PunchOut::CHORDS,
             cartridge_ram: false,
         },
         "zelda" => Game {
@@ -77,18 +77,18 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "donkey-kong" => Game {
-            setup: donkey_kong::target::setup_tape(),
-            chords: donkey_kong::archive::CHORDS,
+            setup: donkey_kong::DonkeyKong.setup(),
+            chords: donkey_kong::DonkeyKong::CHORDS,
             cartridge_ram: false,
         },
         "ice-climbers" => Game {
-            setup: ice_climbers::target::setup_tape(),
-            chords: ice_climbers::archive::CHORDS,
+            setup: ice_climbers::IceClimbers::default().setup(),
+            chords: ice_climbers::IceClimbers::CHORDS,
             cartridge_ram: false,
         },
         "pac-man" => Game {
-            setup: pac_man::target::setup_tape(),
-            chords: pac_man::archive::CHORDS,
+            setup: pac_man::PacMan.setup(),
+            chords: pac_man::PacMan::CHORDS,
             cartridge_ram: false,
         },
         "joust" => Game {

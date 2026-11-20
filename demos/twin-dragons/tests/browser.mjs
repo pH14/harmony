@@ -35,9 +35,10 @@ await page.addInitScript((tourKey) => {
   window.tdTestHeatPixels = (canvas) => {
     const context = canvas.getContext('2d'), d = canvas.dataset, pixels = {};
     const scale = Math.min(canvas.width / +d.mapWidth, canvas.height / +d.mapHeight) * +d.zoom;
+    const left = Math.round(canvas.width / 2 - +d.centerX * scale), top = Math.round(canvas.height / 2 - +d.centerY * scale);
     for (let wy = 4; wy < +d.roomHeight; wy += 32)
       for (let wx = 36; wx < +d.roomWidth; wx += 32) {
-        const x = Math.round((wx - +d.centerX) * scale + canvas.width / 2), y = Math.round((wy - +d.centerY) * scale + canvas.height / 2);
+        const x = Math.floor(left + (wx + 0.5) * scale), y = Math.floor(top + (wy + 0.5) * scale);
         if (x >= 0 && y >= 0 && x < canvas.width && y < canvas.height) pixels[`${wx},${wy}`] = [...context.getImageData(x, y, 1, 1).data];
       }
     return pixels;
@@ -833,17 +834,31 @@ try {
     await page.locator("#search-here").innerText(),
     "↗ Branch search from here",
   );
-  const readOverlay = () =>
-    page
-      .locator('.map-row .area-map')
-      .first()
-      .evaluate((canvas) => window.tdTestHeatPixels(canvas));
-  let originalOverlay = await readOverlay();
+  const assertColors = (reference, sample, message, skip = new Set()) => {
+    const shared = Object.keys(reference).filter((key) => key in sample && !skip.has(key));
+    assert.ok(shared.length >= 10, `Too few shared map positions to compare colors: ${shared.length}`);
+    const changed = shared.filter((key) => reference[key].some((channel, i) => Math.abs(channel - sample[key][i]) > 3));
+    assert.ok(
+      changed.length <= Math.max(1, shared.length * 0.03),
+      `${message}: ${changed.length} of ${shared.length} changed, ${JSON.stringify(changed.slice(0, 8).map((key) => [key, reference[key], sample[key]]))}`,
+    );
+  };
+  const readHandoff = () =>
+    page.locator(".map-row .area-map").first().evaluate((canvas) => {
+      const d = canvas.dataset, scale = Math.min(canvas.width / +d.mapWidth, canvas.height / +d.mapHeight) * +d.zoom;
+      return {
+        pixels: window.tdTestHeatPixels(canvas),
+        room: +d.map,
+        reach: 12 + 3 / scale + 4 / (scale * canvas.clientWidth / canvas.width),
+        cell: document.querySelector("#cell-title").textContent.match(/^Cell (\d+), (\d+)$/)?.slice(1).map(Number) ?? null,
+      };
+    });
+  let handoff = await readHandoff();
   for (let attempt = 0; attempt < 30; attempt++) {
     await page.waitForTimeout(1000);
-    const next = await readOverlay();
-    if (JSON.stringify(next) === JSON.stringify(originalOverlay)) break;
-    originalOverlay = next;
+    const next = await readHandoff();
+    if (JSON.stringify(next.pixels) === JSON.stringify(handoff.pixels)) break;
+    handoff = next;
   }
   await page.locator("#search-here").click();
   await page.waitForFunction(() => !!window.tdTestFork);
@@ -917,6 +932,24 @@ try {
     Number(await page.locator("#map").getAttribute("data-trace-points")) > 1,
     "The prefix trail must outlast the origin ripple while the pane stays closed",
   );
+  await page.locator('#branch-tree button[data-search="0"]').hover();
+  await page.waitForFunction(() => document.querySelector(".map-row .area-map").dataset.previewSearch === "0");
+  const originalOverlay = await page.locator(".map-row .area-map").first().evaluate((canvas) => window.tdTestHeatPixels(canvas));
+  await page.mouse.move(0, 0);
+  await page.waitForFunction(() => document.querySelector("#map").dataset.previewSearch === "");
+  emulator.restore(emulatorRoot);
+  const historyPath = [emulator.observation()];
+  for (const a of manualTape.actions)
+    for (let frame = 0; frame < a.frames; frame++) {
+      emulator.run(a.buttons, 1);
+      historyPath.push(emulator.observation());
+    }
+  const underHistory = new Set(Object.keys(handoff.pixels).filter((key) => {
+    const [x, y] = key.split(",").map(Number);
+    return historyPath.some((o) => o.level === handoff.room && Math.hypot(o.x + 8 - x, o.y - y) <= handoff.reach);
+  }));
+  if (handoff.cell) underHistory.add(`${handoff.cell[0] * 32 + 4},${handoff.cell[1] * 32 + 36}`);
+  assertColors(handoff.pixels, originalOverlay, "Saving the original search for a branch must keep its rendered cell colors away from the open history's trail and marker", underHistory);
   await openCurrentCell();
   await page.waitForFunction(
     () => !document.querySelector("#take-control").disabled,
@@ -959,7 +992,7 @@ try {
   if ((await page.locator("#play").getAttribute("data-state")) === "pause") await page.locator("#play").click();
   await page.locator("#scrub").fill(String(nestedFrame));
   await page.waitForFunction((frame) =>
-    document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame} /`) &&
+    document.querySelector("#frame-label").textContent.startsWith(`FRAME ${frame.toLocaleString()} /`) &&
     !document.querySelector("#take-control").disabled,
     nestedFrame,
   );
@@ -1059,15 +1092,8 @@ try {
       "Switching restores only this branch's heat without an extra root visit",
     );
     if (attempts !== undefined) assert.equal(restored.attempts, attempts);
-    if (overlay) {
-      const shared = Object.keys(overlay).filter((key) => key in restored.overlay);
-      assert.ok(shared.length >= 10, `Too few shared map positions to compare colors: ${shared.length}`);
-      const changed = shared.filter((key) => overlay[key].some((channel, i) => Math.abs(channel - restored.overlay[key][i]) > 3));
-      assert.ok(
-        changed.length <= Math.max(1, shared.length * 0.03),
-        "Returning to the original search must preserve its rendered cell colors while exploration resumes",
-      );
-    }
+    if (overlay)
+      assertColors(overlay, restored.overlay, "Returning to the original search must preserve its rendered cell colors while exploration resumes");
     await page.waitForFunction(
       (before) =>
         Number(

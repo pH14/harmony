@@ -19,7 +19,6 @@ use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY};
 pub const MAX_AGGREGATES: usize = 8;
 pub const OBJECTIVE_WIDTH: usize = 4;
 const STACK: usize = 32;
-const COUNT_LIMIT: i64 = 65_535;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Cmp {
@@ -93,18 +92,8 @@ impl Span {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-enum AggregateKind {
-    Highest,
-    Ever,
-    Count,
-    Last,
-    First,
-}
-
 #[derive(Clone, Debug)]
 struct Aggregate {
-    kind: AggregateKind,
     value: Vec<Op>,
     since: Option<Vec<Op>>,
 }
@@ -144,8 +133,9 @@ impl Lane {
         let packed = if value == NONE {
             0
         } else {
-            let bucket = value.clamp(self.lo, self.hi).div_euclid(self.step) - self.floor;
-            bucket.unsigned_abs() + u64::from(self.none)
+            let bucket = i128::from(value.clamp(self.lo, self.hi).div_euclid(self.step))
+                - i128::from(self.floor);
+            u64::try_from(bucket).unwrap_or(u64::MAX) + u64::from(self.none)
         };
         if self.less {
             self.radix - 1 - packed
@@ -163,8 +153,9 @@ impl Lane {
         if self.none && packed == 0 {
             return NONE;
         }
-        let bucket = i64::try_from(packed - u64::from(self.none)).unwrap_or(i64::MAX);
-        (bucket + self.floor).saturating_mul(self.step)
+        let value = (i128::from(packed - u64::from(self.none)) + i128::from(self.floor))
+            * i128::from(self.step);
+        i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
     }
 }
 
@@ -242,7 +233,6 @@ struct Stage {
     goal: Vec<Op>,
     objective: Tuple,
     latch: bool,
-    carry: bool,
     lines: Option<LineSet>,
     reachable: bool,
 }
@@ -265,6 +255,11 @@ impl Accumulator {
     #[must_use]
     pub fn stage(&self) -> Option<u8> {
         self.started.then_some(self.stage)
+    }
+
+    #[must_use]
+    pub fn heap_bytes(&self) -> usize {
+        std::mem::size_of_val::<[i64]>(&self.values)
     }
 }
 
@@ -836,7 +831,7 @@ impl Compiler<'_> {
                     }
                 })
             }
-            "highest" | "ever" | "count" | "last" | "first" => {
+            AGGREGATE => {
                 arity(1..=2)?;
                 if self.in_aggregate {
                     return Err("an aggregate cannot contain another aggregate".into());
@@ -858,30 +853,14 @@ impl Compiler<'_> {
                     .transpose();
                 self.in_aggregate = false;
                 let (span, since) = (span?, since?);
-                let kind = match function {
-                    "highest" => AggregateKind::Highest,
-                    "ever" => AggregateKind::Ever,
-                    "count" => AggregateKind::Count,
-                    "last" => AggregateKind::Last,
-                    _ => AggregateKind::First,
-                };
-                let result = match kind {
-                    AggregateKind::Ever => Span::FLAG,
-                    AggregateKind::Count => Span {
-                        lo: 0,
-                        hi: COUNT_LIMIT,
-                        none: false,
-                    },
-                    _ => span,
-                };
                 depth_of(&value)?;
                 if let Some(since) = &since {
                     depth_of(since)?;
                 }
                 ops.push(Op::Aggregate(u8::try_from(self.aggregates.len())?));
-                self.aggregates.push(Aggregate { kind, value, since });
-                self.aggregate_spans.push(result);
-                Ok(result)
+                self.aggregates.push(Aggregate { value, since });
+                self.aggregate_spans.push(span);
+                Ok(span)
             }
             _ => Err(format!("`{function}` is not a strategy function").into()),
         }
@@ -1077,7 +1056,7 @@ impl Compiler<'_> {
             (None, None) => Tuple::empty(),
         };
         let identity = match (items(&lines.identity), fallback) {
-            (Some(identity), _) => self.tuple(&identity, u128::from(u32::MAX) + 1, "identity")?,
+            (Some(identity), _) => self.tuple(&identity, u128::from(u64::MAX) + 1, "identity")?,
             (None, Some(fallback)) => fallback.identity.clone(),
             (None, None) => Tuple::empty(),
         };
@@ -1213,14 +1192,13 @@ impl Compiler<'_> {
                 lanes,
             },
             latch: lines.latch,
-            carry: lines.carry,
             reachable,
             lines: stage_set,
         })
     }
 }
 
-const AGGREGATE_FUNCTIONS: [&str; 5] = ["highest", "ever", "count", "last", "first"];
+const AGGREGATE: &str = "highest";
 
 fn whole_values(
     items: &[&str],
@@ -1273,9 +1251,7 @@ fn outside_cell(expr: &Expr, cell: &BTreeSet<String>) -> Option<String> {
         Expr::If(condition, then, otherwise) => outside_cell(condition, cell)
             .or_else(|| outside_cell(then, cell))
             .or_else(|| outside_cell(otherwise, cell)),
-        Expr::Call(function, _) if AGGREGATE_FUNCTIONS.contains(&function.as_str()) => {
-            Some(format!("{function}(...)"))
-        }
+        Expr::Call(function, _) if function == AGGREGATE => Some(format!("{function}(...)")),
         Expr::Call(function, args) => args.iter().enumerate().find_map(|(index, arg)| match arg {
             Expr::Name(_)
                 if index == 1 && ["in", "index", "bucket"].contains(&function.as_str()) =>
@@ -1412,7 +1388,7 @@ impl Compiled {
                 .iter()
                 .chain(aggregate.since.iter().flatten())
                 .any(|op| matches!(op, Op::Local(_)))
-        }) || matches!(&progress, Progress::Stages { stages, .. } if stages.iter().any(|stage| stage.carry));
+        });
         let tables = strategy.table.values().cloned().collect();
         let identity = serde_json::to_vec(&(strategy, catalog.signals(), catalog.declarations()))?;
         let digest = Sha256::digest(identity);
@@ -1467,9 +1443,7 @@ impl Compiled {
     pub fn is_pure(&self) -> bool {
         self.aggregates.is_empty()
             && match &self.progress {
-                Progress::Stages { stages, .. } => {
-                    stages.iter().all(|stage| !stage.latch && !stage.carry)
-                }
+                Progress::Stages { stages, .. } => stages.iter().all(|stage| !stage.latch),
                 _ => true,
             }
     }
@@ -1559,31 +1533,10 @@ impl Compiled {
             });
             let reset = !parent.started || anchor != parent.anchors[index];
             let held = parent.values[index];
-            next.values[index] = match aggregate.kind {
-                AggregateKind::Highest => match (reset || held == NONE, value == NONE) {
-                    (true, _) => value,
-                    (false, true) => held,
-                    (false, false) => held.max(value),
-                },
-                AggregateKind::Ever => i64::from(truthy(value) || (!reset && held != 0)),
-                AggregateKind::Count => {
-                    let base = if reset { 0 } else { held };
-                    (base + i64::from(truthy(value))).min(COUNT_LIMIT)
-                }
-                AggregateKind::Last => {
-                    if value != NONE || reset {
-                        value
-                    } else {
-                        held
-                    }
-                }
-                AggregateKind::First => {
-                    if reset || held == NONE {
-                        value
-                    } else {
-                        held
-                    }
-                }
+            next.values[index] = match (reset || held == NONE, value == NONE) {
+                (true, _) => value,
+                (false, true) => held,
+                (false, false) => held.max(value),
             };
             next.anchors[index] = anchor;
         }
@@ -1659,7 +1612,7 @@ impl Compiled {
             AssertionKey {
                 progress: u32::try_from(progress).unwrap_or(u32::MAX),
                 place: Wide::new(lines.spread.pack(&env, &mut stack)),
-                identity: u32::try_from(lines.identity.pack(&env, &mut stack)).unwrap_or(u32::MAX),
+                identity: lines.identity.pack(&env, &mut stack),
                 across: u16::try_from(lines.across.pack(&env, &mut stack)).unwrap_or(u16::MAX),
                 prefer,
                 scope: lines.scope.as_ref().map_or_else(
@@ -1708,13 +1661,6 @@ impl Compiled {
             let depth = eval(&stage.objective.ops, env, stack);
             let width = stage.objective.lanes.len();
             objective[..width].copy_from_slice(&stack[depth - width..depth]);
-            if stage.carry && parent_stage == Some(index) {
-                for (value, carried) in objective.iter_mut().zip(parent.objective) {
-                    if *value == NONE {
-                        *value = carried;
-                    }
-                }
-            }
             let goal_env = Env {
                 record: env.record,
                 aggregates: env.aggregates,
@@ -1752,19 +1698,11 @@ impl Compiled {
         };
         stages
             .iter()
-            .enumerate()
-            .map(|(index, stage)| {
+            .map(|stage| {
                 let mut objective = [0; OBJECTIVE_WIDTH];
                 let depth = eval(&stage.objective.ops, &env, &mut stack);
                 let width = stage.objective.lanes.len();
                 objective[..width].copy_from_slice(&stack[depth - width..depth]);
-                if stage.carry && parent.stage() == u8::try_from(index).ok() {
-                    for (value, carried) in objective.iter_mut().zip(parent.objective) {
-                        if *value == NONE {
-                            *value = carried;
-                        }
-                    }
-                }
                 let goal_env = Env {
                     record: env.record,
                     aggregates: env.aggregates,
@@ -1818,7 +1756,7 @@ impl Compiled {
             stage,
             progress,
             place: lines.spread.unpack(key.place.get()),
-            identity: lines.identity.unpack(u64::from(key.identity)),
+            identity: lines.identity.unpack(key.identity),
         }
     }
 }

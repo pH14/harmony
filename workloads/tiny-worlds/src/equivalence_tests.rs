@@ -351,8 +351,10 @@ fn keyed<K: Keying>(keying: &K, case: &Case, states: &[State]) -> Vec<K::Key> {
     states
         .iter()
         .map(|&state| {
+            let mut lane = K::Lane::default();
+            keying.arrive(&case.world, state, case.broken, &mut lane);
             keying
-                .key(&case.world, state, case.broken)
+                .key(&case.world, state, case.broken, &lane)
                 .expect("keyed state")
         })
         .collect()

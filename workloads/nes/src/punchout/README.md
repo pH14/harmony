@@ -3,13 +3,13 @@
 # Punch-Out!! workload adapter
 
 This module adapts Punch-Out!! (USA, 1990), the MMC2 (mapper 9) release with
-Mr. Dream as the final opponent, to Dissonance's search interfaces. The game
-logic lives in [`nes-games/src/punchout`](../../../nes-games/src/punchout); this
-module re-exports it and adds the native film and endpoint replay. The
-adapter follows the [Twin Dragons](../twin_dragons/README.md) layout: one
-`target` with the RAM decoder, setup tape and `Target` implementation, one
-`archive` with the key, milestones and controller vocabulary, and one
-`campaign` with the `Workload` implementation.
+Mr. Dream as the final opponent, to Dissonance's search interfaces. Punch-Out!!
+is a game declared through the searcher's assertion catalog:
+`nes-games/src/punchout/game.rs` holds the RAM decoder, power-on setup,
+genesis check and declarations, and `nes-games/src/punchout/punchout.toml` is
+the strategy that keys the archive. `PunchOutWorkload` is
+`NesWorkload<PunchOut, QuickNesMachine>`, the shared workload described in the
+[`nes-games` README](../../../nes-games/README.md).
 
 ## ROM
 
@@ -60,33 +60,32 @@ advances the screens between rounds and fights. Select is excluded. A punch
 lands on its press, so timing matters more than hold length.
 
 Mac knocked down (`$0005` = 2 during a fight) and a lost fight (`$FD`) are
-terminal deaths, as a Mega Man 2 death is. The search ends the rollout there
-because getting up and continuing loses the round's progress. The objective is
-defeating the fourteenth opponent, read as the opponent index reaching 14; no
-run has reached Mr. Dream yet, so that reading is not checked against the
-ROM.
+deaths, rejected by the strategy, as a Mega Man 2 death is. The search ends the
+rollout there because getting up and continuing loses the round's progress.
+The goal is defeating the fourteenth opponent, read as the opponent index
+reaching 14 in a win mode; no run has reached Mr. Dream yet, so that reading is
+not checked against the ROM.
 
-The progress tier is the opponents defeated. The place is the
-opponent, the phase (fight, between rounds, won, other), the screen step
-between fights, the round, the opponent's knockdowns this round, the
-opponent's health in 8-point buckets and the opponent's action. While the
-action is the spin punch series (26) the place also holds the opponent's step
-counter (`$0096`) modulo 4, so progress through the series' 265 frames is kept
-as separate places. Outside a fight the place drops the fight fields and adds the scene, the Start prompt
-and the cutscene timer in 16-step buckets. After a title bout the screens run
-for about 3,000 frames, including a 1,530-frame cutscene, and without the
-timer they form one place that the search does not leave. Higher Mac health, then hearts, then
-stars is preferred within a place, and the identity adds the exact health
-bytes and hearts.
+The progress tier is the opponents defeated. The place is the opponent, the
+phase (fight, between rounds, won, other), the round, the opponent's
+knockdowns this round, the opponent's health in 8-point buckets and the
+opponent's action. While the action is the spin punch series (26) the place
+also holds the opponent's step counter (`$0096`) modulo 4, so progress through
+the series' 265 frames is kept as separate places. Outside a fight the place
+drops the fight fields and holds the screen step between fights, the round,
+the scene, the Start prompt and the cutscene timer in 16-step buckets. After a
+title bout the screens run for about 3,000 frames, including a 1,530-frame
+cutscene, and without the timer they form one place that the search does not
+leave. The identity adds the exact health bytes and hearts, each cell keeps
+one state, and higher Mac health, then hearts, then stars is preferred.
 
-Milestones are the opponents defeated, the most knockdowns of the current
-opponent in one round, victory and death. The first execution that defeats each
-opponent is reported as `named_progress.first_seen` (`glass_joe_defeated` to
-`mr_dream_defeated`), which `benchmarks/search/milestones.py` reads. The
-progress watermark is the triple of opponents defeated, knockdowns and damage
-dealt to the current opponent.
+Named progress marks each defeated opponent (`defeated_glass_joe` to
+`defeated_mr_dream`), the first knockdown of an opponent, victory and death,
+each with its first execution under `named_progress.first_seen`, which
+`benchmarks/search/milestones.py` reads.
 
 ## Running
 
 `nes-eval` takes `"game": "punchout"` with no stage, ai or whole-game option,
-and `nes-film` renders its witness or champion inputs.
+and `nes-film` renders its witness or champion inputs. `nes-core-oracle`
+takes `punchout` as a game name.

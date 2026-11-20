@@ -843,14 +843,16 @@ mod tests {
         suffix: u8,
         state: MetroidMechanicalState,
     ) -> Option<usize> {
+        let action = MetroidAction::Chord(ButtonChord::new(suffix, 4));
         archive
             .insert(
                 parent,
                 execution,
                 ArchiveCandidate {
-                    suffix: vec![MetroidAction::Chord(ButtonChord::new(suffix, 4))],
+                    suffix: vec![action],
                     key: archive_key(state),
                     milestones: MetroidMilestones::default(),
+                    cost: action.planned_frames(),
                 },
                 MetroidSnapshot::for_census_tests(state),
             )
@@ -860,7 +862,7 @@ mod tests {
     #[test]
     fn a_balanced_arrival_is_held_beside_the_missile_holder() {
         for reversed in [false, true] {
-            let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
+            let mut archive = MetroidArchive::new();
             let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
             let mut states = [tourian(10, 11, 644, 39, 0), tourian(10, 11, 834, 25, 0)];
             if reversed {
@@ -875,7 +877,7 @@ mod tests {
 
     #[test]
     fn a_fired_missile_that_hit_a_column_is_held_beside_the_unfired_state() {
-        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
+        let mut archive = MetroidArchive::new();
         let unfired =
             held(&mut archive, None, 0, 0x00, tourian(4, 11, 266, 7, 32)).expect("unfired");
         let fired = held(
@@ -897,7 +899,7 @@ mod tests {
 
     #[test]
     fn a_missile_that_hit_a_zebetite_is_held_beside_the_unfired_state() {
-        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
+        let mut archive = MetroidArchive::new();
         let mut before = tourian(4, 11, 266, 7, 0);
         before.zebetite_hits_left = 8;
         let unfired = held(&mut archive, None, 0, 0x00, before).expect("unfired");
@@ -983,7 +985,7 @@ mod tests {
 
     #[test]
     fn an_energy_arrival_less_balanced_than_the_missile_holder_is_not_held() {
-        let mut archive = MetroidArchive::new(MetroidAction::planned_frames);
+        let mut archive = MetroidArchive::new();
         let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
         let stocked = held(
             &mut archive,

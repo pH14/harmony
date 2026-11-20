@@ -414,7 +414,6 @@ version = "0.1.0"
 dependencies = [
  "consonance-client",
  "libc",
- "lz4_flex",
  "machine",
  "nes-games",
  "oci-support",

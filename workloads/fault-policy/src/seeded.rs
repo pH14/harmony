@@ -57,6 +57,7 @@ impl SeededEnv {
                 self.policy.sample(DecisionClass::Process, &mut self.fault)
             }
             DecisionPoint::Buggify { point } => self.policy.sample_buggify(*point, &mut self.fault),
+            DecisionPoint::Choice { .. } => Answer::Nominal,
         }
     }
 

@@ -20,6 +20,18 @@ moment the guest sends) and the window list a package hands its service handler
 as configuration. The poll travels over the generic
 SDK opaque service request under `STANDING_NAMESPACE`.
 
+A **choice** is a guest driver's draw that the host may answer
+(`DecisionPoint::Choice`, ours). The point carries the site, a 32-bit FNV-1a hash of
+the site name (`choice_site`), and the option count. `ChoiceQuestion` is its wire
+form under `CHOICE_NAMESPACE`: the option count, the guest's own draw (the
+default), the guest's monotonic clock and the site name. `Answer::Nominal` takes
+the default and `Answer::Label(l)` takes option `l`, which the point admits only
+when `l` is below the option count. A recorded deviation is a guest override,
+one `Answer` per `Moment`; `RecordedEnv::recorded` returns the override at the
+current moment so a caller can tell it from the base answer. The seeded
+environment answers every choice `Nominal`. The harness kit asks through this
+point from `sdk.Below`, and the [`faults` package](../faults/README.md) answers it.
+
 The `consonance` adapter maps supported policy questions and answers onto the
 opaque deterministic service channel. Unsupported host operations return an
 error. Policy identity, configuration, and dynamic state participate in capture

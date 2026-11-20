@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod arcade;
+#[cfg(test)]
+mod fixture;
+pub mod shadow;
 pub mod target;
 
 #[cfg(unix)]
@@ -19,11 +22,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
+pub use shadow::{Shadow, ShadowHook, ShadowToken};
 pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
     arcade::Machines,
-    chord::{CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary},
+    chord::{self, CHORD_DRAW_FIELD, CHORD_SITES, CHORD_TREE_IDENTIFIER, ChordVocabulary},
     nes_backend::{NesBackend, NesMemory, SnapshotState},
     search::{
         archive::{
@@ -36,19 +40,22 @@ use crate::{
             StreamIdentity,
         },
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignJobResult,
-            CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
-            postcard_semantic_result_sha256, postcard_value_sha256,
+            ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
+            CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
+            postcard_value_sha256,
         },
+        choice::{Choice, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser},
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome, RolloutStop},
     },
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v2";
 pub const NAMED_PROGRESS_FORMAT: &str = "nes-named-progress-v1";
+pub const ARCHIVE_FORMAT: &str = "nes-workload-archive-v1";
 pub const MAX_SOMETIMES: usize = 128;
 pub const RECORDS_FILE: &str = "records.bin";
 pub const REPLAY_RECORDS_FILE: &str = "records-replay.bin";
@@ -68,20 +75,175 @@ const TERMINAL_IDENTIFIER: &str = "strategy_goal_or_reject_v1";
 pub enum Never {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Moves<M> {
+pub enum Play<M> {
+    Chord,
+    Move(M),
+}
+
+pub const MAX_OFFER_OPTIONS: usize = 64;
+
+pub const EVERY_OPTION: u64 = u64::MAX;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Offer<M: 'static> {
+    pub site: u16,
+    pub default: u16,
+    pub options: &'static [(u16, Play<M>)],
+    pub offered: u64,
+}
+
+impl<M: Copy> Offer<M> {
+    fn offered_options(&self) -> impl Iterator<Item = &(u16, Play<M>)> {
+        self.options
+            .iter()
+            .enumerate()
+            .filter(|(index, (label, _))| {
+                *label == self.default
+                    || (*index < MAX_OFFER_OPTIONS && (self.offered >> index) & 1 == 1)
+            })
+            .map(|(_, option)| option)
+    }
+
+    #[must_use]
+    pub fn labels(&self) -> Vec<u16> {
+        self.offered_options().map(|(label, _)| *label).collect()
+    }
+
+    #[must_use]
+    pub fn plays(&self, label: u16) -> Option<Play<M>> {
+        self.offered_options()
+            .find(|(offered, _)| *offered == label)
+            .map(|(_, play)| *play)
+    }
+
+    #[must_use]
+    pub fn cuts(&self) -> bool {
+        !self
+            .offered_options()
+            .any(|(_, play)| matches!(play, Play::Chord))
+    }
+
+    fn option(&self, action: &ButtonChord) -> Option<(u16, Play<M>)> {
+        let answer = move_answer(action);
+        answer
+            .filter(|(site, _)| *site == self.site)
+            .and_then(|(_, label)| {
+                self.plays(label)
+                    .filter(|play| matches!(play, Play::Move(_)))
+                    .map(|play| (label, play))
+            })
+            .or_else(|| {
+                answer
+                    .is_none()
+                    .then(|| {
+                        self.offered_options()
+                            .find(|(_, play)| matches!(play, Play::Chord))
+                            .copied()
+                    })
+                    .flatten()
+            })
+            .or_else(|| self.plays(self.default).map(|play| (self.default, play)))
+            .or_else(|| self.offered_options().next().copied())
+    }
+
+    #[must_use]
+    pub fn chosen(&self, action: &ButtonChord) -> Option<M> {
+        match self.option(action) {
+            Some((_, Play::Move(mv))) => Some(mv),
+            Some((_, Play::Chord)) | None => None,
+        }
+    }
+
+    pub fn played(&self, action: &ButtonChord) -> Result<ButtonChord, Box<dyn Error>> {
+        match self.option(action) {
+            Some((label, Play::Move(_))) => move_chord(self.site, label),
+            Some((_, Play::Chord)) | None => Ok(*action),
+        }
+    }
+
+    pub fn resolve(
+        &self,
+        chords: &ChordVocabulary,
+        chooser: &mut Chooser,
+        asked: &ButtonChord,
+        previous: Option<&ButtonChord>,
+        records: &mut Vec<ChoiceRecord>,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        let site = CHORD_SITES + self.site;
+        let labels = self.labels();
+        let taken = chooser.choose(site, &labels, self.default);
+        let record = ChoiceRecord::new(site, labels, self.default, taken);
+        let label = record.resolved;
+        records.push(record);
+        if matches!(self.plays(label), Some(Play::Chord)) {
+            chords.resolve(chooser, asked, previous, records)
+        } else {
+            move_chord(self.site, label)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Moves<M: 'static> {
     pub forced: Option<M>,
+    pub offer: Option<Offer<M>>,
 }
 
 impl<M> Moves<M> {
     #[must_use]
     pub fn none() -> Self {
-        Self { forced: None }
+        Self {
+            forced: None,
+            offer: None,
+        }
     }
 
     #[must_use]
     pub fn forced(mv: M) -> Self {
-        Self { forced: Some(mv) }
+        Self {
+            forced: Some(mv),
+            offer: None,
+        }
     }
+
+    #[must_use]
+    pub fn offer(offer: Offer<M>) -> Self {
+        Self {
+            forced: None,
+            offer: Some(offer),
+        }
+    }
+
+    #[must_use]
+    pub fn cuts(&self) -> bool
+    where
+        M: Copy,
+    {
+        self.forced.is_some() || self.offer.is_some_and(|offer| offer.cuts())
+    }
+}
+
+const MOVE_HOLD: u8 = u8::MAX;
+
+pub fn move_chord(site: u16, label: u16) -> Result<ButtonChord, Box<dyn Error>> {
+    let site = u8::try_from(site)?;
+    if site >= MOVE_HOLD - MAX_HOLD_FRAMES {
+        return Err(format!("move site {site} is outside the move chord range").into());
+    }
+    Ok(ButtonChord {
+        buttons: u8::try_from(label)?,
+        hold_frames: MOVE_HOLD - site,
+    })
+}
+
+#[must_use]
+pub fn move_answer(chord: &ButtonChord) -> Option<(u16, u16)> {
+    (chord.hold_frames > MAX_HOLD_FRAMES).then(|| {
+        (
+            u16::from(MOVE_HOLD - chord.hold_frames),
+            u16::from(chord.buttons),
+        )
+    })
 }
 
 pub const FORCED_MOVE_BOUND: &str = "forced_move_within_bound";
@@ -94,7 +256,7 @@ pub struct Step<M> {
 
 pub trait Game: Clone + Debug + Send + Sync + 'static {
     type State: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned + 'static;
-    type Move: Copy + Debug;
+    type Move: Copy + Debug + 'static;
 
     const NAME: &'static str;
     const STRATEGY: &'static str;
@@ -114,8 +276,14 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
     fn decode(&self, previous: Option<&Self::State>, ram: &[u8]) -> Self::State;
     fn declare(&self, state: &Self::State, out: &mut impl Declarations);
     fn moves(&self, state: &Self::State) -> Moves<Self::Move>;
+    fn move_sites(&self) -> Vec<ChoiceSite> {
+        Vec::new()
+    }
     fn play(&self, mv: Self::Move, state: &Self::State) -> Option<Step<Self::Move>>;
     fn move_frames(&self, mv: Self::Move) -> u64;
+    fn answer_frames(_site: u16, _label: u16) -> u64 {
+        1
+    }
 }
 
 #[derive(
@@ -165,7 +333,31 @@ pub struct Lowered<G: Game> {
 }
 
 impl<G: Game> Lowered<G> {
+    #[must_use]
+    pub fn choice_sites(&self) -> Vec<ChoiceSite> {
+        let mut sites = G::CHORDS.sites();
+        sites.extend(self.game.move_sites());
+        sites
+    }
+
+    pub fn records_catalog(&self) -> Result<Catalog, Box<dyn Error>> {
+        self.catalog.clone().with_choices(self.choice_sites())
+    }
+
     pub fn new(game: G, strategy: &str) -> Result<Self, Box<dyn Error>> {
+        if let Some(site) = game
+            .move_sites()
+            .into_iter()
+            .find(|site| site.labels.len() > MAX_OFFER_OPTIONS)
+        {
+            return Err(format!(
+                "{} move site {} declares {} labels and an offer masks {MAX_OFFER_OPTIONS}",
+                G::NAME,
+                site.name,
+                site.labels.len()
+            )
+            .into());
+        }
         let declared = declared(&game, &game.decode(None, &[0; WRAM_SIZE]));
         let sometimes: Vec<String> = declared
             .iter()
@@ -258,6 +450,7 @@ pub struct NesWorkload<G: Game, M: NesBackend<Vec<u8>>> {
     identity: String,
     machines: Machines<M>,
     records: Option<Arc<Records>>,
+    choices: ChoicePolicy,
 }
 
 struct Records {
@@ -284,6 +477,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             identity,
             machines,
             records: None,
+            choices: ChoicePolicy {
+                profiles: ChoiceProfiles::Fixed(G::CHORDS.reproducing_profile()),
+                untried_first: false,
+            },
         })
     }
 
@@ -294,7 +491,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             identity: self.identity.clone(),
             machines: Arc::clone(&self.machines),
             records: None,
+            choices: self.choices,
         })
+    }
+
+    pub fn with_choice_policy(mut self, choices: ChoicePolicy) -> Result<Self, Box<dyn Error>> {
+        self.choices = choices.validate()?;
+        Ok(self)
     }
 
     pub fn with_records(mut self, path: &Path, campaign_seed: u64) -> Result<Self, Box<dyn Error>> {
@@ -307,7 +510,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             },
             policy: self.lowered.compiled.policy_identifier().to_owned(),
             strategy: self.lowered.strategy.clone(),
-            catalog: self.lowered.catalog.clone(),
+            catalog: self.lowered.records_catalog()?,
             genesis: self.lowered.record(&target.observation().state).0,
         };
         let writer = RecordsWriter::create(path, &header)?;
@@ -429,8 +632,16 @@ impl NesEvidence {
 
 pub type NesEntryReport = ArchiveEntryReport<ButtonChord, AssertionKey, Satisfied>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NesArchive;
+
+impl ArchiveFormatName for NesArchive {
+    const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NesArchiveReport {
+    pub format: ArchiveFormat<NesArchive>,
     pub seed: u64,
     pub executions: u64,
     pub milestones: Satisfied,
@@ -452,8 +663,11 @@ pub struct NesArchiveReport {
 type NesActionResult<G, M> = CampaignActionResult<NesWorkload<G, M>>;
 type NesJobResult<G, M> = CampaignJobResult<NesWorkload<G, M>>;
 
-fn chord_time(action: &ButtonChord) -> u64 {
-    u64::from(action.bounded_hold_frames())
+pub fn chord_time<G: Game>(action: &ButtonChord) -> u64 {
+    move_answer(action).map_or_else(
+        || u64::from(action.bounded_hold_frames()),
+        |(site, label)| G::answer_frames(site, label),
+    )
 }
 
 fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>>>(
@@ -489,11 +703,28 @@ fn outcome<G: Game, M: NesBackend<Vec<u8>>>(target: &NesTarget<G, M>) -> Outcome
     }
 }
 
+fn asked_chord<M: Copy>(
+    drawn: &ButtonChord,
+    offer: Option<&Offer<M>>,
+    previous: Option<&ButtonChord>,
+) -> Option<ButtonChord> {
+    if chord::is_ask(drawn) {
+        Some(*drawn)
+    } else if move_answer(drawn).is_some() && offer.and_then(|offer| offer.chosen(drawn)).is_none()
+    {
+        Some(chord::ask(previous))
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     game: &NesWorkload<G, M>,
     run: &NesRun,
     target: &mut NesTarget<G, M>,
     parent_milestones: Satisfied,
+    mut previous: Option<ButtonChord>,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
     stop: RolloutStop,
@@ -516,22 +747,51 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
             actions,
         });
     }
-    for action in suffix {
+    let mut chooser = stop.choices().map(Chooser::new);
+    for drawn in suffix {
+        let mut choices = Vec::new();
+        let offer = (!target.observation().stops())
+            .then(|| game.lowered.game.moves(&target.observation().state).offer)
+            .flatten();
+        let asked = asked_chord(drawn, offer.as_ref(), previous.as_ref());
+        if asked.is_some() && chooser.is_none() && !chord::is_ask(drawn) {
+            break;
+        }
+        let resolved = if let Some(asked) = asked {
+            let chooser = chooser.as_mut().ok_or_else(|| {
+                format!("{} drew a chord for a job without a choice plan", G::NAME)
+            })?;
+            match offer {
+                Some(offer) => {
+                    offer.resolve(&G::CHORDS, chooser, &asked, previous.as_ref(), &mut choices)?
+                }
+                None => G::CHORDS.resolve(chooser, &asked, previous.as_ref(), &mut choices)?,
+            }
+        } else if let Some(offer) = offer {
+            offer.played(drawn)?
+        } else {
+            *drawn
+        };
+        if move_answer(&resolved).is_none() {
+            previous = Some(resolved);
+        }
+        let action = &resolved;
         let action_start_frame = target.observation().frame_count;
         target.apply(action);
         merge_action_milestones(&mut aggregate, target);
-        let observations = if target.exit_kind() == ExitKind::Ok {
-            target.last_action_observations().to_vec()
-        } else {
-            Vec::new()
-        };
+        let mut observations = game.rollout_observations(target);
+        if let Some(last) = observations.last_mut() {
+            last.choices = choices;
+        }
         let raw = outcome(target);
         let outcome = Outcome {
             objective_reached: raw.objective_reached && !objective_seen,
             ..raw
         };
         objective_seen |= raw.objective_reached;
-        let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
+        let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal)
+            && move_answer(action).is_none()
+        {
             let elapsed = target
                 .observation()
                 .frame_count
@@ -551,13 +811,14 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
             }),
             _ => None,
         };
+        let cost = game.shrink_cost(&recorded_action, target, &observations);
         actions.push(CampaignActionResult {
             action: recorded_action,
             observations,
             milestones: aggregate,
             outcome,
             candidate,
-            cost: game.shrink_cost(&recorded_action, target),
+            cost,
             bound: game.remaining_cost_bound(run, target),
         });
         if outcome.should_stop(&stop) {
@@ -705,6 +966,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> Reporting for NesWorkload<G, M> {
         state: ArchiveReportState<Self>,
     ) -> NesArchiveReport {
         NesArchiveReport {
+            format: ArchiveFormat::default(),
             seed: state.seed,
             executions: state.executions,
             milestones: evidence.aggregate,
@@ -732,7 +994,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> InputPolicy for NesWorkload<G, M> {
                 self.lowered.compiled.policy_identifier().to_owned(),
             ),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
-            (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER.to_owned()),
+            (CHORD_DRAW_FIELD, CHORD_TREE_IDENTIFIER.to_owned()),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
             (TERMINAL_POLICY_FIELD, TERMINAL_IDENTIFIER.to_owned()),
             (EMULATOR_BACKEND_FIELD, self.identity.clone()),
@@ -767,20 +1029,31 @@ impl<G: Game, M: NesBackend<Vec<u8>>> InputPolicy for NesWorkload<G, M> {
         &self,
         _run: &NesRun,
         previous: Option<&ButtonChord>,
-        rand: &mut RomuDuoJrRand,
+        _rand: &mut RomuDuoJrRand,
     ) -> Result<ButtonChord, Box<dyn Error>> {
-        G::CHORDS.draw(rand, previous)
+        Ok(chord::ask(
+            previous.filter(|previous| move_answer(previous).is_none()),
+        ))
+    }
+
+    fn choice_sites(&self, _run: &NesRun) -> Vec<ChoiceSite> {
+        self.lowered.choice_sites()
+    }
+
+    fn choice_policy(&self, _run: &NesRun) -> ChoicePolicy {
+        self.choices
     }
 }
 
 impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkload<G, M> {
-    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
-        chord_time
+    fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
+        chord_time::<G>
     }
 
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize {
         std::mem::size_of::<Self::Snapshot>()
             .saturating_add(snapshot.emulator_state.memory_charge())
+            .saturating_add(snapshot.accumulator.heap_bytes())
     }
 
     fn new_target(&self) -> Result<NesTarget<G, M>, String> {
@@ -807,6 +1080,13 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
         target.execution_work()
     }
 
+    fn action_choices(&self, action: &ButtonChord) -> Vec<(u16, Choice)> {
+        move_answer(action)
+            .map(|(site, label)| (CHORD_SITES + site, Choice::Option(label)))
+            .into_iter()
+            .collect()
+    }
+
     fn apply_action(
         &self,
         target: &mut NesTarget<G, M>,
@@ -816,6 +1096,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
         target.apply(action);
         merge_action_milestones(aggregate, target);
         Ok(())
+    }
+
+    fn rollout_observations(&self, target: &NesTarget<G, M>) -> Vec<ActionObservation<G::State>> {
+        if target.exit_kind() == ExitKind::Ok {
+            target.last_action_observations().to_vec()
+        } else {
+            Vec::new()
+        }
     }
 
     fn snapshot(&self, target: &mut NesTarget<G, M>) -> Result<Self::Snapshot, Box<dyn Error>> {
@@ -844,6 +1132,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
             run,
             target,
             parent_milestones,
+            replay
+                .last()
+                .copied()
+                .filter(|action| move_answer(action).is_none()),
             suffix,
             retention,
             stop,
@@ -876,6 +1168,17 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
 
     fn is_doomed(&self, target: &NesTarget<G, M>) -> bool {
         target.observation().rejected.is_some() || target.observation().overran
+    }
+
+    fn action_cost(
+        &self,
+        _action: &ButtonChord,
+        observations: &[ActionObservation<G::State>],
+    ) -> u64 {
+        observations
+            .iter()
+            .map(|observation| observation.cost)
+            .fold(0, u64::saturating_add)
     }
 
     fn current_key(&self, target: &NesTarget<G, M>) -> Result<AssertionKey, Box<dyn Error>> {
@@ -960,17 +1263,17 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                         .observations
                         .iter()
                         .any(|observation| observation.observation.overran),
-                cost: action
-                    .observations
-                    .iter()
-                    .map(|observation| observation.cost)
-                    .sum(),
+                cost: self.action_cost(&action.action, &action.observations),
                 frames: action
                     .observations
                     .iter()
                     .flat_map(|observation| observation.records.iter().copied())
                     .collect(),
-                choices: Vec::new(),
+                choices: action
+                    .observations
+                    .iter()
+                    .flat_map(|observation| observation.choices.iter().cloned())
+                    .collect::<Vec<ChoiceRecord>>(),
             })?;
         }
         if let Some(progress) = watermark(&action.observations) {
@@ -1044,7 +1347,393 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::search::campaign::{
+        ArchiveSource, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
+        CampaignExecutionOptions, CampaignOrigin, JobOutcome, MinimizeConfig, run_job,
+    };
+    use crate::search::cost::ShrinkCost;
+    use crate::search::draw::DrawMixture;
+    use fixture::{RIGHT, Stairs, Stepper, WARP};
+
+    type StairsWorkload = NesWorkload<Stairs, Stepper>;
+
+    const CLIMB_RECORD_COST: u64 = 6 + 3;
+
+    fn climb() -> ButtonChord {
+        ButtonChord::new(RIGHT, 6)
+    }
+
+    fn stairs() -> StairsWorkload {
+        NesWorkload::with_machines(
+            Stairs,
+            Stairs::STRATEGY,
+            b"stairs",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+    }
+
+    fn config(minimize: bool) -> CampaignConfig<StairsWorkload> {
+        CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 1,
+            host: "fixture".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 256,
+            window: 1,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: NesRun,
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+            minimize: minimize.then(MinimizeConfig::default),
+        }
+    }
+
+    type Charge = (&'static str, Option<u64>, Option<ShrinkCost>);
+
+    fn charged(
+        label: &'static str,
+        coordinator: &CampaignCoordinator<'_, StairsWorkload>,
+    ) -> Charge {
+        let archive = coordinator.archive();
+        let index = (0..archive.active.len())
+            .find(|&index| {
+                archive
+                    .entry_input(index)
+                    .is_ok_and(|input| input.actions == [climb()])
+            })
+            .expect("an entry for the climb");
+        (
+            label,
+            archive.entry_cost_in_group(index),
+            archive.entry_shrink_total(index),
+        )
+    }
+
+    fn start<'a>(
+        workload: &'a StairsWorkload,
+        config: &'a CampaignConfig<StairsWorkload>,
+        origin: &CampaignOrigin<StairsWorkload>,
+        stream: &'a mut Vec<u8>,
+    ) -> CampaignCoordinator<'a, StairsWorkload> {
+        CampaignCoordinator::start(
+            workload,
+            config,
+            origin,
+            stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn every_insert_path_charges_a_forced_move_its_record_cost() {
+        let workload = stairs();
+        let ordinary = config(false);
+        let mut charges = Vec::new();
+        let mut stream = Vec::new();
+        let mut live = start(&workload, &ordinary, &CampaignOrigin::Genesis, &mut stream);
+        assert!(live.reserve_next().unwrap());
+        let mut job = live.plan(1).pop().expect("a job from genesis");
+        job.suffix = vec![climb()];
+        let mut target = workload.new_target().unwrap();
+        let outcome = run_job(&workload, &ordinary, &mut target, &job, None).unwrap();
+        let received: JobOutcome<StairsWorkload> =
+            postcard::from_bytes(&postcard::to_allocvec(&outcome).unwrap()).unwrap();
+        let received_cost = received.result.actions[0]
+            .observations
+            .last()
+            .map(|observation| observation.cost);
+        live.admit(received).unwrap();
+        charges.push(charged("live admission", &live));
+        let (report, snapshots) = live.finish(Vec::new()).unwrap();
+        let source = serde_json::to_vec(&report.archive).unwrap();
+        let mut renamed = serde_json::to_value(&report.archive).unwrap();
+        assert_eq!(renamed["format"], ARCHIVE_FORMAT);
+        renamed["format"] = "nes-workload-archive-v0".into();
+        let refused =
+            ArchiveSource::<NesArchiveReport>::from_bytes(&serde_json::to_vec(&renamed).unwrap())
+                .err()
+                .expect("another archive format is refused")
+                .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive format is nes-workload-archive-v0; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
+        renamed.as_object_mut().unwrap().remove("format");
+        let refused =
+            ArchiveSource::<NesArchiveReport>::from_bytes(&serde_json::to_vec(&renamed).unwrap())
+                .err()
+                .expect("an archive without a format is refused")
+                .to_string();
+        assert!(
+            refused.contains(&format!(
+                "archive names no format; this build reads {ARCHIVE_FORMAT}"
+            )),
+            "{refused}"
+        );
+        let mut imports = Vec::new();
+        for (label, checkpoint) in [
+            ("replayed import", None),
+            ("checkpointed import", Some(snapshots)),
+        ] {
+            let origin = CampaignOrigin::Archive {
+                path: "source.json".to_owned(),
+                source: ArchiveSource::from_bytes(&source).unwrap(),
+                checkpoint: checkpoint.map(|snapshots| CampaignCheckpoint {
+                    path: "checkpoint.bin".to_owned(),
+                    file_sha256: snapshots.sha256().unwrap(),
+                    snapshots,
+                }),
+            };
+            let mut stream = Vec::new();
+            let imported = start(&workload, &ordinary, &origin, &mut stream);
+            charges.push(charged(label, &imported));
+            let counts = imported.finish(Vec::new()).unwrap().0.tree_import.unwrap();
+            imports.push((counts.imported, counts.checkpointed));
+        }
+        let shrink = config(true);
+        let tape = CampaignOrigin::Tape {
+            input: Input {
+                actions: vec![climb(), ButtonChord::new(WARP, 9)],
+            },
+            root: 0,
+        };
+        let mut stream = Vec::new();
+        charges.push(charged(
+            "incumbent chain",
+            &start(&workload, &shrink, &tape, &mut stream),
+        ));
+
+        let record = (
+            Some(CLIMB_RECORD_COST),
+            Some(ShrinkCost::new(CLIMB_RECORD_COST, 0)),
+        );
+        assert_eq!(
+            charges,
+            [
+                "live admission",
+                "replayed import",
+                "checkpointed import",
+                "incumbent chain"
+            ]
+            .map(|label| (label, record.0, record.1))
+        );
+        assert_eq!(imports, [(1, 0), (1, 1)]);
+        assert_eq!(
+            report
+                .archive
+                .entries
+                .iter()
+                .find(|entry| entry.input.actions == [climb()])
+                .and_then(|entry| entry.shrink_total),
+            record.1
+        );
+        assert_eq!(received_cost, Some(CLIMB_RECORD_COST));
+    }
+    use crate::search::choice::{CERTAIN, ChoicePlan, ChoiceProfile};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Jump {
+        Short,
+        Long,
+        Far,
+    }
+
+    const JUMPS: [(u16, Play<Jump>); 4] = [
+        (0, Play::Chord),
+        (1, Play::Move(Jump::Short)),
+        (2, Play::Move(Jump::Long)),
+        (3, Play::Move(Jump::Far)),
+    ];
+
+    const WAITS: [(u16, Play<Jump>); 2] =
+        [(1, Play::Move(Jump::Short)), (7, Play::Move(Jump::Far))];
+
+    const SMALL: ChordVocabulary = ChordVocabulary {
+        held: &[0x00, 0x01, 0x80, 0x81],
+        tap: None,
+        short_hold: (2, 12),
+        long_hold: (48, 120),
+    };
+
+    fn jumps(offered: u64) -> Offer<Jump> {
+        Offer {
+            site: 0,
+            default: 0,
+            options: &JUMPS,
+            offered,
+        }
+    }
+
+    fn waits() -> Offer<Jump> {
+        Offer {
+            site: 0,
+            default: 1,
+            options: &WAITS,
+            offered: EVERY_OPTION,
+        }
+    }
+
+    fn chooser(seed: u64, contrary: u32, untried: Option<u32>) -> Chooser {
+        Chooser::new(&ChoicePlan {
+            profile: SMALL.reproducing_profile(),
+            redrawn: false,
+            seed,
+            untried,
+            held: Vec::new(),
+            declared: vec![(CHORD_SITES, contrary)],
+        })
+    }
+
+    fn undeclared(seed: u64, untried: Option<u32>) -> Chooser {
+        Chooser::new(&ChoicePlan {
+            profile: ChoiceProfile::new(0, 0),
+            redrawn: false,
+            seed,
+            untried,
+            held: Vec::new(),
+            declared: Vec::new(),
+        })
+    }
+
+    fn resolve(offer: &Offer<Jump>, chooser: &mut Chooser) -> (ButtonChord, Vec<ChoiceRecord>) {
+        let previous = ButtonChord::new(0x81, 30);
+        let mut records = Vec::new();
+        let action = offer
+            .resolve(
+                &SMALL,
+                chooser,
+                &chord::ask(Some(&previous)),
+                Some(&previous),
+                &mut records,
+            )
+            .expect("resolve");
+        (action, records)
+    }
+
+    #[test]
+    fn a_move_chord_away_from_its_offer_is_resolved_as_a_chord() {
+        let previous = ButtonChord::new(0x40, 12);
+        let wait = move_chord(0, 7).expect("a move chord");
+        let asked = asked_chord::<Jump>(&wait, None, Some(&previous)).expect("resolved as a chord");
+        assert!(chord::is_ask(&asked));
+        assert_eq!(asked.buttons, previous.buttons);
+        assert_eq!(asked_chord(&wait, Some(&waits()), Some(&previous)), None);
+        assert_eq!(asked_chord::<Jump>(&previous, None, None), None);
+        let drawn = chord::ask(Some(&previous));
+        assert_eq!(asked_chord(&drawn, Some(&waits()), None), Some(drawn));
+        let far = move_chord(0, 3).expect("a move chord");
+        assert_eq!(asked_chord(&far, Some(&jumps(EVERY_OPTION)), None), None);
+        let long = move_chord(0, 2).expect("a move chord");
+        assert!(
+            asked_chord(&long, Some(&jumps(0b1011)), None).is_some_and(|ask| chord::is_ask(&ask))
+        );
+    }
+
+    #[test]
+    fn an_offer_beside_chords_plays_a_chord_as_itself_and_a_move_chord_as_its_move() {
+        let offer = jumps(0b1011);
+        let held = ButtonChord::new(0x81, 9);
+        let far = move_chord(0, 3).expect("a move chord");
+        assert_eq!(
+            (offer.chosen(&held), offer.played(&held).ok()),
+            (None, Some(held))
+        );
+        assert_eq!(
+            (offer.chosen(&far), offer.played(&far).ok()),
+            (Some(Jump::Far), Some(far))
+        );
+        assert_eq!(offer.chosen(&move_chord(0, 2).expect("a move chord")), None);
+        assert_eq!(offer.chosen(&move_chord(1, 3).expect("a move chord")), None);
+        assert_eq!(offer.labels(), [0, 1, 3]);
+        assert_eq!(jumps(0b1010).labels(), [0, 1, 3]);
+        assert!(!offer.cuts() && !Moves::offer(offer).cuts());
+        assert!(waits().cuts() && Moves::offer(waits()).cuts());
+        assert!(Moves::<Jump>::forced(Jump::Short).cuts() && !Moves::<Jump>::none().cuts());
+        assert_eq!(waits().chosen(&held), Some(Jump::Short));
+        assert_eq!(waits().played(&held).ok(), move_chord(0, 1).ok());
+    }
+
+    #[test]
+    fn an_unoffered_label_is_never_taken_and_untried_first_skips_it() {
+        let taken = |offer: Offer<Jump>| {
+            let mut taken = BTreeMap::new();
+            for seed in 0..4_000 {
+                let (action, records) = resolve(&offer, &mut chooser(seed, CERTAIN, None));
+                let (_, label) = move_answer(&action).expect("a certain rate takes a move");
+                *taken.entry(label).or_insert(0_u32) += 1;
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].offered, offer.labels());
+            }
+            taken.into_keys().collect::<Vec<u16>>()
+        };
+        let untried = |offer: Offer<Jump>| -> Vec<Option<u16>> {
+            (0..4)
+                .map(|ordinal| {
+                    let (action, _) = resolve(&offer, &mut undeclared(5, Some(ordinal)));
+                    move_answer(&action).map(|(_, label)| label)
+                })
+                .collect()
+        };
+        assert_eq!(taken(jumps(0b1011)), [1, 3]);
+        assert_eq!(untried(jumps(0b1011)), [None, Some(1), Some(3), None]);
+        assert_eq!(taken(jumps(EVERY_OPTION)), [1, 2, 3]);
+        assert_eq!(
+            untried(jumps(EVERY_OPTION)),
+            [None, Some(1), Some(2), Some(3)]
+        );
+    }
+
+    #[test]
+    fn the_chord_option_resolves_the_chord_tree_as_without_an_offer() {
+        for seed in 0..500 {
+            let (action, records) = resolve(&jumps(EVERY_OPTION), &mut chooser(seed, 0, None));
+            let previous = ButtonChord::new(0x81, 30);
+            let mut alone = Vec::new();
+            let without = SMALL
+                .resolve(
+                    &mut chooser(seed, 0, None),
+                    &chord::ask(Some(&previous)),
+                    Some(&previous),
+                    &mut alone,
+                )
+                .expect("resolve");
+            assert_eq!(action, without);
+            assert_eq!(records[0].site, CHORD_SITES);
+            assert_eq!(records[0].taken, Choice::Default);
+            assert_eq!(records[1..], alone[..]);
+        }
+    }
+
+    #[test]
+    fn a_declared_rate_sets_the_share_of_moves_beside_chords() {
+        let mut moves = 0_u32;
+        for job in 0..2_400 {
+            let mut chooser = chooser(job, CERTAIN / 12, None);
+            for _ in 0..10 {
+                let (action, records) = resolve(&jumps(EVERY_OPTION), &mut chooser);
+                match move_answer(&action) {
+                    Some(_) => moves += 1,
+                    None => assert!(records.len() > 1),
+                }
+            }
+        }
+        assert!((1_807..2_193).contains(&moves), "{moves}");
+    }
 
     #[test]
     fn a_violation_report_carries_the_input_that_reproduces_it() {

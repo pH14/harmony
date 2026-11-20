@@ -79,7 +79,7 @@ func (c *client) known(key, value string) (uint64, bool) {
 // Each operation goes to one server drawn from the SDK stream; a follower
 // forwards writes and consistent reads to the leader.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	base := c.servers[sdk.Below(uint64(len(c.servers)))]
+	base := c.servers[sdk.Below("consul.server", uint64(len(c.servers)))]
 	switch op.F {
 	case family.RegisterWrite:
 		_, err := c.put(ctx, base, op.K, op.V.(string), "")

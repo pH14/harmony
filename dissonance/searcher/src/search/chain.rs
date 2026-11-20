@@ -24,6 +24,7 @@ pub(crate) struct State<G: CampaignTypes + ?Sized> {
 pub(crate) struct Chain<G: CampaignTypes + ?Sized> {
     pub(crate) actions: Vec<G::Action>,
     pub(crate) costs: Vec<ShrinkCost>,
+    pub(crate) action_costs: Vec<u64>,
     pub(crate) snapshots: Vec<Arc<G::Snapshot>>,
     pub(crate) keys: Vec<G::Key>,
     pub(crate) lineages: Vec<Lineage<G>>,
@@ -37,6 +38,7 @@ impl<G: CampaignTypes + ?Sized> Chain<G> {
         let mut chain = Self {
             actions: Vec::new(),
             costs: vec![ShrinkCost::ZERO],
+            action_costs: vec![0],
             snapshots: Vec::new(),
             keys: Vec::new(),
             lineages: Vec::new(),
@@ -51,6 +53,7 @@ impl<G: CampaignTypes + ?Sized> Chain<G> {
     pub(crate) fn truncate(&mut self, keep: usize) {
         self.actions.truncate(keep);
         self.costs.truncate(keep + 1);
+        self.action_costs.truncate(keep + 1);
         self.snapshots.truncate(keep + 1);
         self.keys.truncate(keep + 1);
         self.lineages.truncate(keep + 1);
@@ -68,17 +71,18 @@ impl<G: CampaignTypes + ?Sized> Chain<G> {
         &mut self,
         action: G::Action,
         cost: ShrinkCost,
+        action_cost: u64,
         state: State<G>,
         entry: Option<u64>,
     ) {
-        self.actions.push(action);
-        self.costs.push(cost);
+        self.push_goal(action, cost, action_cost);
         self.push_state(state, entry);
     }
 
-    pub(crate) fn push_goal(&mut self, action: G::Action, cost: ShrinkCost) {
+    pub(crate) fn push_goal(&mut self, action: G::Action, cost: ShrinkCost, action_cost: u64) {
         self.actions.push(action);
         self.costs.push(cost);
+        self.action_costs.push(action_cost);
     }
 
     fn push_state(&mut self, state: State<G>, entry: Option<u64>) {

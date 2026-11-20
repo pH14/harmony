@@ -6,34 +6,23 @@ use machine::nes::WRAM_SIZE;
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced, twin_dragons::pose},
     nes_backend::pack_quicknes_state,
-    twin_dragons::{
-        campaign::TwinDragonsGame,
-        target::{TwinDragonsObservations, TwinDragonsSnapshot, TwinDragonsTarget, decode_state},
-    },
+    twin_dragons::{self as game, TwinDragonsState},
+    workload::{Game as _, NesSnapshot, NesTarget, NesWorkload},
 };
 use wasm_bindgen::prelude::*;
 
-use crate::campaign::{BrowserGame, JsMachine, js_error, restore_ram};
+use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type TwinDragons = TwinDragonsGame<Traced<JsMachine>>;
+pub type TwinDragons = NesWorkload<game::TwinDragons, Traced<JsMachine>>;
 
 impl BrowserGame for TwinDragons {
     fn root_snapshot(
-        _target: &mut TwinDragonsTarget<Traced<JsMachine>>,
-        core: u32,
+        target: &mut NesTarget<game::TwinDragons, Traced<JsMachine>>,
+        _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<TwinDragonsSnapshot, Box<dyn Error>> {
-        let decoded = decode_state(&restore_ram(core, raw)?)?;
-        Ok(TwinDragonsSnapshot {
-            emulator_state: pack_quicknes_state(raw)?,
-            observation: TwinDragonsObservations {
-                frame_count: frames,
-                decoded,
-                terminal: decoded.terminal(),
-            },
-            failed: false,
-        })
+    ) -> Result<NesSnapshot<TwinDragonsState>, Box<dyn Error>> {
+        target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)
     }
 }
 
@@ -50,5 +39,5 @@ pub fn twin_dragons_pose(ram: &[u8]) -> Result<u16, JsValue> {
     if ram.len() != WRAM_SIZE {
         return Err(js_error("Twin Dragons poses need 2 KiB of work RAM"));
     }
-    Ok(pose(ram))
+    Ok(pose(game::TwinDragons.decode(None, ram)))
 }

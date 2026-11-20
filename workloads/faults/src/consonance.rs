@@ -32,12 +32,16 @@ use environment::{
     },
     input_spec::{InputSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
-use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
+use fault_policy::{
+    CHOICE_NAMESPACE, STANDING_NAMESPACE, StandingWindow, choice_answer, encode_standing,
+    encode_windows,
+};
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
+use crate::guest::{GuestAnswers, GuestChoice, GuestChoices, GuestChooser};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
@@ -110,6 +114,7 @@ pub struct FaultConfig {
     pub backend: GuestBackend,
     pub root: Option<Arc<Vec<u8>>>,
     pub boot_cache: Option<PathBuf>,
+    pub answers: Vec<crate::guest::GuestAnswer>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -327,6 +332,9 @@ impl ServiceHandler for StandingHandler {
             validate_debug_status(question)?;
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(Vec::new())?));
         }
+        if question.service() == CHOICE_NAMESPACE {
+            return Ok(ServiceResponse::Answered(ChannelAnswer::Nominal));
+        }
         if question.service() != STANDING_NAMESPACE {
             return Err(ChannelError::Handler(
                 "the fault package answers only the standing namespace".to_owned(),
@@ -395,6 +403,8 @@ struct ActionPlan {
     coverage_schedule: CoverageSchedule,
     deadline: u64,
     entropy_seed: u64,
+    step: u64,
+    guest: Option<GuestChoices>,
 }
 
 impl ActionPlan {
@@ -428,6 +438,8 @@ impl ActionPlan {
             coverage_schedule,
             deadline,
             entropy_seed: action_entropy_seed(actions),
+            step: actions.len() as u64,
+            guest: actions.last().and_then(|action| action.guest),
         })
     }
 
@@ -456,6 +468,7 @@ struct Config {
     worker: Option<WorkerLauncher>,
     uml: Option<UmlLaunch>,
     root: Option<Arc<Vec<u8>>>,
+    answers: Arc<GuestAnswers>,
 }
 
 fn uml_launch(
@@ -603,6 +616,8 @@ struct Live {
     abandoned: bool,
     telemetry: LiveTelemetry,
     cursor: ObservationCursor,
+    answers: Arc<GuestAnswers>,
+    choices: Vec<GuestChoice>,
 }
 
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
@@ -743,6 +758,7 @@ pub struct FaultTarget {
     history: FaultHistory,
     observation: FaultObservations,
     action_observations: Vec<FaultObservations>,
+    action_choices: Vec<GuestChoice>,
     failed: bool,
     watchdog_cutoffs: u64,
     infrastructure_failure: bool,
@@ -796,6 +812,7 @@ impl FaultTarget {
                 .uml()
                 .map(|guest| uml_launch(guest, initramfs, config))
                 .transpose()?,
+            answers: Arc::new(GuestAnswers::new(&config.answers)?),
         });
         let (observation, root_seal, history) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -807,6 +824,7 @@ impl FaultTarget {
             actions: std::sync::OnceLock::new(),
             history,
             action_observations: vec![observation.clone()],
+            action_choices: Vec::new(),
             observation,
             failed: false,
             watchdog_cutoffs: 0,
@@ -835,6 +853,11 @@ impl FaultTarget {
     #[must_use]
     pub fn last_action_observations(&self) -> &[FaultObservations] {
         &self.action_observations
+    }
+
+    #[must_use]
+    pub fn last_action_choices(&self) -> &[GuestChoice] {
+        &self.action_choices
     }
 
     #[must_use]
@@ -1288,6 +1311,7 @@ impl FaultTarget {
     }
 
     fn apply_as(&mut self, action: FaultAction, kind: RunKind) -> Option<FaultEndpointCertificate> {
+        self.action_choices.clear();
         if self.failed || !self.observation.stop.is_continuable() {
             return None;
         }
@@ -1295,6 +1319,7 @@ impl FaultTarget {
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
+            self.action_choices = std::mem::take(&mut live.choices);
             observation
                 .parks
                 .retain(|park| park.moment > self.history.receipt().moment());
@@ -1414,6 +1439,7 @@ fn stop_moment(stop: &StopReason) -> u64 {
 fn resolution_for_stop(
     stop: &StopReason,
     handler: &mut dyn ServiceHandler,
+    guest: Option<&mut GuestChooser>,
 ) -> Result<Resolution, Box<dyn Error>> {
     let StopReason::Decision { vtime, id, ctx } = stop else {
         return Err("a service resolution requires a decision stop".into());
@@ -1422,11 +1448,23 @@ fn resolution_for_stop(
         .split_first_chunk::<2>()
         .ok_or("service decision context is missing its service id")?;
     let service = u16::from_le_bytes(*service);
-    let question = Question::with_request_id(id.0, service, payload.to_vec())?;
-    let answer = match handler.respond(vtime.0, &question)? {
-        ServiceResponse::Answered(answer) => answer,
-        ServiceResponse::External => {
-            return Err(format!("service {service} did not answer the explicit decision").into());
+    let answer = match guest {
+        Some(guest) if service == CHOICE_NAMESPACE => {
+            match choice_answer(&guest.answer(vtime.0, payload)?)? {
+                Some(label) => ChannelAnswer::data(label.to_vec())?,
+                None => ChannelAnswer::Nominal,
+            }
+        }
+        _ => {
+            let question = Question::with_request_id(id.0, service, payload.to_vec())?;
+            match handler.respond(vtime.0, &question)? {
+                ServiceResponse::Answered(answer) => answer,
+                ServiceResponse::External => {
+                    return Err(
+                        format!("service {service} did not answer the explicit decision").into(),
+                    );
+                }
+            }
         }
     };
     Ok(Resolution {
@@ -1449,7 +1487,7 @@ fn run_with_service_decisions(
                 vtime: control_proto::Moment(stop_moment(&stop)),
             });
         }
-        let resolution = resolution_for_stop(&stop, handler)?;
+        let resolution = resolution_for_stop(&stop, handler, None)?;
         stop = session.run_resolving(deadline, resolution)?;
     }
     Ok(stop)
@@ -1459,6 +1497,7 @@ struct ExecutedAction {
     observation: FaultObservations,
     snapshot: Option<(SnapId, u64)>,
     proof: EndpointProof,
+    choices: Vec<GuestChoice>,
 }
 
 struct ObservedEndpoint {
@@ -1473,6 +1512,7 @@ fn execute_observed_endpoint(
     session: &mut dyn SearchSession,
     request: ExecutionRequest,
     handler: &mut dyn ServiceHandler,
+    guest: &mut GuestChooser,
     mut decoder: SdkDecoder,
     stopped: &mut Option<StopReason>,
 ) -> Result<ObservedEndpoint, Box<dyn Error>> {
@@ -1484,7 +1524,7 @@ fn execute_observed_endpoint(
                 if stop_moment(decision.stop()) >= deadline {
                     break decision.finalize(true)?;
                 }
-                let resolution = resolution_for_stop(decision.stop(), handler)?;
+                let resolution = resolution_for_stop(decision.stop(), handler, Some(guest))?;
                 decision.resume(resolution)?
             }
             ExecutionStart::Endpoint(endpoint) => break endpoint,
@@ -1646,6 +1686,8 @@ impl Live {
             abandoned: false,
             telemetry,
             cursor: ObservationCursor::default(),
+            answers: Arc::clone(&config.answers),
+            choices: Vec::new(),
         };
         let observation = live.observe(FaultStop::Deadline)?;
         let endpoint = if config.uml.is_some() {
@@ -2283,6 +2325,7 @@ impl Live {
                 mut observation,
                 snapshot: sealed,
                 proof,
+                choices: _,
             } = self.run_action(&plan, last, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
@@ -2328,6 +2371,7 @@ impl Live {
         action: FaultAction,
         kind: RunKind,
     ) -> Result<(FaultObservations, Option<HistoryReceipt>), String> {
+        self.choices.clear();
         if let Some((at, imported)) = self.find_path_selected(
             history.receipt().next_path(action)?,
             history.len() + 1,
@@ -2366,7 +2410,9 @@ impl Live {
             mut observation,
             snapshot: sealed,
             proof,
+            choices,
         } = self.run_action(&plan, parent, kind)?;
+        self.choices = choices;
         let receipt = if let Some((snap, moment)) = sealed {
             let receipt = self.capture_sealed_receipt(
                 snap,
@@ -2461,11 +2507,13 @@ impl Live {
         let combined_branch = request.branch.is_some();
         let run_started = started();
         let mut handler = plan.handler.clone();
+        let mut guest = GuestChooser::new(plan.step, plan.guest, self.answers.at(plan.step));
         let mut stopped = None;
         let outcome = execute_observed_endpoint(
             self.session.as_mut(),
             request,
             &mut handler,
+            &mut guest,
             decoder,
             &mut stopped,
         );
@@ -2520,6 +2568,7 @@ impl Live {
             observation,
             snapshot: outcome.receipt.snapshot,
             proof: outcome.receipt.proof,
+            choices: guest.into_records(),
         })
     }
 
@@ -2604,10 +2653,16 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
     let base = base_identity(kernel, initramfs, config)?;
-    Ok(identity_with_root(
-        &base,
-        config.root.as_deref().map(Vec::as_slice),
-    ))
+    let identity = identity_with_root(&base, config.root.as_deref().map(Vec::as_slice));
+    let answers = GuestAnswers::new(&config.answers)?;
+    Ok(if answers.is_empty() {
+        identity
+    } else {
+        format!(
+            "{identity};guest-answers={:x}",
+            Sha256::digest(answers.identity())
+        )
+    })
 }
 
 fn identity_with_root(base: &str, root: Option<&[u8]>) -> String {
@@ -2751,6 +2806,7 @@ mod tests {
             backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2792,6 +2848,7 @@ mod tests {
             backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2837,11 +2894,13 @@ mod tests {
                     backend: GuestBackend::Vm,
                     root: None,
                     boot_cache: None,
+                    answers: Vec::new(),
                 }
                 .session_config(),
                 cache: None,
                 worker: None,
                 uml: None,
+                answers: Arc::default(),
             }),
             actions: std::sync::OnceLock::new(),
             history: FaultHistory::fixture(
@@ -2852,6 +2911,7 @@ mod tests {
             ),
             observation: FaultObservations::default(),
             action_observations: Vec::new(),
+            action_choices: Vec::new(),
             failed: false,
             watchdog_cutoffs: 0,
             infrastructure_failure: false,
@@ -3572,6 +3632,8 @@ mod tests {
             abandoned: false,
             telemetry: LiveTelemetry::default(),
             cursor: ObservationCursor::default(),
+            answers: Arc::default(),
+            choices: Vec::new(),
         };
         live.chain.certify(0, fixture_genesis()).unwrap();
         live
@@ -3738,6 +3800,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                answers: Vec::new(),
             },
         );
         let run = crate::campaign::FaultCampaignRun::any_bug(
@@ -3782,18 +3845,69 @@ mod tests {
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
+    type Resolved = Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>;
+
     #[derive(Debug)]
-    struct BoundaryDecisionSession {
+    struct DecisionSession {
         endpoint_state: consonance_client::endpoint::EndpointState,
         endpoint_abandoned: bool,
-        resolutions: Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>,
+        resolutions: Resolved,
         branch: Option<ServiceConfig>,
         deadline: u64,
         pending_moment: Option<u64>,
         next_snapshot: u64,
+        choices: Option<u16>,
+        asked: u16,
     }
 
-    impl consonance_client::endpoint::EndpointDriver for BoundaryDecisionSession {
+    impl DecisionSession {
+        fn new(resolutions: &Resolved, choices: Option<u16>) -> Self {
+            Self {
+                endpoint_state: consonance_client::endpoint::EndpointState::default(),
+                endpoint_abandoned: false,
+                resolutions: Arc::clone(resolutions),
+                branch: None,
+                deadline: 0,
+                pending_moment: None,
+                next_snapshot: 1,
+                choices,
+                asked: 0,
+            }
+        }
+
+        fn choice_question(asked: u16, moment: u64) -> Vec<u8> {
+            fault_policy::ChoiceQuestion {
+                site: ["register.op", "runner.pause"][usize::from(asked % 2)].to_owned(),
+                options: 4,
+                default: 1,
+                clock: moment,
+            }
+            .encode()
+            .unwrap()
+        }
+
+        fn choice_moment(&self, asked: u16) -> u64 {
+            self.deadline - u64::from(self.choices.unwrap() - asked)
+        }
+
+        fn next_choice(&self) -> StopReason {
+            if self.asked >= self.choices.unwrap() {
+                return StopReason::Deadline {
+                    vtime: control_proto::Moment(self.deadline),
+                };
+            }
+            let moment = self.choice_moment(self.asked);
+            let mut ctx = CHOICE_NAMESPACE.to_le_bytes().to_vec();
+            ctx.extend(Self::choice_question(self.asked, moment));
+            StopReason::Decision {
+                vtime: control_proto::Moment(moment),
+                id: control_proto::DecisionId(u64::from(self.asked) + 1),
+                ctx,
+            }
+        }
+    }
+
+    impl consonance_client::endpoint::EndpointDriver for DecisionSession {
         fn ensure_active(&self) -> Result<(), Box<dyn Error>> {
             if self.endpoint_abandoned {
                 Err(SessionError::Abandoned.into())
@@ -3857,7 +3971,7 @@ mod tests {
         }
     }
 
-    impl SearchSession for BoundaryDecisionSession {
+    impl SearchSession for DecisionSession {
         fn execution_endpoint(
             &mut self,
             request: consonance_client::endpoint::EndpointRequest,
@@ -3938,11 +4052,15 @@ mod tests {
             _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
             self.branch = Some(config);
+            self.asked = 0;
             Ok(())
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
             self.deadline = deadline;
+            if self.choices.is_some() {
+                return Ok(self.next_choice());
+            }
             let moment = *self.pending_moment.get_or_insert(deadline);
             Ok(StopReason::Decision {
                 vtime: control_proto::Moment(moment),
@@ -3962,6 +4080,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((self.branch.clone().unwrap(), resolution));
+            if self.choices.is_some() {
+                self.asked += 1;
+                return Ok(self.next_choice());
+            }
             Ok(StopReason::Deadline {
                 vtime: control_proto::Moment(deadline),
             })
@@ -3992,17 +4114,9 @@ mod tests {
             FaultOperation::Wait(tick).into(),
             FaultOperation::Kill(3, tick).into(),
         ];
-        let resolutions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let resolutions = Resolved::default();
         let mut live = timed_out_live();
-        live.session = Box::new(BoundaryDecisionSession {
-            endpoint_state: consonance_client::endpoint::EndpointState::default(),
-            endpoint_abandoned: false,
-            resolutions: Arc::clone(&resolutions),
-            branch: None,
-            deadline: 0,
-            pending_moment: None,
-            next_snapshot: 1,
-        });
+        live.session = Box::new(DecisionSession::new(&resolutions, None));
         assert!(live.ensure_prefix(&actions).unwrap().is_ok());
         let resolutions = resolutions.lock().unwrap();
         assert_eq!(resolutions.len(), 1);
@@ -4030,6 +4144,97 @@ mod tests {
             panic!("the previous standing service must answer");
         };
         assert_ne!(first.answer.0, previous.encode());
+    }
+
+    fn choice_live(answers: &[crate::guest::GuestAnswer]) -> (Live, Resolved) {
+        let resolutions = Resolved::default();
+        let mut live = timed_out_live();
+        live.session = Box::new(DecisionSession::new(&resolutions, Some(3)));
+        live.answers = Arc::new(GuestAnswers::new(answers).unwrap());
+        (live, resolutions)
+    }
+
+    fn advance_each(live: &mut Live, actions: &[FaultAction]) -> Vec<Vec<GuestChoice>> {
+        let mut history = FaultHistory::genesis(live.chain.provenance(0).unwrap().clone()).unwrap();
+        actions
+            .iter()
+            .map(|action| {
+                let (_, receipt) = live.advance(&history, *action, RunKind::Rebuild).unwrap();
+                history = history.push(receipt.unwrap()).unwrap();
+                live.choices.clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_live_action_answers_guest_choices_from_its_plan_and_the_recorded_answers() {
+        use crate::guest::GuestAnswer;
+        use searcher::search::choice::CERTAIN;
+
+        let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let planned = |seed| {
+            wait.with_guest(GuestChoices {
+                contrary: CERTAIN,
+                hold: 0,
+                seed,
+                untried: None,
+            })
+        };
+        let actions = [planned(1), wait, planned(3)];
+        let recorded = [GuestAnswer {
+            step: 2,
+            choice: 1,
+            label: Some(3),
+        }];
+
+        let (mut fresh, resolutions) = choice_live(&recorded);
+        let records = advance_each(&mut fresh, &actions);
+        let resolutions = resolutions.lock().unwrap().clone();
+        assert_eq!(resolutions.len(), 9);
+        let answers = GuestAnswers::new(&recorded).unwrap();
+        for (index, (action, records)) in actions.iter().zip(&records).enumerate() {
+            let step = index as u64 + 1;
+            let mut expected = GuestChooser::new(step, action.guest, answers.at(step));
+            for (asked, (_, resolution)) in resolutions[index * 3..index * 3 + 3].iter().enumerate()
+            {
+                let asked = u16::try_from(asked).unwrap();
+                let answer = expected
+                    .answer(
+                        resolution.vtime.0,
+                        &DecisionSession::choice_question(asked, resolution.vtime.0),
+                    )
+                    .unwrap();
+                let encoded = match fault_policy::choice_answer(&answer).unwrap() {
+                    Some(label) => ChannelAnswer::data(label.to_vec()).unwrap(),
+                    None => ChannelAnswer::Nominal,
+                };
+                assert_eq!(resolution.service, CHOICE_NAMESPACE);
+                assert_eq!(resolution.answer.0, encoded.encode());
+            }
+            assert_eq!(records, &expected.into_records());
+        }
+        assert!(
+            records[0]
+                .iter()
+                .chain(&records[2])
+                .all(|choice| choice.label != 1)
+        );
+        assert_eq!(
+            records[1]
+                .iter()
+                .map(|choice| (choice.label, choice.answered))
+                .collect::<Vec<_>>(),
+            [(1, false), (3, true), (1, false)]
+        );
+
+        let (mut again, _) = choice_live(&recorded);
+        assert_eq!(advance_each(&mut again, &actions), records);
+
+        let (mut restored, _) = choice_live(&recorded);
+        advance_each(&mut restored, &[actions[0], actions[1], planned(4)]);
+        let after_restore = advance_each(&mut restored, &actions);
+        assert!(after_restore[0].is_empty() && after_restore[1].is_empty());
+        assert_eq!(after_restore[2], records[2]);
     }
 
     fn hashed_live(hash: [u8; 32]) -> Live {
@@ -4344,6 +4549,7 @@ mod tests {
                 backend,
                 root: None,
                 boot_cache: None,
+                answers: Vec::new(),
             },
         )
     }
@@ -4541,6 +4747,24 @@ mod tests {
     }
 
     #[test]
+    fn a_uml_wait_costs_its_ticks_and_host_work_but_no_fault_to_the_shrink() {
+        use searcher::search::campaign::Evaluation;
+        let target = unbooted_uml_target();
+        let workload = capture_fixture_workload(&target);
+        assert!(target.config.uml.is_some());
+        let wait = FaultOperation::Wait(std::num::NonZeroU16::new(64).unwrap()).into();
+        assert_eq!(
+            workload.action_cost(&wait, &[]),
+            64 + crate::archive::ACTION_HOST_TICKS
+        );
+        assert_eq!(workload.action_cost(&wait, &[]), 320);
+        assert_eq!(
+            workload.shrink_cost(&wait, &target, &[]),
+            searcher::search::cost::ShrinkCost::new(0, 64)
+        );
+    }
+
+    #[test]
     fn branch_prefix_capture_hashes_each_action_once_and_empty_setup_freshly() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for depth in [0, 1, 3] {
@@ -4640,6 +4864,7 @@ mod tests {
             }));
         });
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4690,6 +4915,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -4739,6 +4965,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let error = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -4780,6 +5007,7 @@ mod tests {
             .unwrap(),
         );
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4809,6 +5037,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4851,6 +5080,7 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -4877,6 +5107,7 @@ mod tests {
         let before = capture_hash_calls();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5349,6 +5580,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let keyframe = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &keyframe,
@@ -5384,6 +5616,7 @@ mod tests {
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5448,6 +5681,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5512,6 +5746,7 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let error = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5564,6 +5799,7 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let result = crate::campaign::execute_job(
+            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5590,6 +5826,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                answers: Vec::new(),
             },
         );
         use searcher::search::campaign::Reporting;
@@ -5625,6 +5862,7 @@ mod tests {
                 backend: GuestBackend::Vm,
                 root: None,
                 boot_cache: None,
+                answers: Vec::new(),
             },
         );
         let target = unbooted_target();
@@ -6864,6 +7102,7 @@ mod tests {
                 );
             }
             let result = crate::campaign::execute_job(
+                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &keyframe,
@@ -7536,6 +7775,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun::any_bug(
@@ -7633,6 +7873,24 @@ mod tests {
             },
             CoverageSchedule::new(environment::channel::DEFAULT_COVERAGE_QUANTUM, rows).unwrap(),
         )
+    }
+
+    #[test]
+    fn an_action_plan_answers_guest_choices_with_its_last_action_s_plan_at_its_depth() {
+        let root = ActionWindows { root_seal: 1_000 };
+        let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
+        let guest = GuestChoices {
+            contrary: 1,
+            hold: 2,
+            seed: 3,
+            untried: None,
+        };
+        let empty = ActionPlan::compile(root, &[], &[]).unwrap();
+        assert_eq!((empty.step, empty.guest), (0, None));
+        let last = ActionPlan::compile(root, &[], &[wait, wait.with_guest(guest)]).unwrap();
+        assert_eq!((last.step, last.guest), (2, Some(guest)));
+        let earlier = ActionPlan::compile(root, &[], &[wait.with_guest(guest), wait]).unwrap();
+        assert_eq!((earlier.step, earlier.guest), (2, None));
     }
 
     #[test]
@@ -7923,7 +8181,7 @@ mod tests {
             ctx,
         };
         assert_eq!(
-            resolution_for_stop(&stop, &mut handler).unwrap(),
+            resolution_for_stop(&stop, &mut handler, None).unwrap(),
             Resolution {
                 vtime: control_proto::Moment(1_000),
                 service: environment::channel::SERVICE_COVERAGE_QUANTUM,
@@ -7941,8 +8199,47 @@ mod tests {
                     ctx: vec![1],
                 },
                 &mut handler,
+                None,
             )
             .is_err()
+        );
+        let mut ctx = CHOICE_NAMESPACE.to_le_bytes().to_vec();
+        ctx.extend(
+            fault_policy::ChoiceQuestion {
+                site: "register.op".to_owned(),
+                options: 4,
+                default: 1,
+                clock: 5,
+            }
+            .encode()
+            .unwrap(),
+        );
+        let stop = StopReason::Decision {
+            vtime: control_proto::Moment(2_000),
+            id: control_proto::DecisionId(8),
+            ctx,
+        };
+        let answers = crate::guest::GuestAnswers::new(&[crate::guest::GuestAnswer {
+            step: 1,
+            choice: 0,
+            label: Some(3),
+        }])
+        .unwrap();
+        let mut guest = GuestChooser::new(1, None, answers.at(1));
+        assert_eq!(
+            resolution_for_stop(&stop, &mut handler, Some(&mut guest))
+                .unwrap()
+                .answer,
+            control_proto::Answer(ChannelAnswer::Data(3_u16.to_le_bytes().to_vec()).encode())
+        );
+        let records = guest.into_records();
+        assert_eq!(records.len(), 1);
+        assert_eq!((records[0].moment, records[0].clock), (2_000, 5));
+        assert_eq!(
+            resolution_for_stop(&stop, &mut handler, None)
+                .unwrap()
+                .answer,
+            control_proto::Answer(ChannelAnswer::Nominal.encode())
         );
         let (standing, mut gap) = decode_configuration(&configuration.configuration).unwrap();
         gap[1].0 += 1;
@@ -8234,6 +8531,7 @@ mod tests {
             backend: GuestBackend::Vm,
             root: None,
             boot_cache: None,
+            answers: Vec::new(),
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {

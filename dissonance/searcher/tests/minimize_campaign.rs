@@ -236,7 +236,7 @@ impl TargetExecution for Walk {
         target.execution_work
     }
 
-    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+    fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64 {
         |_| 1
     }
 

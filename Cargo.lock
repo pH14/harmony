@@ -679,7 +679,6 @@ name = "nes-workload"
 version = "0.1.0"
 dependencies = [
  "libc",
- "lz4_flex",
  "machine",
  "nes-games",
  "oci-support",

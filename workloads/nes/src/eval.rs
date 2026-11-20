@@ -93,6 +93,8 @@ pub struct Request {
     pub records: bool,
     #[serde(default)]
     pub keep_stream: bool,
+    #[serde(default)]
+    pub choices: Option<searcher::search::choice::ChoicePolicy>,
 }
 
 struct StreamDigest {
@@ -103,6 +105,7 @@ struct StreamDigest {
 }
 
 pub const DECISION_MARKS_FILE: &str = "decision-marks.jsonl";
+pub const RESULT_FORMAT: &str = "nes-eval-result-v2";
 const DECISION_MARK_EVERY: u64 = 1024;
 const WORKLOAD_FIELDS: [&str; 3] = [
     "result_sha256",
@@ -486,7 +489,7 @@ where
     let solved = objective_within_budget(report.work_to_first_objective, request.frames);
     write_json(
         &out.join("result.json"),
-        &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
+        &json!({"format":RESULT_FORMAT, "status":"complete", "solved":solved,
             "victory_observed":report.objectives_reached>0,
             "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
             "executions": report.executions_completed, "frames_emulated":report.execution_work,

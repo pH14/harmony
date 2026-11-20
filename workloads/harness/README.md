@@ -11,7 +11,7 @@ generic operations onto the target's client API.
 
 | path | contents |
 |---|---|
-| `kit/sdk` | `Random()` and the SDK assertions |
+| `kit/sdk` | `Random()`, the `Below` choice and the SDK assertions |
 | `kit/history` | the JSONL journal writer and loader |
 | `kit/family` | operation families: generators and checkers |
 | `kit/runner` | `Run`, `Check` and `Main` |
@@ -104,12 +104,28 @@ first round's reads can cause one.
 
 ## Randomness
 
-Every choice the driver makes comes from `sdk.Random()`: the operation, its
-key, the pause after it and the journal token. `Random()` writes the
+Every random value the driver uses comes from `sdk.Random()`: the operation,
+its key, the pause after it and the journal token. `Random()` writes the
 entropy command byte `0` to `/dev/harmony` and reads 8 little-endian bytes, the
 protocol of `fuzz_get_random` in `libvoidstar`. Without that device it uses a
 PCG seeded from `HARNESS_SEED`, or from `crypto/rand` when the variable is
 unset.
+
+A draw among a fixed number of options is a choice: `sdk.Below(site, n)`
+names its site (such as `register.op` or `runner.pause`) and returns a value
+below `n`. It first takes its own draw, `Random() % n`, as the default. When
+`/dev/harmony` exists and `n` is between 2 and 65,535, it then asks the host
+through one SDK opaque service request under namespace 11 (fault-policy's
+`CHOICE_NAMESPACE`): the option count, the default, the guest's
+`CLOCK_MONOTONIC` reading and the site name, in the form of fault-policy's
+`ChoiceQuestion`. The host answers `Nominal`, which keeps the default, or a
+label below `n`. The [`faults` package](../faults/README.md) answers from the
+searcher's choice plan for the action (ours), so a run without a plan behaves
+exactly as before. Antithesis's Test Composer treats randomness in the workload
+as the platform's branch points; this is that idea with a declared default per
+site. Without the device `Below` returns its own draw and asks nothing. The
+journal token and `harness-net`'s delay length stay plain `Random()` values,
+because neither is a pick among labelled options.
 
 ## Journal
 
@@ -274,20 +290,24 @@ Assertion ids are the messages.
 
 `harness-net` gives each node its own network namespace so faults can cut
 links between nodes while the driver and check, in the root namespace, still
-reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
-`iptables`) and the container capabilities to create namespaces.
+reach every node. It needs `ip`, `tc`, `iptables` and `iptables-restore`
+(Debian `iproute2` and `iptables`) and the container capabilities to create
+namespaces.
 
 | subcommand | effect |
 |---|---|
 | `setup N` | bridge `hbr0` at 10.77.0.254/24; namespaces `hn1..hnN`, each with `eth0` at 10.77.0.I on the bridge, loopback up, and an empty `HARNESS` iptables chain jumped from `INPUT` and `OUTPUT` |
 | `exec I -- ARGV` | runs ARGV in namespace I through `ip netns exec`, keeping the process ID |
-| `partition` | splits the nodes into two nonempty sides drawn from `Random()`; each node drops traffic to and from the other side |
+| `partition` | splits the nodes into two nonempty sides chosen at site `net.partition`; each node drops traffic to and from the other side |
 | `isolate` | cuts one random node off from the others |
 | `delay` | adds netem delay, log-uniform 1 to 500 ms, to one random node's `eth0` |
 | `heal` | flushes every `HARNESS` chain and removes netem |
 
-`partition` and `isolate` replace the previous cut. Every subcommand can be
-run again. A target calls `harness-net setup N` from its setup script, starts
+`partition` and `isolate` replace the previous cut. Each node's `HARNESS` chain
+is replaced by one `iptables-restore --noflush` that declares the chain, which
+empties it, and appends the new rules in the same commit, so a link that both
+cuts drop never opens during the replace. Every subcommand can be run again.
+A target calls `harness-net setup N` from its setup script, starts
 each node through `harness-net exec I`, binds and advertises 10.77.0.I and
 declares the four fault subcommands as bundle hooks, with `heal` naming the
 hook that lifts the other three:
@@ -309,6 +329,43 @@ the `heal` hook, because the supervisor would then never lift the fault.
 Images that install `iptables` drop the xtables extensions whose names differ
 only in case, which `harmony prepare` rejects, and purge `libssl3`, which
 arrives through Kerberos and carries unreviewed instructions.
+
+## Arm64 images
+
+Image admission on arm64 rejects every executable whose code pages hold an
+allocated non-executable section and every LL/SC exclusive instruction word
+([faults admission](../faults/README.md)). Debian's arm64 binaries fail both,
+so an arm64 target image is built from source on a dynamic musl libc instead
+of a Debian base. On arm64 the shared runtime image
+(`workloads/languages/runtime/Dockerfile`, built by `harmony prepare`) adds:
+
+| path | contents |
+|---|---|
+| `/out/harness/root` | a root filesystem: musl's loader at `/lib/ld-musl-aarch64.so.1`, BusyBox, iproute2 `ip` and `tc`, legacy `iptables` with built-in extensions, e2fsprogs `mkfs.ext4` for node disks, a musl `libvoidstar.so` and minimal `/etc` files |
+| `/out/harness/musl` | the musl toolchain, installed at `/opt/harmony-musl`, with `bin/harmony-cc` |
+
+`image/build-arm64-root.sh` builds both from pinned sources. musl carries the
+LSE-only atomics patch from `consonance/harmony-linux/linux/patches/musl`, and
+`harmony-cc` compiles with `-march=armv8.1-a+lse -mno-outline-atomics` and
+links with `-z separate-code`. On x86-64 both directories are empty.
+
+A target's Go build stages copy `image/go-env.sh` and
+`consonance/harmony-linux/linux/patches/go/` to `/build/harness-go/`, copy
+`/out/harness/musl` to `/opt/harmony-musl` for cgo, source `go-env.sh` before
+building, and pass `-ldflags="${HARNESS_GO_LDFLAGS}"` to every `go build`. On
+arm64 the script applies the two Go runtime patches to the toolchain, sets
+`GOARM64=v8.1` so the compiler emits LSE atomics, points `CC` at `harmony-cc`,
+and sets `HARNESS_GO_LDFLAGS` to `-buildid= -B none`, which keeps the build-ID
+notes out of the internally linked text segment. On x86-64 it changes nothing.
+The final stage is `FROM base-${TARGETARCH}`, where `base-amd64` is the Debian
+base and `base-arm64` is `scratch` with `/out/harness/root` copied in.
+`targets/rqlite` follows this pattern. The arm64 guest kernel builds in the
+veth, bridge, netem and legacy iptables support that `harness-net` uses.
+
+An rqlite search at one worker ran about 1.1 executions a minute on an msr1
+Cortex-A720 core and 0.24 on a Cortex-A520 core with `ram_mib = 1536`, and 3
+on an Apple M1 Max under HVF with `ram_mib = 8192`. On x86-64 it ran about 2.8
+executions a minute on an ms02 E-core with `ram_mib = 1024`.
 
 ## NATS JetStream
 
@@ -501,8 +558,12 @@ the node logs `/tmp/rqlite/<node>.log` with `log` lines.
 The default `bundle` drives the `register` family on table `kv`. `write` is an
 upsert, `cas` is an `UPDATE` that matches the old value and fails definitely
 when it changes no row, and `read` is a `SELECT` at level `linearizable`. Each
-client sends to one random node with `redirect` and follows one redirect to
-the leader.
+row's column `n` counts the writes applied to it: an insert sets it to 1, and
+an upsert or a `cas` that changes the row adds 1. Column `h` is the digest of
+those writes: the sum, modulo 2^52, of the FNV-1a hash modulo 2^52 of each
+value written, which the client computes and sends as a parameter. Each client
+sends to one random node with `redirect` and follows one redirect to the
+leader.
 
 `bundle-forward` sets `HARNESS_RQLITE_MODE=forward` and drives the `log`
 family on table `log`. `append` inserts a row and returns its
@@ -516,8 +577,18 @@ A read pinned to node `nI` in either bundle first runs
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
 index, then reads from `nI` at level `none`, which answers from `nI`'s own
 SQLite database. A `replicas` read on `nI` takes the same fence and selects
-every row of `kv` at level `none`. A row has no version, so its copies hold
-values alone.
+every row of `kv` at level `none`. Each copy's metadata is the row's write
+count, `writes`, and its digest, `digest`. Equal values name one write, and
+every correct node has applied the same writes to that key up to it, so both
+agree. For equal values, equal digests mean the same multiset of applied
+writes on that key, up to hash collision. A node that applied a write the
+others never applied keeps a different digest after the key is written again,
+which the value alone would no longer show, and the count alone would not show
+once a retry of that write succeeds on the other nodes
+([#1032](https://github.com/pH14/harmony/issues/1032)). A divergent Raft entry
+that changed no row, such as a `cas` that did not match, leaves every replica's
+state equal, so no comparison of replicas sees it; only a comparison of the
+nodes' Raft logs does.
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error

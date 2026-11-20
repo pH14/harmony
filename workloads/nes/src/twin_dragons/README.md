@@ -3,13 +3,13 @@
 # Twin Dragons workload adapter
 
 This module adapts [Twin Dragons](https://github.com/Garydos/twin-dragons-nes),
-a three-level NROM platformer by Garydos, to Dissonance's search interfaces. It
-owns the memory decoder, the power-on setup, controller encoding, mechanical
-observations, archive identity, milestones, terminal conditions, and QuickNES
-replay and rendering. It implements `CampaignTypes`, `TargetExecution`,
-`InputPolicy`, `Evaluation` and `Reporting` the same way the
-[Super Tilt Bro](../stb/README.md) adapter does, including the shortened hold
-recorded at a terminal frame inside an action.
+a three-level NROM platformer by Garydos, to Dissonance's search interfaces.
+Twin Dragons is a game declared through the searcher's assertion catalog:
+`nes-games/src/twin_dragons/game.rs` holds the RAM decoder, power-on setup,
+genesis check and declarations, and `nes-games/src/twin_dragons/twin_dragons.toml`
+is the strategy that keys the archive. `TwinDragonsWorkload` is
+`NesWorkload<TwinDragons, QuickNesMachine>`, the shared workload described in
+the [`nes-games` README](../../../nes-games/README.md).
 
 ## ROM
 
@@ -60,33 +60,30 @@ single action, so a long hold of 48 frames or more walks into enemies and pits
 before the search can react. Splicing archived tails gives some jobs the
 dozens of actions that a jump sequence or a level load needs.
 
-Health 0 is a terminal death. The game would restart the level, but a restart
-loses all progress, so the search ends the rollout. Touching the goal of the
-third level is the objective. Earlier goals are milestones that count cleared
-levels.
+Health 0 is a terminal death, rejected by the strategy. The game would
+restart the level, but a restart loses all progress, so the search ends the
+rollout. Touching the goal of the third level is the goal. Earlier goals are
+the `cleared_1` and `cleared_2` named progress marks, and `cleared_3`,
+`victory` and `death` complete the marks.
 
-The archive key is the levels cleared, a stage, world x and y in 16-pixel
-units, and health. The progress tier is the levels cleared, so the newest level
-outweighs the levels behind it. During gameplay the place is the level and the
-32-pixel cell, the identity is the 16-pixel cell, and higher health is
-preferred within a place. The level transition takes about 300 frames from
-touching the goal to the next level's first gameplay frame. Its states are
-archived in the next level's tier, one place per 32 frames of the transition
-timer `$CE`: four places while the goal is touched, one per stage of the
-level-load screen, and one for the frames before the new level is loaded. A
-job can then cross the transition in short steps. The progress watermark is
-the pair of levels cleared and furthest world x.
+The progress tier is the levels cleared, so the newest level outweighs the
+levels behind it. During gameplay the place is the levels cleared and world x
+and y in 32-pixel cells, the identity is the 16-pixel cell, each cell keeps one
+state, and higher health is preferred. The title screen gets no key. The level
+transition takes about 300 frames from touching the goal to the next level's
+first gameplay frame. Its states are archived in the next level's tier, one
+place per 32 frames of the transition timer `$CE`: four places while the goal
+is touched, one per stage of the level-load screen, and one for the frames
+before the new level is loaded. A job can then cross the transition in short
+steps.
 
 ## Running
 
 ```sh
 workloads/nes/scripts/build-twin-dragons-rom.sh
-cargo run --release --manifest-path workloads/nes/Cargo.toml --bin twin-dragons-campaign -- \
-  --core QUICKNES_CORE --rom workloads/nes/build/twin-dragons/twin-dragons.nes \
-  --output OUT --executions 100000 --workers 6
 ```
 
-The command runs the campaign, replays its stream, checks that the replayed
-report and checkpoint match, and renders `witness.mp4` from the objective
-witness or the champion. `nes-eval` and `nes-film` accept `"game":
-"twin-dragons"`.
+`nes-eval` takes `"game": "twin-dragons"` with no stage, ai or whole-game
+option, and `nes-film` renders its witness or champion inputs. `nes-core-oracle`
+takes `twin-dragons` as a game name. The browser demo runs the same workload
+over its WebAssembly core.

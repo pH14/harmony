@@ -261,15 +261,14 @@ fn expressions_cover_tables_conditionals_and_popcount() {
 }
 
 #[test]
-fn stages_climb_their_gap_latch_and_carry() {
+fn stages_climb_their_gap_and_latch() {
     let catalog = catalog();
     let compiled = Compiled::parse(
         r#"
         spread = "position"
         [[stage]]
         goal = "far room"
-        carry = true
-        objective = "if 'in transition' then none else 'far room.gap'"
+        objective = "'far room.gap'"
         [[stage]]
         name = "sword"
         goal = "'items.sword'"
@@ -294,15 +293,6 @@ fn stages_climb_their_gap_latch_and_carry() {
         ..Walk::default()
     });
     assert!(start.key.unwrap().progress() < further.key.unwrap().progress());
-    let transition = observe(Walk {
-        room: 0,
-        transition: true,
-        ..Walk::default()
-    });
-    assert_eq!(
-        transition.key.unwrap().progress(),
-        further.key.unwrap().progress()
-    );
     let far = observe(Walk {
         room: 6,
         ..Walk::default()
@@ -361,15 +351,12 @@ fn stages_climb_their_gap_latch_and_carry() {
 }
 
 #[test]
-fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
+fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
     let compiled = Compiled::parse(
         r#"
         spread = [
             "highest(lives)",
-            "ever('items.key')",
-            "count('in transition')",
-            "last(if 'in transition' then none else 'position.x')",
-            "first(time)",
+            "highest(if 'in transition' then none else 'position.x')",
             "highest(lives, 'position.room')",
         ]
         "#,
@@ -412,10 +399,10 @@ fn aggregates_fold_over_the_lineage_and_reset_since_a_signal_changes() {
     assert_eq!(
         views,
         [
-            vec![3, 0, 0, 10, 7, 3],
-            vec![5, 1, 1, 10, 7, 5],
-            vec![5, 1, 2, 10, 7, 5],
-            vec![5, 1, 2, 40, 7, 2],
+            vec![3, 10, 3],
+            vec![5, 10, 5],
+            vec![5, 10, 5],
+            vec![5, 40, 2],
         ]
     );
 }
@@ -437,32 +424,39 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
         0
     );
     assert_eq!(
-        width("spread = [\"ever('items.key')\", \"first(time)\"]"),
+        width("spread = [\"highest('items.key')\", \"highest(time, 'position.room')\"]"),
         4
     );
     assert_eq!(
         width(
-            "[[stage]]\ngoal = \"far room\"\ncarry = true\nobjective = \"'far room.gap'\"\n[[stage]]\ngoal = \"items\""
-        ),
-        OBJECTIVE_WIDTH
-    );
-    assert_eq!(
-        width(
-            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"ever(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
+            "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"highest(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
         ),
         2 + OBJECTIVE_WIDTH
     );
     assert!(std::mem::size_of::<Accumulator>() <= 24);
+    assert_eq!(std::mem::size_of::<AssertionKey>(), 32);
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Cell<AssertionKey>>(),
+        12
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Position<AssertionKey>>(),
+        16
+    );
+    assert_eq!(
+        std::mem::size_of::<crate::search::archive::Slot<AssertionKey>>(),
+        24
+    );
 }
 
 #[test]
-fn an_aggregate_reads_the_held_objective_of_a_stage_that_does_not_carry() {
+fn an_aggregate_reads_the_held_objective_of_the_parent_stage() {
     let compiled = Compiled::parse(
         r#"
         [[stage]]
         name = "reach"
         objective = "'position.x'"
-        goal = "ever(objective >= 5)"
+        goal = "highest(objective >= 5)"
         [[stage]]
         name = "after"
         goal = "false"
@@ -574,9 +568,15 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
             r#"spread = ["time * 100000", "time * 100000", "time"]"#,
             "key field holds",
         ),
+        (
+            r#"identity = ["time * 100000", "time * 100000", "time"]"#,
+            "key field holds",
+        ),
         (r#"prefer = [["time: most"]]"#, "is not `more`"),
         (r#"spread = "in(time, nothing)""#, "no table"),
-        (r#"spread = "highest(ever(lives))""#, "another aggregate"),
+        (r#"spread = "highest(highest(lives))""#, "another aggregate"),
+        (r#"spread = "count(lives)""#, "not a strategy function"),
+        ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
             r#"prefer_scope = "lives""#,
@@ -593,6 +593,55 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
     ] {
         let error = Compiled::parse(text, &catalog).unwrap_err().to_string();
         assert!(error.contains(message), "{text}: {error}");
+    }
+}
+
+#[test]
+fn an_identity_holds_more_than_32_bits() {
+    let compiled = Compiled::parse(r#"identity = ["time", "time", "time"]"#, &catalog()).unwrap();
+    let key = compiled
+        .key(&record(Walk {
+            time: u16::MAX,
+            ..Walk::default()
+        }))
+        .unwrap();
+    assert!(key.identity > u64::from(u32::MAX));
+    assert_eq!(compiled.view(key).identity, [i64::from(u16::MAX); 3]);
+}
+
+#[test]
+fn a_lane_over_a_wide_signed_range_packs_both_ends_apart() {
+    let declare = |x| {
+        [Assertion::Value {
+            name: "x",
+            value: Number::new(x, -2, i64::MAX),
+        }]
+    };
+    let catalog = Catalog::from_assertions(declare(0)).unwrap();
+    for (text, field) in [
+        (r#"spread = "x""#, "place"),
+        (r#"identity = "x""#, "identity"),
+    ] {
+        let compiled = Compiled::parse(text, &catalog).unwrap();
+        let ends = [-2, -1, i64::MAX - 2, i64::MAX];
+        let keys: Vec<_> = ends
+            .iter()
+            .map(|&x| compiled.key(&Record::from_assertions(declare(x))).unwrap())
+            .collect();
+        for (&x, key) in ends.iter().zip(&keys) {
+            let view = compiled.view(*key);
+            let values = if field == "place" {
+                view.place
+            } else {
+                view.identity
+            };
+            assert_eq!(values, [x], "{text}");
+        }
+        let packed: std::collections::BTreeSet<_> = keys
+            .iter()
+            .map(|key| (key.place.get(), key.identity))
+            .collect();
+        assert_eq!(packed.len(), ends.len(), "{text}");
     }
 }
 
@@ -980,7 +1029,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         strategy: &recorded,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(same_decisions(&jobs, &same), 2);
     assert_eq!(same.cells, 4);
@@ -997,7 +1046,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         strategy: &coarse,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(rooms.cells, 2);
     assert_eq!(same_decisions(&jobs, &rooms), 0);
@@ -1009,7 +1058,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
             strategy: &recorded,
             entry_limit: 1024,
         }
-        .run(&genesis, &short, &actions, |_| 1)
+        .run(&genesis, &short, &actions)
         .is_err()
     );
 }
@@ -1029,7 +1078,7 @@ fn rekeying_keeps_the_descendants_of_a_state_the_strategy_stops_at_stopped() {
         strategy: &rejecting,
         entry_limit: 1024,
     }
-    .run(&genesis, &jobs, &actions, |_| 1)
+    .run(&genesis, &jobs, &actions)
     .unwrap();
     assert_eq!(
         rekeyed
@@ -1167,4 +1216,216 @@ fn catalog_choice_sites_round_trip_and_reject_duplicates() {
             .is_err()
     );
     assert!(catalog().with_choices(vec![site("buttons", &[])]).is_err());
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+struct Banded {
+    bow: u8,
+    room: u8,
+    band: u8,
+}
+
+impl ArchiveKey for Banded {
+    type Place = u8;
+    type Progress = u8;
+    type Identity = u8;
+    type Lineage = ();
+    fn place(self) -> u8 {
+        self.room
+    }
+    fn progress(self) -> u8 {
+        self.bow
+    }
+    fn identity(self) -> u8 {
+        self.band
+    }
+    fn capacity() -> usize {
+        1
+    }
+    fn complete(self, parent: Option<(Self, &())>) -> Self {
+        let Some((parent, ())) = parent else {
+            return self;
+        };
+        Self {
+            bow: self.bow.max(parent.bow),
+            band: if parent.room == self.room {
+                self.band.max(parent.band)
+            } else {
+                self.band
+            },
+            ..self
+        }
+    }
+    fn record(_: &mut (), _: Self) {}
+}
+
+fn banded(state: Walk) -> Banded {
+    Banded {
+        bow: u8::from(state.items & 0b010 != 0),
+        room: state.room,
+        band: state.lives,
+    }
+}
+
+#[test]
+fn the_shadow_threads_the_accumulator_and_the_hand_lineage_through_a_restore() {
+    let compiled = Compiled::parse(
+        r#"
+        capacity = 1
+        spread = "'position.room'"
+        identity = "highest(lives, 'position.room')"
+        [[stage]]
+        name = "bow"
+        goal = "'items.bow'"
+        latch = true
+        [[stage]]
+        name = "after"
+        goal = "false"
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    assert!(!compiled.is_pure());
+    let walk = |room, lives, items| Walk {
+        room,
+        lives,
+        items,
+        ..Walk::default()
+    };
+    let table = ShadowTable::default();
+    let raw = ShadowTable::default();
+    let mut cursor = ShadowCursor::<Banded>::default();
+    let arrive = |cursor: &mut ShadowCursor<Banded>, state: Walk| {
+        let key = cursor.observe(&compiled, &record(state));
+        raw.count(Some(banded(state)), key, false);
+        cursor.pair(&table, Some(banded(state)))
+    };
+    arrive(&mut cursor, walk(0, 3, 0));
+    arrive(&mut cursor, walk(0, 5, 0b010));
+    let saved = cursor.clone();
+    assert_eq!(
+        arrive(&mut cursor, walk(0, 2, 0)),
+        Some(Banded {
+            bow: 1,
+            room: 0,
+            band: 5
+        })
+    );
+    arrive(&mut cursor, walk(1, 1, 0));
+    let mut cursor = saved;
+    assert_eq!(
+        cursor.pair(&table, Some(banded(walk(0, 5, 0b010)))),
+        Some(Banded {
+            bow: 1,
+            room: 0,
+            band: 5
+        })
+    );
+    arrive(&mut cursor, walk(0, 4, 0));
+    arrive(&mut cursor, walk(2, 6, 0));
+    let report = table.report(&compiled).unwrap();
+    assert_eq!(report.disagreements, Disagreements::default());
+    assert_eq!(report.keyed_states, 7);
+    assert_eq!(report.lineage_changes, 4);
+    assert_ne!(raw.report(&compiled).unwrap().disagreements.total(), 0);
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+struct Hurried {
+    room: u8,
+    lives: u8,
+    time: u16,
+}
+
+impl ArchiveKey for Hurried {
+    type Place = u8;
+    type Progress = u8;
+    type Identity = u8;
+    type Lineage = ();
+    fn place(self) -> u8 {
+        self.room
+    }
+    fn progress(self) -> u8 {
+        0
+    }
+    fn identity(self) -> u8 {
+        self.lives
+    }
+    fn capacity() -> usize {
+        1
+    }
+    fn preferences() -> usize {
+        1
+    }
+    fn preference_cmp(self, _: usize, other: Self) -> Ordering {
+        other.time.cmp(&self.time)
+    }
+    fn complete(self, _: Option<(Self, &())>) -> Self {
+        self
+    }
+    fn record(_: &mut (), _: Self) {}
+}
+
+fn shadow_of(strategy: &str, states: &[Walk]) -> ShadowReport {
+    let compiled = Compiled::parse(strategy, &catalog()).unwrap();
+    let table = ShadowTable::default();
+    for state in states {
+        let key = compiled
+            .observe(&record(*state), &mut Accumulator::default())
+            .key;
+        let hand = Hurried {
+            room: state.room,
+            lives: state.lives,
+            time: state.time,
+        };
+        table.count(Some(hand), key, false);
+    }
+    table.report(&compiled).unwrap()
+}
+
+#[test]
+fn a_preference_disagreement_between_identities_of_one_cell_is_a_fault() {
+    let states = [(3, 10), (5, 20)].map(|(lives, time)| Walk {
+        lives,
+        time,
+        ..Walk::default()
+    });
+    let strategy = |prefer: &str| {
+        format!(
+            "capacity = 1\nspread = \"'position.room'\"\nidentity = \"lives\"\nprefer = [[\"time: {prefer}\"]]\n"
+        )
+    };
+    let agreeing = shadow_of(&strategy("less"), &states);
+    assert_eq!(agreeing.disagreements.total(), 0, "{:?}", agreeing.examples);
+    let opposed = shadow_of(&strategy("more"), &states);
+    assert_eq!(
+        (opposed.disagreements.cell, opposed.disagreements.slot),
+        (0, 0)
+    );
+    assert_eq!(
+        opposed.disagreements.preference, 1,
+        "{:?}",
+        opposed.examples
+    );
+}
+
+#[test]
+fn a_capacity_that_differs_from_the_hand_key_is_a_fault() {
+    let states = [Walk {
+        lives: 3,
+        ..Walk::default()
+    }];
+    let strategy = |capacity: usize| {
+        format!(
+            "capacity = {capacity}\nspread = \"'position.room'\"\nidentity = \"lives\"\nprefer = [[\"time: less\"]]\n"
+        )
+    };
+    let same = shadow_of(&strategy(1), &states);
+    assert_eq!(same.disagreements.total(), 0, "{:?}", same.disagreements);
+    let wider = shadow_of(&strategy(2), &states);
+    assert_eq!(wider.disagreements.total(), 1, "{:?}", wider.disagreements);
 }

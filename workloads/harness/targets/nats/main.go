@@ -54,7 +54,7 @@ type client struct {
 }
 
 func dial(process int) (*client, error) {
-	first := int(sdk.Below(uint64(len(servers))))
+	first := int(sdk.Below("nats.server", uint64(len(servers))))
 	ordered := append(append([]string(nil), servers[first:]...), servers[:first]...)
 	conn, err := nats.Connect(strings.Join(ordered, ","),
 		nats.Name(fmt.Sprintf("harness-%d", process)),

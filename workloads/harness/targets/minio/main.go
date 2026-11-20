@@ -70,7 +70,7 @@ func newServer(endpoint string) *minio.Client {
 // drive quorum for the request, so each operation goes to one node drawn from
 // the SDK stream.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	s := c.servers[sdk.Below(uint64(len(c.servers)))]
+	s := c.servers[sdk.Below("minio.server", uint64(len(c.servers)))]
 	switch op.F {
 	case family.RegisterWrite:
 		return nil, classify(put(ctx, s, op.K, op.V.(string), minio.PutObjectOptions{}))

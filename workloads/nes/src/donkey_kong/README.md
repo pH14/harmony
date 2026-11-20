@@ -3,12 +3,14 @@
 # Donkey Kong workload adapter
 
 This module adapts Donkey Kong (NES, World Rev 1) to Dissonance's search
-interfaces. The game logic lives in
-[`nes-games/src/donkey_kong`](../../../nes-games/src/donkey_kong): the RAM
-decoder, power-on setup, observations, archive key, named progress, terminal
-conditions and the `Workload` implementation. It follows the
-[Castlevania](../castlevania/README.md) adapter for target execution and named
-progress. ROM files are never committed. The request pins the ROM by SHA-256
+interfaces. Donkey Kong is a game declared through the searcher's assertion
+catalog: `nes-games/src/donkey_kong/game.rs` holds the RAM decoder, power-on
+setup, genesis check and declarations, and
+`nes-games/src/donkey_kong/donkey_kong.toml` is the strategy that keys the
+archive. `DonkeyKongWorkload` is `NesWorkload<DonkeyKong, QuickNesMachine>`,
+the shared workload described in the
+[`nes-games` README](../../../nes-games/README.md). ROM files are never
+committed. The request pins the ROM by SHA-256
 `226c6f698f60b0a07157bd031004820789469884615fef7bdd862c3157e89d27` (NROM, 24 KiB
 program, CHR ROM).
 
@@ -58,15 +60,14 @@ his start position, standing, with 2 lives. Gameplay is then searched from the
 bottom girder with no route injected.
 
 The controller vocabulary is the shared set of pressable chords, without Start
-and Select. The archive key orders states by the number of stages cleared, then
+and Select. The strategy's tier orders states by the number of stages cleared, then
 rivets pulled, then height above the start; height does not count on the rivet
 stage, where the last rivet can be below the highest girder. The place is the stage, the stages
 cleared, Mario's 16-pixel cell and his posture. A cell keeps one state, and
 more bonus time, then more lives, then a higher score is preferred.
 
-A terminal state is a dead Mario, the attract demo, or round 10 reached.
+The strategy rejects a dead Mario and stops at the goal, round 10 reached. A
+state out of play, such as the attract demo, gets no key.
 
-The named progress diagnostics record the first execution that cleared each
-stage and the first that finished each round: `barrels_cleared`,
-`elevators_cleared`, `rivets_cleared` and `round_1` for the first round, then
-`round_2_barrels_cleared` and so on up to `round_10`, and `goal`.
+Named progress records the first execution that reached each count of cleared
+stages, `cleared_1` to `cleared_30`, and the first `victory` and `death`.

@@ -80,7 +80,7 @@ func (c *client) known(key, value string) (uint64, bool) {
 // default mode lets a deposed leader answer from its own state, so every read
 // is fenced through the server that answers it.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	at := int(sdk.Below(uint64(len(c.servers))))
+	at := int(sdk.Below("nomad.server", uint64(len(c.servers))))
 	if op.Node != "" {
 		at = slices.Index(c.names, op.Node)
 		if at < 0 {

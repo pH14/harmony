@@ -29,6 +29,8 @@ struct Request {
     search: Option<SearchRequest>,
     #[serde(default)]
     root_jobs: Option<u64>,
+    #[serde(default)]
+    shadow: bool,
 }
 
 #[derive(Deserialize)]
@@ -46,8 +48,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("request exceeds 16KB".into());
     }
     let request: Request = serde_json::from_str(&input)?;
-    if request.strategy.is_some() && request.key != KeyKind::Strategy {
-        return Err("a strategy text needs key strategy".into());
+    if request.strategy.is_some() && request.key != KeyKind::Strategy && !request.shadow {
+        return Err("a strategy text needs key strategy or a shadow".into());
     }
     let mut settings = SearchSettings::default();
     if let Some(search) = &request.search {
@@ -69,8 +71,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("world objective is unreachable".into());
     }
     if let Some(job_budget) = request.root_jobs {
-        if request.scale.is_some() || request.verify || request.key != KeyKind::Hand {
-            return Err("root jobs need no scale, verify false and key hand".into());
+        if request.scale.is_some()
+            || request.verify
+            || request.key != KeyKind::Hand
+            || request.shadow
+        {
+            return Err("root jobs need no scale, verify false, key hand and no shadow".into());
         }
         println!("{}", root_jobs(&workload, request.seed, job_budget)?);
         return Ok(());
@@ -79,8 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         if request.workers.is_some() {
             return Err("scaled runs set workers in scale".into());
         }
-        if request.verify || request.keep != Keep::Portfolio {
-            return Err("scaled runs need verify false and keep portfolio".into());
+        if request.verify || request.keep != Keep::Portfolio || request.shadow {
+            return Err("scaled runs need verify false, keep portfolio and no shadow".into());
         }
         let mut progress = std::io::LineWriter::new(std::io::stderr().lock());
         let report = match request.key {
@@ -120,6 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             request.keep,
             request.key,
             request.strategy.as_deref(),
+            request.shadow,
             request.seed,
             request.work_budget,
             request.verify,

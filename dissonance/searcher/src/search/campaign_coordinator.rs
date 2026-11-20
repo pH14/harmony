@@ -29,7 +29,7 @@ use super::{
     record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
     retained_archive_indexes, search_checkpoint_header, source_suffixes,
     stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
-    with_coordinator_session, write_live_progress, write_search_checkpoint,
+    tail_cut, with_coordinator_session, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
@@ -985,15 +985,15 @@ where
         let Some((mut spec, mut pending)) = selected else {
             return Ok(false);
         };
-        let action_cost = self.workload.action_cost_fn();
+        let planned_cost = self.workload.planned_cost_fn();
         self.profile.note_dispatch(
             &spec,
             matches!(pending.splice, Some(CampaignSpliceRecord::Tail { .. })),
-            action_cost,
+            planned_cost,
         );
         let reservation = usize::try_from(self.reserved.saturating_sub(1))?;
         spec.reservation = reservation;
-        pending.planned_finish = planned_finish(self.planned_clock, &spec, action_cost);
+        pending.planned_finish = planned_finish(self.planned_clock, &spec, planned_cost);
         spec.planned_finish = pending.planned_finish;
         let key = (pending.planned_finish, reservation);
         if self.pending.insert(reservation, pending).is_some() {
@@ -1175,6 +1175,15 @@ where
         core.archive
             .set_admission_wave(pending_job.continuation_wave);
         core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
+        let cut = match &pending_job.splice {
+            Some(CampaignSpliceRecord::Tail { tail_postcard, .. })
+                if pending_job.selector.path == SelectorPath::Continuation =>
+            {
+                let tail: Vec<G::Action> = postcard::from_bytes(tail_postcard)?;
+                tail_cut(&result, tail.len(), config.stop_rollout_on_objective)
+            }
+            _ => false,
+        };
         let (sequence, decisions, duration_admission) = core.admit_job_tracking(
             workload,
             pending_job.parent_id,
@@ -1237,6 +1246,7 @@ where
                 landed,
                 replaced,
                 new_cell_descendant,
+                cut,
                 pending_job.continuation_wave,
             );
             core.archive.add_continuation_execution_work(execution_work);

@@ -5,26 +5,24 @@ use std::error::Error;
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced},
     nes_backend::pack_quicknes_state,
-    pac_man::{
-        campaign::PacManGame,
-        target::{PacManSnapshot, PacManTarget},
-    },
+    pac_man::{self as game, PacManState},
+    workload::{NesSnapshot, NesTarget, NesWorkload},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type PacMan = PacManGame<Traced<JsMachine>>;
+pub type PacMan = NesWorkload<game::PacMan, Traced<JsMachine>>;
 
 impl BrowserGame for PacMan {
     fn root_snapshot(
-        target: &mut PacManTarget<Traced<JsMachine>>,
+        target: &mut NesTarget<game::PacMan, Traced<JsMachine>>,
         _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<PacManSnapshot, Box<dyn Error>> {
+    ) -> Result<NesSnapshot<PacManState>, Box<dyn Error>> {
         let snapshot = target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)?;
-        if !snapshot.state().playing() {
+        if !snapshot.observation.state.playing() {
             return Err("Pac-Man cannot play on from this state".into());
         }
         Ok(snapshot)

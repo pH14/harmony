@@ -66,7 +66,7 @@ func (e *serverError) Error() string { return strings.Join(e.messages, "; ") }
 // Each operation goes to one Alpha drawn from the SDK stream. Any Alpha
 // proposes a mutation to its group's leader and asks Zero for timestamps.
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
-	base := c.servers[sdk.Below(uint64(len(c.servers)))]
+	base := c.servers[sdk.Below("dgraph.server", uint64(len(c.servers)))]
 	switch op.F {
 	case family.RegisterWrite:
 		_, err := c.mutate(ctx, base, writeUpsert(op.K, op.V.(string)))
