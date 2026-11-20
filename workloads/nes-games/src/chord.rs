@@ -83,6 +83,11 @@ pub const fn ask(previous: Option<&ButtonChord>) -> ButtonChord {
 }
 
 #[must_use]
+pub fn edited(asked: &ButtonChord, previous: Option<&ButtonChord>) -> Option<ButtonChord> {
+    Some(*previous.unwrap_or(asked)).filter(|chord| chord.buttons != NO_PREVIOUS)
+}
+
+#[must_use]
 pub const fn is_ask(chord: &ButtonChord) -> bool {
     chord.hold_frames == 0
 }
@@ -179,9 +184,8 @@ impl ChordVocabulary {
             resolved
         };
         let tap_buttons = self.tap.map_or(0, |tap| tap.buttons);
-        let base = Some(previous.unwrap_or(asked).buttons)
-            .filter(|buttons| *buttons != NO_PREVIOUS)
-            .map(|buttons| buttons & !tap_buttons)
+        let base = edited(asked, previous)
+            .map(|chord| chord.buttons & !tap_buttons)
             .filter(|base| self.held.contains(base));
         let Some(base) = base else {
             let held_weight = self

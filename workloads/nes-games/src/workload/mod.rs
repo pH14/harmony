@@ -274,6 +274,14 @@ pub fn move_answer(chord: &ButtonChord) -> Option<(u16, u16)> {
     })
 }
 
+#[must_use]
+pub fn reproducing_choices<G: Game>() -> ChoicePolicy {
+    ChoicePolicy {
+        profiles: ChoiceProfiles::Fixed(G::CHORDS.reproducing_profile()),
+        untried_first: false,
+    }
+}
+
 pub const FORCED_MOVE_BOUND: &str = "forced_move_within_bound";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -509,11 +517,13 @@ impl<G: Game> Lowered<G> {
         &self,
         stream: StreamIdentity,
         genesis: &G::State,
+        choice_policy: Option<String>,
     ) -> Result<RecordsHeader, Box<dyn Error>> {
         Ok(RecordsHeader {
             format: RECORDS_FORMAT.to_owned(),
             stream,
             policy: self.compiled.policy_identifier().to_owned(),
+            choice_policy,
             strategy: self.strategy.clone(),
             catalog: self.records_catalog()?,
             genesis: self.genesis_record(genesis),
@@ -557,10 +567,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             identity,
             machines,
             records: None,
-            choices: ChoicePolicy {
-                profiles: ChoiceProfiles::Fixed(G::CHORDS.reproducing_profile()),
-                untried_first: false,
-            },
+            choices: reproducing_choices::<G>(),
         })
     }
 
@@ -588,6 +595,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
                 workload_identity_sha256: self.rom_sha256.clone(),
             },
             &target.observation().state,
+            Some(self.choices.identifier()),
         )?;
         let writer = RecordsWriter::create(path, &header)?;
         self.records = Some(Arc::new(Records {
@@ -826,6 +834,7 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     let mut chooser = stop.choices().map(Chooser::new);
     for drawn in suffix {
         let mut choices = Vec::new();
+        let mut edited = None;
         let offer = (!target.observation().stops())
             .then(|| game.lowered.game.moves(&target.observation().state).offer)
             .flatten();
@@ -834,6 +843,7 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
             break;
         }
         let resolved = if let Some(asked) = asked {
+            edited = chord::edited(&asked, previous.as_ref());
             let chooser = chooser.as_mut().ok_or_else(|| {
                 format!("{} drew a chord for a job without a choice plan", G::NAME)
             })?;
@@ -858,6 +868,7 @@ fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
         let mut observations = game.rollout_observations(target);
         if let Some(last) = observations.last_mut() {
             last.choices = choices;
+            last.edited = edited;
         }
         let raw = outcome(target);
         let outcome = Outcome {
@@ -1350,6 +1361,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                     .iter()
                     .flat_map(|observation| observation.choices.iter().cloned())
                     .collect::<Vec<ChoiceRecord>>(),
+                context: action
+                    .observations
+                    .iter()
+                    .find_map(|observation| observation.edited),
             })?;
         }
         if let Some(progress) = watermark(&action.observations) {

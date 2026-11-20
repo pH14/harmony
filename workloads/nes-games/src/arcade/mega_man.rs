@@ -6,6 +6,7 @@ use crate::{
     mm2::{
         action::Mm2Action,
         campaign::{Mm2CampaignRun, Mm2Game},
+        game::{MegaMan2, Mm2State},
         target::{
             GAMEPLAY_BANK, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, PLAYER_STATE_STANDING,
             decode_state, facing_right,
@@ -13,6 +14,7 @@ use crate::{
     },
     nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
+    workload::Arcade,
 };
 use machine::nes::{ButtonChord, WRAM_SIZE};
 use serde::{Deserialize, Serialize};
@@ -113,40 +115,89 @@ fn cell(stage: u8, screen: u8) -> (u16, u16) {
     )
 }
 
-fn level(state: Mm2MechanicalState) -> u8 {
+#[derive(Clone, Copy)]
+struct Body {
+    stage: u8,
+    screen: u8,
+    x: u8,
+    y: u8,
+    health: u8,
+    standing: bool,
+    playable: bool,
+    dead: bool,
+    goal: bool,
+    facing_right: bool,
+}
+
+impl From<Mm2MechanicalState> for Body {
+    fn from(state: Mm2MechanicalState) -> Self {
+        Self {
+            stage: state.stage,
+            screen: state.screen,
+            x: state.x,
+            y: state.y,
+            health: state.health,
+            standing: state.player_state == PLAYER_STATE_STANDING,
+            playable: state.playable(),
+            dead: state.is_dead() || state.is_dying(),
+            goal: state.bank == GAMEPLAY_BANK && state.stage < STAGE_COUNT && state.stage_cleared(),
+            facing_right: false,
+        }
+    }
+}
+
+impl From<&Mm2State> for Body {
+    fn from(state: &Mm2State) -> Self {
+        Self {
+            stage: state.stage,
+            screen: state.screen,
+            x: state.x,
+            y: state.y,
+            health: state.health,
+            standing: state.player_state == PLAYER_STATE_STANDING,
+            playable: state.playable(),
+            dead: state.is_dead() || state.is_dying(),
+            goal: state.bank == GAMEPLAY_BANK && state.stage < STAGE_COUNT && state.stage_cleared(),
+            facing_right: state.facing_right,
+        }
+    }
+}
+
+fn level(body: Body) -> u8 {
     ORDER
         .iter()
-        .position(|&stage| stage == state.stage)
+        .position(|&stage| stage == body.stage)
         .and_then(|index| u8::try_from(index).ok())
         .unwrap_or(0)
 }
 
-fn position(state: Mm2MechanicalState) -> (u16, u16) {
-    let (col, row) = cell(state.stage, state.screen);
+fn position(body: Body) -> (u16, u16) {
+    let (col, row) = cell(body.stage, body.screen);
     let top = row * SCREEN_HEIGHT;
     (
-        col * 256 + u16::from(state.x),
-        (top + u16::from(state.y.saturating_sub(CROP_TOP))).min(top + SCREEN_HEIGHT - 1),
+        col * 256 + u16::from(body.x),
+        (top + u16::from(body.y.saturating_sub(CROP_TOP))).min(top + SCREEN_HEIGHT - 1),
     )
 }
 
-fn dead(state: Mm2MechanicalState) -> bool {
-    state.is_dead() || state.is_dying()
+fn in_play(body: Body) -> bool {
+    body.stage < STAGE_COUNT && body.playable
 }
 
-fn in_play(state: Mm2MechanicalState) -> bool {
-    state.stage < STAGE_COUNT && state.playable()
-}
-
-fn goal(state: Mm2MechanicalState) -> bool {
-    state.bank == GAMEPLAY_BANK && state.stage < STAGE_COUNT && state.stage_cleared()
-}
-
-fn cleared(state: Mm2MechanicalState) -> u8 {
-    if state.stage == STAGE_COUNT - 1 && goal(state) {
+fn cleared(body: Body) -> u8 {
+    if body.stage == STAGE_COUNT - 1 && body.goal {
         STAGE_COUNT
     } else {
-        level(state) + u8::from(goal(state))
+        level(body) + u8::from(body.goal)
+    }
+}
+
+fn motion(body: Body) -> [u16; 4] {
+    if in_play(body) && !body.dead {
+        let (x, y) = position(body);
+        [u16::from(level(body)), x, y, u16::from(!body.facing_right)]
+    } else {
+        [HIDDEN, 0, 0, 0]
     }
 }
 
@@ -163,19 +214,19 @@ pub struct View {
     climb: u16,
 }
 
-fn view(state: Mm2MechanicalState) -> View {
-    let (x, y) = position(state);
-    let start = STAGES[usize::from(state.stage.min(STAGE_COUNT - 1))].0;
+fn view(body: Body) -> View {
+    let (x, y) = position(body);
+    let start = STAGES[usize::from(body.stage.min(STAGE_COUNT - 1))].0;
     View {
         x,
         y,
-        health: if dead(state) { 0 } else { state.health },
-        level: level(state),
-        goal: goal(state),
-        on_ground: state.player_state == PLAYER_STATE_STANDING,
-        loading: !in_play(state),
-        cleared: cleared(state),
-        climb: u16::from(state.screen.saturating_sub(start)) * 256 + u16::from(state.x),
+        health: if body.dead { 0 } else { body.health },
+        level: level(body),
+        goal: body.goal,
+        on_ground: body.standing,
+        loading: !in_play(body),
+        cleared: cleared(body),
+        climb: u16::from(body.screen.saturating_sub(start)) * 256 + u16::from(body.x),
     }
 }
 
@@ -210,30 +261,24 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Mm2Game<M> {
     }
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
-        match state(wram) {
-            Ok(state) if in_play(state) && !dead(state) => {
-                let (x, y) = position(state);
-                [
-                    u16::from(level(state)),
-                    x,
-                    y,
-                    u16::from(!facing_right(wram)),
-                ]
-            }
-            _ => [HIDDEN, 0, 0, 0],
-        }
+        state(wram).map_or([HIDDEN, 0, 0, 0], |state| {
+            motion(Body {
+                facing_right: facing_right(wram),
+                ..Body::from(state)
+            })
+        })
     }
 
     fn memory_cleared(memory: &[u8]) -> u8 {
-        state(memory).map_or(0, cleared)
+        state(memory).map_or(0, |state| cleared(state.into()))
     }
 
     fn memory_view(memory: &[u8]) -> Result<View, Box<dyn Error>> {
-        Ok(view(state(memory)?))
+        Ok(view(state(memory)?.into()))
     }
 
     fn view(observation: &Mm2Observations) -> View {
-        view(observation.decoded)
+        view(observation.decoded.into())
     }
 
     fn frame_count(observation: &Mm2Observations) -> u64 {
@@ -241,7 +286,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Mm2Game<M> {
     }
 
     fn cleared(observation: &Mm2Observations) -> u8 {
-        cleared(observation.decoded)
+        cleared(observation.decoded.into())
     }
 
     fn snapshot_frame_count(snapshot: &Mm2Snapshot) -> u64 {
@@ -250,5 +295,25 @@ impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for Mm2Game<M> {
 
     fn emulator_state(snapshot: &Mm2Snapshot) -> &[u8] {
         snapshot.emulator_state()
+    }
+}
+
+impl Arcade for MegaMan2 {
+    type View = View;
+
+    fn mixture() -> DrawMixture {
+        DrawMixture::EnergySplice { scale: 6 }
+    }
+
+    fn view(state: &Mm2State) -> View {
+        view(state.into())
+    }
+
+    fn motion(state: &Mm2State) -> [u16; 4] {
+        motion(state.into())
+    }
+
+    fn cleared(state: &Mm2State) -> u8 {
+        cleared(state.into())
     }
 }
