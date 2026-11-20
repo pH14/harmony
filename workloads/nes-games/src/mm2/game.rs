@@ -920,7 +920,7 @@ impl Game for MegaMan2 {
     type Move = Mm2Move;
 
     const NAME: &'static str = "mm2";
-    const STRATEGY: &'static str = include_str!("mm2.toml");
+    const STRATEGY: &'static str = include_str!("mega_man.toml");
     const CHORDS: ChordVocabulary = ChordVocabulary {
         held: &NES_PRESSABLE_BUTTON_MASKS,
         tap: None,

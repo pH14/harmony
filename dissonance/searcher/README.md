@@ -780,7 +780,7 @@ action, whether it failed, its cost in frames (including frames the front end
 ran for it outside the tape), the record of every frame it decoded, stored
 as changes from the previous frame, the choices it resolved, and the action it
 edited (`context`), when the front end edits one, such as the parent's last
-chord for an NES job's first action. The writer
+action for a job's first action. The writer
 writes a job whole once the next job starts or the file finishes, so a file
 cut short by a crash ends in at most one partial job. `Recording::from_bytes`
 reads the whole jobs and reports the bytes left over, `RecordedJobs::from_bytes`
