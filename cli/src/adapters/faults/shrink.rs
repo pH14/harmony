@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_keeps_the_actions_before_the_first_violating_step() {
+    fn a_source_keeps_the_actions_through_the_first_violating_step() {
         let directory = tempfile::tempdir().unwrap();
         saved_run(directory.path(), true, witness(true, &["linearizable"]));
         let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
@@ -418,7 +418,7 @@ mod tests {
             Ok(_) => panic!("the changed report was accepted"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("report.json"), "{error}");
+        assert_eq!(error, "recorded report.json has changed");
     }
 
     #[test]
