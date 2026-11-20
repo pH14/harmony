@@ -11,7 +11,17 @@ use machine::nes::ButtonChord;
 use nes_games::workload::{
     Game, Lowered, NesSnapshot, RECORDS_FILE, REPLAY_RECORDS_FILE, SNAPSHOT_CHECKPOINT_FORMAT,
 };
-use nes_workload::{famidash::Famidash, joust::Joust, zelda::Zelda};
+use nes_games::{mm2::MegaMan2, smb::game::SuperMarioBros};
+use nes_workload::{
+    donkey_kong::DonkeyKong,
+    famidash::{Famidash, LuckyDraw},
+    ice_climbers::IceClimbers,
+    joust::Joust,
+    pac_man::PacMan,
+    punchout::PunchOut,
+    twin_dragons::TwinDragons,
+    zelda::Zelda,
+};
 use searcher::search::{
     assertion::{
         AssertionKey, RecordedAction, RecordedJob, Recording, Rekeyed, Rekeying, StreamIdentity,
@@ -46,6 +56,7 @@ fn rekeyed_report(rekeyed: &Rekeyed) -> Value {
         "entries": rekeyed.holders.iter().map(|held| held.ids.len()).sum::<usize>(),
         "tiers": rekeyed.tiers,
         "findings": rekeyed.findings,
+        "stage_falls": rekeyed.stage_falls,
         "holders": rekeyed.holders,
     })
 }
@@ -183,6 +194,14 @@ fn main() -> Result<()> {
         "joust" => rekey(Joust, run, strategy.as_deref())?,
         "zelda" => rekey(Zelda, run, strategy.as_deref())?,
         "famidash" => rekey(<Famidash>::default(), run, strategy.as_deref())?,
+        "famidash-lucky-draw" => rekey(LuckyDraw::default(), run, strategy.as_deref())?,
+        "twin-dragons" => rekey(TwinDragons, run, strategy.as_deref())?,
+        "punchout" => rekey(PunchOut, run, strategy.as_deref())?,
+        "donkey-kong" => rekey(DonkeyKong, run, strategy.as_deref())?,
+        "ice-climbers" => rekey(IceClimbers::default(), run, strategy.as_deref())?,
+        "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
+        "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
+        "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,
         other => return Err(format!("{other} does not declare assertions").into()),
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -197,7 +216,7 @@ mod tests {
     #[test]
     fn the_rekeyed_report_names_its_format() {
         let rekeyed = Rekeyed {
-            format: "assertion-rekeyed-v1",
+            format: "assertion-rekeyed-v2",
             policy: "assertion_key_test".to_owned(),
             jobs: 1,
             candidates: 2,
@@ -218,10 +237,11 @@ mod tests {
             }],
             snapshots: vec![7],
             findings: Vec::new(),
+            stage_falls: Vec::new(),
             decisions: Vec::new(),
         };
         let report = rekeyed_report(&rekeyed);
-        assert_eq!(report["format"], "assertion-rekeyed-v1");
+        assert_eq!(report["format"], "assertion-rekeyed-v2");
         assert_eq!(report["entries"], 1);
         assert_eq!(report["holders"][0]["identity"], u64::from(u32::MAX) + 1);
     }

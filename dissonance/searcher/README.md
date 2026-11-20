@@ -801,7 +801,7 @@ with the actions between them as the suffix. A candidate's cost is the sum of
 its suffix's `RecordedAction::cost`, the `action_cost` the recording charged.
 `Rekeyed` holds the cells, the
 tiers with their cell and entry counts, the holders of every slot, the
-decisions made, and the check findings. Under the recorded strategy the
+decisions made, and the check findings and stage falls. Under the recorded strategy the
 decisions equal the stream's, and `same_decisions` counts the jobs where they
 do. The archive does not drop entries for memory, so a run that dropped
 entries under its memory budget keys again with those entries still held.
@@ -818,6 +818,28 @@ so the compiler carries each goal's range check (`goal_reachable`,
 `stages_reachable`), which works through comparisons, `and`, `or` and `not`
 over the expression ranges it already computes. Re-keying feeds the checker
 the last frame of every action.
+
+The checker also counts stage falls (`Checker::stage_falls`), every stage with
+the number of observed states whose stage index is below their parent's,
+counted under the stage they fall back to. Re-keying compares each action's
+last frame with the state the action departed from. A fall means a goal the
+parent had passed stopped holding: `Compiled::locate` evaluates every stage
+goal again on each frame and skips only a latched stage the parent is above,
+so an unlatched goal that reads a value that holds only in one room drops the
+state back to that stage when the player leaves it. It is the
+measurement for whether a stage needs `latch = true`. The count runs for every
+staged strategy, and a count of zero bounds only the states the run kept: a
+fall on a path the search never kept, or on an interior frame of an action, is
+not seen.
+
+A port of a hand key to a strategy checks every value it reads for the same
+class of fault: a value read on every frame where the hand key read only action
+ends. Its known cases are a mark that holds only at power-on
+([#1048](https://github.com/pH14/harmony/issues/1048)), a stage goal that holds
+only in one room ([#1052](https://github.com/pH14/harmony/issues/1052)), and a
+route index an action passes through and leaves
+([#1058](https://github.com/pH14/harmony/pull/1058)). A read under
+`action_end` sees only the frame the hand key read.
 
 **Front ends.** `Compiled::observe` advances the accumulator and returns the
 key, the index of the first `reject` line that holds, and whether the `goal`

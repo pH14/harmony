@@ -156,11 +156,13 @@ key states produce the same decision digest when the search made the same
 choices, and the first differing mark bounds where they parted. The digest is
 computed whether or not the stream is kept, so it covers runs of any length.
 
-`nes-rekey GAME RUN_DIR [STRATEGY.toml]` reads `records.bin` and `stream.jsonl`,
-checks that the records belong to that stream and catalog, and prints the
-cells, tiers, holders and check findings the run has under the strategy, the
-recorded one by default, with no emulator. A records file cut short by a crash
-reads as its whole jobs. Under the recorded strategy the tool also counts the
+`nes-rekey GAME RUN_DIR [STRATEGY.toml]`, with GAME the `nes-eval` name of any
+game declared through assertions (`smb-strategy`, `mm2-strategy`, `joust` and
+the rest), reads `records.bin` and `stream.jsonl`, checks that the records
+belong to that stream and catalog, and prints the cells, tiers, holders, check
+findings and stage falls (see the searcher README's Checks) the run has under
+the strategy, the recorded one by default, with no emulator. A records file cut
+short by a crash reads as its whole jobs. Under the recorded strategy the tool also counts the
 jobs whose decisions match the stream and compares the holders with the
 entries of `checkpoint.bin`. Every report gives the records' total cost and the count of
 each forced-move length (an action's cost beyond the frames it decoded). A run

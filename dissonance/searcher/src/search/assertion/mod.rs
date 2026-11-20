@@ -14,7 +14,7 @@ pub use catalog::{
     ACTION_END, Assertion, Catalog, Declarations, Declared, EACH_FIELDS, NONE, Number,
     RECORD_SLOTS, Record, RecordWriter, Signal,
 };
-pub use checks::{Checker, Finding, THIN_TIER_STATES};
+pub use checks::{Checker, Finding, StageFalls, THIN_TIER_STATES};
 pub use compile::{Accumulator, Compiled, KeyView, MAX_AGGREGATES, OBJECTIVE_WIDTH, Observed};
 pub use key::{AssertionKey, MAX_PREFERENCES, Wide};
 pub use records::{
