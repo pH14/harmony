@@ -26,10 +26,12 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
             edges,
             hold,
             target,
+            from_arm,
         } => ProcessAction::EventPark {
             edges: *edges,
             hold_nanos: hold.0,
             target: *target,
+            from_arm: *from_arm,
         },
         Fault::ProcPowerLoss { choice } => ProcessAction::PowerLoss { choice: *choice },
         Fault::ProcDiskError => ProcessAction::DiskError,
@@ -59,10 +61,12 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
             edges,
             hold_nanos,
             target,
+            from_arm,
         } => Fault::ProcEventPark {
             edges,
             hold: Span(hold_nanos),
             target,
+            from_arm,
         },
         ProcessAction::PowerLoss { choice } => Fault::ProcPowerLoss { choice },
         ProcessAction::DiskError => Fault::ProcDiskError,
@@ -97,11 +101,19 @@ mod tests {
                 edges: 3,
                 hold: Span(2_000_000),
                 target: None,
+                from_arm: false,
             },
             Fault::ProcEventPark {
                 edges: 1,
                 hold: Span(2_000_000),
                 target: crate::ParkTarget::new(0x1000, 0x1004),
+                from_arm: false,
+            },
+            Fault::ProcEventPark {
+                edges: 7,
+                hold: Span(2_000_000),
+                target: None,
+                from_arm: true,
             },
             Fault::ProcPowerLoss { choice: 9 },
             Fault::ProcDiskError,
@@ -149,6 +161,7 @@ mod tests {
                     edges,
                     hold: Span(1),
                     target: None,
+                    from_arm: false,
                 },
             );
             assert_eq!(decode_process_target(&park), None);

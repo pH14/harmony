@@ -168,6 +168,7 @@ pub enum Fault {
         edges: u32,
         hold: Span,
         target: Option<crate::ParkTarget>,
+        from_arm: bool,
     },
     ProcPowerLoss {
         choice: u64,

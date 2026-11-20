@@ -47,12 +47,14 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
             1..=fault_policy::EVENT_PARK_EDGE_LIMIT,
             any::<u64>().prop_filter("nonzero hold", |hold| *hold != 0),
             proptest::option::of((any::<u64>(), 1..=u64::MAX)),
+            any::<bool>(),
         )
-            .prop_map(|(edges, hold, target)| Fault::ProcEventPark {
+            .prop_map(|(edges, hold, target, from_arm)| Fault::ProcEventPark {
                 edges,
                 hold: Span(hold),
                 target: target
                     .and_then(|(start, width)| ParkTarget::new(start, start.saturating_add(width))),
+                from_arm,
             },),
         any::<u64>().prop_map(|choice| Fault::ProcPowerLoss { choice }),
         Just(Fault::ProcDiskError),

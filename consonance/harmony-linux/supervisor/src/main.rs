@@ -1442,6 +1442,7 @@ mod runtime {
                         edges: park.edges,
                         hold_nanos: park.hold_nanos,
                         target: park.target,
+                        from_arm: park.from_arm,
                     });
                 }
             }
