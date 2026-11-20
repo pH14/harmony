@@ -23,6 +23,7 @@ pub struct Options {
     pub boot_cache: Option<PathBuf>,
     pub key: crate::key::KeyRequest,
     pub answers: Vec<GuestAnswer>,
+    pub hold_hooks: bool,
 }
 
 impl Options {
@@ -518,6 +519,7 @@ mod live {
             root: options.root.clone(),
             boot_cache: options.boot_cache.clone(),
             answers: options.answers.clone(),
+            hold_hooks: options.hold_hooks,
         })
     }
 
@@ -547,6 +549,11 @@ mod live {
         interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
+        if options.hold_hooks != vocabulary.hold_hooks() {
+            return Err(
+                "the search's hold_hooks option differs from its fault vocabulary's".into(),
+            );
+        }
         let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
@@ -646,6 +653,7 @@ mod live {
         let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
             root_seal: archive.root_seal,
+            hold_hooks: options.hold_hooks,
         };
         let inherited = config
             .root
@@ -1321,6 +1329,7 @@ mod tests {
             boot_cache: None,
             key: crate::key::KeyRequest::default(),
             answers: Vec::new(),
+            hold_hooks: false,
         }
     }
 

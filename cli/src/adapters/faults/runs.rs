@@ -202,6 +202,7 @@ impl Manifest {
             boot_cache: crate::runtime::cache_dir().map(|dir| dir.join("boot")),
             key: self.config.key.clone(),
             answers: self.answers.clone(),
+            hold_hooks: self.config.hold_hooks,
         })
     }
 

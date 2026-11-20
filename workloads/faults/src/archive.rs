@@ -100,14 +100,18 @@ impl DrawProfile {
         wait_draws_hooks: false,
     };
 
-    pub fn draw(rand: &mut RomuDuoJrRand) -> Result<Self, Box<dyn Error>> {
+    pub fn draw(
+        rand: &mut RomuDuoJrRand,
+        vocabulary: &FaultVocabulary,
+    ) -> Result<Self, Box<dyn Error>> {
         let kinds = rand.next_u64();
         let exponent = rand
             .below(NonZeroUsize::new(QUIET_WEIGHT_EXPONENTS).ok_or("empty quiet weight range")?);
         Ok(Self {
             kinds,
             wait_weight: 1 << exponent,
-            wait_draws_hooks: kinds >> WAIT_DRAWS_HOOKS_BIT == 1,
+            wait_draws_hooks: vocabulary.hooks_replace_waits()
+                && kinds >> WAIT_DRAWS_HOOKS_BIT == 1,
         })
     }
 }
@@ -1010,7 +1014,11 @@ mod tests {
         );
         let mut rand = RomuDuoJrRand::with_seed(5);
         let weights = (0..2_000)
-            .map(|_| DrawProfile::draw(&mut rand).unwrap().wait_weight)
+            .map(|_| {
+                DrawProfile::draw(&mut rand, &vocabulary)
+                    .unwrap()
+                    .wait_weight
+            })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             weights,
@@ -1033,16 +1041,27 @@ mod tests {
     }
 
     #[test]
-    fn half_of_drawn_profiles_give_their_wait_weight_to_hooks_and_keep_the_rest() {
+    fn with_hooks_replacing_waits_half_of_drawn_profiles_give_their_wait_weight_to_hooks() {
+        let plain = FaultVocabulary::new(3, vec![1, 4]).expect("vocabulary");
+        let replacing = plain.clone().with_hooks_replace_waits(true);
         let mut flagged = 0;
         for seed in 0..4_000 {
-            let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(seed)).unwrap();
+            let profile =
+                DrawProfile::draw(&mut RomuDuoJrRand::with_seed(seed), &replacing).unwrap();
+            let off = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(seed), &plain).unwrap();
             let mut reference = RomuDuoJrRand::with_seed(seed);
             let kinds = reference.next_u64();
             let exponent = reference.below(NonZeroUsize::new(QUIET_WEIGHT_EXPONENTS).unwrap());
             assert_eq!(profile.kinds, kinds);
             assert_eq!(profile.wait_weight, 1 << exponent);
             assert_eq!(profile.wait_draws_hooks, kinds >> 63 == 1);
+            assert_eq!(
+                off,
+                DrawProfile {
+                    wait_draws_hooks: false,
+                    ..profile
+                }
+            );
             flagged += usize::from(profile.wait_draws_hooks);
         }
         assert!((1_800..2_200).contains(&flagged));
