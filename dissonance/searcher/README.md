@@ -805,8 +805,8 @@ decisions made, and the check findings and stage falls. Under the recorded strat
 decisions equal the stream's, and `same_decisions` counts the jobs where they
 do. The archive does not drop entries for memory, so a run that dropped
 entries under its memory budget keys again with those entries still held. A
-re-keyed key and fall count are exact only when the game has no moves or both
-strategies are pure, with no latched stage and no `highest` aggregate:
+re-keyed key and fall count are exact only when the game has no moves, or both
+strategies have no stages, no latched stage and no `highest` aggregate:
 re-keying folds a move's steps in sequence, where the live target observes each
 step from the move's departure accumulator
 ([#1062](https://github.com/pH14/harmony/issues/1062)).

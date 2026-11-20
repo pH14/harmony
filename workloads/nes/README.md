@@ -168,7 +168,8 @@ entries of `checkpoint.bin`. Every report gives the records' total cost and the 
 each forced-move length (an action's cost beyond the frames it decoded). A run
 with no `stream.jsonl`, such as a witness-verified one, reports only those
 counts. The tool refuses a game with moves when the recorded or the given
-strategy is not pure, because it cannot re-key that pair exactly
+strategy has stages, a latched stage or a `highest` aggregate, because it
+cannot re-key that pair exactly
 ([#1062](https://github.com/pH14/harmony/issues/1062)).
 
 ## Chord draw

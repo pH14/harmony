@@ -65,9 +65,13 @@ fn rekeyed_report(rekeyed: &Rekeyed) -> Value {
 
 fn exact_rekeying<G: Game>(strategies: [&Compiled; 2]) -> Result<()> {
     let moves = TypeId::of::<G::Move>() != TypeId::of::<Never>();
-    if moves && strategies.iter().any(|compiled| !compiled.is_pure()) {
+    if moves
+        && strategies
+            .iter()
+            .any(|compiled| !compiled.is_pure() || !compiled.stage_names().is_empty())
+    {
         return Err(format!(
-            "{} has moves, and a strategy with a latched stage or a `highest` aggregate re-keys exactly only on a game without moves (https://github.com/pH14/harmony/issues/1062)",
+            "{} has moves, and a strategy with stages or a `highest` aggregate re-keys exactly only on a game without moves (https://github.com/pH14/harmony/issues/1062)",
             G::NAME
         )
         .into());
@@ -269,12 +273,22 @@ mod tests {
             &format!("identity = \"highest(x)\"\n{}", LuckyDraw::STRATEGY),
         )
         .unwrap();
+        let staged = Lowered::new(
+            LuckyDraw::default(),
+            "goal = \"0\"\nabsent = \"menu_wait == 2\"\ncapacity = 1\nspread = [\"menu\", \"menu_wait\", \"x / 32\"]\n[[stage]]\nname = \"waiting\"\ngoal = \"menu_wait == 0\"\n[[stage]]\nname = \"after\"\ngoal = \"0\"\n",
+        )
+        .unwrap();
+        assert!(shipped.compiled.stage_names().is_empty());
         assert!(shipped.compiled.is_pure());
         assert!(!highest.compiled.is_pure());
+        assert!(staged.compiled.is_pure());
+        assert_eq!(staged.compiled.stage_names(), ["waiting", "after"]);
         assert!(exact_rekeying::<LuckyDraw>([&shipped.compiled, &shipped.compiled]).is_ok());
         for strategies in [
             [&shipped.compiled, &highest.compiled],
             [&highest.compiled, &shipped.compiled],
+            [&shipped.compiled, &staged.compiled],
+            [&staged.compiled, &shipped.compiled],
         ] {
             let refused = exact_rekeying::<LuckyDraw>(strategies).unwrap_err();
             assert!(refused.to_string().contains("issues/1062"));
