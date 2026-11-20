@@ -97,6 +97,9 @@ pub(crate) fn begin() {
 pub(crate) fn take() -> Option<FaultJobObservation> {
     ACTIVE.with(|s| s.borrow_mut().take())
 }
+pub(crate) fn put(value: Option<FaultJobObservation>) {
+    ACTIVE.with(|s| *s.borrow_mut() = value);
+}
 pub(crate) fn new_generation() {
     GENERATION.with(|g| g.set(g.get().and_then(|n| n.checked_add(1))));
 }
