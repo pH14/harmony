@@ -99,6 +99,13 @@ a native one by construction. Such a film is a native QuickNES replay of a tape
 the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
 `evidence_verified` false, and nothing is captured inside the guest.
 
+The film's expected length is the frame count of the input's headless replay
+endpoint (`Endpointed::input_frames`), so it counts the frames the target
+plays rather than the holds on the tape: a forced move's chords and a chosen
+move's steps count, a move chord's own hold does not, and a chord cut at an
+offer or a stop counts up to its cut. `nes-film` refuses a render whose frame
+count differs from it.
+
 `--max-frames` bounds the render. A whole-game input has no length bound and
 each action can hold up to 120 frames, so an unbounded film can run for hours. Frames past the
 ceiling are still emulated and are left out of the video, making the film a

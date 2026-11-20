@@ -978,6 +978,7 @@ mod tests {
         state: Landing,
         key: Option<AssertionKey>,
         stops: bool,
+        frames: u64,
     }
 
     impl Kept {
@@ -986,6 +987,7 @@ mod tests {
                 state: observation.state,
                 key: observation.key,
                 stops: observation.stops(),
+                frames: observation.frame_count,
             }
         }
     }
@@ -1006,9 +1008,10 @@ mod tests {
 
     fn kept(kept: &Kept) -> String {
         format!(
-            "x {} dwell {} {}",
+            "x {} dwell {} after {} frames {}",
             kept.state.x,
             kept.state.dwell,
+            kept.frames,
             keyed((kept.key, kept.stops))
         )
     }
@@ -1019,16 +1022,14 @@ mod tests {
 
     fn film_of<G: Game<State = Landing>>(lowered: &Arc<Lowered<G>>, tape: &[ButtonChord]) -> Kept {
         let mut film = NesTarget::from_machine(Arc::clone(lowered), Stepper::default()).unwrap();
-        let (_, filmed) = film
-            .render_observed(
-                tape,
-                u32::from(tape.is_empty()),
-                0,
-                &mut Vec::new(),
-                &mut Vec::new(),
-            )
+        let tail = u32::from(tape.is_empty());
+        let (metadata, filmed) = film
+            .render_observed(tape, tail, 0, &mut Vec::new(), &mut Vec::new())
             .unwrap();
-        Kept::of(&filmed)
+        Kept {
+            frames: metadata.frames - u64::from(tail),
+            ..Kept::of(&filmed)
+        }
     }
 
     struct Producers<G: Game<State = Landing>> {
