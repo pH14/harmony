@@ -28,6 +28,7 @@ const MORPH_BALL: u8 = 0x10;
 const BOMBS: u8 = 0x01;
 const KRAID: u8 = 0x12;
 const KRAID_DOOR: (u8, u8) = (9, 29);
+const GENESIS_WAIT_FRAMES: usize = 261;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Metroid;
@@ -148,7 +149,9 @@ impl Game for Metroid {
     const MEMORY_WINDOWS: &'static [(u64, u32)] = &[CARTRIDGE_WINDOW];
 
     fn setup(&self) -> Vec<ButtonChord> {
-        power_on_walk()
+        let mut tape = power_on_walk();
+        tape.extend((0..GENESIS_WAIT_FRAMES).map(|_| ButtonChord::new(0, 1)));
+        tape
     }
 
     fn genesis(&self, state: &MetroidMechanicalState) -> Result<(), String> {
