@@ -183,16 +183,24 @@ RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
 # default.
 ARG RQLITE_RAFT_SNAP=
 ARG RQLITE_RAFT_SNAP_INT=
-RUN : > /opt/harmony/rqlited-flags \
+RUN bad() { echo "$1" >&2; exit 1; } \
+    && : > /opt/harmony/rqlited-flags \
     && case "${RQLITE_RAFT_SNAP}" in \
         "") ;; \
-        0|*[!0-9]*) echo "RQLITE_RAFT_SNAP must be a positive entry count: ${RQLITE_RAFT_SNAP}" >&2; exit 1 ;; \
+        0*|*[!0-9]*) bad "RQLITE_RAFT_SNAP must be a positive entry count: ${RQLITE_RAFT_SNAP}" ;; \
         *) printf -- '-raft-snap %s\n' "${RQLITE_RAFT_SNAP}" >> /opt/harmony/rqlited-flags ;; \
     esac \
-    && case "${RQLITE_RAFT_SNAP_INT}" in \
-        "") ;; \
-        [!0-9]*|*[!0-9.hmnsu]*) echo "RQLITE_RAFT_SNAP_INT must be a Go duration such as 1s: ${RQLITE_RAFT_SNAP_INT}" >&2; exit 1 ;; \
-        *) printf -- '-raft-snap-int %s\n' "${RQLITE_RAFT_SNAP_INT}" >> /opt/harmony/rqlited-flags ;; \
-    esac
+    && message="RQLITE_RAFT_SNAP_INT must be a positive Go duration such as 1s or 1m30s: ${RQLITE_RAFT_SNAP_INT}" \
+    && rest="${RQLITE_RAFT_SNAP_INT}" \
+    && case "${rest}" in ""|*[1-9]*) ;; *) bad "${message}" ;; esac \
+    && while [ -n "${rest}" ]; do \
+        number="${rest%%[!0-9.]*}"; \
+        case "${number}" in ""|.|*.*.*) bad "${message}" ;; esac; \
+        rest="${rest#"${number}"}"; \
+        case "${rest}" in ns*|us*|ms*) rest="${rest#??}" ;; [hms]*) rest="${rest#?}" ;; *) bad "${message}" ;; esac; \
+    done \
+    && if [ -n "${RQLITE_RAFT_SNAP_INT}" ]; then \
+        printf -- '-raft-snap-int %s\n' "${RQLITE_RAFT_SNAP_INT}" >> /opt/harmony/rqlited-flags; \
+    fi
 
 CMD ["/opt/harmony/node.sh", "n1", "4001", "4002"]
