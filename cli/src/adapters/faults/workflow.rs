@@ -208,10 +208,7 @@ pub fn search_prepared(
     bundle: String,
     vocabulary: FaultVocabulary,
 ) -> Result<u8> {
-    let vocabulary = vocabulary
-        .excluding(&c.exclude_faults)
-        .with_hooks_replace_waits(c.hooks_replace_waits)
-        .with_hold_hooks(c.hold_hooks);
+    let vocabulary = configured_vocabulary(vocabulary, &c);
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -222,6 +219,13 @@ pub fn search_prepared(
         Ok(report_code(&report))
     });
     finish(&out, &mut manifest, result)
+}
+
+fn configured_vocabulary(vocabulary: FaultVocabulary, c: &Config) -> FaultVocabulary {
+    vocabulary
+        .excluding(&c.exclude_faults)
+        .with_hooks_replace_waits(c.hooks_replace_waits)
+        .with_hold_hooks(c.hold_hooks)
 }
 
 #[cfg(feature = "frontend")]
@@ -395,10 +399,10 @@ pub fn run_prepared(
         initramfs: execution.initramfs(&prepared.base),
     };
     if let Some(bundle) = prepared.bundle {
-        let vocabulary = prepared
-            .vocabulary
-            .as_ref()
-            .ok_or("missing admitted vocabulary")?;
+        let vocabulary = configured_vocabulary(
+            prepared.vocabulary.ok_or("missing admitted vocabulary")?,
+            &c,
+        );
         let recorded = match actions {
             Some(path) => faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?,
             None => faults_workload::RecordedActions {
@@ -995,6 +999,26 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn configured_vocabulary_applies_the_exclusions_and_both_hook_options() {
+        let admitted = FaultVocabulary::new(1, vec![1]).unwrap();
+        let mut c = Config::default();
+        let plain = configured_vocabulary(admitted.clone(), &c);
+        assert!(plain.excluded().is_empty());
+        assert!(!plain.hooks_replace_waits() && !plain.hold_hooks());
+        c.exclude_faults = vec![faults_workload::bundle::FaultKind::Pause];
+        c.hold_hooks = true;
+        let held = configured_vocabulary(admitted.clone(), &c);
+        assert_eq!(
+            held.excluded(),
+            &[faults_workload::bundle::FaultKind::Pause]
+        );
+        assert!(!held.hooks_replace_waits() && held.hold_hooks());
+        c.hooks_replace_waits = true;
+        let both = configured_vocabulary(admitted, &c);
+        assert!(both.hooks_replace_waits() && both.hold_hooks());
     }
 
     #[test]

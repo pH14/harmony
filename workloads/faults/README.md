@@ -332,7 +332,9 @@ name: `kill`, `kill_all`, `pause`, `restart`, `hook`, `power_loss`,
 `power_loss_all`, `disk_error`, `disk_stall`, `disk_corrupt`, `event_kill`,
 `event_park`, `clock` and `clock_all`. The search then never draws them. `Wait` is always drawn. The
 search records the excluded kinds in its vocabulary identifier, so a resumed
-search keeps them. A replay of recorded actions runs every action it is given.
+search keeps them. A run of recorded actions records the same vocabulary, so a
+search from a branch of the run leaves them out too. A replay of recorded
+actions runs every action it is given.
 
 Two more options in `[workload.options]` change how hooks are drawn and how
 long they stand. Each is off unless the workload sets it to `true`:
@@ -341,10 +343,11 @@ long they stand. Each is off unless the workload sets it to `true`:
 - `hold_hooks` lets a `Hook` window last 1, 2, 4 or 8 times its action's
   duration.
 
-The search records each option that is on in its vocabulary identifier, so a
-resumed search keeps it, and the identifier names no option when both are
-off. The target identity includes `hold_hooks`, so held and unheld executions
-share no cached snapshot. A replay holds hooks as its config says, so a held
+The search records each option that is on in its vocabulary identifier, and a
+run records the same vocabulary, so a resumed search and a search from a
+branch of a run keep it. The identifier names no option when both are off.
+The target identity includes `hold_hooks`, so held and unheld executions share
+no cached snapshot. A replay holds hooks as its config says, so a held
 search's actions replay as searched only under the search's config.
 
 Both are off by default because both take away the quiet time that a
