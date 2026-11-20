@@ -226,6 +226,235 @@ pub fn shrink_saved(request: Request, saved: crate::runs::Saved) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{runs::Destination, selection::Selection};
+    use faults_workload::{
+        FaultOperation,
+        package::{ReplayStep, ReplaySummary},
+        target::{FaultObservations, FaultStop},
+    };
+    use std::num::NonZeroU16;
+
+    fn ticks_of(value: u16) -> NonZeroU16 {
+        NonZeroU16::new(value).unwrap()
+    }
+
+    fn action(operation: FaultOperation) -> FaultAction {
+        FaultAction::new(operation, ticks_of(1))
+    }
+
+    fn step(step: u64, action: Option<FaultAction>, stop: FaultStop) -> ReplayStep {
+        ReplayStep {
+            step,
+            action,
+            observation: FaultObservations {
+                stop,
+                ..FaultObservations::default()
+            },
+            console: String::new(),
+            settlement: false,
+            choices: 0,
+        }
+    }
+
+    fn witness(bug: bool, violations: &[&str]) -> ReplaySummary {
+        let mut summary =
+            ReplaySummary::from_observation(&FaultObservations::default(), Some([7; 32]), 3, 0);
+        summary.bug = bug;
+        summary.stop = if bug {
+            FaultStop::Crash
+        } else {
+            FaultStop::Deadline
+        };
+        summary.violations = violations.iter().map(|text| (*text).to_owned()).collect();
+        summary.timeline = vec![
+            step(0, None, FaultStop::Deadline),
+            step(
+                1,
+                Some(action(FaultOperation::Kill(0, ticks_of(2)))),
+                FaultStop::Deadline,
+            ),
+            step(
+                2,
+                Some(action(FaultOperation::Wait(ticks_of(5)))),
+                FaultStop::Crash,
+            ),
+            step(
+                3,
+                Some(action(FaultOperation::Pause(1, ticks_of(4)))),
+                FaultStop::Crash,
+            ),
+        ];
+        summary
+    }
+
+    fn saved_run(path: &Path, bundle: bool, replay: ReplaySummary) {
+        let options = faults_workload::Options {
+            seed: 0,
+            executions: 1,
+            ram_mib: 1024,
+            knobs: Vec::new(),
+            wall_seconds: None,
+            output: path.to_path_buf(),
+            uml_profile: None,
+            root: None,
+            checkpoint_owner: None,
+            boot_cache: None,
+            key: faults_workload::key::KeyRequest::default(),
+            answers: Vec::new(),
+        };
+        let mut report = Report::new(
+            "replay",
+            &faults_workload::Artifacts {
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+            },
+            "runner".into(),
+            &options,
+            1,
+        );
+        report.replays.push(replay);
+        report.write(path).unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(config, "run").unwrap();
+        record.store(path, "kernel", b"").unwrap();
+        record.store(path, "initramfs", b"").unwrap();
+        record.status = "complete".into();
+        let outcome = serde_json::to_value(&report).unwrap();
+        if !bundle {
+            fs::write(path.join("run.json"), serde_json::to_vec(&outcome).unwrap()).unwrap();
+        }
+        record.payload = serde_json::json!({
+            "bundle": bundle.then_some("node app \"/bin/app\"\n"),
+            "actions": [],
+            "settle": true,
+            "outcome": outcome
+        });
+        record.save(path).unwrap();
+    }
+
+    fn source_error(bundle: bool, replay: ReplaySummary) -> String {
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), bundle, replay);
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        match source(saved, None, "shrink") {
+            Ok(_) => panic!("the source was accepted"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    fn shrink_request(run: &Path, out: &Path) -> Request {
+        Request {
+            selection: Some(Selection {
+                run: run.display().to_string(),
+                finding: None,
+            }),
+            destination: Destination {
+                name: None,
+                out: Some(out.to_path_buf()),
+            },
+            ..Request::default()
+        }
+    }
+
+    #[test]
+    fn faults_and_ticks_count_only_what_the_actions_hold() {
+        let actions = [
+            action(FaultOperation::Wait(ticks_of(5))),
+            action(FaultOperation::Kill(0, ticks_of(2))),
+            action(FaultOperation::Pause(1, ticks_of(4))),
+        ];
+        assert_eq!(faults(&actions), 2);
+        assert_eq!(ticks(&actions), 11);
+        assert_eq!(faults(&actions[..1]), 0);
+        assert_eq!(ticks(&[]), 0);
+    }
+
+    #[test]
+    fn a_source_keeps_the_actions_through_the_first_violating_step() {
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), true, witness(true, &["linearizable"]));
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        let source = source(saved, None, "shrink").unwrap();
+        assert_eq!(source.path, directory.path().canonicalize().unwrap());
+        assert_eq!(source.violations, ["linearizable"]);
+        assert_eq!(
+            source.actions,
+            [
+                action(FaultOperation::Kill(0, ticks_of(2))),
+                action(FaultOperation::Wait(ticks_of(5))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_source_without_a_bundle_or_a_violation_is_refused() {
+        assert_eq!(
+            source_error(false, witness(true, &["linearizable"])),
+            "shrink requires a supervised application scenario"
+        );
+        assert_eq!(
+            source_error(false, witness(false, &[])),
+            "shrink requires a supervised application scenario"
+        );
+        assert_eq!(
+            source_error(true, witness(false, &[])),
+            "the selected execution has no violation to shrink"
+        );
+        assert_eq!(
+            source_error(true, witness(true, &[])),
+            "the selected execution stopped with Crash and names no violation to shrink"
+        );
+    }
+
+    #[test]
+    fn a_source_whose_recorded_report_changed_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), true, witness(true, &["linearizable"]));
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        fs::write(directory.path().join("report.json"), b"{}").unwrap();
+        let error = match source(saved, None, "shrink") {
+            Ok(_) => panic!("the changed report was accepted"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(error, "recorded report.json has changed");
+    }
+
+    #[test]
+    fn shrink_saved_refuses_before_creating_its_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), true, witness(false, &[]));
+        let out = directory.path().join("child");
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        let error = shrink_saved(shrink_request(directory.path(), &out), saved)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "the selected execution has no violation to shrink");
+        assert!(!out.exists());
+
+        let saved = crate::runs::Saved::read(directory.path().to_str().unwrap()).unwrap();
+        let error = shrink_saved(Request::default(), saved)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "select a search or branch");
+    }
+
+    #[cfg(feature = "frontend")]
+    #[test]
+    fn shrink_reads_the_selected_run_and_requires_a_selection() {
+        let error = shrink(Request::default()).unwrap_err().to_string();
+        assert_eq!(error, "select a search or branch");
+
+        let directory = tempfile::tempdir().unwrap();
+        saved_run(directory.path(), false, witness(true, &["linearizable"]));
+        let out = directory.path().join("child");
+        let error = shrink(shrink_request(directory.path(), &out))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "shrink requires a supervised application scenario");
+        assert!(!out.exists());
+    }
 
     #[test]
     fn an_older_shrink_output_is_refused_and_the_current_one_is_recognized() {
