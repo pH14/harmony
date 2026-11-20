@@ -6,12 +6,10 @@ mod fixture;
 pub mod shadow;
 pub mod target;
 
-#[cfg(unix)]
-use std::path::PathBuf;
 use std::{
     error::Error,
     fmt::Debug,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -554,6 +552,7 @@ pub struct NesWorkload<G: Game, M: NesBackend<Vec<u8>>> {
     machines: Machines<M>,
     records: Option<Arc<Records>>,
     choices: ChoicePolicy,
+    milestone_input_dir: Option<PathBuf>,
 }
 
 struct Records {
@@ -581,6 +580,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             machines,
             records: None,
             choices: reproducing_choices::<G>(),
+            milestone_input_dir: None,
         })
     }
 
@@ -592,7 +592,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             machines: Arc::clone(&self.machines),
             records: None,
             choices: self.choices,
+            milestone_input_dir: self.milestone_input_dir.clone(),
         })
+    }
+
+    #[must_use]
+    pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
+        self.milestone_input_dir = Some(directory);
+        self
     }
 
     pub fn with_choice_policy(mut self, choices: ChoicePolicy) -> Result<Self, Box<dyn Error>> {
@@ -721,14 +728,44 @@ impl NesEvidence {
             .any(|(index, seen)| seen.execution.is_none() && value.holds(index))
     }
 
-    fn update_first_seen(&mut self, value: Satisfied, sequence: u64, input: &Input<ButtonChord>) {
+    fn update_first_seen(
+        &mut self,
+        value: Satisfied,
+        sequence: u64,
+        input: Option<&Input<ButtonChord>>,
+    ) -> Vec<String> {
+        let mut named = Vec::new();
         for (index, seen) in self.first_seen.iter_mut().enumerate() {
             if seen.execution.is_none() && value.holds(index) {
                 seen.execution = Some(sequence);
-                seen.input = Some(input.clone());
+                seen.input = input.cloned();
+                named.push(seen.name.clone());
             }
         }
+        named
     }
+}
+
+pub fn publish_milestone_inputs<I: Serialize, F: AsRef<str>>(
+    directory: Option<&Path>,
+    files: impl IntoIterator<Item = F>,
+    input: &I,
+) -> Result<(), Box<dyn Error>> {
+    let Some(directory) = directory else {
+        return Ok(());
+    };
+    let mut bytes = None;
+    for file in files {
+        std::fs::create_dir_all(directory)?;
+        let path = directory.join(format!("{}.json", file.as_ref()));
+        let temporary = path.with_extension("json.tmp");
+        if bytes.is_none() {
+            bytes = Some(serde_json::to_vec(input)?);
+        }
+        std::fs::write(&temporary, bytes.as_deref().unwrap_or_default())?;
+        std::fs::rename(temporary, path)?;
+    }
+    Ok(())
 }
 
 pub type NesEntryReport = ArchiveEntryReport<ButtonChord, AssertionKey, Satisfied>;
@@ -996,6 +1033,16 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M
             "named_progress": named_progress(evidence),
             "violations": violations(evidence),
         }))
+    }
+
+    fn merge_witness_diagnostics(
+        evidence: &mut NesEvidence,
+        observations: &[ActionObservation<G::State>],
+        sequence: u64,
+    ) {
+        for observation in observations {
+            evidence.update_first_seen(observation.observation.satisfied, sequence, None);
+        }
     }
 
     fn direct_records(&self, path: Option<&Path>) -> Result<Option<RecordsSize>, Box<dyn Error>> {
@@ -1321,6 +1368,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
         evidence: &mut NesEvidence,
         target: &NesTarget<G, M>,
     ) -> Result<(), Box<dyn Error>> {
+        evidence.name(&self.lowered);
         if let Some(key) = target.observation().key {
             evidence.watermark = evidence.watermark.max(key.progress);
         }
@@ -1335,7 +1383,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
     ) {
         evidence.name(&self.lowered);
         evidence.aggregate.0 |= value.0;
-        evidence.update_first_seen(value, 0, input);
+        evidence.update_first_seen(value, 0, Some(input));
         if evidence.champion.is_none() {
             evidence.champion_input = input.clone();
         }
@@ -1421,7 +1469,8 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
                     input: input.clone(),
                 });
             }
-            evidence.update_first_seen(action.milestones, sequence, &input);
+            let named = evidence.update_first_seen(action.milestones, sequence, Some(&input));
+            publish_milestone_inputs(self.milestone_input_dir.as_deref(), named, &input)?;
             if let Some(progress) = champion {
                 evidence.champion = Some(progress);
                 evidence.champion_input = input;
@@ -1464,7 +1513,7 @@ mod tests {
     };
     use crate::search::cost::ShrinkCost;
     use crate::search::draw::DrawMixture;
-    use fixture::{RIGHT, Stairs, Stepper, WARP};
+    use fixture::{Ledge, RIGHT, Stairs, Stepper, WARP};
 
     type StairsWorkload = NesWorkload<Stairs, Stepper>;
 
@@ -1842,6 +1891,69 @@ mod tests {
             }
         }
         assert!((1_807..2_193).contains(&moves), "{moves}");
+    }
+
+    #[test]
+    fn a_first_sighting_writes_its_tape_and_its_witness_names_it() {
+        let directory =
+            std::env::temp_dir().join(format!("nes-milestone-inputs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let workload = NesWorkload::<Ledge, Stepper>::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+        .with_milestone_input_dir(directory.clone());
+        let input = Input {
+            actions: vec![ButtonChord::new(RIGHT, 4)],
+        };
+        let mut target = workload.new_target().unwrap();
+        let mut witness = NesEvidence::default();
+        workload
+            .merge_snapshot_root_evidence(&mut witness, &target)
+            .unwrap();
+        assert_eq!(
+            named_progress(&witness)["first_seen"]["far"],
+            serde_json::Value::Null
+        );
+        let snapshot = workload.snapshot(&mut target).unwrap();
+        let result = workload
+            .execute_job(
+                &NesRun,
+                &mut target,
+                &snapshot,
+                &[],
+                Satisfied::default(),
+                &input.actions,
+                RetentionPolicy::Unprobed,
+                RolloutStop::new(true),
+            )
+            .unwrap();
+        let [action] = result.actions.as_slice() else {
+            panic!("one action");
+        };
+        NesWorkload::<Ledge, Stepper>::merge_witness_diagnostics(
+            &mut witness,
+            &action.observations,
+            1,
+        );
+        assert_eq!(
+            named_progress(&witness)["first_seen"]["far"],
+            serde_json::json!({ "execution": 1 })
+        );
+        let mut evidence = NesEvidence::default();
+        workload
+            .merge_action_evidence(&mut evidence, action, 5, || Ok(input.clone()))
+            .unwrap();
+        assert_eq!(evidence.first_seen[0].execution, Some(5));
+        let tape: Input<ButtonChord> =
+            serde_json::from_slice(&std::fs::read(directory.join("far.json")).unwrap()).unwrap();
+        assert_eq!(tape, input);
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

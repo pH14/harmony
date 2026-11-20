@@ -7,7 +7,7 @@ use nes_games::workload::{Game, NesObservation, NesSnapshot, NesWorkload, RECORD
 use serde::Serialize;
 
 use crate::{
-    eval::Request,
+    eval::{MILESTONE_INPUTS_DIR, Request},
     film::{Endpointed, FilmMetadata, Filmable},
     search::{
         archive::{ArchiveKey, Input},
@@ -54,6 +54,7 @@ pub fn configured<G: Game>(
         Some(choices) => workload.with_choice_policy(choices)?,
         None => workload,
     };
+    let workload = workload.with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR));
     if request.records {
         fs::create_dir_all(out)?;
         workload.with_records(&out.join(RECORDS_FILE), request.seed)

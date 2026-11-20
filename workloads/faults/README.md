@@ -230,6 +230,7 @@ timing:
 | action | effect |
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
+| `EndFaults(ticks)` | every standing window still open at the action's start closes there, including each `EventKill` window, fired or not, which disarms a kill that has not fired; the workload then runs undisturbed; never drawn, only applied by the settle phase |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
 | `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
@@ -709,6 +710,47 @@ doubling only while its completed generation is stale or faults remain pending.
 `actions_applied` remains the recorded input prefix, while `settle_actions` and
 `settle_ticks` account for that deterministic validation tail.
 
+A campaign run with `HARMONY_FAULTS_SETTLE_RECORD=PATH` ends every job with a
+settle phase that observes the endpoint after faults end. After the suffix, the
+target snapshots its endpoint and applies, outside the recorded input, a 16-tick
+`EndFaults`, a 16-tick `Restart` for each node whose alive bit is clear, the
+heal hook named by `HARMONY_FAULTS_SETTLE_HEAL` for 16 ticks when that is set,
+and then 50-tick `Wait` actions. An `EventKill` window stays in the supervisor's
+active set for the rest of the execution, whether or not its kill fires, and the
+supervisor reports a fault in force while any window is active, so without
+`EndFaults` no check after the first `EventKill` would run the replica
+comparison. The faults-in-force, recovery-pending and fault-free-check registers
+of the [supervisor](../../consonance/harmony-linux/supervisor/README.md) end it:
+the workload is ready once neither faults nor recovery are pending, and the
+outcome is `compared` when a check that started after that has exited
+successfully. The phase also ends when the workload is not ready 3,000 ticks
+(the 30-second recovery limit) after the restarts and heal end, when no such
+check has finished 6,000 ticks after they end, or at a new violation, a terminal
+stop, a hang or a cancellation. The target then restores the snapshot and its
+tick, horizon and last-action observation counters, so unless the phase found a
+violation, the job's result, its `execution_work` and every search decision are
+those of the run without the phase. The snapshots taken during the phase stay in
+the snapshot cache and can evict others, so cache statistics, worker placement
+and wall time can differ from that run. A new violation that the run's objective
+counts ends the phase with outcome `bug`. The target then applies the phase's
+actions again from the restored snapshot as actions of the job, which reaches
+its objective at the action where the violation appeared: the search reports
+and confirms that violation as it does any finding, whose input ends with the
+phase's actions, the job's `execution_work` includes the phase's ticks, and no
+phase action becomes an archive entry. A violation that does not recur when the actions are applied
+again ends the run with an error. Each job appends one JSON line to `PATH` with
+the path and suffix lengths, the job's execution work, the event-kill armed bits
+at the suffix's end, the nodes restarted, the ticks to ready and to the
+comparison, the phase's actions and ticks, the fault-free check count at the
+job's start, after the suffix and after the phase, and the outcome. Every line
+whose outcome is not `compared` also carries the full input as `actions`, so the
+line alone, saved as a file, is an input for `harmony debug`: the path with the
+phase's actions, the path alone for a skipped job, and in either case through
+the action that hung when one did. A job
+that hung, ended terminal, was cancelled or reached its objective gets a line
+with a `skipped:` outcome and no phase. A resumed run replays its recorded jobs
+and appends their lines again.
+
 ## macOS
 
 Hypervisor.framework allows one virtual machine per process, so a macOS run
@@ -1074,8 +1116,9 @@ mandatory; candidate construction still clones the owned observation projection.
 Parent reconstruction inside campaign jobs verifies every archived prefix through
 a fresh endpoint check. Standalone snapshot capture hashes fresh live state. A
 healthy job whose last action is runnable reuses that candidate's hash for its
-final certificate; terminal and zero-action jobs obtain fresh final endpoint and
-ordered-history evidence. Missing, foreign, abandoned or
+final certificate; terminal and zero-action jobs, and a job that ends on settle
+phase actions applied again, obtain fresh final endpoint and ordered-history
+evidence. Missing, foreign, abandoned or
 unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
 explicit whole-state-unavailable tag while preserving their checked logical
 observations; UML has a separate whole-state-unavailable tag. Whole-state hashes

@@ -79,7 +79,12 @@ so it differs between any two binaries. Archive digests and saved-state reuse us
 `SnapshotState::logical_identity` instead, which keeps the execution hash, so a matching archive
 digest still means the state restores in this execution, and restoring a state still requires the
 hash to match the running machine. `nes-eval` writes `result.json` with format
-`nes-eval-result-v2`, and a native `nes-film` refuses any other format. The Super Tilt Bro
+`nes-eval-result-v3`, and a native `nes-film` refuses any other format, so a result recorded
+under `nes-eval-result-v2` is filmed only after a rerun of its search. In v3 a `nes-games`
+workload's witness names every `sometimes` declaration in `named_progress.first_seen`, and
+`milestone_witnesses` carries a replay of each tape the run wrote to `milestone-inputs/`.
+`nes-film --milestone NAME` films the tape `NAME.json` against its entry there and checks the
+tape's hash, so a milestone is filmed from power-on without resuming a checkpoint. The Super Tilt Bro
 campaign result digest covers the complete job result, including preparation
 failures and retained QuickNES snapshots. Replay therefore detects a latent
 endpoint-state change even when its decoded game observations and archive key

@@ -43,7 +43,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
-    workload::StateHook,
+    workload::{StateHook, publish_milestone_inputs},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
@@ -228,46 +228,6 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> MetroidGame<M, K> {
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
         self
-    }
-
-    fn publish_milestones(
-        &self,
-        names: &[&str],
-        input: &MetroidInput,
-    ) -> Result<(), Box<dyn Error>> {
-        if names.is_empty() {
-            return Ok(());
-        }
-        if let Some(directory) = &self.milestone_input_dir {
-            std::fs::create_dir_all(directory)?;
-            for name in names {
-                let path = directory.join(format!("{name}.json"));
-                let temporary = path.with_extension("json.tmp");
-                std::fs::write(&temporary, serde_json::to_vec(input)?)?;
-                std::fs::rename(temporary, path)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn publish_stocked(
-        &self,
-        improved: &[(&str, &str)],
-        input: &MetroidInput,
-    ) -> Result<(), Box<dyn Error>> {
-        if improved.is_empty() {
-            return Ok(());
-        }
-        if let Some(directory) = &self.milestone_input_dir {
-            std::fs::create_dir_all(directory)?;
-            for (name, stock) in improved {
-                let path = directory.join(format!("{name}-{stock}.json"));
-                let temporary = path.with_extension("json.tmp");
-                std::fs::write(&temporary, serde_json::to_vec(input)?)?;
-                std::fs::rename(temporary, path)?;
-            }
-        }
-        Ok(())
     }
 
     fn publish_champion(&self, input: &MetroidInput) -> Result<(), Box<dyn Error>> {
@@ -1081,8 +1041,14 @@ impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> Evaluation for Metroi
             || !improved.is_empty()
         {
             let input = input()?;
-            self.publish_milestones(&discoveries, &input)?;
-            self.publish_stocked(&improved, &input)?;
+            publish_milestone_inputs(self.milestone_input_dir.as_deref(), &discoveries, &input)?;
+            publish_milestone_inputs(
+                self.milestone_input_dir.as_deref(),
+                improved
+                    .iter()
+                    .map(|(name, stock)| format!("{name}-{stock}")),
+                &input,
+            )?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,

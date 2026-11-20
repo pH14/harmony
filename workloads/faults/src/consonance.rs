@@ -419,7 +419,7 @@ impl ActionPlan {
         let mut deadline = windows.root_seal;
         for (action, window) in actions.iter().zip(windows.iter(actions)) {
             let (start, end) = window?;
-            standing.extend(windows.delta(*action, (start, end)).standing);
+            windows.push_standing(&mut standing, *action, (start, end));
             coverage.push((start, end, action.coverage_quantum));
             deadline = end;
         }
@@ -1042,6 +1042,30 @@ impl FaultTarget {
         let result = inspect(self);
         self.observation = observation;
         result
+    }
+
+    pub fn run_detached<T>(
+        &mut self,
+        run: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, Box<dyn Error>> {
+        let endpoint = self
+            .snapshot()?
+            .ok_or("a detached run needs a runnable endpoint")?;
+        let action_observations = self.action_observations.clone();
+        let execution_ticks = self.execution_ticks;
+        let guest_horizons_run = self.guest_horizons_run;
+        let job = crate::job_observation::take();
+        let result = run(self);
+        let rewound = self.restore(&endpoint);
+        crate::job_observation::put(job);
+        rewound?;
+        if self.failed {
+            return Err("the endpoint before a detached run could not be restored".into());
+        }
+        self.action_observations = action_observations;
+        self.execution_ticks = execution_ticks;
+        self.guest_horizons_run = guest_horizons_run;
+        Ok(result)
     }
 
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
@@ -4904,6 +4928,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -4955,6 +4980,7 @@ mod tests {
                 crate::archive::FaultMilestones::default(),
                 &[],
                 searcher::search::rollout::RolloutStop::new(false),
+                None,
             )
             .unwrap();
             assert_eq!(capture_hash_calls() - before, hashes.len() as u64 + 1);
@@ -5005,6 +5031,7 @@ mod tests {
                 crate::archive::FaultMilestones::default(),
                 &[],
                 searcher::search::rollout::RolloutStop::new(false),
+                None,
             )
             .unwrap_err();
             assert!(error.to_string().contains("certificate"), "{error}");
@@ -5047,6 +5074,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap();
         assert_eq!(result.hang, Some(Vec::new()));
@@ -5077,6 +5105,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -5120,6 +5149,7 @@ mod tests {
                 crate::archive::FaultMilestones::default(),
                 &[],
                 searcher::search::rollout::RolloutStop::new(false),
+                None,
             );
             assert_eq!(result.is_ok(), expected.is_none());
             assert_eq!(capture_hash_calls(), before);
@@ -5147,6 +5177,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[action, action],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap();
         assert_eq!(capture_hash_calls() - before, 3);
@@ -5620,6 +5651,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[second_action],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap_err()
         .to_string();
@@ -5656,6 +5688,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap();
         assert_eq!(result.hang, Some(Vec::new()));
@@ -5721,6 +5754,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap();
         assert_eq!(result.hang, Some(Vec::new()));
@@ -5786,6 +5820,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         )
         .unwrap_err()
         .to_string();
@@ -5839,6 +5874,7 @@ mod tests {
             crate::archive::FaultMilestones::default(),
             &[first, second],
             searcher::search::rollout::RolloutStop::new(false),
+            None,
         );
         let result = result.expect("a suffix cutoff is a hung job");
         assert_eq!(result.hang, Some(vec![first, second]));
@@ -7144,6 +7180,7 @@ mod tests {
                 crate::archive::FaultMilestones::default(),
                 &[],
                 searcher::search::rollout::RolloutStop::new(false),
+                None,
             );
             LIVE.with(|slot| slot.borrow_mut().take());
             let error = result.expect_err("the first keyframe prefix must be checked");
@@ -8714,8 +8751,7 @@ fn active_root_windows(
     actions: &[FaultAction],
     moment: u64,
 ) -> Result<Vec<StandingWindow>, String> {
-    let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
+    let mut standing = standing_windows(windows, inherited, actions)?;
     standing.retain(|window| window.start <= moment);
     Ok(standing)
 }

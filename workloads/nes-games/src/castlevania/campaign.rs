@@ -39,6 +39,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
+    workload::publish_milestone_inputs,
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "castlevania-quicknes-campaign-stream-v1";
@@ -85,28 +86,6 @@ impl<M: NesBackend<Vec<u8>>> CastlevaniaGame<M> {
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
         self
-    }
-
-    fn publish_inputs(
-        &self,
-        names: impl IntoIterator<Item = String>,
-        input: &CastlevaniaInput,
-    ) -> Result<(), Box<dyn Error>> {
-        let Some(directory) = &self.milestone_input_dir else {
-            return Ok(());
-        };
-        let mut bytes = None;
-        for name in names {
-            std::fs::create_dir_all(directory)?;
-            let path = directory.join(format!("{name}.json"));
-            let temporary = path.with_extension("json.tmp");
-            if bytes.is_none() {
-                bytes = Some(serde_json::to_vec(input)?);
-            }
-            std::fs::write(&temporary, bytes.as_deref().unwrap_or_default())?;
-            std::fs::rename(temporary, path)?;
-        }
-        Ok(())
     }
 
     #[must_use]
@@ -758,7 +737,7 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for CastlevaniaGame<M> {
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
         if first_input_needed || champion.is_some() || !discoveries.is_empty() {
             let input = input()?;
-            self.publish_inputs(discoveries, &input)?;
+            publish_milestone_inputs(self.milestone_input_dir.as_deref(), discoveries, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,

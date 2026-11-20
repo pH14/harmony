@@ -8,7 +8,7 @@ use nes_games::{
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     donkey_kong::{DonkeyKong, DonkeyKongWorkload},
-    eval::{Request, Result, evaluate, run_cli},
+    eval::{MILESTONE_INPUTS_DIR, Request, Result, evaluate, run_cli},
     famidash::{
         Famidash, FamidashGame, LuckyDraw, LuckyDrawGame,
         levels::{GROUPS, Side, Stage},
@@ -376,7 +376,7 @@ fn main() -> Result<()> {
                         .map(|input| input.actions)
                         .unwrap_or_default(),
                 )
-                .with_milestone_input_dir(out.join("milestone-inputs"));
+                .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR));
                 if let Some(shadow) = &shadow {
                     game = game.with_shadow(shadow.hook());
                 }
@@ -428,7 +428,7 @@ fn main() -> Result<()> {
             "metroid" => {
                 let game =
                     metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
-                        .with_milestone_input_dir(out.join("milestone-inputs"))
+                        .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR))
                         .with_terminal_policy(match request.metroid_terminal.as_deref() {
                             Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
                             None => MetroidTerminalPolicy::default(),
@@ -502,7 +502,7 @@ fn main() -> Result<()> {
             ),
             "castlevania" => evaluate_watching(
                 CastlevaniaGame::new(&rom, p, h, &execution_sha256)
-                    .with_milestone_input_dir(out.join("milestone-inputs")),
+                    .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR)),
                 CastlevaniaCampaignRun,
                 &rom,
                 &request,
