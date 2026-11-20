@@ -152,6 +152,11 @@ written this way. The other games have their own `target`, `archive` and
   `genesis` checks the state they reach. `genesis_id` names that state in
   the workload's emulator identity, so a recording or checkpoint from another
   start does not resume here; Famidash names its side, level and goal.
+  `rooted_genesis` checks the endpoint of a root (below), because each game
+  states what a valid rooted start is. Super Mario Bros. requires live play,
+  Mega Man 2 play after a stage arrival outside a drive, and Ice Climbers a
+  live climbing state with every life; the other games accept any root that
+  passes the workload's own conditions.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
 - `moves` declares a forced move on a state, a transition the game scripts
@@ -176,7 +181,20 @@ bitmask of the `sometimes` declarations that hold. The strategy must name a
 goal, and a game has at most 128 `sometimes` declarations.
 
 `NesWorkload<G, M>` is the `Workload` implementation for every such game, with
-`NesTarget<G, M>` as its target. An action stops at the first frame the
+`NesTarget<G, M>` as its target.
+`NesWorkload::with_root` roots the search at a tape state: every new target
+plays the root, a list of the workload's own actions, with `NesTarget::apply`
+after `start`, so move answers and forced moves play as in a search. A root
+action that fails, meets the goal, is rejected or overruns a move is refused
+with its index, as is a root that ends inside a forced move or on a state with
+no key, and then `rooted_genesis` runs. The genesis moves to the root's
+endpoint and keeps the decoded state and the accumulator the root's frames
+built, so a latched stage or a `highest` value the tape earned keys the rooted
+genesis as the search would have keyed it. Its frame count and execution work
+start at zero there, so frames and scored rows from a rooted run count from
+the root. The emulator identity appends `:root-sha256=` and the digest of the
+root's chords to `genesis=`, so a checkpoint or stream from a rooted run and
+one from power-on, or from another root, refuse each other. An action stops at the first frame the
 strategy rejects or that meets the goal, so the endpoint is the stopping frame.
 The target replays the hold cut to that frame only when a snapshot or the next
 action needs the machine there, and checks that the replay reaches the same

@@ -54,6 +54,14 @@ pub fn configured<G: Game>(
         Some(choices) => workload.with_choice_policy(choices)?,
         None => workload,
     };
+    let workload = match &request.root_input {
+        Some(path) => {
+            let root: Input<machine::nes::ButtonChord> =
+                serde_json::from_reader(std::io::BufReader::new(fs::File::open(path)?))?;
+            workload.with_root(root.actions)?
+        }
+        None => workload,
+    };
     let workload = workload.with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR));
     if request.records {
         fs::create_dir_all(out)?;

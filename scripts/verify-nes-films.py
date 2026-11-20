@@ -14,6 +14,7 @@ SILENCE_DBFS = -90.0
 FPS = 60
 AUDIO_COVERAGE = 0.99
 REPORT_NAME = 'film-verification.json'
+FILM_FORMAT = 'nes-film-v2'
 
 
 def probe(*arguments):
@@ -79,6 +80,8 @@ def verify(record, minimum_seconds, expected=None, input_path=None):
     if not record.is_file():
         return [f'{record}: the index lists this film but its record is missing']
     film = json.loads(record.read_text())
+    if film.get('format') != FILM_FORMAT:
+        return [f'{record}: is format {film.get("format")}, not {FILM_FORMAT}']
     mp4 = directory / Path(film['capture']['mp4']).name
     problems = []
     if not mp4.is_file() or mp4.stat().st_size == 0:

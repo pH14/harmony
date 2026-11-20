@@ -217,7 +217,7 @@ fn main() -> Result<()> {
         "twin-dragons" => rekey(TwinDragons, run, strategy.as_deref())?,
         "punchout" => rekey(PunchOut, run, strategy.as_deref())?,
         "donkey-kong" => rekey(DonkeyKong, run, strategy.as_deref())?,
-        "ice-climbers" => rekey(IceClimbers::default(), run, strategy.as_deref())?,
+        "ice-climbers" => rekey(IceClimbers, run, strategy.as_deref())?,
         "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
         "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
         "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,

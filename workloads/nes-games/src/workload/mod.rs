@@ -304,6 +304,9 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
         Vec::new()
     }
     fn genesis(&self, state: &Self::State) -> Result<(), String>;
+    fn rooted_genesis(&self, _state: &Self::State) -> Result<(), String> {
+        Ok(())
+    }
     fn genesis_id(&self) -> String {
         format!("{}-setup-v1", Self::NAME)
     }
@@ -532,10 +535,28 @@ impl<G: Game> Lowered<G> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NesRun;
 
+fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
+    format!(
+        "{core};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
+    )
+}
+
+#[must_use]
+pub fn root_sha256(root: &[ButtonChord]) -> String {
+    let mut digest = Sha256::new();
+    for chord in root {
+        digest.update([chord.buttons, chord.hold_frames]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
 pub struct NesWorkload<G: Game, M: NesBackend<Vec<u8>>> {
     lowered: Arc<Lowered<G>>,
     rom_sha256: String,
+    core: String,
+    core_sha256: String,
     identity: String,
+    root: Vec<ButtonChord>,
     machines: Machines<M>,
     records: Option<Arc<Records>>,
     choices: ChoicePolicy,
@@ -566,14 +587,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         core_sha256: &str,
         machines: Machines<M>,
     ) -> Result<Self, Box<dyn Error>> {
-        let identity = format!(
-            "{core};state=ppu-unused2-zero-v1;genesis={};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
-            game.genesis_id()
-        );
+        let identity = emulator_identity(core, &game.genesis_id(), core_sha256);
         Ok(Self {
             lowered: Arc::new(Lowered::new(game, strategy)?),
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
+            core: core.to_owned(),
+            core_sha256: core_sha256.to_owned(),
             identity,
+            root: Vec::new(),
             machines,
             records: None,
             choices: reproducing_choices::<G>(),
@@ -585,12 +606,34 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         Ok(Self {
             lowered: Arc::new(Lowered::new(self.lowered.game.clone(), strategy)?),
             rom_sha256: self.rom_sha256.clone(),
+            core: self.core.clone(),
+            core_sha256: self.core_sha256.clone(),
             identity: self.identity.clone(),
+            root: self.root.clone(),
             machines: Arc::clone(&self.machines),
             records: None,
             choices: self.choices,
             milestone_input_dir: self.milestone_input_dir.clone(),
         })
+    }
+
+    pub fn with_root(mut self, root: Vec<ButtonChord>) -> Result<Self, Box<dyn Error>> {
+        if root.is_empty() {
+            return Err(format!("the {} root carries no actions", G::NAME).into());
+        }
+        let genesis = format!(
+            "{}:root-sha256={}",
+            self.lowered.game.genesis_id(),
+            root_sha256(&root)
+        );
+        self.identity = emulator_identity(&self.core, &genesis, &self.core_sha256);
+        self.root = root;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn root(&self) -> &[ButtonChord] {
+        &self.root
     }
 
     #[must_use]
@@ -1202,7 +1245,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
 
     fn new_target(&self) -> Result<NesTarget<G, M>, String> {
         let machine = (self.machines)().map_err(|error| error.to_string())?;
-        let mut target = NesTarget::from_power_on(Arc::clone(&self.lowered), machine)
+        let mut target = NesTarget::from_power_on(Arc::clone(&self.lowered), machine, &self.root)
             .map_err(|error| error.to_string())?;
         target.record_frames(self.records.is_some());
         Ok(target)
@@ -1516,7 +1559,7 @@ mod tests {
     };
     use crate::search::cost::ShrinkCost;
     use crate::search::draw::DrawMixture;
-    use fixture::{Ledge, RIGHT, Stairs, Stepper, WARP};
+    use fixture::{LEFT, Ledge, RIGHT, Spot, Stairs, Stepper, WARP};
 
     type StairsWorkload = NesWorkload<Stairs, Stepper>;
 
@@ -1957,6 +2000,90 @@ mod tests {
             serde_json::from_slice(&std::fs::read(directory.join("far.json")).unwrap()).unwrap();
         assert_eq!(tape, input);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    fn ledge() -> NesWorkload<Ledge, Stepper> {
+        NesWorkload::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rooted_workload_starts_where_its_root_ends_with_the_lineage_the_root_earned() {
+        let root = vec![ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 3)];
+        let unrooted = ledge();
+        let rooted = ledge().with_root(root.clone()).unwrap();
+        assert_eq!(
+            unrooted.emulator_identity(),
+            "stepper;state=ppu-unused2-zero-v1;genesis=ledge-setup-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256=0"
+        );
+        assert_eq!(
+            rooted.emulator_identity(),
+            format!(
+                "stepper;state=ppu-unused2-zero-v1;genesis=ledge-setup-v1:root-sha256={};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256=0",
+                root_sha256(&root)
+            )
+        );
+        assert_ne!(
+            root_sha256(&root),
+            root_sha256(&[ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 2)])
+        );
+        let mut played = unrooted.new_target().unwrap();
+        for action in &root {
+            played.apply(action);
+        }
+        let played = unrooted.snapshot(&mut played).unwrap();
+        let mut target = rooted.new_target().unwrap();
+        assert_eq!(target.execution_work(), 0);
+        let genesis = rooted.snapshot(&mut target).unwrap();
+        assert_eq!(genesis.observation.state, Spot { x: 1, room: 0 });
+        assert_eq!(genesis.observation.frame_count, 0);
+        assert_eq!(
+            NesObservation {
+                frame_count: played.observation.frame_count,
+                ..genesis.observation.clone()
+            },
+            played.observation
+        );
+        assert_eq!(genesis.accumulator, played.accumulator);
+        let fresh = NesWorkload::<Ledge, Stepper>::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::at(1))),
+        )
+        .unwrap();
+        let fresh = fresh.new_target().unwrap();
+        assert_ne!(
+            fresh.observation().key.map(|key| key.scope),
+            genesis.observation.key.map(|key| key.scope)
+        );
+        target.apply(&ButtonChord::new(RIGHT, 2));
+        target.reset();
+        assert_eq!(rooted.snapshot(&mut target).unwrap(), genesis);
+        assert!(ledge().with_root(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_root_that_reaches_the_goal_is_refused_at_that_action() {
+        let error = ledge()
+            .with_root(vec![ButtonChord::new(RIGHT, 1), ButtonChord::new(WARP, 9)])
+            .unwrap()
+            .new_target()
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("ledge root action 1 reaches a goal"),
+            "{error}"
+        );
     }
 
     #[test]

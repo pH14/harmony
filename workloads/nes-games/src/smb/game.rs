@@ -181,6 +181,16 @@ impl Game for SuperMarioBros {
         }
     }
 
+    fn rooted_genesis(&self, state: &SmbState) -> Result<(), String> {
+        if state.playing && !state.dead && !state.victory {
+            Ok(())
+        } else {
+            Err(format!(
+                "Super Mario Bros. root input did not end in live play: {state:?}"
+            ))
+        }
+    }
+
     fn decode(
         &self,
         parent: Option<&SmbState>,
@@ -300,6 +310,34 @@ impl Game for SuperMarioBros {
 mod tests {
     use super::*;
     use crate::workload::Lowered;
+
+    #[test]
+    fn a_root_must_end_in_live_play_anywhere_in_the_game() {
+        let playing = SmbState {
+            world: 3,
+            playing: true,
+            progress: 40,
+            ..SmbState::default()
+        };
+        assert!(SuperMarioBros.rooted_genesis(&playing).is_ok());
+        assert!(SuperMarioBros.genesis(&playing).is_err());
+        for state in [
+            SmbState {
+                playing: false,
+                ..playing
+            },
+            SmbState {
+                dead: true,
+                ..playing
+            },
+            SmbState {
+                victory: true,
+                ..playing
+            },
+        ] {
+            assert!(SuperMarioBros.rooted_genesis(&state).is_err());
+        }
+    }
 
     fn ram(area: [u8; 2], camera: u16, world: u8, level: u8) -> [u8; WRAM_SIZE] {
         let mut ram = [0; WRAM_SIZE];

@@ -325,7 +325,7 @@ class EvaluationTests(unittest.TestCase):
         binary.write_text('#!/bin/sh\nout=$(echo "$@" | tr " " "\\n" | grep -A1 -x -- --out | tail -1)\n'
                           'printf x > "$out/witness.mp4"\n'
                           'cat > "$out/film.json" <<\'JSON\'\n'
-                          '{"format":"nes-film-v1","endpoint_verified":true,"clip":{"policy":"whole input",'
+                          '{"format":"nes-film-v2","endpoint_verified":true,"clip":{"policy":"whole input",'
                           '"skipped_frames":0},"video":{"frames":300,"audio_frames":7350},'
                           '"capture":{"duration_seconds":5.0,"mp4_sha256":"c"}}\nJSON\n')
         binary.chmod(0o755)
