@@ -10,10 +10,13 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::catalog::{ACTION_END_SLOT, Catalog, RECORD_SLOTS, Record};
+use super::{
+    catalog::{ACTION_END_SLOT, Catalog, RECORD_SLOTS, Record},
+    compile::Accumulator,
+};
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v7";
+pub const RECORDS_FORMAT: &str = "assertion-records-v8";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -30,6 +33,8 @@ pub struct RecordsHeader {
     pub strategy: String,
     pub catalog: Catalog,
     pub genesis: Record,
+    pub root_sha256: Option<String>,
+    pub genesis_accumulator: Accumulator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,8 +297,10 @@ impl<A> Recording<A> {
         if later.header.policy != self.header.policy
             || later.header.choice_policy != self.header.choice_policy
             || later.header.catalog != self.header.catalog
+            || later.header.root_sha256 != self.header.root_sha256
+            || later.header.genesis_accumulator != self.header.genesis_accumulator
         {
-            return Err("a continued recording has another policy or catalog".into());
+            return Err("a continued recording has another policy, catalog or root".into());
         }
         let first = later
             .actions

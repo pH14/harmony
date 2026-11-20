@@ -259,6 +259,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
     }
 
     #[must_use]
+    pub fn genesis_accumulator(&self) -> &Accumulator {
+        &self.genesis_accumulator
+    }
+
+    #[must_use]
     pub fn execution_work(&self) -> u64 {
         self.execution_work
     }

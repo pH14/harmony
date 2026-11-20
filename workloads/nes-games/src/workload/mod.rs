@@ -519,7 +519,9 @@ impl<G: Game> Lowered<G> {
         stream: StreamIdentity,
         genesis: &G::State,
         choice_policy: Option<String>,
+        root: Option<(String, Accumulator)>,
     ) -> Result<RecordsHeader, Box<dyn Error>> {
+        let (root_sha256, genesis_accumulator) = root.unzip();
         Ok(RecordsHeader {
             format: RECORDS_FORMAT.to_owned(),
             stream,
@@ -528,6 +530,8 @@ impl<G: Game> Lowered<G> {
             strategy: self.strategy.clone(),
             catalog: self.records_catalog()?,
             genesis: self.genesis_record(genesis),
+            root_sha256,
+            genesis_accumulator: genesis_accumulator.unwrap_or_default(),
         })
     }
 }
@@ -656,6 +660,12 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             },
             &target.observation().state,
             Some(self.choices.identifier()),
+            (!self.root.is_empty()).then(|| {
+                (
+                    root_sha256(&self.root),
+                    target.genesis_accumulator().clone(),
+                )
+            }),
         )?;
         let writer = RecordsWriter::create(path, &header)?;
         self.records = Some(Arc::new(Records {
@@ -1553,6 +1563,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::search::assertion::{RecordedJob, Recording, Rekeyed, Rekeying, same_decisions};
+    use crate::search::campaign::CampaignAdmissionDecision;
     use crate::search::campaign::{
         ArchiveSource, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
         CampaignExecutionOptions, CampaignOrigin, JobOutcome, MinimizeConfig, run_job,
@@ -2084,6 +2096,159 @@ mod tests {
             error.contains("ledge root action 1 reaches a goal"),
             "{error}"
         );
+    }
+
+    const LATCHED: &str = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = [\"highest(x)\", \"x\"]\n[[stage]]\nname = \"ledge\"\ngoal = \"far\"\nlatch = true\n[[stage]]\nname = \"beyond\"\ngoal = \"false\"\n";
+
+    fn header_of(workload: NesWorkload<Ledge, Stepper>, name: &str) -> RecordsHeader {
+        let path = std::env::temp_dir().join(format!(
+            "nes-records-header-{name}-{}.bin",
+            std::process::id()
+        ));
+        let workload = workload.with_records(&path, 7).unwrap();
+        workload.direct_records(None).unwrap();
+        let header = Recording::<ButtonChord>::from_bytes(&std::fs::read(&path).unwrap())
+            .unwrap()
+            .header;
+        std::fs::remove_file(&path).unwrap();
+        header
+    }
+
+    type Played = (
+        RecordsHeader,
+        Vec<RecordedJob>,
+        Vec<RecordedAction<ButtonChord>>,
+        Vec<Option<AssertionKey>>,
+    );
+
+    fn rooted_run() -> Played {
+        let latched = || {
+            NesWorkload::<Ledge, Stepper>::with_machines(
+                Ledge,
+                LATCHED,
+                b"ledge",
+                "stepper",
+                "0",
+                Arc::new(|| Ok(Stepper::default())),
+            )
+            .unwrap()
+        };
+        let unrooted = header_of(latched(), "unrooted");
+        assert_eq!(unrooted.root_sha256, None);
+        assert_eq!(unrooted.genesis_accumulator, Accumulator::default());
+        let root = vec![ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 3)];
+        let workload = latched().with_root(root.clone()).unwrap();
+        let mut target = workload.new_target().unwrap();
+        let header = header_of(workload, "rooted");
+        assert_eq!(header.root_sha256, Some(root_sha256(&root)));
+        assert_eq!(&header.genesis_accumulator, target.genesis_accumulator());
+        assert_eq!(target.genesis_accumulator().stage(), Some(1));
+        target.record_frames(true);
+        let mut keys = vec![target.observation().key];
+        let mut actions = Vec::new();
+        let mut jobs = Vec::new();
+        for (sequence, hold) in (1..).zip([1, 1, 2]) {
+            let chord = ButtonChord::new(RIGHT, hold);
+            target.apply(&chord);
+            let emitted = target.last_action_observations();
+            actions.push(RecordedAction {
+                sequence,
+                action: chord,
+                failed: false,
+                cost: emitted.iter().map(|observation| observation.cost).sum(),
+                frames: emitted
+                    .iter()
+                    .flat_map(|observation| observation.records.iter().copied())
+                    .collect(),
+                choices: Vec::new(),
+                context: None,
+            });
+            jobs.push(RecordedJob {
+                sequence,
+                parent_id: sequence - 1,
+                decisions: vec![CampaignAdmissionDecision::Retained { id: sequence }],
+            });
+            keys.push(target.observation().key);
+        }
+        (header, jobs, actions, keys)
+    }
+
+    fn rekey(
+        (header, jobs, actions, _): &Played,
+        strategy: &str,
+        rooted: Option<&Accumulator>,
+    ) -> Result<Rekeyed, Box<dyn Error>> {
+        let recorded = Lowered::new(Ledge, &header.strategy)?;
+        let keyed = Lowered::new(Ledge, strategy)?;
+        Rekeying {
+            recorded: &recorded.compiled,
+            strategy: &keyed.compiled,
+            entry_limit: 64,
+            rooted,
+        }
+        .run(&header.genesis, jobs, actions)
+    }
+
+    fn held(rekeyed: &Rekeyed) -> Vec<Option<AssertionKey>> {
+        let held: BTreeMap<u64, AssertionKey> = rekeyed
+            .holders
+            .iter()
+            .flat_map(|held| held.ids.iter().copied().zip(held.keys.iter().copied()))
+            .collect();
+        (0..4).map(|id| held.get(&id).copied()).collect()
+    }
+
+    #[test]
+    fn a_rooted_run_with_a_latched_stage_re_keys_to_the_keys_the_live_search_recorded() {
+        let played = rooted_run();
+        let rooted = Some(&played.0.genesis_accumulator);
+        let rekeyed = rekey(&played, LATCHED, rooted).unwrap();
+        assert_eq!(same_decisions(&played.1, &rekeyed), played.1.len());
+        assert_eq!(held(&rekeyed), played.3);
+        let unseeded = rekey(&played, LATCHED, None)
+            .ok()
+            .map(|unseeded| held(&unseeded));
+        assert_ne!(unseeded, Some(played.3.clone()));
+    }
+
+    #[test]
+    fn a_rooted_run_refuses_another_strategy_that_reads_its_lineage() {
+        let played = rooted_run();
+        let rooted = Some(&played.0.genesis_accumulator);
+        let error = rekey(
+            &played,
+            &LATCHED.replace("capacity = 16", "capacity = 8"),
+            rooted,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("cannot be rebuilt without the root's frames"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_rooted_run_re_keys_under_another_strategy_without_lineage() {
+        let played = rooted_run();
+        let rooted = Some(&played.0.genesis_accumulator);
+        let pure = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = \"x\"\n";
+        let rekeyed = rekey(&played, pure, rooted).unwrap();
+        assert_eq!(same_decisions(&played.1, &rekeyed), played.1.len());
+        let keyed = Lowered::new(Ledge, pure).unwrap();
+        let mut expected = vec![
+            keyed
+                .compiled
+                .observe(&played.0.genesis, &mut Accumulator::default())
+                .key,
+        ];
+        expected.extend(played.2.iter().map(|action| {
+            keyed
+                .compiled
+                .observe(action.frames.last().unwrap(), &mut Accumulator::default())
+                .key
+        }));
+        assert_eq!(held(&rekeyed), expected);
     }
 
     #[test]

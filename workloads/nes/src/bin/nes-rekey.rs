@@ -137,6 +137,11 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
         recorded: &recorded.compiled,
         strategy: &keyed.compiled,
         entry_limit,
+        rooted: recording
+            .header
+            .root_sha256
+            .as_ref()
+            .map(|_| &recording.header.genesis_accumulator),
     }
     .run(&recording.header.genesis, &jobs, &recording.actions)?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;

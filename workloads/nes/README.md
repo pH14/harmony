@@ -177,7 +177,11 @@ with no `stream.jsonl`, such as a witness-verified one, reports only those
 counts. The tool refuses a game with moves when the recorded or the given
 strategy has stages, a latched stage or a `highest` aggregate, because it
 cannot re-key that pair exactly
-([#1062](https://github.com/pH14/harmony/issues/1062)).
+([#1062](https://github.com/pH14/harmony/issues/1062)). A run rooted with `root_input`
+re-keys from the accumulator its records header holds for the root, and the tool
+refuses a given strategy for it, other than the recorded one, that has a latched
+stage or a `highest` aggregate, because that strategy's accumulator at the root
+cannot be rebuilt without the root's frames.
 
 ## Chord draw
 
