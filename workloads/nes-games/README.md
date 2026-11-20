@@ -197,7 +197,12 @@ short costs the frames up to the stop, while its planned cost
 (`planned_cost_fn`, the chord's hold) counts the whole hold. A snapshot holds
 the `NesObservation` and the accumulator alone. A goal frame is a terminal objective, and a rejected
 frame is a doomed terminal. Named progress reports each `sometimes`
-declaration by name with its first execution. The strategy's policy identifier
+declaration by name with its first execution. With `with_milestone_input_dir`,
+the input of each first sighting is written to `<name>.json` by
+`publish_milestone_inputs`, the writer the Mega Man 2, Castlevania and Metroid
+campaigns also use. A witness replay names the declarations and records the
+replayed action that first satisfied each one, so `nes-eval` checks that every
+tape reproduces its name. The strategy's policy identifier
 is part of the recorded workload policies, and `with_strategy` builds the same
 workload under another strategy. The `Arcade` trait gives a game state's
 arcade view, motion sample and cleared count, and the draw mixture, and

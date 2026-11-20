@@ -115,7 +115,10 @@ frame per step. A state offers exactly the hand's switch choices, and only
 where the menu can open; with no choice the state offers no move, where the
 hand target idles 12 frames. A switch answer costs the hand switch's 40
 planned frames. nes-eval runs this workload as `mm2-strategy`, whole game from
-power-on, and the hand workload stays `mm2`.
+power-on, and the hand workload stays `mm2`. A strategy run writes the first
+input that satisfied each `sometimes` declaration to
+`campaign/milestone-inputs/<name>.json`, with no stocked tapes, and
+verification replays each one.
 
 [`draw_check.rs`](../../../nes-games/src/mm2/draw_check.rs) checks that the
 declared moves draw what the hand draws: through the chooser at the root and
