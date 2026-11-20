@@ -7,10 +7,11 @@ PG_SOURCE_VERSION=17.10
 PG_SOURCE_URL=https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2
 PG_SOURCE_SHA256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90
 
-# Debian PostgreSQL packages for the x86 workload image.
+# Debian PostgreSQL packages for the x86 workload image. The security pool drops
+# superseded builds, so the pins name a fixed snapshot.debian.org timestamp.
 PG_MAJOR=17
 PG_VERSION=17.11-0+deb13u1
-PG_DEB_BASE=https://deb.debian.org/debian-security/pool/updates/main/p/postgresql-17
+PG_DEB_BASE=https://snapshot.debian.org/archive/debian-security/20261101T000000Z/pool/updates/main/p/postgresql-17
 PG_SERVER_DEB_URL=$PG_DEB_BASE/postgresql-17_17.11-0+deb13u1_amd64.deb
 PG_SERVER_DEB_SHA256=d2ce1ddffafa783f9acda4c92c86fc21e8288bff3782d739294f14fa797d7886
 PG_CLIENT_DEB_URL=$PG_DEB_BASE/postgresql-client-17_17.11-0+deb13u1_amd64.deb
