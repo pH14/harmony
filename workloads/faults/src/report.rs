@@ -209,7 +209,10 @@ mod tests {
     use crate::target::{FaultOperation, FaultStop};
     use std::num::NonZeroU16;
 
-    const WINDOWS: ActionWindows = ActionWindows { root_seal: 1_000 };
+    const WINDOWS: ActionWindows = ActionWindows {
+        root_seal: 1_000,
+        hold_hooks: false,
+    };
     const TICKS: NonZeroU16 = NonZeroU16::new(50).unwrap();
 
     fn sample() -> BugReport {
@@ -248,7 +251,10 @@ mod tests {
 
     #[test]
     fn a_rooted_report_carries_inherited_standing_windows() {
-        let origin = ActionWindows { root_seal: 0 };
+        let origin = ActionWindows {
+            root_seal: 0,
+            hold_hooks: false,
+        };
         let prefix = [FaultAction::from(FaultOperation::EventKill {
             node: 0,
             rarity: 1,
@@ -257,6 +263,7 @@ mod tests {
         let inherited = standing_windows(origin, &prefix).unwrap();
         let rooted = ActionWindows {
             root_seal: origin.window(&prefix, 0).unwrap().1,
+            hold_hooks: false,
         };
         let report = BugReport::new(
             1,
@@ -318,7 +325,10 @@ mod tests {
             bug(4, FaultOperation::Kill(0, TICKS).into()),
             bug(9, FaultOperation::Wait(NonZeroU16::MIN).into()),
         ];
-        let windows = ActionWindows { root_seal: 7 };
+        let windows = ActionWindows {
+            root_seal: 7,
+            hold_hooks: false,
+        };
         let answer = |step| GuestAnswer {
             step,
             choice: 0,

@@ -597,6 +597,23 @@ definite failure only on a dial error. Other write errors are indeterminate,
 and read errors are definite. The Dockerfile knows the source SHA-256 of
 `v10.6.2` (default); pass `RQLITE_SOURCE_SHA256` for other versions.
 
+Search either bundle with both hook options of the
+[faults package](../faults/README.md) on:
+
+```toml
+[workload.options]
+hooks_replace_waits = true
+hold_hooks = true
+```
+
+A follower that forwards a request gives the leader 30 seconds to answer and
+then resends it once on a new connection. A forwarded append is therefore
+applied twice only when a cut of the follower-to-leader link outlasts that
+deadline and lifts soon after, and the options make such cuts common. On
+v10.6.2 `bundle-forward` with `ram_mib = 2048`, searches with both options on
+found a duplicated append in each of four seeds, within 2,391 to 7,192 guest
+seconds. Four seeds with both off found none in 17.6 guest hours.
+
 ## etcd
 
 `targets/etcd` drives the `register` family through the etcd v3 JSON gateway

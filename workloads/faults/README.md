@@ -199,7 +199,9 @@ instrumented target.
 ## Actions
 
 Every action records its own duration in 10 ms guest ticks, from 10 ms through
-10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
+10.24 seconds, and the next action starts when that duration ends
+([`target`](src/target.rs)). Each action's window lasts its duration, except a
+`Hook`'s, which can outlast it, as described below. The
 search draws one duration per suffix from the adaptive duration policy, and
 every action in the suffix takes it. Half of those draws repeat the parent's
 last duration while jobs from the parent still keep states, so a lineage keeps
@@ -239,7 +241,7 @@ timing:
 | `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
-| `Hook(id, ticks)` | the supervisor runs that hook once; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
+| `Hook(id, ticks)` | the supervisor runs that hook once when its window opens; the window lasts the action's duration, or with the `hold_hooks` option its duration times 1, 2, 4 or 8, set by the top two bits of the action's `choice`, so it can overlap the actions after it; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
 | `ClockAll(offset_ms, rate_ppm, ticks)` | every node's wall clock shifts as in `Clock`, each by a factor in [-1, 1] that the action's `choice` sets per node; drawn only for VM execution with more than one node |
 
@@ -251,6 +253,29 @@ installs a kill as a process restart window over the whole action window, and
 a power loss as a power-loss window plus a restart window over the same span.
 Two adjacent kills of one node join into one longer hold.
 
+With the `hold_hooks` option, a network cut is the exception: it can stay in
+force while later actions run. Clients commonly give up on a request after tens
+of seconds, such as rqlite's 30-second forward timeout. A cut shorter than such
+a timeout delays the reply, and only a longer one makes the client retry. A
+held `Hook` window therefore lasts up to eight action durations, at most 81.92
+seconds, while the timeline still advances by each action's own duration. A cut
+stays in force while any cut window is open. A drawn heal hook lifts every cut at once. When the last cut
+window closes, the supervisor heals as before.
+
+This follows Antithesis's documented fault model
+(https://antithesis.com/docs/environment/fault_injection/fault_types/):
+- each fault is a window that expires on its own;
+- faults are scheduled independently of one another and can overlap;
+- a restore fault ends every network fault at once.
+
+The parts that are ours:
+- the window is the action's duration times 2^j, with j from 0 through 3;
+- j comes from the top two bits of `choice`;
+- the longest window is 81.92 seconds.
+
+The hold is part of the action through `choice`, so a search that redraws
+retained actions redraws their holds with them.
+
 Each drawn job also takes a draw profile from its mutation seed, as in swarm
 testing. The profile keeps each offered fault kind with probability one half,
 or every offered kind when it keeps none. It weighs `Wait` against each kept
@@ -258,6 +283,35 @@ kind by a power of two from 1 through 64, drawn uniformly over the exponents.
 Every action of the job draws its kind from that profile. A job with a heavy
 `Wait` weight leaves quiet time between faults, so the check can run while the
 cluster recovers. A job with weight 1 draws `Wait` as one more kind.
+
+With the `hooks_replace_waits` option, in half of the jobs, chosen by the top
+bit of the profile's kind word, the `Wait` weight draws `Hook` instead, so the
+job draws no `Wait`. Every other kept kind keeps its one share of the same
+total, so its rate per action does not change. Only how often a network fault
+stands while it runs changes. This follows Antithesis's fault model, in which
+faults are scheduled independently and overlap. A vocabulary that offers no
+hook draws the same with the option or without it. A single duration serves
+every action of a suffix, and most guest time is spent in actions of 5 to 10
+seconds, so without these jobs a hook is rare. A network
+cut long enough to outlast a client timeout then seldom stands while a request
+is in flight.
+
+The cost is quiet time. With rqlite's 13 offered kinds, `Wait` falls from 54%
+of the drawn actions to 27%, and hooks rise from 4% to 31%, so more checks
+run while a cut is in force. A search execution's last checks run at the
+endpoint of its last action, with no settle. A replay settles until a check
+starts and finishes in one disturbance generation with no pending process
+fault. An unhealed cut is not a pending process fault, so the settlement does
+not wait for hook windows and can end while a held cut still stands; this is
+tracked in [#993](https://github.com/pH14/harmony/issues/993). A check
+that starts under a standing cut sees `HARMONY_FAULTS_IN_FORCE=1` (see the
+[supervisor README](../../consonance/harmony-linux/supervisor/README.md)), and
+the harness kit then skips its replica comparison and does not fail it, so a
+divergence that only that comparison shows is checked only in the stretches
+between cuts. Even between cuts, the comparison misses a write that one node
+applied alone once its key is written again, for a target whose copies carry
+no per-key metadata; this is tracked in
+[#1032](https://github.com/pH14/harmony/issues/1032).
 
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
@@ -278,7 +332,42 @@ name: `kill`, `kill_all`, `pause`, `restart`, `hook`, `power_loss`,
 `power_loss_all`, `disk_error`, `disk_stall`, `disk_corrupt`, `event_kill`,
 `event_park`, `clock` and `clock_all`. The search then never draws them. `Wait` is always drawn. The
 search records the excluded kinds in its vocabulary identifier, so a resumed
-search keeps them. A replay of recorded actions runs every action it is given.
+search keeps them. A run of recorded actions records the same vocabulary, so a
+search from a branch of the run leaves them out too. A replay of recorded
+actions runs every action it is given.
+
+Two more options in `[workload.options]` change how hooks are drawn and how
+long they stand. Each is off unless the workload sets it to `true`:
+- `hooks_replace_waits` gives the `Wait` weight to `Hook` in half of the jobs,
+  as described above.
+- `hold_hooks` lets a `Hook` window last 1, 2, 4 or 8 times its action's
+  duration.
+
+The search records each option that is on in its vocabulary identifier, and a
+run records the same vocabulary, so a resumed search and a search from a
+branch of a run keep it. The identifier names no option when both are off.
+The target identity includes `hold_hooks`, so held and unheld executions share
+no cached snapshot. A replay holds hooks as its config says, so a held
+search's actions replay as searched only under the search's config.
+
+Both are off by default because both take away the quiet time that a
+readiness property needs. Garage's `workload becomes ready within 30 seconds
+after faults end` fails only when the workload stays not ready through 30
+seconds with no fault in force, and the supervisor counts an open hook window
+as a fault in force. With `hooks_replace_waits`, the drawn part of half of the
+jobs has no `Wait`. With `hold_hooks`, each cut window lasts up to seven more
+action durations. Three Garage seeds with both options on found that failure
+once, after 21 executions and 1,780.5 guest seconds, and a fault or hook
+window was open for 86% of the finding's input. Three seeds with both off
+found it twice, after 2 and 9 executions (122.9 and 777.0 guest seconds),
+with windows open for 58% and 65% of the inputs. This is a mechanism read
+from the code and those three findings, not a measured effect. All six seeds
+ran with `ram_mib = 1024`, below the 2048 that the
+[harness README](../harness/README.md#garage) requires, and guest
+out-of-memory kills ([#992](https://github.com/pH14/harmony/issues/992))
+confound one seed in each arm. The runs also do not separate the two options.
+rqlite's searches turn both on
+([harness README](../harness/README.md#rqlite)).
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
@@ -734,6 +823,10 @@ to and including the failing action and with the branch root's actions,
 becomes a `failure-N.json` file in the run directory (at most 64 per campaign),
 and the search prints the file name. `harmony debug run --actions
 failure-N.json` replays the input, and its console shows the guest's error.
+The search's own message does not carry that error, and a guest
+out-of-memory kill in a deep lineage is recorded as an ordinary failed
+execution; both are tracked in
+[#992](https://github.com/pH14/harmony/issues/992).
 
 The searcher stops the campaign when the current run of consecutive hung jobs
 is too long for the hang rate seen before it. With `h` hangs in the `n` jobs

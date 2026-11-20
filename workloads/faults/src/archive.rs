@@ -84,23 +84,34 @@ pub fn action_cost(action: &FaultAction) -> u64 {
 pub struct DrawProfile {
     pub kinds: u64,
     pub wait_weight: usize,
+    pub wait_draws_hooks: bool,
 }
 
 pub const QUIET_WEIGHT_EXPONENTS: usize = 7;
+
+const WAIT_DRAWS_HOOKS_BIT: u32 = 63;
+
+const HOOK_ALTERNATIVE: usize = 4;
 
 impl DrawProfile {
     pub const EVERY_KIND: Self = Self {
         kinds: u64::MAX,
         wait_weight: 1,
+        wait_draws_hooks: false,
     };
 
-    pub fn draw(rand: &mut RomuDuoJrRand) -> Result<Self, Box<dyn Error>> {
+    pub fn draw(
+        rand: &mut RomuDuoJrRand,
+        vocabulary: &FaultVocabulary,
+    ) -> Result<Self, Box<dyn Error>> {
         let kinds = rand.next_u64();
         let exponent = rand
             .below(NonZeroUsize::new(QUIET_WEIGHT_EXPONENTS).ok_or("empty quiet weight range")?);
         Ok(Self {
             kinds,
             wait_weight: 1 << exponent,
+            wait_draws_hooks: vocabulary.hooks_replace_waits()
+                && kinds >> WAIT_DRAWS_HOOKS_BIT == 1,
         })
     }
 }
@@ -143,7 +154,11 @@ pub fn sample_profiled_action(
         (FaultKind::Kill, 1, true),
         (FaultKind::Pause, 2, true),
         (FaultKind::Restart, 3, true),
-        (FaultKind::Hook, 4, !vocabulary.hooks().is_empty()),
+        (
+            FaultKind::Hook,
+            HOOK_ALTERNATIVE,
+            !vocabulary.hooks().is_empty(),
+        ),
         (FaultKind::KillAll, 7, several),
         (FaultKind::PowerLoss, 8, disks),
         (FaultKind::DiskError, 10, disks),
@@ -172,11 +187,16 @@ pub fn sample_profiled_action(
         .copied()
         .filter(|&alternative| profile.kinds & (1 << alternative) != 0)
         .collect::<Vec<_>>();
+    let quiet = if profile.wait_draws_hooks && offered.contains(&HOOK_ALTERNATIVE) {
+        HOOK_ALTERNATIVE
+    } else {
+        0
+    };
     let faults = if kept.is_empty() { offered } else { kept };
     let drawn = pick(rand, profile.wait_weight + faults.len())?;
     let alternative = drawn
         .checked_sub(profile.wait_weight)
-        .map_or(0, |index| faults[index]);
+        .map_or(quiet, |index| faults[index]);
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
         let mut bits = event_ready;
@@ -196,7 +216,7 @@ pub fn sample_profiled_action(
         1 => FaultOperation::Kill(node, ticks),
         2 => FaultOperation::Pause(node, ticks),
         3 => FaultOperation::Restart(node, ticks),
-        4 => FaultOperation::Hook(
+        HOOK_ALTERNATIVE => FaultOperation::Hook(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
             ticks,
         ),
@@ -971,6 +991,7 @@ mod tests {
         let kill_only = draw(DrawProfile {
             kinds: 1 << 1,
             wait_weight: 4,
+            wait_draws_hooks: false,
         });
         assert!(kill_only.iter().all(|operation| matches!(
             operation,
@@ -984,6 +1005,7 @@ mod tests {
         let none_kept = draw(DrawProfile {
             kinds: 0,
             wait_weight: 1,
+            wait_draws_hooks: false,
         });
         assert_eq!(
             none_kept,
@@ -992,7 +1014,11 @@ mod tests {
         );
         let mut rand = RomuDuoJrRand::with_seed(5);
         let weights = (0..2_000)
-            .map(|_| DrawProfile::draw(&mut rand).unwrap().wait_weight)
+            .map(|_| {
+                DrawProfile::draw(&mut rand, &vocabulary)
+                    .unwrap()
+                    .wait_weight
+            })
             .collect::<BTreeSet<_>>();
         assert_eq!(
             weights,
@@ -1000,6 +1026,118 @@ mod tests {
                 .map(|exponent| 1 << exponent)
                 .collect()
         );
+    }
+
+    fn count_kinds(operations: &[FaultOperation]) -> (usize, usize, usize, usize) {
+        operations
+            .iter()
+            .fold((0, 0, 0, 0), |(w, k, p, h), operation| match operation {
+                FaultOperation::Wait(_) => (w + 1, k, p, h),
+                FaultOperation::Kill(..) => (w, k + 1, p, h),
+                FaultOperation::Pause(..) => (w, k, p + 1, h),
+                FaultOperation::Hook(..) => (w, k, p, h + 1),
+                other => panic!("unexpected kind {other:?}"),
+            })
+    }
+
+    #[test]
+    fn with_hooks_replacing_waits_half_of_drawn_profiles_give_their_wait_weight_to_hooks() {
+        let plain = FaultVocabulary::new(3, vec![1, 4]).expect("vocabulary");
+        let replacing = plain.clone().with_hooks_replace_waits(true);
+        let mut flagged = 0;
+        for seed in 0..4_000 {
+            let profile =
+                DrawProfile::draw(&mut RomuDuoJrRand::with_seed(seed), &replacing).unwrap();
+            let off = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(seed), &plain).unwrap();
+            let mut reference = RomuDuoJrRand::with_seed(seed);
+            let kinds = reference.next_u64();
+            let exponent = reference.below(NonZeroUsize::new(QUIET_WEIGHT_EXPONENTS).unwrap());
+            assert_eq!(profile.kinds, kinds);
+            assert_eq!(profile.wait_weight, 1 << exponent);
+            assert_eq!(profile.wait_draws_hooks, kinds >> 63 == 1);
+            assert_eq!(
+                off,
+                DrawProfile {
+                    wait_draws_hooks: false,
+                    ..profile
+                }
+            );
+            flagged += usize::from(profile.wait_draws_hooks);
+        }
+        assert!((1_800..2_200).contains(&flagged));
+        const { assert!(!DrawProfile::EVERY_KIND.wait_draws_hooks) };
+    }
+
+    #[test]
+    fn a_profile_whose_wait_draws_hooks_keeps_every_other_kind_at_its_rate() {
+        let vocabulary = FaultVocabulary::new(3, vec![1, 4]).expect("vocabulary");
+        let draw = |wait_draws_hooks| {
+            let mut rand = RomuDuoJrRand::with_seed(23);
+            let operations = (0..6_000)
+                .map(|_| {
+                    sample_profiled_action(
+                        &mut rand,
+                        &vocabulary,
+                        0,
+                        TICKS,
+                        None,
+                        DrawProfile {
+                            kinds: (1 << 1) | (1 << 2),
+                            wait_weight: 4,
+                            wait_draws_hooks,
+                        },
+                    )
+                    .expect("draw")
+                    .operation
+                })
+                .collect::<Vec<_>>();
+            count_kinds(&operations)
+        };
+        let (waits, kills, pauses, hooks) = draw(false);
+        assert_eq!(hooks, 0);
+        assert!((3_800..4_200).contains(&waits));
+        assert!((850..1_150).contains(&kills) && (850..1_150).contains(&pauses));
+        let (waits, kills, pauses, hooks) = draw(true);
+        assert_eq!(waits, 0);
+        assert!((3_800..4_200).contains(&hooks));
+        assert!((850..1_150).contains(&kills) && (850..1_150).contains(&pauses));
+    }
+
+    #[test]
+    fn wait_draws_hooks_changes_nothing_when_no_hook_is_offered() {
+        let hookless = FaultVocabulary::new(3, Vec::new()).expect("vocabulary");
+        let excluded = FaultVocabulary::new(3, vec![1])
+            .expect("vocabulary")
+            .excluding(&[FaultKind::Hook]);
+        for vocabulary in [hookless, excluded] {
+            let draw = |wait_draws_hooks| {
+                let mut rand = RomuDuoJrRand::with_seed(29);
+                (0..2_000)
+                    .map(|_| {
+                        sample_profiled_action(
+                            &mut rand,
+                            &vocabulary,
+                            0,
+                            TICKS,
+                            None,
+                            DrawProfile {
+                                kinds: (1 << 1) | (1 << 4),
+                                wait_weight: 8,
+                                wait_draws_hooks,
+                            },
+                        )
+                        .expect("draw")
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let plain = draw(false);
+            assert_eq!(draw(true), plain);
+            assert!(
+                plain
+                    .iter()
+                    .any(|action| matches!(action.operation, FaultOperation::Wait(_)))
+            );
+        }
     }
 
     #[test]
