@@ -18,8 +18,8 @@ pub use checks::{Checker, Finding, THIN_TIER_STATES};
 pub use compile::{Accumulator, Compiled, KeyView, MAX_AGGREGATES, OBJECTIVE_WIDTH, Observed};
 pub use key::{AssertionKey, MAX_PREFERENCES, Wide};
 pub use records::{
-    RECORDS_FORMAT, RecordedAction, Recording, RecordsHeader, RecordsSize, RecordsWriter,
-    StreamIdentity,
+    RECORDS_FORMAT, RecordedAction, RecordedJobs, Recording, RecordsHeader, RecordsSize,
+    RecordsWriter, StreamIdentity,
 };
 pub use rekey::{Holders, RecordedJob, Rekeyed, Rekeying, Tier, same_decisions};
 pub use shadow::{Disagreements, ShadowCursor, ShadowReport, ShadowTable, ShadowTier};

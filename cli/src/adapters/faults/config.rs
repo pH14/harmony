@@ -187,6 +187,10 @@ pub struct Config {
     pub hooks: BTreeMap<String, Vec<String>>,
     pub explain: Explain,
     pub exclude_faults: Vec<faults_workload::bundle::FaultKind>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hooks_replace_waits: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hold_hooks: bool,
     pub key: faults_workload::key::KeyRequest,
 }
 
@@ -214,6 +218,8 @@ impl Default for Config {
             hooks: BTreeMap::new(),
             explain: Explain::default(),
             exclude_faults: Vec::new(),
+            hooks_replace_waits: false,
+            hold_hooks: false,
             key: faults_workload::key::KeyRequest::default(),
         }
     }
@@ -518,6 +524,29 @@ mod tests {
         assert!(shared("[\"wait\"]").is_err());
         assert!(shared("[\"disk-corrupt\"]").is_err());
         assert!(Config::default().exclude_faults.is_empty());
+    }
+
+    #[test]
+    fn hook_options_come_from_workload_options_and_are_written_only_when_on() {
+        let shared = |options: &str| -> Result<Config> {
+            let shared: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options]\n{options}"
+            ))?;
+            Config::from_shared(&shared)
+        };
+        let off = shared("").unwrap();
+        assert!(!off.hooks_replace_waits && !off.hold_hooks);
+        let written = off.shared().unwrap().workload.options;
+        assert!(!written.contains_key("hooks_replace_waits"));
+        assert!(!written.contains_key("hold_hooks"));
+        let on = shared("hooks_replace_waits = true\nhold_hooks = true\n").unwrap();
+        assert!(on.hooks_replace_waits && on.hold_hooks);
+        let restored = Config::from_shared(&on.shared().unwrap()).unwrap();
+        assert!(restored.hooks_replace_waits && restored.hold_hooks);
+        let held = shared("hold_hooks = true\n").unwrap();
+        assert!(!held.hooks_replace_waits && held.hold_hooks);
+        assert!(shared("hold_hooks = 1\n").is_err());
+        assert!(shared("hold_hook = true\n").is_err());
     }
 
     #[test]

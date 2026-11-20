@@ -1239,6 +1239,7 @@ fn walk_recording() -> (Record, Vec<RecordedJob>, Vec<RecordedAction<u8>>) {
         cost: frames.len() as u64,
         frames,
         choices: Vec::new(),
+        context: (action % 2 == 0).then_some(action - 1),
     };
     let actions = vec![
         action(1, 1, walk_frames(0, 0, 16)),
@@ -1269,6 +1270,7 @@ fn walk_header(genesis: Record) -> RecordsHeader {
             workload_identity_sha256: "walk".to_owned(),
         },
         policy: "walk".to_owned(),
+        choice_policy: Some("choices_v1:fixed:49152:0,profile_first".to_owned()),
         strategy: "spread = \"position\"".to_owned(),
         catalog: catalog(),
         memory_windows: vec![(0x6877, 7)],
@@ -1309,7 +1311,19 @@ fn records_round_trip_through_the_delta_encoding() {
     let recording = Recording::<u8>::from_bytes(&bytes).unwrap();
     assert!(recording.header.genesis.action_end());
     assert_eq!(recording.header, header);
+    assert_eq!(
+        recording.header.choice_policy.as_deref(),
+        Some("choices_v1:fixed:49152:0,profile_first")
+    );
     assert_eq!(recording.actions, actions);
+    assert_eq!(
+        recording
+            .actions
+            .iter()
+            .map(|action| action.context)
+            .collect::<Vec<_>>(),
+        [None, Some(1), None, Some(3)]
+    );
     assert_eq!((recording.jobs, recording.truncated_bytes), (2, 0));
     assert!(recording.check_stream(&header.stream, "walk").is_ok());
     assert!(
@@ -1331,7 +1345,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
     let (genesis, _, _) = walk_recording();
     let header = walk_header(genesis);
     let earlier = postcard::to_allocvec(&(
-        "assertion-records-v6",
+        "assertion-records-v7",
         &header.stream,
         &header.policy,
         &header.strategy,
@@ -1345,7 +1359,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
         .to_string();
     assert_eq!(
         error,
-        format!("records format assertion-records-v6 is not {RECORDS_FORMAT}")
+        format!("records format assertion-records-v7 is not {RECORDS_FORMAT}")
     );
 }
 
@@ -1383,6 +1397,7 @@ fn a_cut_records_file_reads_as_its_whole_jobs_and_a_later_file_replaces_the_jobs
                 ChoiceRecord::new(0, vec![0, 2, 5], 2, Choice::Option(5)),
                 ChoiceRecord::new(1, vec![0, 2], 2, Choice::Option(5)),
             ],
+            context: Some(4),
         }))
         .collect();
     let earlier = Recording::<u8>::from_bytes(&bytes[..bytes.len() - 1]).unwrap();
@@ -1488,6 +1503,7 @@ fn a_recorded_action_wider_than_the_record_is_an_error() {
         width: u8,
         changes: Vec<Vec<(u8, i64)>>,
         choices: Vec<ChoiceRecord>,
+        context: Option<u8>,
     }
     let (genesis, _, _) = walk_recording();
     let mut bytes = postcard::to_allocvec(&walk_header(genesis)).unwrap();
@@ -1502,6 +1518,7 @@ fn a_recorded_action_wider_than_the_record_is_an_error() {
                 width,
                 changes: vec![Vec::new()],
                 choices: Vec::new(),
+                context: None,
             }],
         })
         .unwrap(),

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v11";
 pub const MAX_NODES: u16 = 64;
 pub const CHECKSUMMED: &str = "checksummed";
+pub const HOOKS_REPLACE_WAITS: &str = "hooks_replace_waits";
+pub const HOLD_HOOKS: &str = "hold_hooks";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +90,10 @@ pub struct FaultVocabulary {
     clock_faults: bool,
     #[serde(default)]
     excluded: Vec<FaultKind>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hooks_replace_waits: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hold_hooks: bool,
 }
 
 impl FaultVocabulary {
@@ -114,6 +120,8 @@ impl FaultVocabulary {
             instrumented_events: false,
             clock_faults: false,
             excluded: Vec::new(),
+            hooks_replace_waits: false,
+            hold_hooks: false,
         })
     }
 
@@ -150,6 +158,18 @@ impl FaultVocabulary {
         self.excluded.extend_from_slice(kinds);
         self.excluded.sort_unstable();
         self.excluded.dedup();
+        self
+    }
+
+    #[must_use]
+    pub fn with_hooks_replace_waits(mut self, enabled: bool) -> Self {
+        self.hooks_replace_waits = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_hold_hooks(mut self, enabled: bool) -> Self {
+        self.hold_hooks = enabled;
         self
     }
 
@@ -339,6 +359,27 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn hooks_replace_waits(&self) -> bool {
+        self.hooks_replace_waits
+    }
+
+    #[must_use]
+    pub fn hold_hooks(&self) -> bool {
+        self.hold_hooks
+    }
+
+    fn options(&self) -> Option<String> {
+        let names = [
+            (self.hooks_replace_waits, HOOKS_REPLACE_WAITS),
+            (self.hold_hooks, HOLD_HOOKS),
+        ]
+        .into_iter()
+        .filter_map(|(enabled, name)| enabled.then_some(name))
+        .collect::<Vec<_>>();
+        (!names.is_empty()).then(|| names.join(","))
+    }
+
+    #[must_use]
     pub fn identifier(&self) -> String {
         let hooks = self
             .hooks
@@ -371,10 +412,14 @@ impl FaultVocabulary {
         } else {
             "none"
         };
-        format!(
+        let identifier = format!(
             "{VOCABULARY_FORMAT};nodes={};hooks={hooks};disks={disks};checksummed={checksummed};events={events};clock={clock};exclude={excluded}",
             self.nodes,
-        )
+        );
+        match self.options() {
+            Some(options) => format!("{identifier};options={options}"),
+            None => identifier,
+        }
     }
 
     pub fn from_identifier(identifier: &str) -> Result<Self, String> {
@@ -424,8 +469,24 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("exclude="))
             .ok_or("fault vocabulary has no excluded fault list")?;
+        let options = fields
+            .next()
+            .map(|field| {
+                field
+                    .strip_prefix("options=")
+                    .ok_or("fault vocabulary has trailing fields")
+            })
+            .transpose()?;
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
+        }
+        let (mut hooks_replace_waits, mut hold_hooks) = (false, false);
+        for name in options.into_iter().flat_map(|options| options.split(',')) {
+            match name {
+                HOOKS_REPLACE_WAITS => hooks_replace_waits = true,
+                HOLD_HOOKS => hold_hooks = true,
+                _ => return Err(format!("fault vocabulary has an unknown option {name:?}")),
+            }
         }
         let hooks = if hooks.is_empty() {
             Vec::new()
@@ -463,9 +524,14 @@ impl FaultVocabulary {
             .with_checksummed(nodes_of(checksummed)?)?
             .with_instrumented_events(instrumented_events)
             .with_clock_faults(clock_faults)
-            .excluding(&excluded);
+            .excluding(&excluded)
+            .with_hooks_replace_waits(hooks_replace_waits)
+            .with_hold_hooks(hold_hooks);
         if vocabulary.excluded != excluded {
             return Err("fault vocabulary lists excluded fault kinds out of order".to_owned());
+        }
+        if vocabulary.options().as_deref() != options {
+            return Err("fault vocabulary lists its options out of order or twice".to_owned());
         }
         Ok(vocabulary)
     }
@@ -591,6 +657,63 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         assert!(FaultKind::from_name("wait").is_err());
+    }
+
+    #[test]
+    fn hook_options_are_pinned_in_the_identifier_only_when_on() {
+        let off = FaultVocabulary::parse(ETCD).expect("parse");
+        let base = "faultlab_bundle_v11;nodes=1;hooks=1,2;disks=;checksummed=;events=none;clock=none;exclude=";
+        assert_eq!(off.identifier(), base);
+        assert_eq!(
+            serde_json::to_value(&off).expect("serialize"),
+            serde_json::json!({
+                "nodes": 1,
+                "hooks": [1, 2],
+                "disks": [],
+                "checksummed": [],
+                "instrumented_events": false,
+                "clock_faults": false,
+                "excluded": [],
+            })
+        );
+        for (waits, hold, options) in [
+            (true, false, ";options=hooks_replace_waits"),
+            (false, true, ";options=hold_hooks"),
+            (true, true, ";options=hooks_replace_waits,hold_hooks"),
+        ] {
+            let vocabulary = off
+                .clone()
+                .with_hooks_replace_waits(waits)
+                .with_hold_hooks(hold);
+            assert_eq!(
+                (vocabulary.hooks_replace_waits(), vocabulary.hold_hooks()),
+                (waits, hold)
+            );
+            let identifier = vocabulary.identifier();
+            assert_eq!(identifier, format!("{base}{options}"));
+            assert_eq!(
+                FaultVocabulary::from_identifier(&identifier).expect("resolve"),
+                vocabulary
+            );
+            let json = serde_json::to_vec(&vocabulary).expect("serialize");
+            assert_eq!(
+                serde_json::from_slice::<FaultVocabulary>(&json).expect("deserialize"),
+                vocabulary
+            );
+        }
+        for bad in [
+            ";options=",
+            ";options=hold",
+            ";options=hold_hooks,hooks_replace_waits",
+            ";options=hold_hooks,hold_hooks",
+            ";options=hold_hooks;options=hold_hooks",
+            ";hold_hooks",
+        ] {
+            assert!(
+                FaultVocabulary::from_identifier(&format!("{base}{bad}")).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

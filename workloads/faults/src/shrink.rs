@@ -84,6 +84,7 @@ mod tests {
                 root: None,
                 boot_cache: None,
                 answers: Vec::new(),
+                hold_hooks: false,
             },
         );
         let kill = action(FaultOperation::Kill(1, ticks(256)));

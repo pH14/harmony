@@ -952,9 +952,10 @@ fn held_suffix(
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("action duration must be positive")?;
     let event_ready = draw.context;
-    let profile = DrawProfile::draw(&mut RomuDuoJrRand::with_seed(
-        mutation_seed ^ PROFILE_SEED_MIX,
-    ))?;
+    let profile = DrawProfile::draw(
+        &mut RomuDuoJrRand::with_seed(mutation_seed ^ PROFILE_SEED_MIX),
+        &run.vocabulary,
+    )?;
     let mut suffix =
         state.draw(before, replay, |view| {
             draw_suffix(
@@ -1769,6 +1770,7 @@ mod tests {
             root: None,
             boot_cache: None,
             answers: Vec::new(),
+            hold_hooks: false,
         }
     }
 

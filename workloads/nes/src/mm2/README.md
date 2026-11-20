@@ -83,11 +83,68 @@ posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play and the boss intro's 64-frame step. The holder identity is
 the 16-pixel position bucket, the weapon and the menu state. The key declares two
 preferences, and each place keeps the best arrival under each. The first ranks
-health, then summed weapon energy. The second ranks the weapon energies sorted
-lowest first, then health, so it keeps the arrival whose most-drained weapon
-holds the most. Random input fires whatever weapon is equipped, and a summed
+health, then summed weapon energy. The second ranks the three lowest weapon
+energies, lowest first, then health, so it keeps the arrival whose most-drained
+weapons hold the most. Random input fires whatever weapon is equipped, and a summed
 total hides one weapon spent down while the others stay full, which matters
 where a boss takes damage from one weapon only.
+
+## Strategy key
+
+[`nes-games/src/mm2/game.rs`](../../../nes-games/src/mm2/game.rs) declares
+the same key through assertions as the `MegaMan2` `Game`, with the strategy in
+[`mega_man.toml`](../../../nes-games/src/mm2/mega_man.toml). Its decoder carries the
+hand target's per-frame context (fall run, dying run, enemy damage, boss
+intro frames, arrival) in its state. A transition is a forced `Drive` move
+whose steps are the hand target's menu chords, so `NesTarget` plays the same
+award wait, stage-select walk, cursor path and arrival wait. Its award, settle
+and walk idles are multi-frame steps of up to 120 frames. The decoder reads no
+death during a `Drive`, as the hand target's transition reads none. The tier is the
+preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
+inside 64 bits. The hand target finishes the current chord before a stage
+transition, while the strategy target cuts it at the transition frame, so a
+witness's frame count can differ by that remainder; no key differs. The
+hand target ends an action, a weapon switch included, at the frame where the
+player first reads dead, as the strategy target does outside a `Drive` step,
+so a rejected path charges the same frames in each.
+
+A weapon switch is a move at the `weapon` site, declared at 1 in 12 beside
+the chord tree. Its 12 options are P, the eight Robot Master weapons and the
+three items, and each plays the hand target's `WeaponSwitch` menu path one
+frame per step. A state offers exactly the hand's switch choices, and only
+where the menu can open; with no choice the state offers no move, where the
+hand target idles 12 frames. A switch answer costs the hand switch's 40
+planned frames. nes-eval runs this workload as `mm2-strategy`, whole game from
+power-on, and the hand workload stays `mm2`.
+
+[`draw_check.rs`](../../../nes-games/src/mm2/draw_check.rs) checks that the
+declared moves draw what the hand draws: through the chooser at the root and
+at two prefix states, for a job's first ask under the shipped policy, and
+through the harness the hand search and target share. A whole-game run with
+`"shadow": true` gives each hand target a `ShadowHook`. While the shadow is
+on, the hand target drives a transition with `MegaMan2::play`'s chords and
+passes the step states to `forced`.
+
+## Archive memory
+
+An archive entry of the hand workload is 112 bytes, with a 26-byte
+`Mm2ArchiveKey`, and an entry of the strategy workload is 128 bytes, with a
+28-byte `AssertionKey` (`size_of` on aarch64 macOS, release build). The
+strategy entry is larger because its key and its 16-byte milestones take 44
+bytes, against 29 for the hand key and its 3-byte milestones. Archive history compacts once it holds more than a quarter of
+`memory_mib`, so the strategy arm compacts after fewer entries than the hand
+arm, and the two arms' search decisions differ from the first compaction on.
+An outcome that decides a choice for this workload is therefore scored on
+`mm2-strategy`. The archive charges each resident snapshot its struct size, its
+compressed QuickNES state and a 32-byte allocation header, and the strategy
+adds its accumulator's heap, which is empty for this strategy. The struct is 240
+bytes for the strategy and 96 for the hand. Along the Wily 5 root tape the
+compressed state averages 8,126 bytes, so a strategy snapshot is charged 8,398
+bytes against 8,254, and the same 1.5 GiB budget holds about 1.7% fewer
+resident snapshots: 191,785 against 195,131 if snapshots held the whole budget.
+A preference packs into 32 bits, which holds the three lowest
+weapon energies and health at a byte each. The full sorted energies would need
+12 lanes and do not fit.
 
 ## Milestones and evidence
 

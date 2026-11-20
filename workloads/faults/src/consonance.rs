@@ -45,7 +45,7 @@ use crate::guest::{GuestAnswers, GuestChoice, GuestChoices, GuestChooser};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, ObservationCheckpoint, SdkDecoder, action_delta, standing_windows,
+    FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -115,6 +115,7 @@ pub struct FaultConfig {
     pub root: Option<Arc<Vec<u8>>>,
     pub boot_cache: Option<PathBuf>,
     pub answers: Vec<crate::guest::GuestAnswer>,
+    pub hold_hooks: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -418,7 +419,7 @@ impl ActionPlan {
         let mut deadline = windows.root_seal;
         for (action, window) in actions.iter().zip(windows.iter(actions)) {
             let (start, end) = window?;
-            standing.extend(action_delta(*action, (start, end)).standing);
+            standing.extend(windows.delta(*action, (start, end)).standing);
             coverage.push((start, end, action.coverage_quantum));
             deadline = end;
         }
@@ -469,6 +470,7 @@ struct Config {
     uml: Option<UmlLaunch>,
     root: Option<Arc<Vec<u8>>>,
     answers: Arc<GuestAnswers>,
+    hold_hooks: bool,
 }
 
 fn uml_launch(
@@ -813,6 +815,7 @@ impl FaultTarget {
                 .map(|guest| uml_launch(guest, initramfs, config))
                 .transpose()?,
             answers: Arc::new(GuestAnswers::new(&config.answers)?),
+            hold_hooks: config.hold_hooks,
         });
         let (observation, root_seal, history) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -1673,7 +1676,10 @@ impl Live {
             base_identity,
             session,
             setup,
-            windows: ActionWindows { root_seal },
+            windows: ActionWindows {
+                root_seal,
+                hold_hooks: config.hold_hooks,
+            },
             inherited,
             chain: Chain::new(
                 Point {
@@ -2654,6 +2660,11 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
     let base = base_identity(kernel, initramfs, config)?;
     let identity = identity_with_root(&base, config.root.as_deref().map(Vec::as_slice));
+    let identity = if config.hold_hooks {
+        format!("{identity};hold-hooks")
+    } else {
+        identity
+    };
     let answers = GuestAnswers::new(&config.answers)?;
     Ok(if answers.is_empty() {
         identity
@@ -2807,6 +2818,7 @@ mod tests {
             root: None,
             boot_cache: None,
             answers: Vec::new(),
+            hold_hooks: false,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
@@ -2849,6 +2861,7 @@ mod tests {
             root: None,
             boot_cache: None,
             answers: Vec::new(),
+            hold_hooks: false,
         };
         let split = FaultConfig {
             knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
@@ -2866,6 +2879,17 @@ mod tests {
         assert_eq!(
             identity(b"kernel", b"initramfs", &joined),
             identity(b"kernel", b"initramfs", &split)
+        );
+        let held = FaultConfig {
+            hold_hooks: true,
+            ..split.clone()
+        };
+        assert_eq!(
+            identity(b"kernel", b"initramfs", &held).unwrap(),
+            format!(
+                "{};hold-hooks",
+                identity(b"kernel", b"initramfs", &split).unwrap()
+            )
         );
     }
 
@@ -2895,12 +2919,14 @@ mod tests {
                     root: None,
                     boot_cache: None,
                     answers: Vec::new(),
+                    hold_hooks: false,
                 }
                 .session_config(),
                 cache: None,
                 worker: None,
                 uml: None,
                 answers: Arc::default(),
+                hold_hooks: false,
             }),
             actions: std::sync::OnceLock::new(),
             history: FaultHistory::fixture(
@@ -3619,7 +3645,10 @@ mod tests {
             }),
             base_identity: [0; 32],
             setup: SnapId(1),
-            windows: ActionWindows { root_seal: 0 },
+            windows: ActionWindows {
+                root_seal: 0,
+                hold_hooks: false,
+            },
             inherited: Vec::new(),
             chain: Chain::new(
                 Point {
@@ -3801,6 +3830,7 @@ mod tests {
                 root: None,
                 boot_cache: None,
                 answers: Vec::new(),
+                hold_hooks: false,
             },
         );
         let run = crate::campaign::FaultCampaignRun::any_bug(
@@ -4550,6 +4580,7 @@ mod tests {
                 root: None,
                 boot_cache: None,
                 answers: Vec::new(),
+                hold_hooks: false,
             },
         )
     }
@@ -5827,6 +5858,7 @@ mod tests {
                 root: None,
                 boot_cache: None,
                 answers: Vec::new(),
+                hold_hooks: false,
             },
         );
         use searcher::search::campaign::Reporting;
@@ -5863,6 +5895,7 @@ mod tests {
                 root: None,
                 boot_cache: None,
                 answers: Vec::new(),
+                hold_hooks: false,
             },
         );
         let target = unbooted_target();
@@ -7230,7 +7263,15 @@ mod tests {
 
     #[test]
     fn debug_service_is_portable_and_root_identity_includes_saved_state() {
-        let standing = test_branch_config(ActionWindows { root_seal: 1000 }, &[], &[]).unwrap();
+        let standing = test_branch_config(
+            ActionWindows {
+                root_seal: 1000,
+                hold_hooks: false,
+            },
+            &[],
+            &[],
+        )
+        .unwrap();
         let message = process_proto::debug::Message {
             id: 9,
             operation: process_proto::debug::Operation::Input,
@@ -7776,6 +7817,7 @@ mod tests {
             root: None,
             boot_cache: None,
             answers: Vec::new(),
+            hold_hooks: false,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         let run = crate::campaign::FaultCampaignRun::any_bug(
@@ -7854,7 +7896,7 @@ mod tests {
         let mut rows = Vec::new();
         for (index, action) in actions.iter().enumerate() {
             let window = windows.window(actions, index).unwrap();
-            standing.extend(action_delta(*action, window).standing);
+            standing.extend(windows.delta(*action, window).standing);
             rows.push((window.0, window.1, u64::from(action.coverage_quantum.get())));
         }
         let encoded = encode_windows(&standing).unwrap();
@@ -7877,7 +7919,10 @@ mod tests {
 
     #[test]
     fn an_action_plan_answers_guest_choices_with_its_last_action_s_plan_at_its_depth() {
-        let root = ActionWindows { root_seal: 1_000 };
+        let root = ActionWindows {
+            root_seal: 1_000,
+            hold_hooks: false,
+        };
         let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
         let guest = GuestChoices {
             contrary: 1,
@@ -7900,7 +7945,10 @@ mod tests {
         use std::num::NonZeroU16;
 
         let ticks = |value| NonZeroU16::new(value).unwrap();
-        let root = ActionWindows { root_seal: 1_000 };
+        let root = ActionWindows {
+            root_seal: 1_000,
+            hold_hooks: false,
+        };
         let inherited = [StandingWindow {
             class: DecisionClass::Process.as_u16(),
             target: process_target(9, &Fault::ProcEventKill { rarity: 5 }),
@@ -8031,6 +8079,7 @@ mod tests {
         let action = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::MIN));
         let root = ActionWindows {
             root_seal: u64::MAX,
+            hold_hooks: false,
         };
         let empty = ActionPlan::compile(root, &[], &[]).unwrap();
         assert_eq!(empty.deadline, u64::MAX);
@@ -8041,6 +8090,7 @@ mod tests {
         );
         let root = ActionWindows {
             root_seal: u64::MAX - SUPERVISOR_TICK_NANOS,
+            hold_hooks: false,
         };
         assert_eq!(
             ActionPlan::compile(root, &[], &[action]).unwrap().deadline,
@@ -8055,7 +8105,10 @@ mod tests {
         );
         let limit = (environment::channel::MAX_CHANNEL_BYTES - 14) / 24;
         let actions = vec![action; limit + 1];
-        let root = ActionWindows { root_seal: 1000 };
+        let root = ActionWindows {
+            root_seal: 1000,
+            hold_hooks: false,
+        };
         assert!(ActionPlan::compile(root, &[], &actions[..limit]).is_ok());
         assert_eq!(
             ActionPlan::compile(root, &[], &actions)
@@ -8148,7 +8201,10 @@ mod tests {
                 std::num::NonZeroU16::new(8).unwrap(),
             ),
         ];
-        let windows = ActionWindows { root_seal: 1_000 };
+        let windows = ActionWindows {
+            root_seal: 1_000,
+            hold_hooks: false,
+        };
         let configuration = test_branch_config(windows, &[], &actions).unwrap();
         let schedule = test_coverage_schedule(windows, &actions).unwrap();
         let mut handler =
@@ -8294,7 +8350,10 @@ mod tests {
 
     #[test]
     fn root_continuation_keeps_an_unfired_event_kill_window() {
-        let root = ActionWindows { root_seal: 1_000 };
+        let root = ActionWindows {
+            root_seal: 1_000,
+            hold_hooks: false,
+        };
         let prefix = [FaultAction::from(FaultOperation::EventKill {
             node: 0,
             rarity: 1,
@@ -8307,9 +8366,15 @@ mod tests {
         let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
         assert_eq!(decoded.snapshot, b"snapshot");
         assert_eq!(root_standing(&payload).unwrap(), active);
-        let continuation =
-            test_branch_config(ActionWindows { root_seal: moment }, &decoded.standing, &[])
-                .unwrap();
+        let continuation = test_branch_config(
+            ActionWindows {
+                root_seal: moment,
+                hold_hooks: false,
+            },
+            &decoded.standing,
+            &[],
+        )
+        .unwrap();
         let mut original = StandingHandler::from_configuration(&original.configuration).unwrap();
         let mut continuation =
             StandingHandler::from_configuration(&continuation.configuration).unwrap();
@@ -8328,7 +8393,10 @@ mod tests {
             original.respond(moment, &since_start).unwrap(),
             continuation.respond(moment, &since_start).unwrap()
         );
-        let rooted = ActionWindows { root_seal: moment };
+        let rooted = ActionWindows {
+            root_seal: moment,
+            hold_hooks: false,
+        };
         let suffix = [FaultAction::from(FaultOperation::Wait(
             std::num::NonZeroU16::MIN,
         ))];
@@ -8341,6 +8409,7 @@ mod tests {
         let nested_config = test_branch_config(
             ActionWindows {
                 root_seal: nested_moment,
+                hold_hooks: false,
             },
             &nested.standing,
             &[],
@@ -8359,7 +8428,15 @@ mod tests {
     #[test]
     fn inactive_debug_declares_local_but_active_empty_debug_remains_external_and_validates_status()
     {
-        let config = test_branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
+        let config = test_branch_config(
+            ActionWindows {
+                root_seal: 0,
+                hold_hooks: false,
+            },
+            &[],
+            &[],
+        )
+        .unwrap();
         let factory = service_factory();
         let mut standing = factory(&config).unwrap();
         assert_eq!(standing.local_services(), &LOCAL_SERVICES);
@@ -8532,6 +8609,7 @@ mod tests {
             root: None,
             boot_cache: None,
             answers: Vec::new(),
+            hold_hooks: false,
         };
         let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
         for terminal in [false, true] {

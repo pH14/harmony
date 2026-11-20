@@ -12,9 +12,14 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    mm2::action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
+    mm2::{
+        action::{Mm2Action, SWITCH_WAIT_FRAMES, WeaponSwitch, switch_choice},
+        archive::{Mm2ArchiveKey, archive_key},
+        game::{self, Drive, MegaMan2, Mm2Move},
+    },
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
+    workload::{Game, ShadowHook, ShadowToken},
 };
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -381,7 +386,7 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     decode_state_after(wram, None)
 }
 
-fn decode_state_after(
+pub(crate) fn decode_state_after(
     wram: &[u8],
     previous_stage: Option<u8>,
 ) -> Result<Mm2MechanicalState, MachineError> {
@@ -462,7 +467,7 @@ pub fn menu_next_row(menu: u8) -> u8 {
 }
 
 #[must_use]
-pub fn weapon_menu_row(weapon: u8) -> u8 {
+pub const fn weapon_menu_row(weapon: u8) -> u8 {
     if weapon <= LAST_FIRST_PAGE_WEAPON {
         weapon + 1
     } else {
@@ -603,6 +608,119 @@ enum Transition {
     Castle(u8),
 }
 
+fn make_observation(frame_count: u64, state: Mm2MechanicalState) -> Mm2Observations {
+    Mm2Observations {
+        frame_count,
+        decoded: state,
+        dead: state.is_dead(),
+        ..Mm2Observations::default()
+    }
+}
+
+struct FrameWalk {
+    whole_game: bool,
+    genesis: Mm2MechanicalState,
+    start: u64,
+    prior_wram: [u8; WRAM_SIZE],
+    prior_state: Mm2MechanicalState,
+    emitted: bool,
+    observations: Vec<Mm2Observations>,
+    died: bool,
+    dying_run: u32,
+    fall_run: u16,
+    enemy_damage: u8,
+    boss_intro_frames: u16,
+    prior_frame: [u8; WRAM_SIZE],
+    previous: Mm2MechanicalState,
+    arrived: bool,
+    pending: Option<Transition>,
+    ending: bool,
+    decoded: usize,
+}
+
+impl FrameWalk {
+    fn step(&mut self, wram: &[u8; WRAM_SIZE]) -> Option<bool> {
+        let mut state = decode_state_after(wram, Some(self.previous.stage)).ok()?;
+        let previous = self.previous;
+        let steady = state.camera_state != CAMERA_STATE_SCROLLING
+            && previous.camera_state != CAMERA_STATE_SCROLLING
+            && state.screen == previous.screen;
+        let dropped = state.y.wrapping_sub(previous.y);
+        self.fall_run = if steady && dropped > 0 && dropped <= FALL_STEP_LIMIT {
+            self.fall_run.saturating_add(u16::from(dropped))
+        } else {
+            0
+        };
+        let fell_out = self.fall_run > FALL_RUN_LIMIT;
+        let lost_life = if self.whole_game {
+            state.lives < previous.lives
+        } else {
+            state.lives < self.genesis.lives || state.stage < self.genesis.stage
+        };
+        self.ending =
+            self.whole_game && previous.stage == MM2_LAST_WILY_STAGE && state.final_stage_cleared();
+        self.previous = state;
+        let prior_state = self.prior_state;
+        if state.screen != prior_state.screen || state.stage != prior_state.stage {
+            self.enemy_damage = 0;
+        }
+        self.enemy_damage = self
+            .enemy_damage
+            .saturating_add(enemy_damage_between(&self.prior_frame, wram))
+            .min(ENEMY_DAMAGE_CAP);
+        state.enemy_damage = self.enemy_damage;
+        self.boss_intro_frames = if state.boss_intro() {
+            self.boss_intro_frames.saturating_add(1)
+        } else {
+            0
+        };
+        state.boss_intro_frames = self.boss_intro_frames;
+        self.prior_frame = *wram;
+        let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
+            && prior_state.boss_phase < BOSS_PHASE_DEFEATED
+            && state.screen != prior_state.screen;
+        self.dying_run = if state.is_dying() {
+            self.dying_run.saturating_add(1)
+        } else {
+            0
+        };
+        let dead = self.died
+            || state.is_dead()
+            || self.dying_run >= DYING_FRAMES
+            || lost_life
+            || escaped
+            || fell_out;
+        if self.whole_game && !dead {
+            self.pending = transition(state);
+        }
+        let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
+            || preference_tuple(state) != preference_tuple(prior_state)
+            || encounter(state) != encounter(prior_state)
+            || state.boss_phase != prior_state.boss_phase
+            || dead != self.died
+            || self.ending
+            || self.pending.is_some();
+        self.died = dead;
+        self.decoded += 1;
+        if boundary {
+            let frame_count = self
+                .start
+                .saturating_add(u64::try_from(self.decoded).unwrap_or(u64::MAX));
+            let mut observation = make_observation(frame_count, state);
+            observation.dead = dead;
+            observation.fall_run = self.fall_run;
+            observation.dying_run = self.dying_run;
+            observation.ending = self.ending;
+            observation.arrived = std::mem::take(&mut self.arrived);
+            self.observations.push(observation);
+            self.prior_wram = *wram;
+            self.prior_state = state;
+            self.emitted = true;
+        }
+        Some(self.ending || dead || self.pending.is_some())
+    }
+}
+
 fn transition(state: Mm2MechanicalState) -> Option<Transition> {
     if state.stage < MM2_FIRST_WILY_STAGE && state.boss_phase >= BOSS_PHASE_DEFEATED {
         return Some(Transition::RobotMaster(state.stage));
@@ -629,6 +747,8 @@ pub struct Mm2Snapshot {
     emulator_state: Vec<u8>,
     observation: Mm2Observations,
     failed: bool,
+    #[serde(skip)]
+    token: Option<ShadowToken>,
 }
 
 impl Mm2Snapshot {
@@ -645,6 +765,7 @@ impl Mm2Snapshot {
                 ..Mm2Observations::default()
             },
             failed: false,
+            token: None,
         }
     }
 
@@ -704,6 +825,7 @@ pub struct Mm2Target<M: NesBackend<Vec<u8>> + NesMemory> {
     execution_work: u64,
     route: Mm2Route,
     sink: Option<CaptureSink<M>>,
+    shadow: Option<ShadowHook<Mm2ArchiveKey>>,
 }
 
 #[cfg(unix)]
@@ -792,15 +914,18 @@ fn run_chords<M: Machine>(machine: &mut M, chords: &[ButtonChord]) -> Result<(),
 fn drive_switch<E: From<MachineError>>(
     word: u32,
     wram: &[u8],
-    mut run: impl FnMut(ButtonChord) -> Result<Mm2MechanicalState, E>,
+    mut run: impl FnMut(ButtonChord) -> Result<Option<Mm2MechanicalState>, E>,
 ) -> Result<(), E> {
     let mut ran = false;
     if let Some(weapon) = switch_choice(&switch_choices(wram)?, word) {
         let mut switch = WeaponSwitch::to_row(weapon_menu_row(weapon));
         let mut state = decode_state(wram)?;
         while let Some(chord) = switch.next(state) {
-            state = run(chord)?;
             ran = true;
+            match run(chord)? {
+                Some(next) => state = next,
+                None => break,
+            }
         }
     }
     if !ran {
@@ -826,7 +951,7 @@ pub fn run_actions<M: Machine + NesMemory>(
                 drive_switch(word, &wram, |chord| {
                     run_chords(machine, &[chord])?;
                     resolved.push(chord);
-                    decode_state(&machine.read_wram()?)
+                    decode_state(&machine.read_wram()?).map(Some)
                 })?;
                 pending = resolved.len();
             }
@@ -953,7 +1078,7 @@ impl Mm2Target<QuickNesMachine> {
                         let wram = self.machine.read_wram()?;
                         drive_switch(word, &wram, |chord| -> Result<_, Box<dyn Error>> {
                             self.render_action(chord, video_output, audio_output, &mut metadata)?;
-                            Ok(decode_state(&self.machine.read_wram()?)?)
+                            Ok(Some(decode_state(&self.machine.read_wram()?)?))
                         })?;
                     }
                 }
@@ -1169,12 +1294,35 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
             execution_work: 0,
             route,
             sink: None,
+            shadow: None,
         })
     }
 
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
+    }
+
+    pub fn set_shadow(&mut self, shadow: ShadowHook<Mm2ArchiveKey>) {
+        shadow.start(&self.current_wram);
+        self.shadow = Some(shadow);
+    }
+
+    pub fn shadow(&self, hand: Option<Mm2ArchiveKey>) {
+        if let Some(shadow) = &self.shadow {
+            shadow.observe(hand);
+        }
+    }
+
+    pub fn shadow_current(&self) {
+        if self.exit_kind() != ExitKind::Ok {
+            return;
+        }
+        if self.is_dead() && !self.objective_reached() {
+            self.shadow(None);
+        } else {
+            self.shadow(Some(archive_key(self.mechanical_state())));
+        }
     }
 
     #[must_use]
@@ -1257,7 +1405,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         self.current_wram = wram;
         self.observation = Mm2Observations {
             arrived: decoded.arrived_at(Mm2Stage(decoded.stage)),
-            ..self.make_observation(frame_count, decoded)
+            ..make_observation(frame_count, decoded)
         };
         self.action_observations = vec![self.observation.clone()];
         self.snapshot()
@@ -1302,12 +1450,26 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         }
     }
 
-    fn make_observation(&self, frame_count: u64, state: Mm2MechanicalState) -> Mm2Observations {
-        Mm2Observations {
-            frame_count,
-            decoded: state,
-            dead: state.is_dead(),
-            ..Mm2Observations::default()
+    fn frame_walk(&self) -> FrameWalk {
+        FrameWalk {
+            whole_game: self.route == Mm2Route::WholeGame,
+            genesis: self.genesis_observation.decoded,
+            start: self.observation.frame_count,
+            prior_wram: self.current_wram,
+            prior_state: self.observation.decoded,
+            emitted: false,
+            observations: Vec::new(),
+            died: self.observation.dead,
+            dying_run: self.observation.dying_run,
+            fall_run: self.observation.fall_run,
+            enemy_damage: self.observation.decoded.enemy_damage,
+            boss_intro_frames: self.observation.decoded.boss_intro_frames,
+            prior_frame: self.current_wram,
+            previous: self.observation.decoded,
+            arrived: self.observation.arrived,
+            pending: None,
+            ending: false,
+            decoded: 0,
         }
     }
 
@@ -1331,14 +1493,24 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
 
     fn run_switch(&mut self, word: u32) -> Option<Vec<[u8; WRAM_SIZE]>> {
         let wram = self.current_wram;
+        let mut walk = self.frame_walk();
         let mut frames: Vec<[u8; WRAM_SIZE]> = Vec::new();
         drive_switch(word, &wram, |chord| {
             let ran = self
                 .run_action(&chord)
                 .ok_or_else(|| MachineError::Backend("Mega Man 2 switch chord failed".into()))?;
+            for frame in &ran {
+                walk.step(frame).ok_or_else(|| {
+                    MachineError::Backend("Mega Man 2 switch decode failed".into())
+                })?;
+                if walk.died || walk.ending {
+                    frames.extend(ran);
+                    return Ok(None);
+                }
+            }
             let state = decode_state(ran.last().unwrap_or(&wram));
             frames.extend(ran);
-            state
+            state.map(Some)
         })
         .ok()?;
         Some(frames)
@@ -1407,6 +1579,49 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         Some(frames + self.wait_for_arrival(next, limit)?)
     }
 
+    fn drive_as_played(
+        &mut self,
+        transition: Transition,
+        departure: &[u8; WRAM_SIZE],
+    ) -> Option<u64> {
+        let transition = match transition {
+            Transition::RobotMaster(stage) => game::Transition::RobotMaster(stage),
+            Transition::Castle(stage) => game::Transition::Castle(stage),
+        };
+        let mut state = game::Mm2State {
+            driving: Some(transition),
+            ..MegaMan2.decode(None, None, departure)
+        };
+        let parent = state;
+        let mut mv = Mm2Move::Drive(Drive::begin(transition));
+        let bound = MegaMan2.move_frames(mv);
+        let mut frames = 0_u64;
+        let mut steps = Vec::new();
+        while let Some(step) = MegaMan2.play(mv, &state) {
+            frames += u64::try_from(self.run_action(&step.chord)?.len()).ok()?;
+            if let Some(CaptureSink(sink)) = &mut self.sink {
+                sink(&mut self.machine).ok()?;
+            }
+            let wram = self.machine.read_wram().ok()?;
+            state = MegaMan2.decode(Some(&parent), Some(&state), &wram);
+            steps.push(wram);
+            if frames > bound {
+                return None;
+            }
+            match step.rest {
+                Some(next) => mv = next,
+                None => break,
+            }
+        }
+        if state.driving.is_some() {
+            return None;
+        }
+        if let Some(shadow) = &self.shadow {
+            shadow.forced(&steps);
+        }
+        Some(frames)
+    }
+
     fn drive(&mut self, transition: Transition) -> Option<u64> {
         match transition {
             Transition::RobotMaster(stage) => self.drive_after_robot_master(stage),
@@ -1427,6 +1642,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
+        if let Some(shadow) = &self.shadow {
+            shadow.start(&self.genesis_wram);
+        }
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -1463,111 +1681,47 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             frames.extend(idle);
         }
         let frames = &frames;
-        let mut prior_wram = self.current_wram;
-        let mut prior_state = self.observation.decoded;
-        let mut emitted = false;
-        let mut observations = Vec::new();
-        let genesis = self.genesis_observation.decoded;
-        let mut died = self.observation.dead;
-        let mut dying_run = self.observation.dying_run;
-        let mut fall_run = self.observation.fall_run;
-        let mut enemy_damage = self.observation.decoded.enemy_damage;
-        let mut boss_intro_frames = self.observation.decoded.boss_intro_frames;
-        let mut prior_frame = self.current_wram;
-        let mut previous = self.observation.decoded;
-        let mut arrived = self.observation.arrived;
-        let mut pending = None;
-        let mut ending = false;
-        let mut decoded_frames = frames.len();
-        for (offset, wram) in frames.iter().enumerate() {
-            let Ok(mut state) = decode_state_after(wram, Some(previous.stage)) else {
-                self.failed = true;
-                return;
-            };
-            let steady = state.camera_state != CAMERA_STATE_SCROLLING
-                && previous.camera_state != CAMERA_STATE_SCROLLING
-                && state.screen == previous.screen;
-            let dropped = state.y.wrapping_sub(previous.y);
-            fall_run = if steady && dropped > 0 && dropped <= FALL_STEP_LIMIT {
-                fall_run.saturating_add(u16::from(dropped))
-            } else {
-                0
-            };
-            let fell_out = fall_run > FALL_RUN_LIMIT;
-            let lost_life = if whole_game {
-                state.lives < previous.lives
-            } else {
-                state.lives < genesis.lives || state.stage < genesis.stage
-            };
-            ending =
-                whole_game && previous.stage == MM2_LAST_WILY_STAGE && state.final_stage_cleared();
-            previous = state;
-            if state.screen != prior_state.screen || state.stage != prior_state.stage {
-                enemy_damage = 0;
-            }
-            enemy_damage = enemy_damage
-                .saturating_add(enemy_damage_between(&prior_frame, wram))
-                .min(ENEMY_DAMAGE_CAP);
-            state.enemy_damage = enemy_damage;
-            boss_intro_frames = if state.boss_intro() {
-                boss_intro_frames.saturating_add(1)
-            } else {
-                0
-            };
-            state.boss_intro_frames = boss_intro_frames;
-            prior_frame = *wram;
-            let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
-                && prior_state.boss_phase < BOSS_PHASE_DEFEATED
-                && state.screen != prior_state.screen;
-            dying_run = if state.is_dying() {
-                dying_run.saturating_add(1)
-            } else {
-                0
-            };
-            let dead = died
-                || state.is_dead()
-                || dying_run >= DYING_FRAMES
-                || lost_life
-                || escaped
-                || fell_out;
-            if whole_game && !dead {
-                pending = transition(state);
-            }
-            let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-                || preference_tuple(state) != preference_tuple(prior_state)
-                || encounter(state) != encounter(prior_state)
-                || state.boss_phase != prior_state.boss_phase
-                || dead != died
-                || ending
-                || pending.is_some();
-            died = dead;
-            if boundary {
-                let frame_count = self
-                    .observation
-                    .frame_count
-                    .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1));
-                let mut observation = self.make_observation(frame_count, state);
-                observation.dead = dead;
-                observation.fall_run = fall_run;
-                observation.dying_run = dying_run;
-                observation.ending = ending;
-                observation.arrived = std::mem::take(&mut arrived);
-                observations.push(observation);
-                prior_wram = *wram;
-                prior_state = state;
-                emitted = true;
-            }
-            if ending || pending.is_some() {
-                decoded_frames = offset + 1;
-                break;
+        let mut walk = self.frame_walk();
+        for wram in frames {
+            match walk.step(wram) {
+                None => {
+                    self.failed = true;
+                    return;
+                }
+                Some(true) => break,
+                Some(false) => {}
             }
         }
+        let FrameWalk {
+            prior_wram,
+            emitted,
+            mut observations,
+            died,
+            dying_run,
+            fall_run,
+            enemy_damage,
+            boss_intro_frames,
+            previous,
+            arrived,
+            pending,
+            ending,
+            decoded: decoded_frames,
+            ..
+        } = walk;
         let action_frames = self
             .observation
             .frame_count
             .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
+        if let Some(shadow) = &self.shadow {
+            shadow.advance(&frames[..decoded_frames]);
+        }
         if let Some(transition) = pending {
-            let Some(driven) = self.drive(transition) else {
+            let driven = if self.shadow.is_some() {
+                self.drive_as_played(transition, &frames[decoded_frames - 1])
+            } else {
+                self.drive(transition)
+            };
+            let Some(driven) = driven else {
                 self.failed = true;
                 return;
             };
@@ -1594,7 +1748,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             .get(decoded_frames.saturating_sub(1))
             .copied()
             .unwrap_or(prior_wram);
-        let endpoint_frame = if ending {
+        let endpoint_frame = if ending || died {
             self.observation
                 .frame_count
                 .saturating_add(u64::try_from(decoded_frames).unwrap_or(u64::MAX))
@@ -1613,7 +1767,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             };
             endpoint_state.enemy_damage = enemy_damage;
             endpoint_state.boss_intro_frames = boss_intro_frames;
-            let mut observation = self.make_observation(endpoint_frame, endpoint_state);
+            let mut observation = make_observation(endpoint_frame, endpoint_state);
             observation.dead = died;
             observation.fall_run = fall_run;
             observation.dying_run = dying_run;
@@ -1655,10 +1809,12 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
             self.failed = true;
             return None;
         };
+        let token = self.shadow.as_ref().map(ShadowHook::saved);
         Some(Mm2Snapshot {
             emulator_state,
             observation: self.observation.clone(),
             failed: self.failed,
+            token,
         })
     }
 
@@ -1673,6 +1829,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
+        if let Some(shadow) = &self.shadow {
+            shadow.restored(snapshot.token.as_ref(), &self.current_wram);
+        }
         Ok(())
     }
 }

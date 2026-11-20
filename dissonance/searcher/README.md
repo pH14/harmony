@@ -718,7 +718,7 @@ where the action is kept. The target writes the decided flag into each recorded
 frame and into the genesis record of the records header. The header also
 lists the memory windows, as address and length pairs, that the workload read
 beside work RAM to decode each frame, empty for a game that reads work RAM
-alone. The assertion records format is `assertion-records-v7`, a records file
+alone. The assertion records format is `assertion-records-v8`, a records file
 of an earlier format is refused by its format string, and `Rekeying` reads the
 recorded flags instead of deciding them again. A latched stage whose goal
 includes `action_end` passes only on a kept state, as the hand plans latch
@@ -801,15 +801,19 @@ from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 
 **Records.** A front end that keeps records writes a file beside the run's
 stream with `RecordsWriter`. The header holds the stream's identity (campaign
-seed and workload identity), the policy identifier, the strategy text, the
-catalog and the genesis record. Each entry is one job: its sequence number,
+seed and workload identity), the policy identifier, the choice policy
+identifier, the strategy text, the catalog and the genesis record. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
 ran for it outside the tape), the record of every frame it decoded, stored
-as changes from the previous frame, and the choices it resolved. The writer
+as changes from the previous frame, the choices it resolved, and the action it
+edited (`context`), when the front end edits one, such as the parent's last
+action for a job's first action. The writer
 writes a job whole once the next job starts or the file finishes, so a file
 cut short by a crash ends in at most one partial job. `Recording::from_bytes`
-reads the whole jobs and reports the bytes left over, `check_stream` refuses a
+reads the whole jobs and reports the bytes left over, `RecordedJobs::from_bytes`
+reads them one job at a time without decoding frames into memory together,
+`check_stream` refuses a
 stream with another identity or key policy, and `continue_with` joins a resumed
 run's file, whose jobs replace the earlier file's from its first job on.
 
@@ -1523,7 +1527,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v21`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v22`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same

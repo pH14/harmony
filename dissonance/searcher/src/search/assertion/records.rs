@@ -4,6 +4,7 @@ use std::{
     error::Error,
     fs::File,
     io::{BufWriter, Write},
+    marker::PhantomData,
     path::Path,
 };
 
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use super::catalog::{ACTION_END_SLOT, Catalog, RECORD_SLOTS, Record};
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v7";
+pub const RECORDS_FORMAT: &str = "assertion-records-v8";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -25,6 +26,7 @@ pub struct RecordsHeader {
     pub format: String,
     pub stream: StreamIdentity,
     pub policy: String,
+    pub choice_policy: Option<String>,
     pub strategy: String,
     pub catalog: Catalog,
     pub memory_windows: Vec<(u64, u32)>,
@@ -39,6 +41,7 @@ pub struct RecordedAction<A> {
     pub cost: u64,
     pub frames: Vec<Record>,
     pub choices: Vec<ChoiceRecord>,
+    pub context: Option<A>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,6 +58,7 @@ struct Encoded<A> {
     width: u8,
     changes: Vec<Vec<(u8, i64)>>,
     choices: Vec<ChoiceRecord>,
+    context: Option<A>,
 }
 
 impl<A: Clone> Encoded<A> {
@@ -91,6 +95,7 @@ impl<A: Clone> Encoded<A> {
             width: u8::try_from(width).unwrap_or(u8::MAX),
             changes,
             choices: recorded.choices.clone(),
+            context: recorded.context.clone(),
         }
     }
 }
@@ -123,6 +128,7 @@ impl<A> Encoded<A> {
             cost: self.cost,
             frames,
             choices: self.choices,
+            context: self.context,
         })
     }
 }
@@ -209,45 +215,84 @@ pub struct Recording<A> {
 
 impl<A: DeserializeOwned> Recording<A> {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let (format, _): (String, _) = postcard::take_from_bytes(bytes)?;
-        if format != RECORDS_FORMAT {
-            return Err(format!("records format {format} is not {RECORDS_FORMAT}").into());
-        }
-        let (header, mut rest): (RecordsHeader, _) = postcard::take_from_bytes(bytes)?;
+        let (header, mut recorded) = RecordedJobs::from_bytes(bytes)?;
         let mut actions = Vec::new();
         let mut jobs = 0;
-        let mut last = None;
-        while !rest.is_empty() {
-            let Ok((job, tail)) = postcard::take_from_bytes::<EncodedJob<A>>(rest) else {
-                break;
-            };
-            if last.is_some_and(|last| job.sequence <= last) {
-                return Err(format!(
-                    "records job {} does not follow job {}",
-                    job.sequence,
-                    last.unwrap_or_default()
-                )
-                .into());
-            }
-            last = Some(job.sequence);
-            rest = tail;
+        for job in &mut recorded {
+            actions.extend(job?);
             jobs += 1;
-            for action in job.actions {
-                actions.push(action.decode(job.sequence)?);
-            }
         }
         Ok(Self {
             header,
             actions,
             jobs,
-            truncated_bytes: rest.len(),
+            truncated_bytes: recorded.truncated_bytes(),
         })
+    }
+}
+
+pub struct RecordedJobs<'a, A> {
+    rest: &'a [u8],
+    last: Option<u64>,
+    actions: PhantomData<A>,
+}
+
+impl<'a, A: DeserializeOwned> RecordedJobs<'a, A> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<(RecordsHeader, Self), Box<dyn Error>> {
+        let (format, _): (String, _) = postcard::take_from_bytes(bytes)?;
+        if format != RECORDS_FORMAT {
+            return Err(format!("records format {format} is not {RECORDS_FORMAT}").into());
+        }
+        let (header, rest): (RecordsHeader, _) = postcard::take_from_bytes(bytes)?;
+        Ok((
+            header,
+            Self {
+                rest,
+                last: None,
+                actions: PhantomData,
+            },
+        ))
+    }
+}
+
+impl<A> RecordedJobs<'_, A> {
+    pub const fn truncated_bytes(&self) -> usize {
+        self.rest.len()
+    }
+}
+
+impl<A: DeserializeOwned> Iterator for RecordedJobs<'_, A> {
+    type Item = Result<Vec<RecordedAction<A>>, Box<dyn Error>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.rest.is_empty() {
+            return None;
+        }
+        let (job, tail) = postcard::take_from_bytes::<EncodedJob<A>>(self.rest).ok()?;
+        if let Some(last) = self.last.filter(|last| job.sequence <= *last) {
+            self.rest = &[];
+            return Some(Err(format!(
+                "records job {} does not follow job {last}",
+                job.sequence
+            )
+            .into()));
+        }
+        self.last = Some(job.sequence);
+        self.rest = tail;
+        Some(
+            job.actions
+                .into_iter()
+                .map(|action| action.decode(job.sequence))
+                .collect(),
+        )
     }
 }
 
 impl<A> Recording<A> {
     pub fn continue_with(mut self, later: Self) -> Result<Self, Box<dyn Error>> {
-        if later.header.policy != self.header.policy || later.header.catalog != self.header.catalog
+        if later.header.policy != self.header.policy
+            || later.header.choice_policy != self.header.choice_policy
+            || later.header.catalog != self.header.catalog
         {
             return Err("a continued recording has another policy or catalog".into());
         }
