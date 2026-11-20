@@ -62,8 +62,8 @@ pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v4";
-pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v5";
+pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v4";
 
 pub const DURATION_IDENTIFIER: &str = "stratified_with_wait_for_control_v1";
 
