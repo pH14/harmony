@@ -8,7 +8,10 @@ use std::{
 };
 
 use machine::quicknes::QuickNesMachine;
-use nes_games::workload::{Game, NesRun, NesWorkload};
+use nes_games::{
+    metroid::game::Metroid,
+    workload::{Game, NesRun, NesWorkload},
+};
 use nes_workload::{
     castlevania::campaign::{CastlevaniaCampaignRun, CastlevaniaGame},
     donkey_kong::{DonkeyKong, DonkeyKongWorkload},
@@ -20,6 +23,7 @@ use nes_workload::{
     film::{Capture, FilmMetadata, Filmable, Reel},
     ice_climbers::{IceClimbers, IceClimbersWorkload},
     joust::{Joust, JoustGame},
+    metroid::MetroidStrategyGame,
     mm2::{MegaMan2, Mm2Workload},
     pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
@@ -514,8 +518,28 @@ fn main() -> Result<()> {
                 identity,
             )
         }
+        "metroid-strategy" => {
+            if args.ai.is_some() {
+                return Err("Metroid takes no ai option".into());
+            }
+            produce(
+                strategic(
+                    MetroidStrategyGame::new(
+                        Metroid,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?,
+                    &args,
+                )?,
+                NesRun,
+                &args,
+                identity,
+            )
+        }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man, Joust and strategy Mega Man 2 scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man, Joust, strategy Mega Man 2 and strategy Metroid scenarios"
                 .into(),
         ),
     }
