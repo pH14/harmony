@@ -614,6 +614,13 @@ v10.6.2 `bundle-forward` with `ram_mib = 2048`, searches with both options on
 found a duplicated append in each of four seeds, within 2,391 to 7,192 guest
 seconds. Four seeds with both off found none in 17.6 guest hours.
 
+Node disks and their write logs live in guest memory, and a write log empties
+only when a power loss replays it, so with `ram_mib = 1024` the guest's
+out-of-memory killer ended 2 executions in 66 guest hours of v10.7.1 `bundle`
+searches, each about 1,100 to 1,200 guest seconds after the path's last power
+loss ([#992](https://github.com/pH14/harmony/issues/992)), while 12 v10.6.2
+`bundle-forward` searches with `ram_mib = 2048` lost none in 53.5 guest hours.
+
 ## etcd
 
 `targets/etcd` drives the `register` family through the etcd v3 JSON gateway
