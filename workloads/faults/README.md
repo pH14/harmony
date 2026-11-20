@@ -307,7 +307,10 @@ that starts under a standing cut sees `HARMONY_FAULTS_IN_FORCE=1` (see the
 [supervisor README](../../consonance/harmony-linux/supervisor/README.md)), and
 the harness kit then skips its replica comparison and does not fail it, so a
 divergence that only that comparison shows is checked only in the stretches
-between cuts.
+between cuts. Even between cuts, the comparison misses a write that one node
+applied alone once its key is written again, for a target whose copies carry
+no per-key metadata; this is tracked in
+[#1032](https://github.com/pH14/harmony/issues/1032).
 
 A drawn clock action changes either the offset or the rate. The offset is a
 power of two from 1 ms through 2^18 ms (about 4.4 minutes) with a random sign.
