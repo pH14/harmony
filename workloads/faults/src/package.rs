@@ -358,14 +358,17 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
                 return Err("event rarity exceeds the runtime hash width".into());
             }
             FaultOperation::EventPark { edges, .. }
+            | FaultOperation::EventParkFromArm { edges, .. }
                 if *edges == 0 || *edges > fault_policy::EVENT_PARK_EDGE_LIMIT =>
             {
                 return Err("event park edge count is outside the runtime range".into());
             }
-            FaultOperation::EventPark { hold_us: 0, .. } => {
+            FaultOperation::EventPark { hold_us: 0, .. }
+            | FaultOperation::EventParkFromArm { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
             }
             FaultOperation::EventPark { hold_us, ticks, .. }
+            | FaultOperation::EventParkFromArm { hold_us, ticks, .. }
                 if u64::from(*hold_us)
                     > u64::from(ticks.get()) * crate::target::SUPERVISOR_TICK_MICROS =>
             {
@@ -1511,6 +1514,20 @@ mod tests {
         assert!(parse_recorded_input(&park(20_000)).is_ok());
         assert!(parse_recorded_input(&park(20_001)).is_err());
         assert!(parse_recorded_input(&park(0)).is_err());
+        let from_arm = |edges, hold_us| {
+            serde_json::to_string(&[FaultAction::from(FaultOperation::EventParkFromArm {
+                node: 0,
+                edges,
+                hold_us,
+                ticks: std::num::NonZeroU16::new(2).unwrap(),
+                target: None,
+            })])
+            .expect("serialize")
+        };
+        assert!(parse_recorded_input(&from_arm(1, 20_000)).is_ok());
+        assert!(parse_recorded_input(&from_arm(1, 20_001)).is_err());
+        assert!(parse_recorded_input(&from_arm(1, 0)).is_err());
+        assert!(parse_recorded_input(&from_arm(0, 1)).is_err());
         let clock = |rate_ppm| {
             serde_json::to_string(&[FaultAction::from(FaultOperation::ClockAll {
                 offset_ms: 0,

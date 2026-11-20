@@ -99,11 +99,13 @@ in `harmony.toml` counts as given. The built-in 1,000 applies only when no
 execution or wall budget is set anywhere.
 
 The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`,
-`knobs` and `exclude_faults` in `workload.options`. `exclude_faults` lists fault
-kinds the search never draws, for example `exclude_faults = ["disk_corrupt",
-"power_loss_all"]`; the
+`knobs`, `exclude_faults` and `resume_park` in `workload.options`.
+`exclude_faults` lists fault kinds the search never draws, for example
+`exclude_faults = ["disk_corrupt", "power_loss_all"]`; the
 [faults README](../workloads/faults/README.md#actions) lists the
-names. Lifecycle commands and node/hook commands are
+names. `resume_park = [SITE, ...]` follows every drawn pause with a park on the
+resumed node, aimed at one of the sites, and `resume_park = []` with a park at
+any edge; the faults README describes it. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
 commands and hooks compile into a supervisor bundle. Omit them to use the image's
 bundle. Services share the image filesystem. See the

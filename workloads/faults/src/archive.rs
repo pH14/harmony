@@ -364,6 +364,46 @@ fn park_hold_us(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u32, Box<
     Ok((low + offset).saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS)?))
 }
 
+const RESUME_PARK_EXPONENTS: usize = 11;
+
+pub fn resume_park(
+    rand: &mut RomuDuoJrRand,
+    node: u16,
+    sites: &[u64],
+    ticks: NonZeroU16,
+) -> Result<FaultAction, Box<dyn Error>> {
+    let (edges, target) = if sites.is_empty() {
+        let exponent = rand.below(
+            NonZeroUsize::new(RESUME_PARK_EXPONENTS).ok_or("empty resume park exponent range")?,
+        );
+        (1_u32 << exponent, None)
+    } else {
+        let site = sites[rand.below(NonZeroUsize::new(sites.len()).ok_or("no resume park site")?)];
+        (
+            1,
+            Some(
+                ParkTarget::new(site, site.saturating_add(1))
+                    .ok_or("resume park site overflows")?,
+            ),
+        )
+    };
+    let operation = FaultOperation::EventParkFromArm {
+        node,
+        edges,
+        hold_us: park_hold_us(rand, ticks)?,
+        ticks,
+        target,
+    };
+    let quantum = searcher::search::duration::DurationPolicy::draw_without_history(
+        rand,
+        std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
+    );
+    Ok(
+        FaultAction::new(operation, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
+            .with_choice(rand.next_u64()),
+    )
+}
+
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
 pub type FaultArchiveEntryReport = ArchiveEntryReport<FaultAction, AssertionKey, FaultMilestones>;
 pub type FaultInput = searcher::search::archive::Input<FaultAction>;
@@ -568,6 +608,7 @@ mod tests {
             FaultOperation::Clock { .. } => 13,
             FaultOperation::ClockAll { .. } => 14,
             FaultOperation::EndFaults(_) => 15,
+            FaultOperation::EventParkFromArm { .. } => 16,
         };
         for _ in 0..2_000 {
             let action =
@@ -615,6 +656,9 @@ mod tests {
                     panic!("a vocabulary without clock faults drew one")
                 }
                 FaultOperation::EndFaults(_) => panic!("a vocabulary drew the end of faults"),
+                FaultOperation::EventParkFromArm { .. } => {
+                    panic!("a vocabulary drew a park that counts from its arming")
+                }
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
@@ -878,7 +922,9 @@ mod tests {
             .with_instrumented_events(true)
             .with_clock_faults(true);
         let kind = |operation: &FaultOperation| match operation {
-            FaultOperation::Wait(_) | FaultOperation::EndFaults(_) => None,
+            FaultOperation::Wait(_)
+            | FaultOperation::EndFaults(_)
+            | FaultOperation::EventParkFromArm { .. } => None,
             FaultOperation::Kill(..) => Some(FaultKind::Kill),
             FaultOperation::KillAll(_) => Some(FaultKind::KillAll),
             FaultOperation::Pause(..) => Some(FaultKind::Pause),

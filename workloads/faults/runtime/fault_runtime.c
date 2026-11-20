@@ -76,6 +76,7 @@ struct harmony_fault_event_state {
     uint8_t kill_rarity;
     uint32_t kill_armed;
     uint32_t park_armed;
+    uint32_t park_from_arm;
     uint64_t park_edges;
     uint64_t park_weight_left;
     uint64_t park_hold_nanos;
@@ -217,7 +218,9 @@ static int harmony_fault_event_rarity_allows(uint64_t before, uint8_t rarity)
 static int harmony_fault_park_spend(uint64_t before)
 {
     uint64_t visits = before == UINT64_MAX ? before : before + 1;
-    uint64_t weight = (UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT) / visits;
+    uint64_t weight = harmony_fault_events.park_from_arm != 0
+                          ? UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT
+                          : (UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT) / visits;
 
     if (weight == 0)
         weight = 1;
@@ -486,7 +489,8 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events.kill_rarity = (uint8_t)first;
                 harmony_fault_events.kill_armed = 1;
             }
-        } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
+        } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK ||
+                   kind == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM) {
             if (second != 0 &&
                 (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT ||
                  (target_end == 0 ? target_start != 0
@@ -500,6 +504,8 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events.park_weight_left =
                     first << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
                 harmony_fault_events.park_hold_nanos = second;
+                harmony_fault_events.park_from_arm =
+                    kind == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM;
                 harmony_fault_events.park_target_start = target_start;
                 harmony_fault_events.park_target_end = target_end;
                 harmony_fault_events.park_armed = 1;

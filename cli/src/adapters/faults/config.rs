@@ -191,6 +191,7 @@ pub struct Config {
     pub hooks_replace_waits: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hold_hooks: bool,
+    pub resume_park: Option<Vec<u64>>,
     pub key: faults_workload::key::KeyRequest,
 }
 
@@ -220,6 +221,7 @@ impl Default for Config {
             exclude_faults: Vec::new(),
             hooks_replace_waits: false,
             hold_hooks: false,
+            resume_park: None,
             key: faults_workload::key::KeyRequest::default(),
         }
     }
@@ -547,6 +549,32 @@ mod tests {
         assert!(!held.hooks_replace_waits && held.hold_hooks);
         assert!(shared("hold_hooks = 1\n").is_err());
         assert!(shared("hold_hook = true\n").is_err());
+    }
+
+    #[test]
+    fn resume_park_comes_from_workload_options_and_survives_roundtrip() {
+        let shared = |options: &str| -> Result<Config> {
+            let shared: crate::config::Config = toml::from_str(&format!(
+                "[workload]\npackage = \"faults\"\n[workload.options]\n{options}"
+            ))?;
+            Config::from_shared(&shared)
+        };
+        for (options, expected) in [
+            ("", None),
+            ("resume_park = []\n", Some(Vec::new())),
+            ("resume_park = [228994]\n", Some(vec![228_994])),
+        ] {
+            let config = shared(options).unwrap();
+            assert_eq!(config.resume_park, expected);
+            assert_eq!(
+                Config::from_shared(&config.shared().unwrap())
+                    .unwrap()
+                    .resume_park,
+                expected
+            );
+        }
+        assert!(shared("resume_park = true\n").is_err());
+        assert!(shared("resume_park = [-1]\n").is_err());
     }
 
     #[test]

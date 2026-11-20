@@ -6,6 +6,7 @@ pub const EVENT_CMD_KILL: u64 = 1;
 pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
 pub const EVENT_CMD_COVERAGE_STATUS: u64 = 4;
+pub const EVENT_CMD_PARK_FROM_ARM: u64 = 5;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
 pub const EVENT_PROTOCOL_VERSION: u64 = 5;
 pub const EVENT_CONTROL_FRAME_SIZE: usize = 40;
@@ -39,6 +40,7 @@ pub enum Command {
         edges: u32,
         hold_nanos: u64,
         target: Option<ParkTarget>,
+        from_arm: bool,
     },
     DisarmPark,
     ParkStatus,
@@ -100,7 +102,17 @@ pub fn encode_command(command: Command) -> [u8; EVENT_CONTROL_FRAME_SIZE] {
             edges,
             hold_nanos,
             target,
-        } => (EVENT_CMD_PARK, u64::from(edges), hold_nanos, target),
+            from_arm,
+        } => (
+            if from_arm {
+                EVENT_CMD_PARK_FROM_ARM
+            } else {
+                EVENT_CMD_PARK
+            },
+            u64::from(edges),
+            hold_nanos,
+            target,
+        ),
         Command::DisarmPark => (EVENT_CMD_PARK, 0, 0, None),
         Command::ParkStatus => (EVENT_CMD_PARK_STATUS, 0, 0, None),
         Command::CoverageStatus => (EVENT_CMD_COVERAGE_STATUS, 0, 0, None),
@@ -144,11 +156,13 @@ pub fn decode_reply(expected: Command, frame: &[u8]) -> Result<Reply, ProtocolEr
         });
     }
     if frame != encode_command(expected) {
-        return Err(if kind == EVENT_CMD_KILL || kind == EVENT_CMD_PARK {
-            ProtocolError::MismatchedReply
-        } else {
-            ProtocolError::UnknownCommand
-        });
+        return Err(
+            if kind == EVENT_CMD_KILL || kind == EVENT_CMD_PARK || kind == EVENT_CMD_PARK_FROM_ARM {
+                ProtocolError::MismatchedReply
+            } else {
+                ProtocolError::UnknownCommand
+            },
+        );
     }
     Ok(Reply::Echo(expected))
 }
@@ -229,14 +243,25 @@ mod tests {
                 edges: 2,
                 hold_nanos: 9,
                 target: None,
+                from_arm: false,
             }),
             words([2, 2, 9, 0, 0])
+        );
+        assert_eq!(
+            encode_command(Command::ArmPark {
+                edges: 3,
+                hold_nanos: 9,
+                target: None,
+                from_arm: true,
+            }),
+            words([5, 3, 9, 0, 0])
         );
         assert_eq!(
             encode_command(Command::ArmPark {
                 edges: 1,
                 hold_nanos: 9,
                 target: ParkTarget::new(0x40, 0x80),
+                from_arm: false,
             }),
             words([2, 1, 9, 0x40, 0x80])
         );
@@ -261,6 +286,7 @@ mod tests {
             edges: 4,
             hold_nanos: 17,
             target: ParkTarget::new(8, 16),
+            from_arm: true,
         };
         let mut wrong = encode_command(park);
         wrong[16] = 18;
