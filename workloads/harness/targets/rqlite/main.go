@@ -23,10 +23,10 @@ import (
 )
 
 const (
-	upsertSQL = "INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"
-	casSQL    = "UPDATE kv SET v = ? WHERE k = ? AND v = ?"
+	upsertSQL = "INSERT INTO kv(k, v, n) VALUES(?, ?, 1) ON CONFLICT(k) DO UPDATE SET v = excluded.v, n = n + 1"
+	casSQL    = "UPDATE kv SET v = ?, n = n + 1 WHERE k = ? AND v = ?"
 	readSQL   = "SELECT v FROM kv WHERE k = ?"
-	keysSQL   = "SELECT k, v FROM kv"
+	keysSQL   = "SELECT k, v, n FROM kv"
 	appendSQL = "INSERT INTO log(v) VALUES(?)"
 	scanSQL   = "SELECT v FROM log ORDER BY id"
 	fenceSQL  = "UPDATE ready SET n = n + 1 WHERE k = 1"
@@ -43,7 +43,7 @@ var nodes = []string{
 var nodeNames = []string{"n1", "n2", "n3"}
 
 var readySQL = [][]any{
-	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT)"},
+	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT, n INTEGER NOT NULL DEFAULT 0)"},
 	{"CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, v TEXT)"},
 	{"CREATE TABLE IF NOT EXISTS ready (k INTEGER PRIMARY KEY, n INTEGER)"},
 	{"INSERT INTO ready(k, n) VALUES(1, 1) ON CONFLICT(k) DO UPDATE SET n = n + 1"},
@@ -356,7 +356,8 @@ func (c *client) read(ctx context.Context, k int64, level string) (any, error) {
 	return nil, fmt.Errorf("query: %d rows for one key", len(res.Values))
 }
 
-// A row has no version, so a copy holds the value alone.
+// A row counts the writes applied to it, so a node that applied a write the
+// others did not keeps a different count after the key is written again.
 func (c *client) replicas(ctx context.Context, keys []string) (map[string]family.Copy, error) {
 	resp, status, err := c.post(ctx, "/db/query?level=none", [][]any{{keysSQL}})
 	if err != nil {
@@ -380,7 +381,7 @@ func (c *client) replicas(ctx context.Context, keys []string) (map[string]family
 		copies[name] = family.Copy{}
 	}
 	for _, row := range res.Values {
-		if len(row) != 2 {
+		if len(row) != 3 {
 			return nil, fmt.Errorf("query: row has %d columns", len(row))
 		}
 		k, ok := row[0].(float64)
@@ -391,10 +392,16 @@ func (c *client) replicas(ctx context.Context, keys []string) (map[string]family
 		if _, wanted := copies[name]; !wanted {
 			continue
 		}
+		writes, ok := row[2].(float64)
+		if !ok {
+			return nil, fmt.Errorf("query: write count %v has type %T", row[2], row[2])
+		}
+		meta := map[string]uint64{"writes": uint64(writes)}
 		switch value := row[1].(type) {
 		case nil:
+			copies[name] = family.Copy{Meta: meta}
 		case string:
-			copies[name] = family.Copy{Value: &value}
+			copies[name] = family.Copy{Value: &value, Meta: meta}
 		default:
 			return nil, fmt.Errorf("query: value %v has type %T", value, value)
 		}

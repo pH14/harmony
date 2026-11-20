@@ -558,8 +558,9 @@ the node logs `/tmp/rqlite/<node>.log` with `log` lines.
 The default `bundle` drives the `register` family on table `kv`. `write` is an
 upsert, `cas` is an `UPDATE` that matches the old value and fails definitely
 when it changes no row, and `read` is a `SELECT` at level `linearizable`. Each
-client sends to one random node with `redirect` and follows one redirect to
-the leader.
+row's column `n` counts the writes applied to it: an insert sets it to 1, and
+an upsert or a `cas` that changes the row adds 1. Each client sends to one
+random node with `redirect` and follows one redirect to the leader.
 
 `bundle-forward` sets `HARNESS_RQLITE_MODE=forward` and drives the `log`
 family on table `log`. `append` inserts a row and returns its
@@ -573,8 +574,12 @@ A read pinned to node `nI` in either bundle first runs
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
 index, then reads from `nI` at level `none`, which answers from `nI`'s own
 SQLite database. A `replicas` read on `nI` takes the same fence and selects
-every row of `kv` at level `none`. A row has no version, so its copies hold
-values alone.
+every row of `kv` at level `none`. Each copy's metadata is the row's write
+count, `writes`. Equal values name one write, and every correct node has
+applied the same writes to that key up to it, so the counts agree. A node that
+applied a write the others never applied keeps a different count after the key
+is written again, which the value alone would no longer show
+([#1032](https://github.com/pH14/harmony/issues/1032)).
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
