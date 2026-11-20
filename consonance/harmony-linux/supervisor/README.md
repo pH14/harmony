@@ -126,7 +126,10 @@ register publishes whether a restarted workload has not yet passed its ready
 probe. The fault-free-checks-started and fault-free-checks-finished registers
 count the checks that started with `HARMONY_FAULTS_IN_FORCE=0` and the ones of
 those that exited successfully, so the host can tell how many checks in an
-execution ran the comparisons a check skips under faults.
+execution ran the comparisons a check skips under faults. The
+fault-free-check-passed register holds the ordinal, among those checks, of the
+latest one that exited successfully, so the host can tell whether a check that
+started after a given moment has passed even when an earlier one failed.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges

@@ -1256,6 +1256,8 @@ pub struct FaultObservations {
     pub faults_in_force: bool,
     #[serde(default)]
     pub recovery_pending: bool,
+    #[serde(default)]
+    pub fault_free_check_passed: u64,
 }
 
 impl FaultObservations {
@@ -1304,6 +1306,7 @@ impl FaultObservations {
             fault_free_checks_finished: value(reg::FAULT_FREE_CHECKS_FINISHED),
             faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
             recovery_pending: value(reg::RECOVERY_PENDING) != 0,
+            fault_free_check_passed: value(reg::FAULT_FREE_CHECK_PASSED),
         }
     }
 

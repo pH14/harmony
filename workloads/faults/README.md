@@ -729,7 +729,9 @@ check has finished 6,000 ticks after they end, or at a new violation, a terminal
 stop, a hang or a cancellation. The target then restores the snapshot and its
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
-those of the run without the phase. A new violation that the run's objective
+those of the run without the phase. The snapshots taken during the phase stay in
+the snapshot cache and can evict others, so cache statistics, worker placement
+and wall time can differ from that run. A new violation that the run's objective
 counts ends the phase with outcome `bug`. The target then applies the phase's
 actions again from the restored snapshot as actions of the job, which reaches
 its objective at the action where the violation appeared: the search reports
@@ -741,8 +743,10 @@ the path and suffix lengths, the job's execution work, the event-kill armed bits
 at the suffix's end, the nodes restarted, the ticks to ready and to the
 comparison, the phase's actions and ticks, the fault-free check count at the
 job's start, after the suffix and after the phase, and the outcome. Every line
-whose outcome is not `compared` also carries the full input for `harmony debug`:
-the path with the phase's actions, or the path alone for a skipped job. A job
+whose outcome is not `compared` also carries the full input as `actions`, so the
+line alone, saved as a file, is an input for `harmony debug`: the path with the
+phase's actions, the path alone for a skipped job, and in either case through
+the action that hung when one did. A job
 that hung, ended terminal, was cancelled or reached its objective gets a line
 with a `skipped:` outcome and no phase. A resumed run replays its recorded jobs
 and appends their lines again.

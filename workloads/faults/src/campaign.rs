@@ -570,11 +570,11 @@ fn apply_settled(
     settled: &[FaultAction],
     stop: &searcher::search::rollout::RolloutStop,
 ) -> Result<Option<Vec<FaultAction>>, Box<dyn Error>> {
-    for (index, action) in settled.iter().enumerate() {
+    for action in settled {
         target.apply(*action);
         target.verify_integrity()?;
         if job_hung(target, "settle execution")? {
-            return Ok(Some(steps.attempted(&settled[..=index])));
+            return Ok(Some(steps.attempted(std::slice::from_ref(action))));
         }
         if steps
             .record(run, target, *action, |_, _| None)
@@ -617,7 +617,7 @@ pub(crate) fn execute_job(
     target.restore(origin_snapshot)?;
     if job_hung(target, "parent reconstruction")? {
         if let Some(policy) = settle_policy {
-            settle::skipped(target, policy, settle_start, 0, settle::Skip::Hung);
+            settle::skipped(target, policy, settle_start, 0, settle::Skip::Hung(None));
         }
         return Ok(hung_job(&[]));
     }
@@ -630,7 +630,13 @@ pub(crate) fn execute_job(
         target.verify_integrity()?;
         if job_hung(target, "parent replay")? {
             if let Some(policy) = settle_policy {
-                settle::skipped(target, policy, settle_start, 0, settle::Skip::Hung);
+                settle::skipped(
+                    target,
+                    policy,
+                    settle_start,
+                    0,
+                    settle::Skip::Hung(Some(*action)),
+                );
             }
             return Ok(hung_job(&[]));
         }
@@ -653,7 +659,13 @@ pub(crate) fn execute_job(
         target.verify_integrity()?;
         if job_hung(target, "suffix execution")? {
             if let Some(policy) = settle_policy {
-                settle::skipped(target, policy, settle_start, index + 1, settle::Skip::Hung);
+                settle::skipped(
+                    target,
+                    policy,
+                    settle_start,
+                    index + 1,
+                    settle::Skip::Hung(Some(*action)),
+                );
             }
             return Ok(hung_job(&suffix[..=index]));
         }
@@ -1677,6 +1689,38 @@ mod tests {
                 Some((0, [0; 32]))
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_hang_after_recorded_actions_reports_each_attempted_action_once() {
+        let wait = |ticks| {
+            FaultAction::new(
+                FaultOperation::Wait(std::num::NonZeroU16::new(ticks).unwrap()),
+                std::num::NonZeroU16::MIN,
+            )
+        };
+        let result = |action| FaultCampaignActionResult {
+            action,
+            observations: Vec::new(),
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                doomed: false,
+                objective_reached: false,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+            cost: ShrinkCost::ZERO,
+            bound: ShrinkCost::ZERO,
+        };
+        let steps = JobSteps {
+            aggregate: FaultMilestones::default(),
+            objective_seen: false,
+            results: vec![result(wait(1)), result(wait(2))],
+        };
+        assert_eq!(
+            steps.attempted(std::slice::from_ref(&wait(3))),
+            vec![wait(1), wait(2), wait(3)]
         );
     }
 

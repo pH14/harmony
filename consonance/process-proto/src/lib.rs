@@ -37,6 +37,7 @@ pub mod registers {
     pub const FAULT_FREE_CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 27;
     pub const FAULTS_IN_FORCE: u32 = SUPERVISOR_REGISTER_BASE + 28;
     pub const RECOVERY_PENDING: u32 = SUPERVISOR_REGISTER_BASE + 29;
+    pub const FAULT_FREE_CHECK_PASSED: u32 = SUPERVISOR_REGISTER_BASE + 30;
 }
 
 pub const PROCESS_CLASS: u16 = 6;
@@ -539,6 +540,7 @@ mod tests {
                 FAULT_FREE_CHECKS_FINISHED,
                 FAULTS_IN_FORCE,
                 RECOVERY_PENDING,
+                FAULT_FREE_CHECK_PASSED,
             ],
             core::array::from_fn(|offset| SUPERVISOR_REGISTER_BASE + offset as u32)
         );

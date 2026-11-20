@@ -101,6 +101,7 @@ pub struct Counters {
     pub fault_free_checks_finished: u64,
     pub faults_in_force: u64,
     pub recovery_pending: u64,
+    pub fault_free_check_passed: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -601,9 +602,10 @@ impl ProcessSupervisor {
             self.counters.fault_free_checks_started.saturating_add(1);
     }
 
-    pub fn note_fault_free_check_finished(&mut self) {
+    pub fn note_fault_free_check_passed(&mut self, ordinal: u64) {
         self.counters.fault_free_checks_finished =
             self.counters.fault_free_checks_finished.saturating_add(1);
+        self.counters.fault_free_check_passed = ordinal;
     }
 
     pub fn set_fault_state(&mut self, faults_in_force: bool, recovery_pending: bool) {
@@ -716,6 +718,7 @@ impl ProcessSupervisor {
             fault_free_checks_finished: self.counters.fault_free_checks_finished,
             faults_in_force: self.counters.faults_in_force,
             recovery_pending: self.counters.recovery_pending,
+            fault_free_check_passed: self.counters.fault_free_check_passed,
             event_kill_armed: self
                 .event_kill_armed
                 .iter()
@@ -1345,11 +1348,12 @@ mod tests {
         let mut sup = Supervisor::new(1);
         sup.note_fault_free_check_started();
         sup.note_fault_free_check_started();
-        sup.note_fault_free_check_finished();
+        sup.note_fault_free_check_passed(2);
         sup.set_fault_state(true, false);
         let snapshot = sup.snapshot();
         assert_eq!(snapshot.fault_free_checks_started, 2);
         assert_eq!(snapshot.fault_free_checks_finished, 1);
+        assert_eq!(snapshot.fault_free_check_passed, 2);
         assert_eq!(snapshot.faults_in_force, 1);
         assert_eq!(snapshot.recovery_pending, 0);
         sup.set_fault_state(false, true);

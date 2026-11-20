@@ -11,7 +11,8 @@ pub use process_proto::registers::{
     EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_ARMED as REG_EVENT_KILL_ARMED,
     EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES, EVENT_KILL_SITE as REG_EVENT_KILL_SITE,
     EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES, EVENT_PARK_HELD as REG_EVENT_PARK_HELD,
-    EVENT_READY as REG_EVENT_READY, FAULT_FREE_CHECKS_FINISHED as REG_FAULT_FREE_CHECKS_FINISHED,
+    EVENT_READY as REG_EVENT_READY, FAULT_FREE_CHECK_PASSED as REG_FAULT_FREE_CHECK_PASSED,
+    FAULT_FREE_CHECKS_FINISHED as REG_FAULT_FREE_CHECKS_FINISHED,
     FAULT_FREE_CHECKS_STARTED as REG_FAULT_FREE_CHECKS_STARTED,
     FAULTS_IN_FORCE as REG_FAULTS_IN_FORCE, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
@@ -52,11 +53,12 @@ pub struct RegisterSnapshot {
     pub fault_free_checks_finished: u64,
     pub faults_in_force: u64,
     pub recovery_pending: u64,
+    pub fault_free_check_passed: u64,
 }
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 30] {
+    pub fn pairs(&self) -> [(u32, u64); 31] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -100,6 +102,7 @@ impl RegisterSnapshot {
             ),
             (REG_FAULTS_IN_FORCE, self.faults_in_force),
             (REG_RECOVERY_PENDING, self.recovery_pending),
+            (REG_FAULT_FREE_CHECK_PASSED, self.fault_free_check_passed),
         ]
     }
 }
@@ -181,6 +184,7 @@ mod tests {
                 (REG_FAULT_FREE_CHECKS_FINISHED, 0),
                 (REG_FAULTS_IN_FORCE, 0),
                 (REG_RECOVERY_PENDING, 0),
+                (REG_FAULT_FREE_CHECK_PASSED, 0),
             ]
         );
     }

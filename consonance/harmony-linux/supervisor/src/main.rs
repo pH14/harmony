@@ -131,10 +131,11 @@ mod runtime {
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
         REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EDGE_CROSSINGS,
         REG_EDGE_DIGEST, REG_EVENT_KILL_ARMED, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE,
-        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_FAULT_FREE_CHECKS_FINISHED,
-        REG_FAULT_FREE_CHECKS_STARTED, REG_FAULTS_IN_FORCE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED,
-        REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RECOVERY_PENDING, REG_RESTARTS,
-        REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
+        REG_EVENT_PARK_FIRES, REG_EVENT_PARK_HELD, REG_EVENT_READY, REG_FAULT_FREE_CHECK_PASSED,
+        REG_FAULT_FREE_CHECKS_FINISHED, REG_FAULT_FREE_CHECKS_STARTED, REG_FAULTS_IN_FORCE,
+        REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS,
+        REG_RECOVERY_PENDING, REG_RESTARTS, REG_TICKS, REG_UNEXPECTED_DEATHS,
+        REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
     use harmony_supervisor::supervise::{Action, RemountCheck, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -155,7 +156,7 @@ mod runtime {
     use std::thread;
     use std::time::Duration;
 
-    const CATALOG: [Point; 30] = [
+    const CATALOG: [Point; 31] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),
         Point::state(REG_HOOKS_STARTED, "supervisor.hooks_started"),
@@ -201,6 +202,10 @@ mod runtime {
         ),
         Point::state(REG_FAULTS_IN_FORCE, "supervisor.faults_in_force"),
         Point::state(REG_RECOVERY_PENDING, "supervisor.recovery_pending"),
+        Point::state(
+            REG_FAULT_FREE_CHECK_PASSED,
+            "supervisor.fault_free_check_passed",
+        ),
     ];
 
     type GuestSdk = Sdk<DeviceTransport>;
@@ -226,7 +231,7 @@ mod runtime {
         child: Child,
         run: u64,
         start_generation: u64,
-        fault_free: bool,
+        fault_free: Option<u64>,
     }
 
     struct RecoveryProbe {
@@ -860,15 +865,16 @@ mod runtime {
         sdk.state_set(REG_CHECKS_STARTED, supervisor.counters().checks_started)
             .map_err(|error| format!("state_set({REG_CHECKS_STARTED}): {error}"))?;
         let in_force = faults_in_force(supervisor, &runtime.hook_faults);
-        let check = spawn_check(
+        let mut check = spawn_check(
             spec,
             argv,
             run,
             supervisor.disturbance_generation(),
             in_force,
         )?;
-        if check.fault_free {
+        if !in_force {
             supervisor.note_fault_free_check_started();
+            check.fault_free = Some(supervisor.counters().fault_free_checks_started);
         }
         runtime.check = Some(check);
         log(tick, &format!("check {run} started"));
@@ -901,8 +907,8 @@ mod runtime {
                 end_generation: supervisor.disturbance_generation(),
                 pid: u64::from(check.child.id()),
             });
-            if check.fault_free {
-                supervisor.note_fault_free_check_finished();
+            if let Some(ordinal) = check.fault_free {
+                supervisor.note_fault_free_check_passed(ordinal);
             }
         } else {
             log(tick, &format!("check {run} exited {status}"));
@@ -1744,7 +1750,7 @@ mod runtime {
             child,
             run,
             start_generation,
-            fault_free: !faults_in_force,
+            fault_free: None,
         })
     }
 

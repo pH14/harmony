@@ -74,7 +74,7 @@ pub(crate) enum Skip {
     Finding,
     Terminal,
     Cancelled,
-    Hung,
+    Hung(Option<FaultAction>),
 }
 
 impl Skip {
@@ -83,7 +83,7 @@ impl Skip {
             Self::Finding => "skipped: the execution reached its objective",
             Self::Terminal => "skipped: the execution ended terminal",
             Self::Cancelled => "skipped: the job was cancelled",
-            Self::Hung => "skipped: the job hung",
+            Self::Hung(_) => "skipped: the job hung",
         }
     }
 }
@@ -119,8 +119,7 @@ impl SettleClock {
             self.ready_after = Some(since_end);
             self.started_at_ready = observation.fault_free_checks_started;
         }
-        if self.ready_after.is_some()
-            && observation.fault_free_checks_finished > self.started_at_ready
+        if self.ready_after.is_some() && observation.fault_free_check_passed > self.started_at_ready
         {
             self.compared_after = Some(since_end);
             return Step::Compared;
@@ -155,7 +154,7 @@ pub(crate) struct SettleRecord {
     pub(crate) faults_in_force_after_settle: bool,
     pub(crate) recovery_pending_after_settle: bool,
     pub(crate) violations: Vec<String>,
-    pub(crate) input: Vec<FaultAction>,
+    pub(crate) actions: Vec<FaultAction>,
     pub(crate) error: Option<String>,
 }
 
@@ -181,7 +180,15 @@ pub(crate) fn skipped(
             .saturating_sub(start.fault_free_checks_finished),
         faults_in_force_after_settle: observation.faults_in_force,
         recovery_pending_after_settle: observation.recovery_pending,
-        input: target.actions().to_vec(),
+        actions: target
+            .actions()
+            .iter()
+            .copied()
+            .chain(match skip {
+                Skip::Hung(action) => action,
+                _ => None,
+            })
+            .collect(),
         ..SettleRecord::default()
     };
     write_record(&policy.record, &record);
@@ -276,10 +283,16 @@ fn settle(
         let operation = planned
             .next()
             .unwrap_or(FaultOperation::Wait(ticks(WAIT_TICKS)));
-        target.apply(FaultAction::new(operation, quantum));
+        let action = FaultAction::new(operation, quantum);
+        let applied = target.actions().len();
+        target.apply(action);
         record.settle_actions += 1;
         if target.watchdog_cutoffs() != 0 || target.infrastructure_failure() || target.failed() {
             record.outcome = "incomplete";
+            record.actions = target.actions().to_vec();
+            if record.actions.len() == applied {
+                record.actions.push(action);
+            }
             break;
         }
         let violations: Vec<String> = target
@@ -291,9 +304,9 @@ fn settle(
         if !violations.is_empty() && run.reproduced_by(target.observation()) {
             record.outcome = "bug";
             record.violations = violations;
-            record.input = target.actions().to_vec();
+            record.actions = target.actions().to_vec();
             found = record
-                .input
+                .actions
                 .get(record.path_actions..)
                 .map(<[FaultAction]>::to_vec);
             break;
@@ -304,8 +317,8 @@ fn settle(
         }
     }
     record.settle_ticks = target.execution_ticks().saturating_sub(began);
-    if record.outcome != "compared" && record.input.is_empty() {
-        record.input = target.actions().to_vec();
+    if record.outcome != "compared" && record.actions.is_empty() {
+        record.actions = target.actions().to_vec();
     }
     found
 }
@@ -332,12 +345,12 @@ fn write_record(path: &Path, record: &SettleRecord) {
 mod tests {
     use super::*;
 
-    fn seen(in_force: bool, pending: bool, started: u64, finished: u64) -> FaultObservations {
+    fn seen(in_force: bool, pending: bool, started: u64, passed: u64) -> FaultObservations {
         FaultObservations {
             faults_in_force: in_force,
             recovery_pending: pending,
             fault_free_checks_started: started,
-            fault_free_checks_finished: finished,
+            fault_free_check_passed: passed,
             ..FaultObservations::default()
         }
     }
@@ -391,6 +404,28 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_check_neither_counts_nor_holds_back_a_later_pass() {
+        let mut clock = SettleClock::default();
+        assert_eq!(
+            clock.observe(Some(0), &seen(false, false, 1, 0)),
+            Step::Continue
+        );
+        assert_eq!(
+            clock.observe(Some(50), &seen(false, false, 2, 0)),
+            Step::Continue
+        );
+        assert_eq!(
+            clock.observe(Some(100), &seen(false, false, 3, 0)),
+            Step::Continue
+        );
+        assert_eq!(
+            clock.observe(Some(150), &seen(false, false, 3, 3)),
+            Step::Compared
+        );
+        assert_eq!(clock.compared_after, Some(150));
+    }
+
+    #[test]
     fn readiness_is_bounded_by_the_recovery_limit() {
         let mut clock = SettleClock::default();
         let unready = seen(false, true, 0, 0);
@@ -416,6 +451,24 @@ mod tests {
         assert_eq!(
             clock.observe(Some(CHECK_LIMIT_TICKS), &running),
             Step::NoFaultFreeCheck
+        );
+    }
+
+    #[test]
+    fn a_record_line_is_a_recorded_input() {
+        let actions = vec![
+            FaultAction::new(FaultOperation::EndFaults(ticks(END_TICKS)), NonZeroU16::MIN),
+            FaultAction::new(FaultOperation::Wait(ticks(WAIT_TICKS)), NonZeroU16::MIN),
+        ];
+        let line = serde_json::to_string(&SettleRecord {
+            outcome: "incomplete",
+            actions: actions.clone(),
+            ..SettleRecord::default()
+        })
+        .unwrap();
+        assert_eq!(
+            crate::package::parse_recorded_input(&line).unwrap().actions,
+            actions
         );
     }
 
