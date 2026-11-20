@@ -60,7 +60,12 @@ WORKDIR /build
 RUN sha256="${RQLITE_SOURCE_SHA256}" \
     && if [ -z "${sha256}" ]; then \
         case "${RQLITE_VERSION}" in \
+            v10.2.7) sha256=d1014f7e6c924fafda67226dd8df7d144fe71e5b5b7aa87e17eaa1e7f168d7b3 ;; \
+            v10.3.0) sha256=bbf2c340554307ab3b0abebf1f5b42c0b5c33f7fb167f83ae8ffb0d1736860cd ;; \
+            v10.3.1) sha256=61b13407c64968861c126fd6190c857d6e163daf11ad252e8c7509f1ff70cd3a ;; \
             v10.6.2) sha256=5c13048d3d7e67174a49b40e4f10656654fe575a115d7aedcc85dede7da4fe1c ;; \
+            v10.7.0) sha256=baf9854cc6ff4492fe940f29d9474b842f49a9078cdc0b8e25f42182bd771ec5 ;; \
+            v10.7.1) sha256=36e21568c1b2f34b7749a2fbb862e63f0fb9f084116d77316f2dbba72c3e227b ;; \
             *) echo "pass RQLITE_SOURCE_SHA256 for ${RQLITE_VERSION}" >&2; exit 1 ;; \
         esac; \
     fi \
@@ -173,5 +178,38 @@ COPY workloads/harness/targets/rqlite/${HARNESS_BUNDLE} /etc/harmony/bundle
 COPY workloads/harness/targets/rqlite/setup.sh workloads/harness/targets/rqlite/node.sh /opt/harmony/
 
 RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
+
+# Every node passes these flags to rqlited; an empty value keeps the version's
+# default.
+ARG RQLITE_RAFT_SNAP=
+ARG RQLITE_RAFT_SNAP_INT=
+RUN bad() { echo "$1" >&2; exit 1; } \
+    && : > /opt/harmony/rqlited-flags \
+    && case "${RQLITE_RAFT_SNAP}" in \
+        "") ;; \
+        0*|*[!0-9]*|???????????????????*) bad "RQLITE_RAFT_SNAP must be a positive entry count of at most 18 digits: ${RQLITE_RAFT_SNAP}" ;; \
+        *) printf -- '-raft-snap %s\n' "${RQLITE_RAFT_SNAP}" >> /opt/harmony/rqlited-flags ;; \
+    esac \
+    && message="RQLITE_RAFT_SNAP_INT must be a positive duration below 2562047h in whole ns, us, ms, s, m or h, such as 1s or 1m30s: ${RQLITE_RAFT_SNAP_INT}" \
+    && rest="${RQLITE_RAFT_SNAP_INT}" \
+    && total=0 \
+    && while [ -n "${rest}" ]; do \
+        digits="${rest%%[!0-9]*}"; \
+        rest="${rest#"${digits}"}"; \
+        number="${digits#"${digits%%[!0]*}"}"; \
+        case "${digits}" in ""|???????????*) bad "${message}" ;; esac; \
+        case "${rest}" in \
+            ns*) scale=1 ;; us*) scale=1000 ;; ms*) scale=1000000 ;; \
+            h*) scale=3600000000000 ;; m*) scale=60000000000 ;; s*) scale=1000000000 ;; \
+            *) bad "${message}" ;; \
+        esac; \
+        case "${rest}" in ns*|us*|ms*) rest="${rest#??}" ;; *) rest="${rest#?}" ;; esac; \
+        [ "$(( ${number:-0} <= (9223372036854775807 - total) / scale ))" = 1 ] || bad "${message}"; \
+        total=$(( total + ${number:-0} * scale )); \
+    done \
+    && if [ -n "${RQLITE_RAFT_SNAP_INT}" ]; then \
+        [ "${total}" -gt 0 ] || bad "${message}"; \
+        printf -- '-raft-snap-int %s\n' "${RQLITE_RAFT_SNAP_INT}" >> /opt/harmony/rqlited-flags; \
+    fi
 
 CMD ["/opt/harmony/node.sh", "n1", "4001", "4002"]
