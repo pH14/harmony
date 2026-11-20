@@ -441,6 +441,8 @@ the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
 `smb_route`, `smb_terminal`, `minimize`, `resume`, `resume_states` and `mixture`. For Super
 Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
 `control_in:7,0`, and `root_input` a tape the game replays before its genesis.
+`smb`, `mm2`, `metroid` and `ice-climbers` take `root_input`, and every other
+game rejects a request that names one.
 For any game, `minimize` runs the campaign in the searcher's minimize mode
 (see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search
 keeps going after its first goal and `victory-input.json` holds the cheapest
