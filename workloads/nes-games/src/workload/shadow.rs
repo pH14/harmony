@@ -1030,6 +1030,7 @@ mod tests {
                     .flat_map(|observation| observation.records.iter().copied())
                     .collect(),
                 choices: Vec::new(),
+                context: None,
             });
             self.jobs.push(RecordedJob {
                 sequence,
@@ -1051,6 +1052,7 @@ mod tests {
                         workload_identity_sha256: G::NAME.to_owned(),
                     },
                     &self.live_kept[0].state,
+                    None,
                 )
                 .unwrap();
             let path = std::env::temp_dir().join(format!(
