@@ -59,7 +59,7 @@ use crate::{
     },
 };
 
-mod settle;
+pub(crate) mod settle;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v13";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
@@ -302,11 +302,8 @@ fn kvm_result_endpoint(
 ) -> Result<FaultEndpointCertificate, Box<dyn Error>> {
     if let Some(last) = result.actions.last()
         && matches!(last.outcome.disposition, ExecutionDisposition::Runnable)
+        && let Some(candidate) = last.candidate.as_ref()
     {
-        let candidate = last
-            .candidate
-            .as_ref()
-            .ok_or("a runnable final action lacks its candidate certificate")?;
         validate_snapshot_prefix_certificates(&candidate.snapshot, false)?;
         if !candidate.viable
             || candidate.snapshot.failed
@@ -520,6 +517,82 @@ fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultA
         .collect()
 }
 
+struct JobSteps {
+    aggregate: FaultMilestones,
+    objective_seen: bool,
+    results: Vec<CampaignActionResult<FaultWorkload>>,
+}
+
+impl JobSteps {
+    fn record(
+        &mut self,
+        run: &FaultCampaignRun,
+        target: &FaultTarget,
+        action: FaultAction,
+        candidate: impl FnOnce(
+            &FaultTarget,
+            ExecutionDisposition,
+        ) -> Option<CampaignCandidate<FaultWorkload>>,
+    ) -> Outcome {
+        merge_action_milestones(&mut self.aggregate, target);
+        let raw = outcome(run, target);
+        let outcome = Outcome {
+            doomed: false,
+            objective_reached: raw.objective_reached && !self.objective_seen,
+            disposition: raw.disposition,
+        };
+        self.objective_seen |= raw.objective_reached;
+        self.results.push(CampaignActionResult {
+            action,
+            observations: target.last_action_observations().to_vec(),
+            milestones: self.aggregate,
+            outcome,
+            candidate: candidate(target, outcome.disposition),
+            cost: fault_cost(&action),
+            bound: ShrinkCost::ZERO,
+        });
+        outcome
+    }
+
+    fn attempted(&self, more: &[FaultAction]) -> Vec<FaultAction> {
+        self.results
+            .iter()
+            .map(|result| result.action)
+            .chain(more.iter().copied())
+            .collect()
+    }
+}
+
+fn apply_settled(
+    run: &FaultCampaignRun,
+    target: &mut FaultTarget,
+    steps: &mut JobSteps,
+    settled: &[FaultAction],
+    stop: &searcher::search::rollout::RolloutStop,
+) -> Result<Option<Vec<FaultAction>>, Box<dyn Error>> {
+    for (index, action) in settled.iter().enumerate() {
+        target.apply(*action);
+        target.verify_integrity()?;
+        if job_hung(target, "settle execution")? {
+            return Ok(Some(steps.attempted(&settled[..=index])));
+        }
+        if steps
+            .record(run, target, *action, |_, _| None)
+            .should_stop(stop)
+        {
+            break;
+        }
+    }
+    if steps.objective_seen || stop.cancelled() {
+        Ok(None)
+    } else {
+        Err(
+            "the settle phase's violation did not recur when its actions were applied to the job"
+                .into(),
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
     key_of: impl Fn(&FaultObservations) -> Option<AssertionKey>,
@@ -531,12 +604,12 @@ pub(crate) fn execute_job(
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
     stop: searcher::search::rollout::RolloutStop,
+    settle_policy: Option<&settle::SettlePolicy>,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     if replay.len() != replay_certificates.len() {
         return Err("fault replay certificate count does not match its action path".into());
     }
     let _cancel = crate::consonance::JobCancel::install(stop.cancellation().cloned());
-    let settle_policy = settle::policy()?;
     let mut settle_start = settle::JobStart {
         work: target.execution_ticks(),
         fault_free_checks_finished: 0,
@@ -565,13 +638,15 @@ pub(crate) fn execute_job(
         crate::job_observation::tail(true);
     }
     settle_start.fault_free_checks_finished = target.observation().fault_free_checks_finished;
-    let mut aggregate = parent_milestones;
-    let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = outcome(run, target);
-    let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
+    let mut steps = JobSteps {
+        aggregate: parent_milestones,
+        objective_seen: parent_outcome.objective_reached,
+        results: Vec::with_capacity(suffix.len()),
+    };
     let suffix = guest_suffix(suffix, stop.choices());
     for (index, action) in suffix.iter().enumerate() {
         let captured = target.apply_and_snapshot(*action);
@@ -583,18 +658,8 @@ pub(crate) fn execute_job(
             return Ok(hung_job(&suffix[..=index]));
         }
         let captured = captured?;
-        merge_action_milestones(&mut aggregate, target);
-        let observations = target.last_action_observations().to_vec();
-        let raw_outcome = outcome(run, target);
-        let objective_reached = raw_outcome.objective_reached && !objective_seen;
-        objective_seen |= raw_outcome.objective_reached;
-        let outcome = Outcome {
-            doomed: false,
-            objective_reached,
-            disposition: raw_outcome.disposition,
-        };
-        let candidate = match captured {
-            Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
+        let outcome = steps.record(run, target, *action, |target, disposition| match captured {
+            Some(snapshot) if matches!(disposition, ExecutionDisposition::Runnable) => {
                 key_of(target.observation()).map(|key| CampaignCandidate {
                     key,
                     viable: true,
@@ -602,22 +667,14 @@ pub(crate) fn execute_job(
                 })
             }
             _ => None,
-        };
-        actions.push(CampaignActionResult {
-            action: *action,
-            observations,
-            milestones: aggregate,
-            outcome,
-            candidate,
-            cost: fault_cost(action),
-            bound: ShrinkCost::ZERO,
         });
         if outcome.should_stop(&stop) {
             break;
         }
     }
     if let Some(policy) = settle_policy {
-        let skip = if objective_seen {
+        let suffix_actions = steps.results.len();
+        let skip = if steps.objective_seen {
             Some(settle::Skip::Finding)
         } else if !matches!(disposition(target), ExecutionDisposition::Runnable) {
             Some(settle::Skip::Terminal)
@@ -627,16 +684,29 @@ pub(crate) fn execute_job(
             None
         };
         match skip {
-            Some(skip) => settle::skipped(target, policy, settle_start, actions.len(), skip),
+            Some(skip) => settle::skipped(target, policy, settle_start, suffix_actions, skip),
             None => {
-                settle::settle_execution(run, target, &stop, policy, settle_start, actions.len())?
+                let settled = settle::settle_execution(
+                    run,
+                    target,
+                    &stop,
+                    policy,
+                    settle_start,
+                    suffix_actions,
+                )?;
+                if let Some(settled) = settled
+                    && let Some(attempted) =
+                        apply_settled(run, target, &mut steps, &settled, &stop)?
+                {
+                    return Ok(hung_job(&attempted));
+                }
             }
         }
     }
     Ok(CampaignJobResult {
         preparation_failure: None,
         hang: None,
-        actions,
+        actions: steps.results,
     })
 }
 
@@ -1201,6 +1271,7 @@ impl TargetExecution for FaultWorkload {
             parent_milestones,
             suffix,
             stop,
+            settle::policy()?,
         )
     }
 
@@ -1225,6 +1296,7 @@ impl TargetExecution for FaultWorkload {
             parent_milestones,
             suffix,
             stop,
+            settle::policy()?,
         )
     }
 }
@@ -1685,6 +1757,21 @@ mod tests {
         .unwrap();
         assert_eq!(fresh_calls, 1);
         assert_eq!(reused, fresh);
+        let mut settled = result.clone();
+        settled.actions[0].candidate = None;
+        let settled_endpoint = kvm_result_endpoint(
+            &settled,
+            &[action],
+            &FaultObservations::default(),
+            fixture_key(&FaultObservations::default()),
+            || {
+                fresh_calls += 1;
+                Ok([17; 32])
+            },
+        )
+        .unwrap();
+        assert_eq!(fresh_calls, 2);
+        assert_eq!(settled_endpoint, fresh);
         assert_eq!(
             endpoint_result_sha256(&result, reused, Some((0, [0; 32]))).unwrap(),
             endpoint_result_sha256(&result, fresh, Some((0, [0; 32]))).unwrap()

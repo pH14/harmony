@@ -194,7 +194,7 @@ pub(crate) fn settle_execution(
     policy: &SettlePolicy,
     start: JobStart,
     suffix_actions: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<Vec<FaultAction>>, Box<dyn Error>> {
     let mut record = SettleRecord {
         pid: std::process::id(),
         path_actions: target.actions().len(),
@@ -205,11 +205,12 @@ pub(crate) fn settle_execution(
         ..SettleRecord::default()
     };
     let settled = target.run_detached(|target| {
-        settle(run, target, stop, policy, &mut record);
+        let found = settle(run, target, stop, policy, &mut record);
         let end = target.observation();
         record.fault_free_checks_after_settle = end.fault_free_checks_finished;
         record.faults_in_force_after_settle = end.faults_in_force;
         record.recovery_pending_after_settle = end.recovery_pending;
+        found
     });
     if let Err(error) = &settled {
         record.outcome = "error";
@@ -228,7 +229,7 @@ fn settle(
     stop: &RolloutStop,
     policy: &SettlePolicy,
     record: &mut SettleRecord,
-) {
+) -> Option<Vec<FaultAction>> {
     let quantum = target
         .actions()
         .last()
@@ -254,6 +255,7 @@ fn settle(
     let began = target.execution_ticks();
     let mut planned = planned.into_iter();
     let mut clock = SettleClock::default();
+    let mut found = None;
     loop {
         let elapsed = target.execution_ticks().saturating_sub(began);
         let since_end = (planned.len() == 0).then(|| elapsed.saturating_sub(record.end_ticks));
@@ -290,6 +292,10 @@ fn settle(
             record.outcome = "bug";
             record.violations = violations;
             record.input = target.actions().to_vec();
+            found = record
+                .input
+                .get(record.path_actions..)
+                .map(<[FaultAction]>::to_vec);
             break;
         }
         if !target.observation().stop.is_continuable() {
@@ -301,6 +307,7 @@ fn settle(
     if record.outcome != "compared" && record.input.is_empty() {
         record.input = target.actions().to_vec();
     }
+    found
 }
 
 fn ticks(value: u16) -> NonZeroU16 {
