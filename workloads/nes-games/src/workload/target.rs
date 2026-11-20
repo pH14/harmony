@@ -1179,6 +1179,26 @@ mod tests {
         let first = walk(&mut target, &ON);
         target.restore(decoded).unwrap();
         assert_eq!(walk(&mut target, &ON), first);
+        let mut previous = Vec::new();
+        write_checkpoint(
+            &SnapshotCheckpoint {
+                format: "nes-workload-snapshot-checkpoint-v2".to_owned(),
+                entries: vec![SnapshotCheckpointEntry { id: 7, snapshot }],
+            },
+            &mut previous,
+        )
+        .unwrap();
+        let error = read_checkpoint::<NesSnapshot<Spot>>(
+            &mut previous.as_slice(),
+            SNAPSHOT_CHECKPOINT_FORMAT,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "snapshot checkpoint format is nes-workload-snapshot-checkpoint-v2; this build reads {SNAPSHOT_CHECKPOINT_FORMAT}"
+            )
+        );
     }
 }
 
