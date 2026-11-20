@@ -107,7 +107,8 @@ struct StreamDigest {
 }
 
 pub const DECISION_MARKS_FILE: &str = "decision-marks.jsonl";
-pub const RESULT_FORMAT: &str = "nes-eval-result-v2";
+pub const RESULT_FORMAT: &str = "nes-eval-result-v3";
+pub const MILESTONE_INPUTS_DIR: &str = "milestone-inputs";
 const DECISION_MARK_EVERY: u64 = 1024;
 const WORKLOAD_FIELDS: [&str; 3] = [
     "result_sha256",
@@ -451,7 +452,7 @@ where
         }
     }
     let mut milestone_witnesses = serde_json::Map::new();
-    let milestone_directory = out.join("milestone-inputs");
+    let milestone_directory = out.join(MILESTONE_INPUTS_DIR);
     if milestone_directory.is_dir() {
         let mut paths: Vec<_> = fs::read_dir(&milestone_directory)?
             .map(|entry| entry.map(|entry| entry.path()))

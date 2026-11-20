@@ -56,6 +56,7 @@ struct Args {
     max_frames: u64,
     recorded_backend: String,
     strategy: Option<PathBuf>,
+    milestone: Option<String>,
 }
 
 impl Args {
@@ -75,6 +76,7 @@ impl Args {
         let mut max_frames = DEFAULT_MAX_FRAMES;
         let mut recorded_backend = "native".to_owned();
         let mut strategy = None;
+        let mut milestone = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             let value = args
@@ -102,6 +104,7 @@ impl Args {
                 "--max-frames" => max_frames = text()?.replace('_', "").parse()?,
                 "--recorded-backend" => recorded_backend = text()?,
                 "--strategy" => strategy = Some(PathBuf::from(&value)),
+                "--milestone" => milestone = Some(text()?),
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -121,12 +124,16 @@ impl Args {
             max_frames,
             recorded_backend,
             strategy,
+            milestone,
         };
         if u64::from(args.tail_frames) >= args.max_frames {
             return Err("the frame budget must leave room for more than the tail".into());
         }
         if !matches!(args.recorded_backend.as_str(), "native" | "consonance") {
             return Err("the recording backend is native or consonance".into());
+        }
+        if args.milestone.is_some() && args.recorded_backend != "native" {
+            return Err("a milestone tape is checked against a native run's result".into());
         }
         Ok(args)
     }
@@ -169,9 +176,27 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
             )
             .into());
         }
-        let expected = recorded
-            .get("witness")
-            .ok_or("the recorded result carries no witness evidence")?;
+        let expected = match &args.milestone {
+            Some(name) => {
+                let tape = recorded
+                    .get("milestone_witnesses")
+                    .and_then(|witnesses| witnesses.get(name))
+                    .ok_or_else(|| format!("the recorded result has no milestone tape {name}"))?;
+                if tape.get("input_sha256").and_then(Value::as_str)
+                    != Some(sha256(&input_bytes).as_str())
+                {
+                    return Err(format!(
+                        "the input is not the tape the run recorded for milestone {name}"
+                    )
+                    .into());
+                }
+                tape.get("replay")
+                    .ok_or("the recorded milestone tape carries no replay")?
+            }
+            None => recorded
+                .get("witness")
+                .ok_or("the recorded result carries no witness evidence")?,
+        };
         if &replayed != expected {
             return Err(format!(
                 "the recorded input no longer reaches its recorded endpoint\nrecorded: {expected}\nreplayed: {replayed}"
@@ -236,6 +261,7 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
             "rom_sha256": args.rom_sha256,
             "core_sha256": args.core_sha256,
             "input_sha256": sha256(&input_bytes),
+            "milestone": args.milestone,
             "input_actions": input.actions.len(),
             "input_frames": input_frames,
             "solved": recorded.get("solved").cloned().unwrap_or(Value::Null),
@@ -552,6 +578,27 @@ mod tests {
                 .unwrap()
                 .strategy,
             Some(std::path::PathBuf::from("strategy.toml"))
+        );
+    }
+
+    #[test]
+    fn a_milestone_tape_is_filmed_only_against_a_native_result() {
+        assert_eq!(
+            Args::parse_from(required(&["--milestone", "crash_defeated"]))
+                .unwrap()
+                .milestone
+                .as_deref(),
+            Some("crash_defeated")
+        );
+        assert_eq!(Args::parse_from(required(&[])).unwrap().milestone, None);
+        assert!(
+            Args::parse_from(required(&[
+                "--milestone",
+                "crash_defeated",
+                "--recorded-backend",
+                "consonance"
+            ]))
+            .is_err()
         );
     }
 

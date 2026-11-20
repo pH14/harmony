@@ -40,7 +40,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
-    workload::ShadowHook,
+    workload::{ShadowHook, publish_milestone_inputs},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
@@ -246,28 +246,6 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Game<M> {
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
         self
-    }
-
-    fn publish_inputs(
-        &self,
-        files: impl IntoIterator<Item = String>,
-        input: &Mm2Input,
-    ) -> Result<(), Box<dyn Error>> {
-        let Some(directory) = &self.milestone_input_dir else {
-            return Ok(());
-        };
-        let mut bytes = None;
-        for file in files {
-            std::fs::create_dir_all(directory)?;
-            let path = directory.join(format!("{file}.json"));
-            let temporary = path.with_extension("json.tmp");
-            if bytes.is_none() {
-                bytes = Some(serde_json::to_vec(input)?);
-            }
-            std::fs::write(&temporary, bytes.as_deref().unwrap_or_default())?;
-            std::fs::rename(temporary, path)?;
-        }
-        Ok(())
     }
 
     #[must_use]
@@ -997,7 +975,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for Mm2Game<M> {
             || !improved.is_empty()
         {
             let input = input()?;
-            self.publish_inputs(discoveries.into_iter().chain(improved), &input)?;
+            publish_milestone_inputs(
+                self.milestone_input_dir.as_deref(),
+                discoveries.into_iter().chain(improved),
+                &input,
+            )?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
