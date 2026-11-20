@@ -3,7 +3,7 @@
 use std::{error::Error, fmt::Debug, fs, io::Write, path::Path, sync::Arc};
 
 use machine::quicknes::QuickNesMachine;
-use nes_games::workload::{Game, NesSnapshot, NesWorkload, RECORDS_FILE, Shadow};
+use nes_games::workload::{Game, NesObservation, NesSnapshot, NesWorkload, RECORDS_FILE, Shadow};
 use serde::Serialize;
 
 use crate::{
@@ -73,31 +73,34 @@ impl<G: Game> Endpointed for NesWorkload<G, QuickNesMachine> {
         &self,
         input: &Input<machine::nes::ButtonChord>,
     ) -> Result<serde_json::Value, Box<dyn Error>> {
-        let mut target = self.new_target()?;
-        target.reset();
-        for action in &input.actions {
-            target.apply(action);
-            if target.exit_kind() != ExitKind::Ok {
-                return Err(format!(
-                    "the recorded {} input crashed during headless replay",
-                    G::NAME
-                )
-                .into());
-            }
-        }
-        Ok(serde_json::to_value(target.observe().state)?)
+        Ok(serde_json::to_value(replayed(self, input)?.state)?)
     }
 
     fn input_frames(
         &self,
         input: &Input<machine::nes::ButtonChord>,
     ) -> Result<u64, Box<dyn Error>> {
-        Ok(input
-            .actions
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum())
+        Ok(replayed(self, input)?.frame_count)
     }
+}
+
+fn replayed<G: Game>(
+    workload: &NesWorkload<G, QuickNesMachine>,
+    input: &Input<machine::nes::ButtonChord>,
+) -> Result<NesObservation<G::State>, Box<dyn Error>> {
+    let mut target = workload.new_target()?;
+    target.reset();
+    for action in &input.actions {
+        target.apply(action);
+        if target.exit_kind() != ExitKind::Ok {
+            return Err(format!(
+                "the recorded {} input crashed during headless replay",
+                G::NAME
+            )
+            .into());
+        }
+    }
+    Ok(target.observe())
 }
 
 impl<G: Game> Filmable for NesWorkload<G, QuickNesMachine> {
