@@ -746,9 +746,12 @@ In a stage's objective, an aggregate's second argument may be the word `stage`:
 the aggregate restarts unless the parent was located in this same stage. This
 is the hand plans' carried objective, which a stage keeps from a parent in the
 same stage and starts afresh on entering it. A route stage writes it as
-`objective = "max(last(index(cell, route), stage), 0)"`: the index of the
-current cell on the route, the last route cell while the path is off the route,
-and 0 when the stage is entered off the route. The aggregate reads the stage
+`objective = "max(last(if action_end then index(cell, route) else none, stage), 0)"`:
+the index of the kept cell on the route, the last route cell a kept state stood
+on while the path is off the route, and 0 when the stage is entered off the
+route. Reading `action_end` folds only kept states, as the hand plans locate
+from action endpoints, so a route cell an action passes through and leaves
+moves no objective. The aggregate reads the stage
 the accumulator holds for the parent, so objectives carry no stage number. The
 word scopes an aggregate nowhere else, and a strategy whose catalog or defines
 name a value `stage` cannot use it.

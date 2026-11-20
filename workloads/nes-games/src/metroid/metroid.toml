@@ -11,7 +11,7 @@ prefer_scope = "0"
 
 [[stage]]
 name = "maru_mari"
-objective = "max(last(index(cell, to_maru_mari), stage), 0)"
+objective = "max(last(if action_end then index(cell, to_maru_mari) else none, stage), 0)"
 goal = "(equipment / 16) % 2 == 1"
 
 [[stage]]
@@ -22,7 +22,7 @@ latch = true
 
 [[stage]]
 name = "missiles"
-objective = "max(last(index(cell, to_missiles), stage), 0)"
+objective = "max(last(if action_end then index(cell, to_missiles) else none, stage), 0)"
 goal = "missile_capacity > 0"
 
 [[stage]]
@@ -33,7 +33,7 @@ latch = true
 
 [[stage]]
 name = "bombs"
-objective = "max(last(index(cell, to_bombs), stage), 0)"
+objective = "max(last(if action_end then index(cell, to_bombs) else none, stage), 0)"
 goal = "equipment % 2 == 1"
 
 [[stage]]
@@ -44,8 +44,8 @@ latch = true
 
 [[stage]]
 name = "kraid_door"
-objective = "max(last(index(cell, to_kraid_door), stage), 0)"
-goal = "objective + 1 >= len(to_kraid_door)"
+objective = "max(last(if action_end then index(cell, to_kraid_door) else none, stage), 0)"
+goal = "action_end and objective + 1 >= len(to_kraid_door)"
 latch = true
 
 [[stage]]

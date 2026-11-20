@@ -461,10 +461,13 @@ from the same bytes. It still runs in its own `target` and `campaign`.
 end), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
 and the two hand preferences. A route stage's objective is the last route index
-the path stood on within that stage, `last(index(cell, route), stage)`, and 0
-when the stage is entered off the route, as the hand plan carries a route
-objective only from a parent in the same stage. The kraid_door stage ends at the
-last cell of its route, `objective + 1 >= len(to_kraid_door)`. Boss damage is the drop from
+a kept state stood on within that stage,
+`last(if action_end then index(cell, route) else none, stage)`, and 0 when the
+stage is entered off the route, as the hand plan locates from action endpoints
+and carries a route objective only from a parent in the same stage. The
+kraid_door stage ends at the last cell of its route on a kept state,
+`action_end and objective + 1 >= len(to_kraid_door)`. The equivalence test
+observes interior frames between kept states. Boss damage is the drop from
 `highest` boss health since the area last changed, rounded up to fours.
 `balance` is the rank of the smaller of missiles over capacity and health over
 the energy cap among every such ratio, so the second preference line is

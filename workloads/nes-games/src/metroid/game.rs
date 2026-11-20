@@ -252,6 +252,12 @@ mod tests {
         Lowered::new(Metroid, Metroid::STRATEGY).unwrap()
     }
 
+    fn interior(lowered: &Lowered<Metroid>, path: &mut Path) {
+        let (mut record, _) = lowered.record(&path.state);
+        record.set_action_end(false);
+        let _ = lowered.compiled.observe(&record, &mut path.accumulator);
+    }
+
     fn step(lowered: &Lowered<Metroid>, path: &mut Path) -> StageProgress {
         let hand = plan::locate(path.state, 0, path.hand);
         let (mut record, _) = lowered.record(&path.state);
@@ -344,6 +350,10 @@ mod tests {
                         accumulator,
                         hand,
                     };
+                }
+                for _ in 0..rand.next_u64() % 4 {
+                    wander(&mut rand, &mut path.state);
+                    interior(&lowered, &mut path);
                 }
                 wander(&mut rand, &mut path.state);
             }
