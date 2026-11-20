@@ -101,8 +101,8 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
 formats are Castlevania v1, Metroid v13, Mega Man 2 v4, SMB
-QuickNES v4 and SMB Consonance v3; Super Tilt Bro's native campaign selects v5.
-The games declared through assertions share `nes-workload-snapshot-checkpoint-v2`,
+QuickNES v5 and SMB Consonance v4; Super Tilt Bro's native campaign selects v5.
+The games declared through assertions share `nes-workload-snapshot-checkpoint-v3`,
 and their archive reports carry `format: nes-workload-archive-v1`, which an
 archive import checks.
 These plain snapshots use the postcard payload codec inside the framed envelope.
@@ -127,7 +127,19 @@ Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
 written this way. The other games have their own `target`, `archive` and
 `campaign` modules. A game implements `Game`:
 
-- `decode` turns work RAM, and the previous state, into the game's `State`.
+- `decode` turns work RAM into the game's `State`, given two earlier states:
+  the parent, the kept state the current action started from (none at the
+  genesis), and the previous frame's state. Lineage, a value carried from one
+  kept state to the next, belongs in `decode` and reads the parent, so every
+  frame of an action computes it as if that frame were the action's end and
+  interior frames never chain it through each other. Super Mario Bros.'s
+  `page` and `band` are lineage: the page restarts where a new area or a warp
+  back of 17 or more columns arrives and is carried otherwise, and the band
+  carries the parent's band unless the level changes or a warp drops it. The
+  previous frame is for
+  carries across frames, such as a position held while the player has no
+  control. A forced move after an input belongs to that input's action and
+  decodes against the same parent.
 - `declare` passes the state's assertions, named values and `sometimes`
   events, one at a time, to a `Declarations` sink. The workload collects
   them in a `Vec<Assertion>` to form the catalog. On each frame `Lowered`
@@ -277,7 +289,8 @@ the move it plays as the action's cost, which `action_cost` and the default
 unoffered label plays as where no offer stands: a job resolves it as a chord,
 and the target, which has no chooser, presses it as it is. A move chord where
 no offer stands, as when a table or splice copies one, is resolved as a chord.
-Films decode each frame from the state before it, as the search does, so a
+Films decode each frame from the state before it and from the kept state its
+action started from, as the search does, so a
 state that counts frames, such as Lucky Draw's `menu_wait`, ends a film where
 it ends the run. `action_choices` reports a move chord's answer, so a job's
 first ask at that site can hold its parent's last answer.
@@ -404,7 +417,8 @@ restore. Clones of a token share one handle, and when the last clone drops, the
 hook forgets the cursor saved under it, so the saved cursors are those of the
 snapshots still alive. The handle holds a weak reference to its `Shadow`, which
 keeps the cursors in a `Mutex` behind the `Arc` its hooks share, so a snapshot
-can drop on any worker. The hook decodes each frame from the one before,
+can drop on any worker. The hook decodes each frame from the one before and
+from the kept state its action started from,
 decodes a forced move's steps in a chain as the target does and observes each
 from the departure, advances its own accumulator at each frame of an action and
 at a move's arrival, completes the raw key against the previous one with `ArchiveKey::complete`, and counts the

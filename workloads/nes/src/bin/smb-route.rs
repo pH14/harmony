@@ -5,7 +5,7 @@ use std::{env, error::Error, fs, path::PathBuf};
 use nes_workload::{
     search::archive::ArchiveKey,
     smb::{
-        archive::{SmbArchiveKey, SmbRoomIdentity, archive_key, stamp_arrival_room},
+        archive::{SmbArchiveKey, archive_key, stamp_arrival_room},
         plan::SmbRoute,
         target::{
             ROOM_IDENTITY_BYTES, SmbInput, SmbTarget, smb_is_playing, smb_player_has_control,
@@ -124,7 +124,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     ));
     exits.push(([0, 0], 0, boot_frames));
     let mut parent: Option<SmbArchiveKey> = None;
-    let mut lineage: Vec<SmbRoomIdentity> = Vec::new();
     let mut visits: Vec<StageVisit> = Vec::new();
     for action in &input.actions {
         if target.is_dead() || target.is_victory() {
@@ -136,8 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let wram = target.wram();
         if let Some(route) = route {
             let key = stamp_arrival_room(archive_key(&wram).on_route(route), &wram)?
-                .complete(parent.map(|key| (key, &lineage)));
-            SmbArchiveKey::record(&mut lineage, key);
+                .complete(parent.map(|key| (key, &())));
             parent = Some(key);
             let (stage, objective) = key.progress();
             let doomed = !target.is_dead() && (target.is_doomed() || route.is_doomed(&wram));

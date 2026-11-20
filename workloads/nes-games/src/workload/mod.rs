@@ -53,7 +53,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v3";
 pub const NAMED_PROGRESS_FORMAT: &str = "nes-named-progress-v1";
 pub const ARCHIVE_FORMAT: &str = "nes-workload-archive-v1";
 pub const MAX_SOMETIMES: usize = 128;
@@ -301,7 +301,12 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
     fn genesis_id(&self) -> String {
         format!("{}-setup-v1", Self::NAME)
     }
-    fn decode(&self, previous: Option<&Self::State>, ram: &[u8]) -> Self::State;
+    fn decode(
+        &self,
+        parent: Option<&Self::State>,
+        previous: Option<&Self::State>,
+        ram: &[u8],
+    ) -> Self::State;
     fn declare(&self, state: &Self::State, out: &mut impl Declarations);
     fn moves(&self, state: &Self::State) -> Moves<Self::Move>;
     fn move_sites(&self) -> Vec<ChoiceSite> {
@@ -386,7 +391,7 @@ impl<G: Game> Lowered<G> {
             )
             .into());
         }
-        let declared = declared(&game, &game.decode(None, &[0; WRAM_SIZE]));
+        let declared = declared(&game, &game.decode(None, None, &[0; WRAM_SIZE]));
         let sometimes: Vec<String> = declared
             .iter()
             .filter(|assertion| assertion.is_sometimes())

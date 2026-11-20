@@ -1,20 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, io::Write, path::Path};
+use std::{error::Error, fmt::Debug, fs, io::Write, path::Path, sync::Arc};
 
 use machine::quicknes::QuickNesMachine;
-use nes_games::workload::{Game, NesSnapshot, NesWorkload, RECORDS_FILE};
+use nes_games::workload::{Game, NesSnapshot, NesWorkload, RECORDS_FILE, Shadow};
 use serde::Serialize;
 
 use crate::{
     eval::Request,
     film::{Endpointed, FilmMetadata, Filmable},
-    search::{archive::Input, campaign::TargetExecution},
+    search::{
+        archive::{ArchiveKey, Input},
+        campaign::TargetExecution,
+    },
     target::{ExitKind, Target},
     witness::EndpointIdentity,
 };
 
 pub const STRATEGY_FILE: &str = "strategy.toml";
+pub const SHADOW_FILE: &str = "shadow-keys.json";
+
+pub fn write_shadow<G: Game, H: ArchiveKey + Debug + Send + Sync + 'static>(
+    shadow: Option<&Arc<Shadow<G, H>>>,
+    out: &Path,
+) -> Result<(), Box<dyn Error>>
+where
+    H::Lineage: Send + Sync,
+{
+    if let Some(shadow) = shadow {
+        fs::write(
+            out.join(SHADOW_FILE),
+            serde_json::to_vec_pretty(&shadow.report()?)?,
+        )?;
+    }
+    Ok(())
+}
+
 pub fn configured<G: Game>(
     workload: NesWorkload<G, QuickNesMachine>,
     request: &Request,

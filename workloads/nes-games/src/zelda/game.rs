@@ -245,7 +245,12 @@ impl Game for Zelda {
         }
     }
 
-    fn decode(&self, _previous: Option<&ZeldaState>, ram: &[u8]) -> ZeldaState {
+    fn decode(
+        &self,
+        _: Option<&ZeldaState>,
+        _previous: Option<&ZeldaState>,
+        ram: &[u8],
+    ) -> ZeldaState {
         let held = |address| byte(ram, address) != 0;
         let items = [
             held(RAFT),
@@ -342,7 +347,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> ZeldaState {
-        Zelda.decode(None, wram)
+        Zelda.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<Zelda> {

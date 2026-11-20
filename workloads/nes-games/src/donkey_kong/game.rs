@@ -215,7 +215,12 @@ impl Game for DonkeyKong {
         }
     }
 
-    fn decode(&self, _previous: Option<&DonkeyKongState>, ram: &[u8]) -> DonkeyKongState {
+    fn decode(
+        &self,
+        _: Option<&DonkeyKongState>,
+        _previous: Option<&DonkeyKongState>,
+        ram: &[u8],
+    ) -> DonkeyKongState {
         let stage = byte(ram, STAGE);
         let rivets = if stage == STAGE_RIVETS {
             (0..usize::from(RIVETS))
@@ -317,7 +322,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> DonkeyKongState {
-        DonkeyKong.decode(None, wram)
+        DonkeyKong.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<DonkeyKong> {

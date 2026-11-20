@@ -1,0 +1,72 @@
+goal = "victory"
+reject = ["dead", "doomed and action_end", "not in(raw_world * 4 + raw_level, route_levels) and action_end", "vine_out_of_reach and action_end"]
+spread = ["area_type", "area_pointer", "page", "progress + screen_x", "y_bucket", "loop_on_path", "time_bucket"]
+identity = "screen_x"
+prefer = [["clock: more"]]
+prefer_scope = "0"
+
+[table]
+route_levels = [0, 1, 12, 13, 28, 29, 30, 31]
+
+[define]
+here = "world * 4 + level"
+
+[[stage]]
+name = "1-1"
+goal = "here > 0"
+objective = "band"
+
+[[stage]]
+name = "1-2 to the warp zone"
+goal = "here > 1 or (here == 1 and warp_zone == 4)"
+objective = "band"
+
+[[stage]]
+name = "1-2 pipe to 4-1"
+goal = "here > 1"
+objective = "0"
+
+[[stage]]
+name = "4-1"
+goal = "here > 12"
+objective = "band"
+
+[[stage]]
+name = "4-2 to the vine"
+goal = "here > 13 or (here == 13 and (vine >= 8 or warp_zone == 6))"
+objective = "vine"
+
+[[stage]]
+name = "4-2 to the warp zone"
+goal = "here > 13 or (here == 13 and warp_zone == 6)"
+objective = "band"
+
+[[stage]]
+name = "4-2 pipe to 8-1"
+goal = "here > 13"
+objective = "0"
+
+[[stage]]
+name = "8-1"
+goal = "here > 28"
+objective = "band"
+
+[[stage]]
+name = "8-2"
+goal = "here > 29"
+objective = "band"
+
+[[stage]]
+name = "8-3"
+goal = "here > 30"
+objective = "band"
+
+[[stage]]
+name = "8-4"
+goal = "victory"
+objective = "band"
+
+[[stage]]
+name = "ending"
+goal = "0"
+objective = "0"

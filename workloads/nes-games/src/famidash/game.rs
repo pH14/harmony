@@ -318,7 +318,12 @@ impl<const GROUP: usize> Game for Famidash<GROUP> {
         }
     }
 
-    fn decode(&self, _previous: Option<&FamidashState>, ram: &[u8]) -> FamidashState {
+    fn decode(
+        &self,
+        _: Option<&FamidashState>,
+        _previous: Option<&FamidashState>,
+        ram: &[u8],
+    ) -> FamidashState {
         decode(self.stage, ram)
     }
 

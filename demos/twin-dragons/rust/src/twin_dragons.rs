@@ -39,5 +39,5 @@ pub fn twin_dragons_pose(ram: &[u8]) -> Result<u16, JsValue> {
     if ram.len() != WRAM_SIZE {
         return Err(js_error("Twin Dragons poses need 2 KiB of work RAM"));
     }
-    Ok(pose(game::TwinDragons.decode(None, ram)))
+    Ok(pose(game::TwinDragons.decode(None, None, ram)))
 }

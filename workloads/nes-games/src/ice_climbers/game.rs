@@ -290,7 +290,12 @@ impl Game for IceClimbers {
         }
     }
 
-    fn decode(&self, _previous: Option<&IceClimbersState>, ram: &[u8]) -> IceClimbersState {
+    fn decode(
+        &self,
+        _: Option<&IceClimbersState>,
+        _previous: Option<&IceClimbersState>,
+        ram: &[u8],
+    ) -> IceClimbersState {
         let (x, y) = (byte(ram, PLAYER_X), byte(ram, PLAYER_Y));
         let mut state = IceClimbersState {
             level: byte(ram, LEVEL),
@@ -389,7 +394,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> IceClimbersState {
-        IceClimbers::default().decode(None, wram)
+        IceClimbers::default().decode(None, None, wram)
     }
 
     fn at(x: u8, y: u8) -> IceClimbersState {

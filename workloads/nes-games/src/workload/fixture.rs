@@ -270,7 +270,7 @@ goal = "false"
         Ok(())
     }
 
-    fn decode(&self, _: Option<&Spot>, ram: &[u8]) -> Spot {
+    fn decode(&self, _: Option<&Spot>, _: Option<&Spot>, ram: &[u8]) -> Spot {
         Spot {
             x: ram[0],
             room: ram[1],
@@ -362,6 +362,7 @@ pub struct Landing {
     pub x: u8,
     pub room: u8,
     pub dwell: u8,
+    pub departed: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -391,7 +392,7 @@ identity = ["highest(x, room)", "dwell"]
         Ok(())
     }
 
-    fn decode(&self, previous: Option<&Landing>, ram: &[u8]) -> Landing {
+    fn decode(&self, parent: Option<&Landing>, previous: Option<&Landing>, ram: &[u8]) -> Landing {
         let room = ram[1];
         Landing {
             x: ram[0],
@@ -399,6 +400,7 @@ identity = ["highest(x, room)", "dwell"]
             dwell: previous
                 .filter(|previous| previous.room == room)
                 .map_or(0, |previous| previous.dwell.saturating_add(1)),
+            departed: parent.map_or(ram[0], |parent| parent.x),
         }
     }
 
@@ -414,6 +416,10 @@ identity = ["highest(x, room)", "dwell"]
         out.declare(Assertion::Value {
             name: "dwell",
             value: Number::byte(state.dwell),
+        });
+        out.declare(Assertion::Value {
+            name: "departed",
+            value: Number::byte(state.departed),
         });
     }
 
@@ -456,8 +462,8 @@ impl Game for Switchback {
         Ok(())
     }
 
-    fn decode(&self, previous: Option<&Landing>, ram: &[u8]) -> Landing {
-        Stairs.decode(previous, ram)
+    fn decode(&self, parent: Option<&Landing>, previous: Option<&Landing>, ram: &[u8]) -> Landing {
+        Stairs.decode(parent, previous, ram)
     }
 
     fn declare(&self, state: &Landing, out: &mut impl Declarations) {

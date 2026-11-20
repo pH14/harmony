@@ -155,7 +155,12 @@ impl Game for TwinDragons {
         }
     }
 
-    fn decode(&self, _previous: Option<&TwinDragonsState>, ram: &[u8]) -> TwinDragonsState {
+    fn decode(
+        &self,
+        _: Option<&TwinDragonsState>,
+        _previous: Option<&TwinDragonsState>,
+        ram: &[u8],
+    ) -> TwinDragonsState {
         let game_state = byte(ram, GAME_STATE);
         let level = byte(ram, CURRENT_LEVEL);
         let next_level = byte(ram, NEXT_LEVEL);
@@ -269,7 +274,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> TwinDragonsState {
-        TwinDragons.decode(None, wram)
+        TwinDragons.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<TwinDragons> {

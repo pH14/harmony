@@ -168,7 +168,12 @@ impl Game for Joust {
         }
     }
 
-    fn decode(&self, _previous: Option<&JoustState>, ram: &[u8]) -> JoustState {
+    fn decode(
+        &self,
+        _: Option<&JoustState>,
+        _previous: Option<&JoustState>,
+        ram: &[u8],
+    ) -> JoustState {
         let mut riders = 0u8;
         let mut eggs = 0u8;
         let mut facing_left = false;
@@ -299,7 +304,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> JoustState {
-        Joust.decode(None, wram)
+        Joust.decode(None, None, wram)
     }
 
     fn lowered() -> Lowered<Joust> {

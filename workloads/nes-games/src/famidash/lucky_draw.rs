@@ -129,7 +129,12 @@ impl Game for LuckyDraw {
         }
     }
 
-    fn decode(&self, previous: Option<&LuckyDrawState>, ram: &[u8]) -> LuckyDrawState {
+    fn decode(
+        &self,
+        _parent: Option<&LuckyDrawState>,
+        previous: Option<&LuckyDrawState>,
+        ram: &[u8],
+    ) -> LuckyDrawState {
         let famidash = decode(self.famidash.stage, ram);
         let menu_wait = previous.map_or(0, |previous| {
             let waited = previous.at_menu() && famidash.game_state == GAME_STATE_LEVEL_SELECT;

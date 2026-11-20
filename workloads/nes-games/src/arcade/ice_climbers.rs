@@ -84,7 +84,7 @@ mod tests {
     }
 
     fn pose(wram: &[u8; WRAM_SIZE]) -> u16 {
-        IceClimbers::motion(&IceClimbers::default().decode(None, wram))[3]
+        IceClimbers::motion(&IceClimbers::default().decode(None, None, wram))[3]
     }
 
     #[test]
@@ -107,13 +107,13 @@ mod tests {
         let mut memory = wram([0xc0, 0x5c, 0x00, 0x38], false);
         memory[PHASE] = 0;
         assert_eq!(
-            IceClimbers::motion(&IceClimbers::default().decode(None, &memory))[0],
+            IceClimbers::motion(&IceClimbers::default().decode(None, None, &memory))[0],
             HIDDEN
         );
         let mut memory = wram([0xc0, 0x5c, 0x00, 0x38], false);
         memory[LIVES] = 2;
         assert_eq!(
-            IceClimbers::motion(&IceClimbers::default().decode(None, &memory))[0],
+            IceClimbers::motion(&IceClimbers::default().decode(None, None, &memory))[0],
             HIDDEN
         );
     }
