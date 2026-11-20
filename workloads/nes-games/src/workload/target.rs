@@ -65,7 +65,11 @@ impl<S> From<NesObservation<S>> for ActionObservation<S> {
     }
 }
 
-type Played<M> = (u64, Vec<u8>, Option<M>);
+struct Played<M> {
+    frames: u64,
+    frame: Vec<u8>,
+    forced: Option<M>,
+}
 
 type Tracked<'a, S> = (&'a S, &'a mut Accumulator, &'a mut NesObservation<S>);
 
@@ -403,7 +407,11 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
             records,
             choices: Vec::new(),
         });
-        Ok((frames, frame, forced))
+        Ok(Played {
+            frames,
+            frame,
+            forced,
+        })
     }
 
     fn play_forced_after(
@@ -419,9 +427,8 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
         else {
             return Ok((0, frame));
         };
-        let (frames, frame, _) =
-            self.play_move(parent, (mv, false), departure, frame, accumulator, emitted)?;
-        Ok((frames, frame))
+        let played = self.play_move(parent, (mv, false), departure, frame, accumulator, emitted)?;
+        Ok((played.frames, played.frame))
     }
 
     fn store_action(
@@ -461,7 +468,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
         let mut emitted = Vec::new();
         let departure = self.observation.clone();
         let parent = departure.state.clone();
-        let Ok((frames, frame, forced)) = self.play_move(
+        let Ok(played) = self.play_move(
             &parent,
             (mv, true),
             departure,
@@ -471,15 +478,19 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
         ) else {
             return self.fail();
         };
-        let Ok((forced_frames, frame)) =
-            self.play_forced_after(&parent, forced, frame, &mut accumulator, &mut emitted)
-        else {
+        let Ok((forced_frames, frame)) = self.play_forced_after(
+            &parent,
+            played.forced,
+            played.frame,
+            &mut accumulator,
+            &mut emitted,
+        ) else {
             return self.fail();
         };
         self.store_action(
             start,
             emitted,
-            frames.saturating_add(forced_frames),
+            played.frames.saturating_add(forced_frames),
             accumulator,
             frame,
             None,

@@ -21,6 +21,7 @@ pub struct Options {
     pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
     pub boot_cache: Option<PathBuf>,
+    pub key: crate::key::KeyRequest,
     pub answers: Vec<GuestAnswer>,
 }
 
@@ -424,12 +425,14 @@ mod live {
         Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
         StateHashEncoding, first_confirmed_bug, replay_confirms_bug, replay_needs_settle,
     };
+
     use crate::{
         bundle::FaultVocabulary,
         campaign::{
             FaultCampaignConfig, FaultCampaignRun, FaultWorkload, run_fault_campaign_with_plan,
         },
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
+        key::FaultKeys,
         report::{
             BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
             write_hang_reports,
@@ -544,6 +547,7 @@ mod live {
         interrupt: Option<&'static std::sync::atomic::AtomicBool>,
     ) -> Result<Report, Box<dyn Error>> {
         options.validate()?;
+        let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
@@ -559,7 +563,7 @@ mod live {
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(resources.budget));
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
@@ -890,7 +894,8 @@ mod live {
         let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(memory.budget));
-        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
+        let keys = FaultKeys::new(options.key.strategy(), run.vocabulary.nodes())?;
+        let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)));
         let workers = memory.workers;
         let mut settings = ShrinkConfig::new(run, options.seed);
@@ -1314,6 +1319,7 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: crate::key::KeyRequest::default(),
             answers: Vec::new(),
         }
     }

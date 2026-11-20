@@ -290,8 +290,9 @@ Assertion ids are the messages.
 
 `harness-net` gives each node its own network namespace so faults can cut
 links between nodes while the driver and check, in the root namespace, still
-reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
-`iptables`) and the container capabilities to create namespaces.
+reach every node. It needs `ip`, `tc`, `iptables` and `iptables-restore`
+(Debian `iproute2` and `iptables`) and the container capabilities to create
+namespaces.
 
 | subcommand | effect |
 |---|---|
@@ -302,8 +303,11 @@ reach every node. It needs `ip`, `tc` and `iptables` (Debian `iproute2` and
 | `delay` | adds netem delay, log-uniform 1 to 500 ms, to one random node's `eth0` |
 | `heal` | flushes every `HARNESS` chain and removes netem |
 
-`partition` and `isolate` replace the previous cut. Every subcommand can be
-run again. A target calls `harness-net setup N` from its setup script, starts
+`partition` and `isolate` replace the previous cut. Each node's `HARNESS` chain
+is replaced by one `iptables-restore --noflush` that declares the chain, which
+empties it, and appends the new rules in the same commit, so a link that both
+cuts drop never opens during the replace. Every subcommand can be run again.
+A target calls `harness-net setup N` from its setup script, starts
 each node through `harness-net exec I`, binds and advertises 10.77.0.I and
 declares the four fault subcommands as bundle hooks, with `heal` naming the
 hook that lifts the other three:
@@ -554,8 +558,12 @@ the node logs `/tmp/rqlite/<node>.log` with `log` lines.
 The default `bundle` drives the `register` family on table `kv`. `write` is an
 upsert, `cas` is an `UPDATE` that matches the old value and fails definitely
 when it changes no row, and `read` is a `SELECT` at level `linearizable`. Each
-client sends to one random node with `redirect` and follows one redirect to
-the leader.
+row's column `n` counts the writes applied to it: an insert sets it to 1, and
+an upsert or a `cas` that changes the row adds 1. Column `h` is the digest of
+those writes: the sum, modulo 2^52, of the FNV-1a hash modulo 2^52 of each
+value written, which the client computes and sends as a parameter. Each client
+sends to one random node with `redirect` and follows one redirect to the
+leader.
 
 `bundle-forward` sets `HARNESS_RQLITE_MODE=forward` and drives the `log`
 family on table `log`. `append` inserts a row and returns its
@@ -569,8 +577,18 @@ A read pinned to node `nI` in either bundle first runs
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
 index, then reads from `nI` at level `none`, which answers from `nI`'s own
 SQLite database. A `replicas` read on `nI` takes the same fence and selects
-every row of `kv` at level `none`. A row has no version, so its copies hold
-values alone.
+every row of `kv` at level `none`. Each copy's metadata is the row's write
+count, `writes`, and its digest, `digest`. Equal values name one write, and
+every correct node has applied the same writes to that key up to it, so both
+agree. For equal values, equal digests mean the same multiset of applied
+writes on that key, up to hash collision. A node that applied a write the
+others never applied keeps a different digest after the key is written again,
+which the value alone would no longer show, and the count alone would not show
+once a retry of that write succeeds on the other nodes
+([#1032](https://github.com/pH14/harmony/issues/1032)). A divergent Raft entry
+that changed no row, such as a `cas` that did not match, leaves every replica's
+state equal, so no comparison of replicas sees it; only a comparison of the
+nodes' Raft logs does.
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
