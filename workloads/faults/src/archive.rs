@@ -567,6 +567,7 @@ mod tests {
             FaultOperation::DiskCorrupt(..) => 12,
             FaultOperation::Clock { .. } => 13,
             FaultOperation::ClockAll { .. } => 14,
+            FaultOperation::EndFaults(_) => 15,
         };
         for _ in 0..2_000 {
             let action =
@@ -613,6 +614,7 @@ mod tests {
                 FaultOperation::Clock { .. } | FaultOperation::ClockAll { .. } => {
                     panic!("a vocabulary without clock faults drew one")
                 }
+                FaultOperation::EndFaults(_) => panic!("a vocabulary drew the end of faults"),
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
@@ -876,7 +878,7 @@ mod tests {
             .with_instrumented_events(true)
             .with_clock_faults(true);
         let kind = |operation: &FaultOperation| match operation {
-            FaultOperation::Wait(_) => None,
+            FaultOperation::Wait(_) | FaultOperation::EndFaults(_) => None,
             FaultOperation::Kill(..) => Some(FaultKind::Kill),
             FaultOperation::KillAll(_) => Some(FaultKind::KillAll),
             FaultOperation::Pause(..) => Some(FaultKind::Pause),

@@ -96,6 +96,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
         crate::archive::FaultMilestones::default(),
         &[crate::target::FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
         searcher::search::rollout::RolloutStop::new(false),
+        None,
     );
     let error = result
         .err()

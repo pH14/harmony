@@ -191,8 +191,7 @@ fn standing_hex(
     inherited: &[StandingWindow],
     actions: &[FaultAction],
 ) -> Result<String, Box<dyn Error>> {
-    let mut standing = inherited.to_vec();
-    standing.extend(standing_windows(windows, actions)?);
+    let standing = standing_windows(windows, inherited, actions)?;
     Ok(hex(&fault_policy::encode_windows(&standing)?))
 }
 
@@ -244,7 +243,7 @@ mod tests {
         let bytes = report.standing_bytes().expect("hex round-trips");
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("the window list decodes"),
-            standing_windows(WINDOWS, &report.actions).unwrap(),
+            standing_windows(WINDOWS, &[], &report.actions).unwrap(),
             "both faulting actions reach the window list"
         );
     }
@@ -260,7 +259,7 @@ mod tests {
             rarity: 1,
             ticks: TICKS,
         })];
-        let inherited = standing_windows(origin, &prefix).unwrap();
+        let inherited = standing_windows(origin, &[], &prefix).unwrap();
         let rooted = ActionWindows {
             root_seal: origin.window(&prefix, 0).unwrap().1,
             hold_hooks: false,

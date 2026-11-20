@@ -573,6 +573,9 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
     let span = |ticks: NonZeroU16| seconds(u64::from(ticks.get()));
     match *operation {
         FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
+        FaultOperation::EndFaults(ticks) => {
+            format!("end every standing fault, then wait {}", span(ticks))
+        }
         FaultOperation::Kill(index, ticks) => format!("kill {} for {}", node(index), span(ticks)),
         FaultOperation::KillAll(ticks) => format!("kill every node for {}", span(ticks)),
         FaultOperation::Pause(index, ticks) => format!("pause {} for {}", node(index), span(ticks)),
@@ -2142,6 +2145,10 @@ mod tests {
         let names = names(BUNDLE);
         let cases = [
             (FaultOperation::Wait(ticks(50)), "wait 0.50 s"),
+            (
+                FaultOperation::EndFaults(ticks(16)),
+                "end every standing fault, then wait 0.16 s",
+            ),
             (FaultOperation::Kill(0, ticks(100)), "kill n1 for 1.00 s"),
             (
                 FaultOperation::KillAll(ticks(25)),
