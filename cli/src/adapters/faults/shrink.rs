@@ -252,6 +252,7 @@ mod tests {
             },
             console: String::new(),
             settlement: false,
+            choices: 0,
         }
     }
 
@@ -298,6 +299,8 @@ mod tests {
             root: None,
             checkpoint_owner: None,
             boot_cache: None,
+            key: faults_workload::key::KeyRequest::default(),
+            answers: Vec::new(),
         };
         let mut report = Report::new(
             "replay",
