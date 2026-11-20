@@ -162,7 +162,13 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     let input_bytes = fs::read(&args.input)?;
     let input: Input<G::Action> = serde_json::from_slice(&input_bytes)?;
     if input.actions.is_empty() {
-        return Err("the recorded run produced no renderable input".into());
+        return Err(match &args.milestone {
+            Some(name) => {
+                format!("milestone {name} holds at power-on, so its tape has no actions to film")
+            }
+            None => "the recorded run produced no renderable input".to_owned(),
+        }
+        .into());
     }
     let recorded: Value = serde_json::from_slice(&fs::read(&args.evidence)?)?;
     let native = args.recorded_backend == "native";
