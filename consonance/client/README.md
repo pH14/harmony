@@ -449,13 +449,18 @@ extent allocation and store report it reads the free memory again, outside the
 index lock. Memory the index does not count (guests, worker processes, the
 coordinator, and the kernel) is the usage minus the cache and store bytes, so
 the room that keeps the reserve free is the counted bytes plus the free
-memory, less the reserve. The budget is that room up to the planned budget. It
-rises above the planned budget only when the room also holds one transient per
-worker, and then it is the room less those transients. A check sees an export's
-buffers, because a worker allocates its extent after exporting, but not an
-import's decompressed pages, which can appear on every worker before the next
-check. A budget above the plan therefore leaves the reserve and every worker's
-transient free, and a budget at or below the plan leaves what the plan leaves.
+memory, less the reserve. The budget is that room up to the planned budget. A
+worker can move up to one transient of pages between two checks, and it holds
+two copies of them while it moves them: an import holds the decompressed page
+list while the store copies the pages it lacks, and an export's encoding holds
+the packed pages while it copies them into the extent buffer. The budget rises
+above the planned budget only when the free memory beyond it holds the reserve
+and one transient per worker, and also two transients per worker, with the
+reserve counting toward the second copy. It is then the room less
+`max(workers × transient, 2 × workers × transient − reserve)`. In the worst case,
+when every worker moves a full transient of incompressible pages at once, usage
+reaches the limit with no reserve left and does not pass it. A budget at or
+below the plan leaves what the plan leaves.
 `LocalIndex::measured` takes the planned budget, the worker count and the
 transient. The index sets its budget at each check and evicts entries or asks
 the largest store to shrink to fit it. A worker that briefly needs more memory,

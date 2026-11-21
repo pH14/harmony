@@ -389,13 +389,14 @@ impl State {
         Ok(())
     }
 
-    fn measure(&mut self, headroom: Option<u64>, held: u64) {
+    fn measure(&mut self, headroom: Option<u64>, workers: usize, transient: u64) {
         if let Some(headroom) = headroom {
             self.budget = measured_budget(
                 self.planned,
                 self.segments.charged().saturating_add(self.stored),
                 headroom,
-                held,
+                workers,
+                transient,
             );
             self.stats.lowest_budget = self.stats.lowest_budget.min(self.budget);
             self.stats.highest_budget = self.stats.highest_budget.max(self.budget);
@@ -426,7 +427,8 @@ pub struct LocalIndex {
     state: Arc<Mutex<State>>,
     lock_work: Arc<lock_work::LockWork>,
     headroom: Option<fn() -> Option<u64>>,
-    held: u64,
+    workers: usize,
+    transient: u64,
 }
 
 impl LocalIndex {
@@ -448,7 +450,8 @@ impl LocalIndex {
         transient: u64,
     ) -> Self {
         self.headroom = Some(headroom);
-        self.held = (workers as u64).saturating_mul(transient);
+        self.workers = workers;
+        self.transient = transient;
         self
     }
 
@@ -465,7 +468,8 @@ impl LocalIndex {
         Self {
             lock_work: Arc::default(),
             headroom: None,
-            held: 0,
+            workers: 0,
+            transient: 0,
             state: Arc::new(Mutex::new(State {
                 owner: Arc::new(()),
                 planned: budget,
@@ -553,7 +557,7 @@ impl CacheIndex for LocalIndex {
     fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
         let headroom = self.headroom();
         let mut state = self.state(lock_work::Site::Extent);
-        state.measure(headroom, self.held);
+        state.measure(headroom, self.workers, self.transient);
         let needed =
             segments::rounded(len.max(1)).ok_or(CacheError::Malformed("extent size overflow"))?;
         if let Err(error) = state.make_room(needed) {
@@ -729,7 +733,7 @@ impl CacheIndex for LocalIndex {
         let mut state = self.state(lock_work::Site::ReportStore);
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
         state.set_store(holder, Some(bytes));
-        state.measure(headroom, self.held);
+        state.measure(headroom, self.workers, self.transient);
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
                 break;
