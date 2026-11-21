@@ -79,8 +79,8 @@ latch = true
 
 [[stage]]
 name = "ridley_elevator"
-objective = "max(last(if action_end then index(cell, to_ridley_elevator) else none, stage), 0)"
-goal = "action_end and objective + 1 >= len(to_ridley_elevator)"
+objective = "max(last(if action_end then index(cell, to_ridley) else none), 0)"
+goal = "action_end and cell == 202524"
 latch = true
 
 [[stage]]
@@ -91,8 +91,8 @@ latch = true
 
 [[stage]]
 name = "ridley_door"
-objective = "max(last(if action_end then index(cell, to_ridley_door) else none, stage), 0)"
-goal = "action_end and objective + 1 >= len(to_ridley_door)"
+objective = "max(last(if action_end then index(cell, to_ridley) else none), 0)"
+goal = "action_end and cell == 201829"
 latch = true
 
 [[stage]]
@@ -107,7 +107,71 @@ objective = "boss_damage"
 goal = "ridley_defeated"
 
 [[stage]]
-name = "after_ridley"
+name = "energy_after_ridley"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 96"
+latch = true
+
+[[stage]]
+name = "ridley_exit"
+objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+goal = "action_end and cell == 172522"
+latch = true
+
+[[stage]]
+name = "energy_before_norfair_return"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 80"
+latch = true
+
+[[stage]]
+name = "norfair_return"
+objective = "if area == 20 then 0 else 1 + max(last(if action_end then index(cell, to_ending) else none), 0)"
+goal = "action_end and cell == 162211"
+latch = true
+
+[[stage]]
+name = "energy_before_tourian"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 96"
+latch = true
+
+[[stage]]
+name = "missiles_before_tourian"
+objective = "missiles"
+goal = "action_end and missiles >= missile_capacity"
+latch = true
+
+[[stage]]
+name = "tourian_elevator"
+objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+goal = "action_end and cell == 190304"
+latch = true
+
+[[stage]]
+name = "zebetite_door"
+objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+goal = "action_end and cell == 190411"
+latch = true
+
+[[stage]]
+name = "zebetites"
+objective = "8 * max(last(if action_end then index(cell, to_ending) else none), 0) + zebetites_destroyed"
+goal = "action_end and cell == 190211"
+latch = true
+
+[[stage]]
+name = "mother_brain"
+objective = "256 * zebetites_destroyed + boss_damage"
+goal = "mother_brain_defeated"
+
+[[stage]]
+name = "escape"
+objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+goal = "ending"
+
+[[stage]]
+name = "after_ending"
 goal = "false"
 
 [define]
@@ -144,13 +208,24 @@ to_norfair = [
     161308, 161309, 161310, 161311, 161411, 161511, 161611, 161711, 161811, 161911,
     162011, 162111, 162211, 162212, 172212, 172213,
 ]
-to_ridley_elevator = [
+to_ridley = [
     172213, 172214, 172314, 172414, 172514, 172614, 172714, 172814, 172914, 173014,
     173015, 173016, 173017, 173018, 173019, 173020, 173021, 172921, 172821, 172721,
-    172621, 172521, 172421, 172422, 172522, 172523, 202523, 202524,
+    172621, 172521, 172421, 172422, 172522, 172523, 202523, 202524, 202525, 202425,
+    202325, 202225, 202125, 202025, 201925, 201825, 201725, 201726, 201727, 201827,
+    201927, 202027, 202127, 202227, 202228, 202229, 202129, 202029, 201929, 201829,
 ]
-to_ridley_door = [
-    202524, 202525, 202425, 202325, 202225, 202125, 202025, 201925, 201825, 201725,
-    201726, 201727, 201827, 201927, 202027, 202127, 202227, 202228, 202229, 202129,
-    202029, 201929, 201829,
+to_ending = [
+    201829, 201929, 202029, 202129, 202229, 202329, 202429, 202529, 202629, 202729,
+    202829, 202929, 203029, 203028, 203027, 203026, 203025, 202925, 202825, 202725,
+    202625, 202525, 202524, 202523, 172523, 172522, 172422, 172421, 172521, 172621,
+    172721, 172821, 172921, 173021, 173020, 173019, 173018, 173017, 173016, 173015,
+    173014, 172914, 172814, 172714, 172614, 172514, 172414, 172314, 172214, 172213,
+    172212, 162212, 162211, 162111, 162011, 161911, 161811, 161711, 161611, 161511,
+    161411, 161311, 161310, 161309, 161308, 161307, 161207, 161107, 161106, 161105,
+    161104, 161103, 161102, 161002, 160902, 160802, 160702, 160602, 160502, 160402,
+    160302, 160303, 190303, 190304, 190305, 190306, 190307, 190407, 190507, 190607,
+    190707, 190807, 190907, 191007, 191008, 191009, 191010, 191011, 190911, 190811,
+    190711, 190611, 190511, 190411, 190311, 190211, 190111, 190110, 190109, 190108,
+    190107, 190106, 190105, 190104, 190103,
 ]

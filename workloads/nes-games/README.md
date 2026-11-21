@@ -518,7 +518,25 @@ and the two hand preferences. Past Kraid's defeat the strategy continues where
 the hand plan stops: energy for the hideout shaft (120), the route to the
 Norfair elevator, energy (80), the route to the Ridley elevator, energy (96),
 the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
-damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. The routes
+damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
+Ridley come energy (96), the route out of the hideout, energy (80), the route
+back through Norfair, energy (96), full missiles, the route to the Tourian
+elevator and the route to the Zebetite door. The norfair_return objective is 0
+in Ridley's area, because the last route index a state stood on survives a
+walk back into the hideout and would rank it level with Norfair. The zebetites
+stage climbs 8 per screen of the route to Mother Brain's room plus the columns
+reading destroyed, so a hit on a column is a new place through
+`zebetite_hits_left` but ranks no higher: a column heals a hit every 64 frames,
+and only a broken column, or the screen past it, lasts. The mother_brain stage
+climbs 256 per destroyed column plus boss damage and is done on
+`mother_brain_defeated`, and the escape stage climbs the escape shaft's route
+and is done on the ending. A strategy holds at most 8 aggregates, and a
+stage-scoped `last` is one per stage, so the two Ridley routes share the table
+`to_ridley` and every route after Ridley shares `to_ending`, each read by one
+`last` with no stage scope. Neither table repeats a cell, and every stage that
+reads one starts on a cell of it (the Norfair elevator's arrival and Ridley's
+room), so the unscoped `last` starts each stage at its entry cell as the
+scoped form does. Each of those stages is done on its route's last cell. The routes
 and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
 the equivalence test compares the stages up to Kraid and checks that every
 state past his defeat is located past the hand plan's stages. A route stage's objective is the last route index

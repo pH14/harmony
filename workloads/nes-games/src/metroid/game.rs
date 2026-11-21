@@ -234,6 +234,7 @@ impl Game for Metroid {
         ));
         out.declare(byte("tanks", state.collectibles()));
         out.declare(byte("zebetite_hits_left", state.zebetite_hits_left));
+        out.declare(byte("zebetites_destroyed", state.zebetites_destroyed));
         out.declare(value("health", i64::from(state.health), 0, MAX_HEALTH));
         out.declare(value("balance", balance(state), 0, balance_max()));
         out.declare(value(
