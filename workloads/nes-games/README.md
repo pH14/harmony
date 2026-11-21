@@ -154,9 +154,11 @@ written this way. The other games have their own `target`, `archive` and
   start does not resume here; Famidash names its side, level and goal.
   `rooted_genesis` checks the endpoint of a root (below), because each game
   states what a valid rooted start is. Super Mario Bros. requires live play,
-  Mega Man 2 play after a stage arrival outside a drive, and Ice Climbers a
-  live climbing state with every life; the other games accept any root that
-  passes the workload's own conditions.
+  Mega Man 2 play after a stage arrival outside a drive, Ice Climbers a
+  live climbing state with every life, and Metroid a live state before the
+  ending in play (game mode 3) or the item pickup pause (game mode 9), the
+  two modes a retained search state is in; the other games accept any root
+  that passes the workload's own conditions.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
 - `MEMORY_WINDOWS` names the save RAM a game reads beside work RAM, as CPU

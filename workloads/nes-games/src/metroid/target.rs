@@ -27,6 +27,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 const GAME_MODE: usize = 0x1e;
 pub(crate) const GAME_MODE_PLAYING: u8 = 0x03;
+const GAME_MODE_ITEM_PICKUP: u8 = 0x09;
 const SCROLL_DIRECTION: usize = 0x49;
 const SCROLL_UP: u8 = 0;
 const SCROLL_DOWN: u8 = 1;
@@ -230,6 +231,11 @@ impl MetroidMechanicalState {
     #[must_use]
     pub fn in_play(self) -> bool {
         self.mode == GAME_MODE_PLAYING
+    }
+
+    #[must_use]
+    pub fn in_play_or_item_pickup(self) -> bool {
+        self.in_play() || self.mode == GAME_MODE_ITEM_PICKUP
     }
 }
 

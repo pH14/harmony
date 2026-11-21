@@ -162,6 +162,19 @@ impl Game for Metroid {
         }
     }
 
+    fn rooted_genesis(&self, state: &MetroidMechanicalState) -> Result<(), String> {
+        if state.in_play_or_item_pickup()
+            && !MetroidTerminalPolicy::default().is_dead(*state)
+            && !state.ending
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "Metroid root input did not end in live play or an item pickup: {state:?}"
+            ))
+        }
+    }
+
     fn decode(
         &self,
         _parent: Option<&MetroidMechanicalState>,
@@ -365,6 +378,37 @@ mod tests {
             if matches!(PLAN[stage].objective, plan::Objective::Route(_)) {
                 assert!(*count > 0, "{}", PLAN[stage].name);
             }
+        }
+    }
+
+    #[test]
+    fn a_root_must_end_in_live_play_or_an_item_pickup() {
+        let playing = MetroidMechanicalState {
+            area: 0x10,
+            health: 300,
+            mode: 3,
+            ..MetroidMechanicalState::default()
+        };
+        assert!(Metroid.rooted_genesis(&playing).is_ok());
+        let pickup = MetroidMechanicalState { mode: 9, ..playing };
+        assert!(Metroid.rooted_genesis(&pickup).is_ok());
+        for state in [
+            MetroidMechanicalState { mode: 8, ..playing },
+            MetroidMechanicalState { mode: 1, ..playing },
+            MetroidMechanicalState {
+                health: 0,
+                ..pickup
+            },
+            MetroidMechanicalState {
+                health: 0,
+                ..playing
+            },
+            MetroidMechanicalState {
+                ending: true,
+                ..playing
+            },
+        ] {
+            assert!(Metroid.rooted_genesis(&state).is_err(), "{state:?}");
         }
     }
 

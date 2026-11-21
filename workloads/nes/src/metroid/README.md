@@ -302,8 +302,10 @@ game on the shared `NesWorkload` target with no hand campaign, under
 image gains cartridge RAM, as in the hand target, because the game declares a
 memory window there. Its setup tape is the hand target's power-on walk followed
 by the 261 idle frames the hand target waits on this ROM until play starts, so
-both start from the same genesis. `nes-film --game metroid-strategy` films its
-witness and milestone tapes. Its live view reads the same `View` as the hand campaign,
+both start from the same genesis. A `root_input` tape must end alive before the
+ending in play or the item pickup pause, so a milestone tape the search
+produced roots unedited. `nes-film --game metroid-strategy` films its
+witness and milestone tapes, with `--root-input` for a rooted run. Its live view reads the same `View` as the hand campaign,
 and its trail motion carries no facing, which the decoded state does not hold.
 
 ## Archive memory
