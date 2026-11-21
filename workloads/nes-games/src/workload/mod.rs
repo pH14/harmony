@@ -2663,6 +2663,91 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
+    const FALLS_AT_FOUR: &str = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = \"x\"\nreject = \"x >= 4\"\n[[stage]]\nname = \"ledge\"\nobjective = \"x\"\ngoal = \"x >= 4\"\n[[stage]]\nname = \"beyond\"\ngoal = \"false\"\n";
+
+    fn fall(
+        workload: &NesWorkload<Ledge, Stepper>,
+        actions: &[ButtonChord],
+    ) -> Vec<NesActionResult<Ledge, Stepper, Vec<u8>>> {
+        let mut target = workload.new_target().unwrap();
+        let snapshot = workload.snapshot(&mut target).unwrap();
+        let result = workload
+            .execute_job(
+                &NesRun,
+                &mut target,
+                &snapshot,
+                &[],
+                Satisfied::default(),
+                actions,
+                RetentionPolicy::Unprobed,
+                RolloutStop::new(true),
+            )
+            .unwrap();
+        let fallen = result.actions.last().unwrap();
+        let last = &fallen.observations.last().unwrap().observation;
+        assert_eq!((last.state.x, last.rejected, last.key), (4, Some(0), None));
+        assert!(fallen.outcome.doomed && fallen.candidate.is_none());
+        result.actions
+    }
+
+    fn stage_and_objective(
+        workload: &NesWorkload<Ledge, Stepper>,
+        progress: u32,
+    ) -> (Option<String>, Vec<i64>) {
+        let view = workload.lowered.compiled.view(AssertionKey {
+            progress,
+            ..AssertionKey::default()
+        });
+        (view.stage, view.progress)
+    }
+
+    #[test]
+    fn a_rejected_frame_raises_no_watermark() {
+        let workload = ledge_with(FALLS_AT_FOUR);
+        let actions = fall(&workload, &[ButtonChord::new(RIGHT, 4)]);
+        let [action] = actions.as_slice() else {
+            panic!("one action");
+        };
+        let mut evidence = NesEvidence::default();
+        workload
+            .merge_action_evidence(&mut evidence, action, 1, || Ok(Input::default()))
+            .unwrap();
+        assert_eq!(
+            stage_and_objective(&workload, evidence.watermark),
+            (Some("ledge".to_owned()), vec![3])
+        );
+    }
+
+    #[test]
+    fn a_rejected_frame_becomes_no_champion() {
+        let workload = ledge_with(FALLS_AT_FOUR);
+        let step = ButtonChord::new(RIGHT, 2);
+        let actions = fall(&workload, &[step, step]);
+        let [walked, fallen] = actions.as_slice() else {
+            panic!("two actions");
+        };
+        let one = Input {
+            actions: vec![step],
+        };
+        let mut evidence = NesEvidence::default();
+        workload
+            .merge_action_evidence(&mut evidence, walked, 1, || Ok(one.clone()))
+            .unwrap();
+        workload
+            .merge_action_evidence(&mut evidence, fallen, 2, || {
+                Ok(Input {
+                    actions: vec![step, step],
+                })
+            })
+            .unwrap();
+        let champion = evidence.champion.unwrap();
+        assert_eq!(
+            stage_and_objective(&workload, champion),
+            (Some("ledge".to_owned()), vec![2])
+        );
+        assert_eq!(evidence.champion_input, one);
+    }
+
     #[test]
     fn a_violation_report_carries_the_input_that_reproduces_it() {
         let input = Input {

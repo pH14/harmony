@@ -386,17 +386,27 @@ every reset and after every transition, snapshots carry it, and a restore puts
 it back, so a state reached from a snapshot keys as it would on the path that
 made the snapshot. The strategy's lane is its `Accumulator` and the key
 `Compiled::observe` gave, or that its `reject` line matched a state that is not
-the world's goal. The world's goal (`World::goal`) is the one goal signal: the
-campaign's objective, the rejection rule and the shadow all read it, whatever
-the strategy's own `goal` line says. A rejected state ends its path as doomed
-(`Keying::rejected`), as in `NesTarget`, so the archive never keys it; a hand
+the world's goal. The world's goal (`World::goal`) is the goal of the
+campaign's objective, the rejection rule and the shadow, whatever the strategy's
+own `goal` line says, with one exception: `Compiled::observe` keeps the key of
+a state that a `reject` line matches only where the strategy's own `goal` line
+holds ([#1114](https://github.com/pH14/harmony/issues/1114)). A rejected state
+ends its path as doomed (`Keying::rejected`), as in `NesTarget`, so the archive
+never keys it. A strategy keeps no key for a state that a `reject` line matches
+unless its own `goal` line holds there, so where the world's goal holds and the
+strategy's `goal` does not, `Keying::key` refuses the state: "a tiny-world
+strategy's reject line matches a state where the world's goal holds". A hand
 key's lane is empty, since the campaign completes a hand key against its parent
 with `ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying,
-and its lane adds a searcher `ShadowCursor`: at each arrival the cursor
-observes the state's record under the strategy with the world's goal as its
-objective (`observe_with_objective`), takes no hand key where the hand keying
-ends the path, completes the raw hand key against the previous one and counts
-the pair in a `ShadowTable`. The report's `shadow` is the table's
+and its lane adds a searcher `ShadowCursor`: at each arrival the cursor observes
+the state's record under the strategy with the world's goal as its objective
+(`observe_with_objective`), takes no hand key where the hand keying ends the
+path, completes the raw hand key against the previous one and counts the pair in
+a `ShadowTable`. Where a `reject` line and the strategy's `goal` hold and the
+world's goal does not, `Compiled::observe` advances the cursor's accumulator as
+for any goal record and the cursor then drops the key; where a `reject` line and
+the world's goal hold and the strategy's `goal` does not, the cursor has no key
+and its accumulator stays at the parent. The report's `shadow` is the table's
 `ShadowReport`, taken after the run and before verification replays it.
 
 Each file in `strategies/` writes its family's hand key in the strategy
@@ -510,9 +520,9 @@ the shadow reports no disagreement while the lineage changes hand keys. With a
 ends its paths at the rejected state with the decision stream of a hand keying
 that ends them there, that the shadow agrees on that state, and that it counts
 an `absent` disagreement where only one side ends the path. With `reject =
-"goal"` and no `goal` line, the world's goal keeps its key in the strategy and
-in the shadow, and the strategy run gives the shipped strategy's decision
-stream.
+"goal"` and no `goal` line, the strategy refuses the summit, from `Keying::key`
+and through a strategy run, with "a tiny-world strategy's reject line matches a
+state where the world's goal holds".
 
 ## Stairs
 
