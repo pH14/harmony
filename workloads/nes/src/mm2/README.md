@@ -92,15 +92,18 @@ where a boss takes damage from one weapon only.
 ## Strategy key
 
 [`nes-games/src/mm2/game.rs`](../../../nes-games/src/mm2/game.rs) declares
-the same key through assertions as the `MegaMan2` `Game`, with the strategy in
-[`mega_man.toml`](../../../nes-games/src/mm2/mega_man.toml). Its decoder carries the
+the key through assertions as the `MegaMan2` `Game`, with the strategy in
+[`mega_man.toml`](../../../nes-games/src/mm2/mega_man.toml). The screen is
+the last tier item, so within the same clears a higher screen of a stage is a
+higher progress rank and draws favor the furthest screen reached. This relies
+on the screen byte not falling along a stage's route. Its decoder carries the
 hand target's per-frame context (fall run, dying run, enemy damage, boss
 intro frames, arrival) in its state. A transition is a forced `Drive` move
 whose steps are the hand target's menu chords, so `NesTarget` plays the same
 award wait, stage-select walk, cursor path and arrival wait. Its award, settle
 and walk idles are multi-frame steps of up to 120 frames. The decoder reads no
-death during a `Drive`, as the hand target's transition reads none. The tier is the
-preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
+death during a `Drive`, as the hand target's transition reads none. The tier
+without the screen is the preference scope, and `min(stage, 13)` and `min(platforms, 7)` keep the place
 inside 64 bits. The hand target finishes the current chord before a stage
 transition, while the strategy target cuts it at the transition frame, so a
 witness's frame count can differ by that remainder; no key differs. The
