@@ -158,13 +158,45 @@ fn an_edited_strategy_compiles_without_a_rebuild_and_keys_differently() {
 }
 
 #[test]
-fn a_strategy_with_aggregates_stages_or_rejects_is_refused() {
+fn stages_latches_and_aggregates_compile_and_stages_keep_the_shared_context_lines() {
     for strategy in [
-        "tier = \"highest(ticks)\"\n",
-        "[[stage]]\ngoal = \"sometimes.count > 2\"\n",
-        "reject = \"always.violated > 0\"\n",
+        "tier = \"min(highest(ticks), 15)\"\n",
+        "[[stage]]\ngoal = \"sometimes.count > 2\"\nlatch = true\n[[stage]]\ngoal = \"false\"\n",
+        "[every_stage]\nspread = [\"alive\"]\n[[stage]]\ngoal = \"min(highest(hooks.finished), 8) > 2\"\n[[stage]]\ngoal = \"false\"\n",
     ] {
-        assert!(FaultKeys::new(strategy, 3).is_err(), "{strategy}");
+        assert!(FaultKeys::new(strategy, 3).is_ok(), "{strategy}");
+    }
+    let shared = FaultKeys::new(
+        "[every_stage]\nidentity = [\"alive\"]\n[[stage]]\ngoal = \"false\"\n",
+        3,
+    )
+    .unwrap();
+    let context = shared.context(
+        shared
+            .key(&FaultObservations {
+                alive: 0b101,
+                ..FaultObservations::default()
+            })
+            .unwrap(),
+    );
+    assert_eq!((context.place.get() >> 4) & 0b111, 0b101);
+    for (strategy, refusal) in [
+        (
+            "[[stage]]\nname = \"early\"\ngoal = \"false\"\nspread = [\"alive\"]\n",
+            "stage `early` gives its own `spread` or `identity`",
+        ),
+        (
+            "[[stage]]\ngoal = \"false\"\nidentity = [\"alive\"]\n",
+            "stage `false` gives its own",
+        ),
+        ("reject = \"always.violated > 0\"\n", "no reject line"),
+        (
+            "[[stage]]\ngoal = \"false\"\nreject = \"always.violated > 0\"\n",
+            "no reject line",
+        ),
+    ] {
+        let error = FaultKeys::new(strategy, 3).unwrap_err().to_string();
+        assert!(error.contains(refusal), "{strategy}: {error}");
     }
 }
 

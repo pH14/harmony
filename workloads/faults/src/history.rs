@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn dag_codec_carries_each_endpoint_s_accumulator_and_observed_key() {
-        let keys = crate::campaign::fixture_keys();
+        let keys = crate::key::FaultKeys::new("tier = \"min(highest(ticks), 15)\"\n", 3).unwrap();
         let mut snapshots = dag_ladder(3, 9);
         let mut accumulator = searcher::search::assertion::Accumulator::default();
         for (depth, snapshot) in snapshots.iter_mut().enumerate() {
@@ -1124,10 +1124,7 @@ mod tests {
         .unwrap();
         assert_eq!(decoded, checkpoint);
         for (entry, snapshot) in decoded.entries.iter().zip(&snapshots) {
-            assert_ne!(
-                entry.snapshot.accumulator,
-                searcher::search::assertion::Accumulator::default()
-            );
+            assert!(entry.snapshot.accumulator.heap_bytes() > 0);
             assert_eq!(entry.snapshot.accumulator, snapshot.accumulator);
             assert_eq!(entry.snapshot.observed, snapshot.observed);
             assert_eq!(entry.snapshot.observed.key, keys.key(&snapshot.observation));

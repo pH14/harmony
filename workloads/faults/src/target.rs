@@ -1341,6 +1341,8 @@ pub struct FaultObservations {
     pub recovery_pending: bool,
     #[serde(default)]
     pub fault_free_check_passed: u64,
+    #[serde(default)]
+    pub stage_fall: Option<u8>,
 }
 
 impl FaultObservations {
@@ -1390,6 +1392,7 @@ impl FaultObservations {
             faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
             recovery_pending: value(reg::RECOVERY_PENDING) != 0,
             fault_free_check_passed: value(reg::FAULT_FREE_CHECK_PASSED),
+            stage_fall: None,
         }
     }
 

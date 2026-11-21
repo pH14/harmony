@@ -1295,8 +1295,11 @@ validates the recorded context. It is read from the key's lanes named
 `hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
 `checks_finished`, `workload_running` and the identity lane `alive`; a
 strategy without one of them leaves that part of the context zero, and packs
-no bits for a node mask it does not read. `FaultKeys::new` refuses a strategy
-with stages, a reject line or aggregates.
+no bits for a node mask it does not read. A strategy may give stages, latched
+stages and aggregates. Every stage reads the shared `spread` and `identity`
+lines, given at the top level or under `[every_stage]`, because the duration
+context reads its lanes from them, so `FaultKeys::new` refuses a `[[stage]]`
+that gives its own `spread` or `identity`. It also refuses a reject line.
 
 Each `FaultTarget` carries the strategy's accumulator, the searcher's
 `Accumulator`. The target folds its observation into a fresh accumulator with
@@ -1311,6 +1314,19 @@ after it continue from the fold the snapshot saved. The snapshot codec
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
+
+A staged strategy's archive report lists `stage_falls`: every stage with the
+number of action endpoints whose stage is below the stage of the state the
+action departed from, counted under the stage they fall to. The games make the
+same count with `Checker::stage_falls` when they re-key their records, and
+count keyed records only. The target counts falls live (ours): at each
+completed action whose endpoint has a key, it compares the departure
+accumulator's stage with the endpoint's and records a fall in that action's
+`FaultObservations::stage_fall`. An endpoint without a key counts no fall. The
+campaign evidence counts the falls of every action it merges, kept or not. A
+fall inside an action is not seen, and
+an action of a detached settle run counts only when the job applies it again.
+A tier strategy's report has no `stage_falls`.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
 duration context the shipped strategy gives 64 sampled states for each of 1,

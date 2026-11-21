@@ -14,7 +14,7 @@ use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
 use searcher::{
     search::{
         archive::{KeyShape, RetentionPolicy},
-        assertion::AssertionKey,
+        assertion::{AssertionKey, Compiled, StageFalls},
         campaign::{
             ArchiveFormat, ArchiveReportState, CampaignActionResult, CampaignCandidate,
             CampaignConfig, CampaignExecutionOptions, CampaignJobResult, CampaignModeReport,
@@ -195,6 +195,8 @@ pub struct FaultCampaignEvidence {
     park_thresholds: BTreeMap<u32, ParkThresholds>,
     undecided_checks: UndecidedChecks,
     undecided_execution: Option<(u64, u64)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    stage_falls: BTreeMap<u8, u64>,
 }
 
 impl FaultCampaignEvidence {
@@ -211,6 +213,21 @@ impl FaultCampaignEvidence {
             _ => {}
         }
         self.undecided_execution = Some((sequence, keys));
+    }
+
+    fn stage_falls(&self, compiled: &Compiled) -> Vec<StageFalls> {
+        compiled
+            .stage_names()
+            .into_iter()
+            .zip(0_u8..)
+            .map(|(stage, index)| StageFalls {
+                stage: stage.to_owned(),
+                records: self
+                    .stage_falls
+                    .get(&index)
+                    .map_or(0, |&records| usize::try_from(records).unwrap_or(usize::MAX)),
+            })
+            .collect()
     }
 
     fn recordable_bug<'a>(
@@ -873,6 +890,7 @@ impl Reporting for FaultWorkload {
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
             undecided_checks: evidence.undecided_checks,
+            stage_falls: evidence.stage_falls(self.keys.compiled()),
         }
     }
 }
@@ -1525,6 +1543,9 @@ impl Evaluation for FaultWorkload {
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
             }
+            if let Some(stage) = observation.stage_fall {
+                *evidence.stage_falls.entry(stage).or_default() += 1;
+            }
             evidence.note_undecided_keys(
                 sequence,
                 observation
@@ -1649,6 +1670,14 @@ pub(crate) fn fixture_run() -> FaultCampaignRun {
 #[cfg(test)]
 pub(crate) fn fixture_keys() -> FaultKeys {
     FaultKeys::new(crate::key::STRATEGY, 3).expect("the shipped strategy compiles")
+}
+
+#[cfg(test)]
+impl FaultWorkload {
+    pub(crate) fn with_fixture_keys(mut self, keys: Arc<FaultKeys>) -> Self {
+        self.keys = keys;
+        self
+    }
 }
 
 #[cfg(test)]

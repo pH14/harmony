@@ -372,20 +372,24 @@ impl FaultKeys {
         let lanes = ContextLanes::find(&parsed)?;
         lanes.check(nodes)?;
         masks_fit(strategy, nodes)?;
-        if !parsed.stage.is_empty() {
-            return Err("the faults strategy gives a tier, not stages".into());
+        if let Some(stage) = parsed
+            .stage
+            .iter()
+            .find(|stage| stage.spread.is_some() || stage.identity.is_some())
+        {
+            return Err(format!(
+                "stage `{}` gives its own `spread` or `identity`, but the duration context reads the shared lines; give them at the top level or under `[every_stage]`",
+                stage.name.as_deref().unwrap_or(&stage.goal)
+            )
+            .into());
         }
-        if parsed.lines()?.reject.is_some() {
+        if parsed.lines()?.reject.is_some()
+            || parsed.stage.iter().any(|stage| stage.reject.is_some())
+        {
             return Err("the faults workload reads no reject line".into());
         }
         let (compiled, catalog) = compile(&parsed, nodes, &facts)
             .map_err(|error| node_limit(&parsed, nodes, &facts, error))?;
-        if !compiled.is_pure() {
-            return Err(
-                "the faults workload keeps no accumulator, so its strategy holds no aggregates"
-                    .into(),
-            );
-        }
         Ok(Self {
             lanes,
             compiled,

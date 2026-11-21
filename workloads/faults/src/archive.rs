@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use fault_policy::ParkTarget;
 use searcher::search::{
     archive::{ArchiveEntryReport, ProgressPoint, SelectorAccounting, entries_by_suffix},
-    assertion::AssertionKey,
+    assertion::{AssertionKey, StageFalls},
     campaign::{ArchiveFormat, ArchiveFormatName},
     draw_tables::DrawView,
     rand::RomuDuoJrRand,
@@ -484,6 +484,8 @@ pub struct FaultArchiveReport {
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
     #[serde(default)]
     pub undecided_checks: UndecidedChecks,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub stage_falls: Vec<StageFalls>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

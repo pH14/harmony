@@ -861,10 +861,14 @@ impl FaultTarget {
         };
     }
 
-    fn observe_endpoint(&mut self) {
-        if let Some(keys) = &self.keys {
-            self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
-        }
+    fn observe_endpoint(&mut self) -> Option<u8> {
+        let keys = self.keys.as_ref()?;
+        let departure = self.accumulator.stage();
+        self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
+        let arrival = self.observed.key.and(self.accumulator.stage());
+        departure
+            .zip(arrival)
+            .and_then(|(from, to)| (to < from).then_some(to))
     }
 
     #[must_use]
@@ -1412,7 +1416,7 @@ impl FaultTarget {
             ))
         });
         match result {
-            Ok((observation, ran, receipt)) => {
+            Ok((mut observation, ran, receipt)) => {
                 let endpoint = receipt.as_ref().map(HistoryReceipt::endpoint);
                 if let Some(receipt) = receipt {
                     match self.history.push(receipt) {
@@ -1436,7 +1440,7 @@ impl FaultTarget {
                     .saturating_add(crate::target::action_ticks(&action));
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
-                self.observe_endpoint();
+                observation.stage_fall = self.observe_endpoint();
                 self.action_observations.push(observation);
                 endpoint
             }
@@ -3150,6 +3154,15 @@ mod tests {
         static PLANNED_BRANCHES: RefCell<Option<Vec<PlannedBranch>>> = const { RefCell::new(None) };
     }
 
+    const SCRIPTED_WORK: u64 = u64::MAX;
+
+    #[derive(Debug, Default)]
+    struct ScriptedRuns {
+        batches: Vec<Vec<consonance_client::session::SdkEvent>>,
+        depths: BTreeMap<u64, usize>,
+        depth: usize,
+    }
+
     #[derive(Debug, Default)]
     struct TimedOutRestore {
         endpoint_state: consonance_client::endpoint::EndpointState,
@@ -3160,6 +3173,7 @@ mod tests {
         branch_calls: u64,
         sdk_offsets: Vec<u32>,
         sdk_event_count: u64,
+        scripted: Option<ScriptedRuns>,
         run_events: Option<Vec<consonance_client::session::SdkEvent>>,
         abandon_on_hash: bool,
         hash_failure: bool,
@@ -3514,6 +3528,9 @@ mod tests {
                 if self.run_hashes.is_some() {
                     self.hash = self.snapshots.get(&snapshot.0).copied();
                 }
+                if let Some(scripted) = &mut self.scripted {
+                    scripted.depth = scripted.depths.get(&snapshot.0).copied().unwrap_or(0);
+                }
                 self.current = snapshot.0;
                 if let Some(history) = self.histories.get(&snapshot.0) {
                     self.history = *history;
@@ -3550,6 +3567,12 @@ mod tests {
                 if let Some(history) = self.histories.get(&snapshot.0) {
                     self.history = *history;
                 }
+                if let Some(scripted) = &mut self.scripted {
+                    scripted.depth = scripted.depths.get(&snapshot.0).copied().unwrap_or(0);
+                    let events = self.events.get(&snapshot.0).cloned().unwrap_or_default();
+                    self.events.insert(SCRIPTED_WORK, events);
+                    self.current = SCRIPTED_WORK;
+                }
                 Ok(())
             } else {
                 Err(SessionError::Hung(WALL_LIMIT).into())
@@ -3559,6 +3582,15 @@ mod tests {
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
             if let Some(events) = self.run_events.take() {
                 self.events.insert(self.current, events);
+            }
+            if let Some(scripted) = &mut self.scripted {
+                let batch = scripted
+                    .batches
+                    .get(scripted.depth)
+                    .cloned()
+                    .unwrap_or_default();
+                scripted.depth += 1;
+                self.events.entry(self.current).or_default().extend(batch);
             }
             if self.run_hung && self.run_hashes.as_ref().is_none_or(Vec::is_empty) {
                 return Err(SessionError::Hung(WALL_LIMIT).into());
@@ -3587,6 +3619,11 @@ mod tests {
             self.next_snap += 1;
             self.snapshots.insert(self.next_snap, self.hash.unwrap());
             self.histories.insert(self.next_snap, self.history);
+            if let Some(scripted) = &mut self.scripted {
+                scripted.depths.insert(self.next_snap, scripted.depth);
+                let events = self.events.get(&self.current).cloned().unwrap_or_default();
+                self.events.insert(self.next_snap, events);
+            }
             Ok((SnapId(self.next_snap), self.moment))
         }
 
@@ -3713,6 +3750,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -3773,6 +3811,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4367,6 +4406,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4584,6 +4624,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4619,6 +4660,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash,
             hash_failure: false,
@@ -4936,6 +4978,206 @@ mod tests {
         assert_eq!(*target.accumulator(), root.accumulator);
         assert_eq!(target.observed(), root.observed);
         LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    const FOLDING: &str = "tier = \"min(highest(ticks), 15)\"\n";
+
+    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+        let mut bytes = vec![0];
+        bytes.extend_from_slice(&ticks.to_le_bytes());
+        (0, (2 << 24) | process_proto::registers::TICKS, bytes)
+    }
+
+    fn scripted_runs_live(ticks: &[u64]) -> Live {
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            scripted: Some(ScriptedRuns {
+                batches: ticks
+                    .iter()
+                    .map(|&ticks| vec![ticks_event(ticks)])
+                    .collect(),
+                ..ScriptedRuns::default()
+            }),
+            run_hashes: Some(vec![[17; 32]; 64]),
+            ..fixture_session()
+        });
+        live
+    }
+
+    fn keyed_target(strategy: &str) -> (FaultTarget, Arc<FaultKeys>) {
+        let keys = Arc::new(FaultKeys::new(strategy, 3).unwrap());
+        (unbooted_target().with_keys(Arc::clone(&keys)), keys)
+    }
+
+    fn merged_report(
+        keys: &Arc<FaultKeys>,
+        actions: &[searcher::search::campaign::CampaignActionResult<
+            crate::campaign::FaultWorkload,
+        >],
+    ) -> crate::archive::FaultArchiveReport {
+        use searcher::search::campaign::{ArchiveReportState, Evaluation, Reporting};
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+            boot_cache: None,
+            answers: Vec::new(),
+            hold_hooks: false,
+        };
+        let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config)
+            .with_fixture_keys(Arc::clone(keys));
+        let mut evidence = crate::campaign::FaultCampaignEvidence::default();
+        for (sequence, action) in (0..).zip(actions) {
+            game.merge_action_evidence(&mut evidence, action, sequence, || {
+                Ok(crate::archive::FaultInput::default())
+            })
+            .unwrap();
+        }
+        game.archive_report(
+            &evidence,
+            ArchiveReportState {
+                seed: 0,
+                executions: 0,
+                entries: Vec::new(),
+                progress_curve: Vec::new(),
+                retained: 0,
+                rejected: 0,
+                terminal_endpoints: 0,
+                terminal_objectives: 0,
+                doomed_endpoints: 0,
+                execution_failures: 0,
+                hung_jobs: 0,
+                selector: searcher::search::archive::SelectorAccounting::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn replayed_rebuilt_and_settled_parents_fold_each_action_as_the_live_path_did() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, keys) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 2, 7])));
+        let root = target.snapshot().unwrap().unwrap();
+        let first = target.apply_and_snapshot(action).unwrap().unwrap();
+        let second = target.apply_and_snapshot(action).unwrap().unwrap();
+        let detached = target
+            .run_detached(|target| {
+                target.apply(action);
+                target.apply(action);
+                (
+                    target.observation().ticks,
+                    *target.accumulator() != second.accumulator,
+                )
+            })
+            .unwrap();
+        assert_eq!(detached, (7, true));
+        assert_eq!(*target.accumulator(), second.accumulator);
+        assert_eq!(target.observed(), second.observed);
+        let third = target.apply_and_snapshot(action).unwrap().unwrap();
+        let ticks = [&root, &first, &second, &third].map(|snapshot| snapshot.observation.ticks);
+        assert_eq!(ticks, [0, 5, 1, 2]);
+        let mut expected = Accumulator::default();
+        let _ = keys.observe(&root.observation, &mut expected, false);
+        let observed = [&first, &second, &third]
+            .map(|snapshot| keys.observe(&snapshot.observation, &mut expected, true));
+        assert_eq!(third.accumulator, expected);
+        assert_eq!(third.observed, observed[2]);
+        assert_eq!(keys.view(third.observed.key.unwrap()).progress, [5]);
+        let mut skipped = Accumulator::default();
+        let _ = keys.observe(&root.observation, &mut skipped, false);
+        let _ = keys.observe(&third.observation, &mut skipped, true);
+        assert_ne!(skipped, third.accumulator);
+        let certificates = second.history.certificates();
+        for (origin, replay) in [(&root, &[action, action][..]), (&first, &[action][..])] {
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 2, 7])));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                origin,
+                replay,
+                &certificates[certificates.len() - replay.len()..],
+                crate::archive::FaultMilestones::default(),
+                &[action],
+                searcher::search::rollout::RolloutStop::new(false),
+                None,
+            )
+            .unwrap();
+            let candidate = &result.actions[0].candidate.as_ref().unwrap().snapshot;
+            assert_eq!(candidate.observation.ticks, 2);
+            assert_eq!(candidate.accumulator, third.accumulator);
+            assert_eq!(candidate.observed, third.observed);
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn a_staged_strategy_reports_each_fall_back_to_an_earlier_stage() {
+        use searcher::search::assertion::StageFalls;
+        let staged = "[[stage]]\nname = \"quiet\"\ngoal = \"ticks >= 4\"\n[[stage]]\nname = \"busy\"\ngoal = \"false\"\n";
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, keys) = keyed_target(staged);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 6])));
+        let origin = target.snapshot().unwrap().unwrap();
+        assert_eq!(origin.accumulator.stage(), Some(0));
+        let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[action, action, action],
+            searcher::search::rollout::RolloutStop::new(false),
+            None,
+        )
+        .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        let stages: Vec<_> = result
+            .actions
+            .iter()
+            .map(|action| {
+                let candidate = &action.candidate.as_ref().unwrap().snapshot;
+                (
+                    action.observations[0].stage_fall,
+                    candidate.accumulator.stage(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            stages,
+            [(None, Some(1)), (Some(0), Some(0)), (None, Some(1))]
+        );
+        let falls = |stage: &str, records| StageFalls {
+            stage: stage.to_owned(),
+            records,
+        };
+        let report = merged_report(&keys, &result.actions);
+        assert_eq!(report.stage_falls, [falls("quiet", 1), falls("busy", 0)]);
+        let encoded = serde_json::to_value(&report).unwrap();
+        assert_eq!(encoded["stage_falls"][0]["stage"], "quiet");
+        let tier = merged_report(&Arc::new(crate::campaign::fixture_keys()), &result.actions);
+        assert!(tier.stage_falls.is_empty());
+        assert!(
+            serde_json::to_value(&tier)
+                .unwrap()
+                .get("stage_falls")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn snapshot_memory_charge_counts_the_aggregate_accumulator() {
+        let keys = FaultKeys::new(FOLDING, 3).unwrap();
+        let mut snapshot = FaultSnapshot::default();
+        let pure = snapshot_memory_charge(&snapshot);
+        snapshot.observed = keys.observe(&snapshot.observation, &mut snapshot.accumulator, false);
+        assert!(snapshot.accumulator.heap_bytes() > 0);
+        assert_eq!(
+            snapshot_memory_charge(&snapshot),
+            pure + snapshot.accumulator.heap_bytes()
+        );
     }
 
     #[test]
@@ -5523,6 +5765,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5567,6 +5810,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -5667,6 +5911,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5710,6 +5955,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5814,6 +6060,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5880,6 +6127,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5932,6 +6180,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -6346,6 +6595,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: true,
@@ -7189,6 +7439,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -7231,6 +7482,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -8648,6 +8900,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 history_failure: None,
@@ -8779,6 +9032,7 @@ mod tests {
                     branch_calls: 0,
                     sdk_offsets: Vec::new(),
                     sdk_event_count: 0,
+                    scripted: None,
                     run_events: None,
                     abandon_on_hash: false,
                     history_failure: history_hung.then_some(|| SessionError::Hung(WALL_LIMIT)),
