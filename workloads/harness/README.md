@@ -617,8 +617,8 @@ namespaces, with HTTP ports 4001, 4003 and 4005, Raft ports 4002, 4004 and
 4006 and data under `/tmp/rqlite/<node>`. The setup script forwards the HTTP
 ports on 127.0.0.1 to the nodes, and the adapter dials 127.0.0.1. `ready`
 creates the tables through the first node that accepts the statements.
-Each node's data directory is a 256 MiB node disk in both bundles, so the
-search draws power-loss and disk faults for every node. Both bundles declare
+Each node's data directory is a 256 MiB node disk in every bundle, so the
+search draws power-loss and disk faults for every node. Every bundle declares
 the node logs `/tmp/rqlite/<node>.log` with `log` lines.
 
 The default `bundle` drives the `register` family on table `kv`. `write` is an
@@ -638,7 +638,23 @@ row id at level `linearizable`. Each operation goes to a random node without
 `redirect`, so a follower forwards it to the leader. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-forward` to select it.
 
-A read pinned to node `nI` in either bundle first runs
+`bundle-stepdown` drives the `register` family as `bundle` does and adds hook
+5, `rqlite-harness stepdown`, a client that asks the leader to hand over
+leadership. It sends `POST /leader?wait&redirect` to a node drawn at site
+`rqlite.stepdown.via` and follows one redirect. The body is `{"id": "nI"}` for
+a target drawn at `rqlite.stepdown.target` among the three nodes, or empty for
+no target, which lets Raft pick the most caught-up follower. Raft gives a
+transfer one election timeout, 1 second in rqlited, and the answer is then
+`leadership transfer timeout`. On that answer the client sends the same request
+again, up to a number of times drawn at `rqlite.stepdown.retries` (0 to 2),
+each after a wait drawn at `rqlite.stepdown.wait` (0 to 1 second in steps of
+100 ms). The retry is ours. It appends each answer to `/tmp/rqlite/stepdown.log`
+and exits 0 whatever the answers. The bundle's `heal` line makes the supervisor
+count the hook as a cut, so it is a fault in force until the heal hook runs
+after its window closes. Build the image with
+`--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
+
+A read pinned to node `nI` in every bundle first runs
 `UPDATE ready SET n = n + 1 WHERE k = 1` with `raft_index` through a random
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
 index, then reads from `nI` at level `none`, which answers from `nI`'s own
@@ -679,7 +695,7 @@ commits about 7 entries a second, so with `RQLITE_RAFT_SNAP=64` and
 follower that misses more than 80 entries, about 12 seconds of writes, catches
 up by installing the leader's snapshot.
 
-Search either bundle with both hook options of the
+Search every bundle with both hook options of the
 [faults package](../faults/README.md) on:
 
 ```toml

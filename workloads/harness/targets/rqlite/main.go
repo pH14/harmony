@@ -45,6 +45,17 @@ var nodes = []string{
 
 var nodeNames = []string{"n1", "n2", "n3"}
 
+var stepdownTargets = []string{"", "n1", "n2", "n3"}
+
+const (
+	stepdownLog          = "/tmp/rqlite/stepdown.log"
+	stepdownTimedOut     = "leadership transfer timeout"
+	stepdownTimeout      = 10 * time.Second
+	stepdownRetryChoices = 3
+	stepdownWaitChoices  = 11
+	stepdownWaitStep     = 100 * time.Millisecond
+)
+
 var readySQL = [][]any{
 	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT, n INTEGER NOT NULL DEFAULT 0, h INTEGER NOT NULL DEFAULT 0)"},
 	{"CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, v TEXT)"},
@@ -524,50 +535,137 @@ func (c *client) post(ctx context.Context, path string, statements [][]any) (res
 	if err != nil {
 		return response{}, 0, runner.Definite(err)
 	}
+	var status int
+	var text string
 	if c.forward {
-		resp, status, _, err := c.send(ctx, c.base+path, body)
-		return resp, status, err
+		status, text, _, err = c.send(ctx, c.base+path, body)
+	} else {
+		status, text, err = c.postRedirect(ctx, path, body)
 	}
+	if err != nil {
+		return response{}, 0, err
+	}
+	resp := response{text: text}
+	if status == http.StatusOK {
+		if err := json.Unmarshal([]byte(text), &resp); err != nil {
+			return response{}, 0, fmt.Errorf("decode %q: %w", text, err)
+		}
+	}
+	return resp, status, nil
+}
+
+func (c *client) postRedirect(ctx context.Context, path string, body []byte) (int, string, error) {
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
 	target := c.base + path + separator + "redirect"
 	for hop := 0; ; hop++ {
-		resp, status, location, err := c.send(ctx, target, body)
+		status, text, location, err := c.send(ctx, target, body)
 		if err != nil || status != http.StatusMovedPermanently || hop > 0 || location == "" {
-			return resp, status, err
+			return status, text, err
 		}
 		target = location
 	}
 }
 
-func (c *client) send(ctx context.Context, target string, body []byte) (response, int, string, error) {
+func (c *client) send(ctx context.Context, target string, body []byte) (int, string, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
-		return response{}, 0, "", runner.Definite(err)
+		return 0, "", "", runner.Definite(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := c.http.Do(req)
 	if err != nil {
 		var opErr *net.OpError
 		if errors.As(err, &opErr) && opErr.Op == "dial" {
-			return response{}, 0, "", runner.Definite(err)
+			return 0, "", "", runner.Definite(err)
 		}
-		return response{}, 0, "", err
+		return 0, "", "", err
 	}
 	defer httpResp.Body.Close()
 	text, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return response{}, 0, "", err
+		return 0, "", "", err
 	}
-	resp := response{text: strings.TrimSpace(string(text))}
-	if httpResp.StatusCode == http.StatusOK {
-		if err := json.Unmarshal(text, &resp); err != nil {
-			return response{}, 0, "", fmt.Errorf("decode %q: %w", text, err)
+	return httpResp.StatusCode, strings.TrimSpace(string(text)), httpResp.Header.Get("Location"), nil
+}
+
+type stepdownAnswer struct {
+	status int
+	text   string
+	err    error
+}
+
+func (a stepdownAnswer) timedOut() bool {
+	return a.err == nil && a.status == http.StatusInternalServerError && strings.Contains(a.text, stepdownTimedOut)
+}
+
+func (a stepdownAnswer) String() string {
+	if a.err != nil {
+		return "error " + strconv.Quote(a.err.Error())
+	}
+	return fmt.Sprintf("status %d %s", a.status, strconv.Quote(a.text))
+}
+
+func (c *client) stepdown(ctx context.Context, id string) stepdownAnswer {
+	ctx, cancel := context.WithTimeout(ctx, stepdownTimeout)
+	defer cancel()
+	var body []byte
+	if id != "" {
+		var err error
+		body, err = json.Marshal(struct {
+			ID string `json:"id"`
+		}{id})
+		if err != nil {
+			return stepdownAnswer{err: err}
 		}
 	}
-	return resp, httpResp.StatusCode, httpResp.Header.Get("Location"), nil
+	status, text, err := c.postRedirect(ctx, "/leader?wait", body)
+	return stepdownAnswer{status: status, text: text, err: err}
+}
+
+func (c *client) stepdownRetrying(ctx context.Context, id string, retries int, wait func() time.Duration, record func(stepdownAnswer)) {
+	for attempt := 0; ; attempt++ {
+		answer := c.stepdown(ctx, id)
+		record(answer)
+		if attempt == retries || !answer.timedOut() {
+			return
+		}
+		time.Sleep(wait())
+	}
+}
+
+func runStepdown() error {
+	via := sdk.Below("rqlite.stepdown.via", uint64(len(nodes)))
+	target := stepdownTargets[sdk.Below("rqlite.stepdown.target", uint64(len(stepdownTargets)))]
+	retries := int(sdk.Below("rqlite.stepdown.retries", stepdownRetryChoices))
+	out, err := os.OpenFile(stepdownLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	named := target
+	if named == "" {
+		named = "any"
+	}
+	c := newClient(nodes[via])
+	defer c.Close()
+	wait := func() time.Duration {
+		return time.Duration(sdk.Below("rqlite.stepdown.wait", stepdownWaitChoices)) * stepdownWaitStep
+	}
+	c.stepdownRetrying(context.Background(), target, retries, wait, func(answer stepdownAnswer) {
+		fmt.Fprintf(out, "%s via=%s target=%s retries=%d %s\n", uptime(), nodeNames[via], named, retries, answer)
+	})
+	return nil
+}
+
+func uptime() string {
+	text, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return "uptime=?"
+	}
+	return "uptime=" + strings.Fields(string(text))[0]
 }
 
 func (adapter) Ready(ctx context.Context) error {
@@ -583,6 +681,13 @@ func (adapter) Ready(ctx context.Context) error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "stepdown" {
+		if err := runStepdown(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
 		runner.Main(adapter{})
