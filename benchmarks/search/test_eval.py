@@ -171,6 +171,19 @@ class EvaluationTests(unittest.TestCase):
         assets['smb']['sha256'] = eval.digest(rom)
         with self.assertRaises(ValueError): eval.resolve_assets(job, assets)
 
+    def test_a_strategy_game_reads_its_base_game_rom(self):
+        rom = self.root / 'private.nes'
+        core = self.root / 'private.so'
+        rom.write_bytes(b'private ROM sentinel')
+        core.write_bytes(b'core sentinel')
+        job = eval.expand_suite(self.suite)[0]
+        job['case']['rom_sha256'] = eval.digest(rom)
+        job['request']['game'] = 'smb-strategy'
+        assets = {'smb': {'path': str(rom), 'sha256': eval.digest(rom)}, 'core': {'path': str(core), 'sha256': eval.digest(core)}}
+        self.assertEqual(eval.resolve_assets(job, assets)['rom'], str(rom.resolve()))
+        self.assertEqual(eval.rom_asset('mm2-strategy'), 'mm2')
+        self.assertEqual(eval.rom_asset('mm2'), 'mm2')
+
     def test_tail_preserves_partial_records(self):
         path = self.root / 'progress.jsonl'
         tail = eval.Tail(path)
@@ -296,6 +309,10 @@ class EvaluationTests(unittest.TestCase):
         rooted = eval.film_command(Path('nes-film'), {**request, 'root_input': '/roots/smb.json'},
                                    Path('run/campaign'), Path('run/film'), 4096, 180)
         self.assertEqual(rooted[rooted.index('--root-input')+1], '/roots/smb.json')
+        self.assertNotIn('--stage', command)
+        staged = eval.film_command(Path('nes-film'), {**request, 'game': 'mm2-strategy', 'ai': None, 'stage': 6},
+                                   Path('run/campaign'), Path('run/film'), 4096, 180)
+        self.assertEqual(staged[staged.index('--stage')+1], '6')
 
     def test_a_run_with_no_renderable_input_reports_media_unavailable(self):
         matrix = self.root/'matrix'

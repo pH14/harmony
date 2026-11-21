@@ -181,7 +181,11 @@ in 89–251 seconds, including witness verification. One validation seed needed
 conditions.
 
 All manifests specify exact ROM hashes and normal menu origins. The MM2 stage
-cases are independent stage clears. `mm2-whole-game.json` runs MM2 from power-on
+cases are independent stage clears on `mm2-strategy` with a `stage`: the run
+starts at that stage's arrival from the power-on menus and wins when that Robot
+Master's weapon is awarded. The throughput panels run `mm2-strategy` as the
+whole game. A strategy game reads its base game's ROM entry, so `mm2-strategy`
+and `smb-strategy` use the `mm2` and `smb` entries. `mm2-whole-game.json` runs MM2 from power-on
 to the ending with the Robot Master order fixed. Metroid
 progress is reported even when its ending is not reached.
 

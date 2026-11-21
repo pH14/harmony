@@ -156,9 +156,13 @@ def expand_suite(suite, selected=None):
     return jobs
 
 
+def rom_asset(game):
+    return game.removesuffix('-strategy')
+
+
 def resolve_assets(job, assets):
     request=job['request'].copy()
-    for name in ('core',request['game']):
+    for name in ('core',rom_asset(request['game'])):
         item=assets[name]
         actual=digest(item['path'])
         if actual!=item['sha256']: raise ValueError('asset checksum mismatch: '+name)
@@ -670,6 +674,7 @@ def film_command(binary, request, campaign, out, max_frames, tail_frames):
                '--input', str(campaign / 'witness-input.json'), '--evidence', str(campaign / 'result.json'),
                '--out', str(out), '--max-frames', str(max_frames), '--tail-frames', str(tail_frames)]
     if request.get('ai') is not None: command += ['--ai', str(request['ai'])]
+    if request['game'] == 'mm2-strategy' and request.get('stage') is not None: command += ['--stage', str(request['stage'])]
     if request.get('root_input'): command += ['--root-input', str(request['root_input'])]
     return command
 
