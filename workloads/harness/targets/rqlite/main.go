@@ -545,7 +545,7 @@ func (c *client) post(ctx context.Context, path string, statements [][]any) (res
 	if err != nil {
 		return response{}, 0, err
 	}
-	resp := response{text: text}
+	resp := response{text: strings.TrimSpace(text)}
 	if status == http.StatusOK {
 		if err := json.Unmarshal([]byte(text), &resp); err != nil {
 			return response{}, 0, fmt.Errorf("decode %q: %w", text, err)
@@ -588,7 +588,7 @@ func (c *client) send(ctx context.Context, target string, body []byte) (int, str
 	if err != nil {
 		return 0, "", "", err
 	}
-	return httpResp.StatusCode, strings.TrimSpace(string(text)), httpResp.Header.Get("Location"), nil
+	return httpResp.StatusCode, string(text), httpResp.Header.Get("Location"), nil
 }
 
 type stepdownAnswer struct {
@@ -622,7 +622,7 @@ func (c *client) stepdown(ctx context.Context, id string) stepdownAnswer {
 		}
 	}
 	status, text, err := c.postRedirect(ctx, "/leader?wait", body)
-	return stepdownAnswer{status: status, text: text, err: err}
+	return stepdownAnswer{status: status, text: strings.TrimSpace(text), err: err}
 }
 
 func (c *client) stepdownRetrying(ctx context.Context, id string, retries int, wait func() time.Duration, record func(stepdownAnswer)) {
@@ -654,10 +654,13 @@ func runStepdown() error {
 	wait := func() time.Duration {
 		return time.Duration(sdk.Below("rqlite.stepdown.wait", stepdownWaitChoices)) * stepdownWaitStep
 	}
+	var written error
 	c.stepdownRetrying(context.Background(), target, retries, wait, func(answer stepdownAnswer) {
-		fmt.Fprintf(out, "%s via=%s target=%s retries=%d %s\n", uptime(), nodeNames[via], named, retries, answer)
+		if _, err := fmt.Fprintf(out, "%s via=%s target=%s retries=%d %s\n", uptime(), nodeNames[via], named, retries, answer); err != nil && written == nil {
+			written = err
+		}
 	})
-	return nil
+	return written
 }
 
 func uptime() string {

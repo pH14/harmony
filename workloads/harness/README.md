@@ -648,10 +648,15 @@ transfer one election timeout, 1 second in rqlited, and the answer is then
 `leadership transfer timeout`. On that answer the client sends the same request
 again, up to a number of times drawn at `rqlite.stepdown.retries` (0 to 2),
 each after a wait drawn at `rqlite.stepdown.wait` (0 to 1 second in steps of
-100 ms). The retry is ours. It appends each answer to `/tmp/rqlite/stepdown.log`
-and exits 0 whatever the answers. The bundle's `heal` line makes the supervisor
+100 ms). The retry is ours. Each request, with its one redirect, has 10
+seconds, so the hook runs for at most about 32 seconds. It appends each answer
+to `/tmp/rqlite/stepdown.log` and exits 0 whatever the answers, or 1 when it
+cannot open or write the log. The bundle's `heal` line makes the supervisor
 count the hook as a cut, so it is a fault in force until the heal hook runs
-after its window closes. Build the image with
+after its window closes. The supervisor also holds that heal until every
+running cut hook exits, so a stepdown still waiting on an answer when the last
+cut window closes keeps an overlapping partition, isolation or delay in force
+until it exits. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
 
 A read pinned to node `nI` in every bundle first runs

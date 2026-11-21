@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"harmony.local/harness/kit/runner"
 )
 
 func TestStatusAnswersNameTheLastAnswerAcrossAttempts(t *testing.T) {
@@ -47,6 +49,19 @@ func TestStatusAnswersWithoutAnAnswerSaySo(t *testing.T) {
 	want := "n1 has no /status answer on record; last attempt: waiting for fence 5535: connection refused"
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestExecuteDecodesTheBodyAsSent(t *testing.T) {
+	for _, forward := range []bool{false, true} {
+		server, _ := leaderServer(t, answer(http.StatusOK, "{\"results\":[{\"rows_affected\":1,\"last_insert_id\":1}]} "))
+		c := newClient(server.URL)
+		c.forward = forward
+		_, err := c.executeAll(context.Background(), [][]any{{"UPDATE kv SET n = 1"}})
+		c.Close()
+		if err == nil || runner.IsDefinite(err) {
+			t.Fatalf("forward %v: error %v, want an indefinite decode error", forward, err)
+		}
 	}
 }
 
