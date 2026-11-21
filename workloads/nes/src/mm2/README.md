@@ -88,16 +88,19 @@ than 256 pixels on a steady screen.
 ## Archive key
 
 The progress tier is the Robot Master clears, the castle clears, the Wily 5
-refights, whether the boss that clears the current castle is defeated and
-whether the Wily Machine's first form is broken. A castle clear waits for the
-stage-clear sequence after the kill, and a kill that left the tier unchanged
-would share its draws with every fight state in the room. The place is the
-stage, screen, room, boss and enemy damage in steps of two, the 32-pixel position bucket,
+refights, whether the boss that clears the current castle is defeated, whether
+the Wily Machine's first form is broken, and the screen. A castle clear waits
+for the stage-clear sequence after the kill, and a kill that left the tier
+unchanged would share its draws with every fight state in the room. The screen
+is the last tier item, so within the same clears a higher screen of a stage is
+a higher progress rank and draws favor the furthest screen reached. This relies
+on the screen byte not falling along a stage's route. The place is the stage,
+room, boss and enemy damage in steps of two, the 32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play and the boss intro's 64-frame step. `min(stage, 13)`
 and `min(platforms, 7)` keep the place inside 64 bits. The holder identity is
-the 16-pixel position bucket, the weapon and the menu state. The tier is the
-preference scope, and each place keeps the best arrival under each of two
+the 16-pixel position bucket, the weapon and the menu state. The tier without
+the screen is the preference scope, and each place keeps the best arrival under each of two
 preferences. The first ranks health, then summed weapon energy. The second
 ranks the three lowest weapon energies, lowest first, then health, so it keeps
 the arrival whose most-drained weapons hold the most. Random input fires
