@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use machine::quicknes::QuickNesMachine;
+use machine::{nes::ButtonChord, quicknes::QuickNesMachine};
 use nes_games::{
     metroid::game::Metroid,
     workload::{Game, NesRun, NesWorkload},
@@ -28,6 +28,7 @@ use nes_workload::{
     pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
+    smb::SmbStrategyGame,
     stb::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
@@ -43,6 +44,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const DEFAULT_TAIL_FRAMES: u32 = 180;
 const DEFAULT_MAX_FRAMES: u64 = 72_000;
+const FILM_FORMAT: &str = "nes-film-v2";
 
 struct Args {
     game: String,
@@ -61,6 +63,7 @@ struct Args {
     recorded_backend: String,
     strategy: Option<PathBuf>,
     milestone: Option<String>,
+    root_input: Option<PathBuf>,
 }
 
 impl Args {
@@ -81,6 +84,7 @@ impl Args {
         let mut recorded_backend = "native".to_owned();
         let mut strategy = None;
         let mut milestone = None;
+        let mut root_input = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             let value = args
@@ -109,6 +113,7 @@ impl Args {
                 "--recorded-backend" => recorded_backend = text()?,
                 "--strategy" => strategy = Some(PathBuf::from(&value)),
                 "--milestone" => milestone = Some(text()?),
+                "--root-input" => root_input = Some(PathBuf::from(&value)),
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -129,6 +134,7 @@ impl Args {
             recorded_backend,
             strategy,
             milestone,
+            root_input,
         };
         if u64::from(args.tail_frames) >= args.max_frames {
             return Err("the frame budget must leave room for more than the tail".into());
@@ -162,7 +168,32 @@ fn strategic<G: Game>(
     }
 }
 
-fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> Result<()> {
+fn rooted<G: Game>(
+    make: impl Fn() -> Result<NesWorkload<G, QuickNesMachine>>,
+    args: &Args,
+    identity: Value,
+) -> Result<()> {
+    let Some(path) = &args.root_input else {
+        return produce(strategic(make()?, args)?, NesRun, args, identity, None);
+    };
+    let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(path)?)?;
+    let game = strategic(make()?, args)?.with_root(root.actions.clone())?;
+    produce(
+        game,
+        NesRun,
+        args,
+        identity,
+        Some((strategic(make()?, args)?, root)),
+    )
+}
+
+fn produce<G: Filmable>(
+    game: G,
+    run: G::Run,
+    args: &Args,
+    identity: Value,
+    root: Option<(G, Input<G::Action>)>,
+) -> Result<()> {
     let input_bytes = fs::read(&args.input)?;
     let input: Input<G::Action> = serde_json::from_slice(&input_bytes)?;
     if input.actions.is_empty() {
@@ -215,7 +246,20 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
         }
     }
 
-    let input_frames = game.input_frames(&input)?;
+    let (filmer, tape, root_actions, root_frames) = match &root {
+        Some((unrooted, root)) => {
+            let mut tape = root.clone();
+            tape.actions.extend(input.actions.iter().cloned());
+            (
+                unrooted,
+                tape,
+                root.actions.len(),
+                unrooted.input_frames(root)?,
+            )
+        }
+        None => (&game, input.clone(), 0, 0),
+    };
+    let input_frames = filmer.input_frames(&tape)?;
     let requested_frames = input_frames + u64::from(args.tail_frames);
     let skip_frames = requested_frames.saturating_sub(args.max_frames);
 
@@ -228,7 +272,7 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     )?;
     let metadata: FilmMetadata = {
         let (video, audio) = reel.sinks()?;
-        game.film(&input, args.tail_frames, skip_frames, video, audio)?
+        filmer.film(&tape, args.tail_frames, skip_frames, video, audio)?
     };
     if metadata.skipped_frames != skip_frames {
         return Err("the renderer did not honour the declared frame budget".into());
@@ -266,13 +310,15 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     write_json(
         &args.out.join("film.json"),
         &json!({
-            "format": "nes-film-v1",
+            "format": FILM_FORMAT,
             "identity": identity,
             "rom_sha256": args.rom_sha256,
             "core_sha256": args.core_sha256,
             "input_sha256": sha256(&input_bytes),
             "milestone": args.milestone,
             "input_actions": input.actions.len(),
+            "root_actions": root_actions,
+            "root_frames": root_frames,
             "input_frames": input_frames,
             "solved": recorded.get("solved").cloned().unwrap_or(Value::Null),
             "victory": replayed.get("victory").cloned().unwrap_or(Value::Null),
@@ -321,6 +367,13 @@ fn main() -> Result<()> {
         }
         identity["strategy_sha256"] = json!(sha256(&fs::read(path)?));
     }
+    identity["root_input_sha256"] = json!(null);
+    if let Some(path) = &args.root_input {
+        if matches!(args.game.as_str(), "stb" | "castlevania") {
+            return Err("only games declared through assertions take a root input".into());
+        }
+        identity["root_input_sha256"] = json!(sha256(&fs::read(path)?));
+    }
     match args.game.as_str() {
         "stb" => {
             let ai = match args.ai.as_deref().unwrap_or("hard") {
@@ -334,24 +387,23 @@ fn main() -> Result<()> {
                 StbCampaignRun,
                 &args,
                 identity,
+                None,
             )
         }
         "twin-dragons" => {
             if args.ai.is_some() {
                 return Err("Twin Dragons takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     TwinDragonsWorkload::new(
-                        TwinDragons,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    TwinDragons,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -365,24 +417,23 @@ fn main() -> Result<()> {
                 CastlevaniaCampaignRun,
                 &args,
                 identity,
+                None,
             )
         }
         "punchout" => {
             if args.ai.is_some() {
                 return Err("Punch-Out!! takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     PunchOutWorkload::new(
-                        PunchOut,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    PunchOut,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -394,18 +445,16 @@ fn main() -> Result<()> {
             let side =
                 Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
             let stage = Stage::new(side, args.level, args.goal.unwrap_or(args.level))?;
-            produce(
-                strategic(
+            rooted(
+                || {
                     FamidashGame::new(
-                        Famidash::new(stage),
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    Famidash::new(stage),
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -414,12 +463,10 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Zelda takes no ai option".into());
             }
-            produce(
-                strategic(
-                    ZeldaGame::new(Zelda, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
-                    &args,
-                )?,
-                NesRun,
+            rooted(
+                || {
+                    ZeldaGame::new(Zelda, &rom, &args.core, &args.core_sha256, &execution_sha256)
+                },
                 &args,
                 identity,
             )
@@ -428,18 +475,16 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Donkey Kong takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     DonkeyKongWorkload::new(
-                        DonkeyKong,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    DonkeyKong,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -448,18 +493,16 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Ice Climbers takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     IceClimbersWorkload::new(
-                        IceClimbers::default(),
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    IceClimbers,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -468,18 +511,16 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Pac-Man takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     PacManWorkload::new(
-                        PacMan,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    PacMan,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -488,12 +529,28 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Joust takes no ai option".into());
             }
-            produce(
-                strategic(
-                    JoustGame::new(Joust, &rom, &args.core, &args.core_sha256, &execution_sha256)?,
-                    &args,
-                )?,
-                NesRun,
+            rooted(
+                || {
+                    JoustGame::new(Joust, &rom, &args.core, &args.core_sha256, &execution_sha256)
+                },
+                &args,
+                identity,
+            )
+        }
+        "smb-strategy" => {
+            if args.ai.is_some() {
+                return Err("Super Mario Bros. takes no ai option".into());
+            }
+            rooted(
+                || {
+                    SmbStrategyGame::new(
+                        nes_games::smb::game::SuperMarioBros,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )
+                },
                 &args,
                 identity,
             )
@@ -502,18 +559,16 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Mega Man 2 takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     Mm2Workload::new(
-                        MegaMan2,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    MegaMan2,
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                )
+                },
                 &args,
                 identity,
             )
@@ -522,24 +577,22 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Metroid takes no ai option".into());
             }
-            produce(
-                strategic(
+            rooted(
+                || {
                     MetroidStrategyGame::new(
                         Metroid,
                         &rom,
                         &args.core,
                         &args.core_sha256,
                         &execution_sha256,
-                    )?,
-                    &args,
-                )?,
-                NesRun,
+                    )
+                },
                 &args,
                 identity,
             )
         }
         _ => Err(
-            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man, Joust, strategy Mega Man 2 and strategy Metroid scenarios"
+            "nes-film renders the STB, Twin Dragons, Castlevania, Famidash, Punch-Out!!, Zelda, Donkey Kong, Ice Climbers, Pac-Man, Joust, strategy Super Mario Bros., strategy Mega Man 2 and strategy Metroid scenarios"
                 .into(),
         ),
     }
@@ -608,6 +661,17 @@ mod tests {
                 .unwrap()
                 .strategy,
             Some(std::path::PathBuf::from("strategy.toml"))
+        );
+    }
+
+    #[test]
+    fn a_root_input_is_optional() {
+        assert_eq!(Args::parse_from(required(&[])).unwrap().root_input, None);
+        assert_eq!(
+            Args::parse_from(required(&["--root-input", "root.json"]))
+                .unwrap()
+                .root_input,
+            Some(std::path::PathBuf::from("root.json"))
         );
     }
 

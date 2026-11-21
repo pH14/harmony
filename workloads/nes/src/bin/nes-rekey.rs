@@ -79,6 +79,25 @@ fn exact_rekeying<G: Game>(strategies: [&Compiled; 2]) -> Result<()> {
     Ok(())
 }
 
+fn same_root(header: &Value, records_root: Option<&str>) -> Result<()> {
+    let genesis = header["emulator_backend"]
+        .as_str()
+        .ok_or("the stream header has no emulator backend")?
+        .split(';')
+        .find_map(|field| field.strip_prefix("genesis="))
+        .ok_or("the stream header's emulator backend names no genesis")?;
+    let stream_root = genesis.split_once(":root-sha256=").map(|(_, root)| root);
+    if stream_root != records_root {
+        return Err(format!(
+            "the stream is rooted at {} and the records at {}",
+            stream_root.unwrap_or("power-on"),
+            records_root.unwrap_or("power-on")
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> {
     let recording = Recording::<ButtonChord>::from_bytes(&fs::read(run.join(RECORDS_FILE))?)?;
     let recorded = Lowered::new(game.clone(), &recording.header.strategy)?;
@@ -115,6 +134,7 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
             .as_str()
             .ok_or("the stream header has no key policy")?,
     )?;
+    same_root(&header, recording.header.root_sha256.as_deref())?;
     let entry_limit = header["archive_entry_limit"]
         .as_u64()
         .and_then(|limit| usize::try_from(limit).ok())
@@ -137,6 +157,11 @@ fn rekey<G: Game>(game: G, run: &Path, strategy: Option<&str>) -> Result<Value> 
         recorded: &recorded.compiled,
         strategy: &keyed.compiled,
         entry_limit,
+        rooted: recording
+            .header
+            .root_sha256
+            .as_ref()
+            .map(|_| &recording.header.accumulator_before_genesis),
     }
     .run(&recording.header.genesis, &jobs, &recording.actions)?;
     let same_policy = keyed.compiled.policy_identifier() == recording.header.policy;
@@ -217,7 +242,7 @@ fn main() -> Result<()> {
         "twin-dragons" => rekey(TwinDragons, run, strategy.as_deref())?,
         "punchout" => rekey(PunchOut, run, strategy.as_deref())?,
         "donkey-kong" => rekey(DonkeyKong, run, strategy.as_deref())?,
-        "ice-climbers" => rekey(IceClimbers::default(), run, strategy.as_deref())?,
+        "ice-climbers" => rekey(IceClimbers, run, strategy.as_deref())?,
         "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
         "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
         "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,
@@ -264,6 +289,28 @@ mod tests {
         assert_eq!(report["format"], "assertion-rekeyed-v2");
         assert_eq!(report["entries"], 1);
         assert_eq!(report["holders"][0]["identity"], u64::from(u32::MAX) + 1);
+    }
+
+    #[test]
+    fn the_records_and_the_stream_must_share_a_root() {
+        let stream = |genesis: &str| {
+            json!({
+                "emulator_backend": format!("quicknes;state=ppu-unused2-zero-v1;genesis={genesis};sha256=0")
+            })
+        };
+        let rooted = stream("smb-setup-v1:root-sha256=aa");
+        let unrooted = stream("smb-setup-v1");
+        assert!(same_root(&rooted, Some("aa")).is_ok());
+        assert!(same_root(&unrooted, None).is_ok());
+        let other = same_root(&rooted, Some("bb")).unwrap_err().to_string();
+        assert_eq!(other, "the stream is rooted at aa and the records at bb");
+        let bare = same_root(&unrooted, Some("aa")).unwrap_err().to_string();
+        assert_eq!(
+            bare,
+            "the stream is rooted at power-on and the records at aa"
+        );
+        assert!(same_root(&rooted, None).is_err());
+        assert!(same_root(&json!({}), None).is_err());
     }
 
     #[test]

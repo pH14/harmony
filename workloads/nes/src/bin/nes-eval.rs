@@ -90,16 +90,6 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
         .transpose()
 }
 
-fn ice_climbers_root(root_input: Option<&Path>) -> Result<Option<Vec<machine::nes::ButtonChord>>> {
-    match root_actions::<nes_workload::search::archive::Input<machine::nes::ButtonChord>>(
-        root_input,
-    )? {
-        Some(input) if input.actions.is_empty() => Err("root input carries no actions".into()),
-        Some(input) => Ok(Some(input.actions)),
-        None => Ok(None),
-    }
-}
-
 type LiveFamidash<const GROUP: usize> =
     nes_games::workload::NesWorkload<Famidash<GROUP>, NativeMachine>;
 
@@ -207,12 +197,26 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
 }
 
 const SHADOW_GAMES: &[&str] = &["smb", "metroid", "mm2"];
-const ROOT_GAMES: &[&str] = &["smb", "mm2", "metroid", "ice-climbers"];
+const ROOT_GAMES: &[&str] = &["smb", "mm2", "metroid"];
+const STRATEGY_GAMES: &[&str] = &[
+    "joust",
+    "zelda",
+    "famidash",
+    "famidash-lucky-draw",
+    "donkey-kong",
+    "pac-man",
+    "punchout",
+    "ice-climbers",
+    "twin-dragons",
+    "smb-strategy",
+    "mm2-strategy",
+    "metroid-strategy",
+];
 
 fn root_input_taken(game: &str, root_input: bool) -> Result<()> {
-    if root_input && !ROOT_GAMES.contains(&game) {
+    if root_input && !ROOT_GAMES.contains(&game) && !STRATEGY_GAMES.contains(&game) {
         return Err(format!(
-            "{game} takes no root_input; the games that do are {}",
+            "{game} takes no root_input; the games that do are {} and every strategy game",
             ROOT_GAMES.join(", ")
         )
         .into());
@@ -275,18 +279,7 @@ fn main() -> Result<()> {
             {
                 return Err("Famidash takes a stage, whole_game, or both".into());
             }
-            "joust"
-            | "zelda"
-            | "famidash"
-            | "famidash-lucky-draw"
-            | "donkey-kong"
-            | "pac-man"
-            | "punchout"
-            | "ice-climbers"
-            | "twin-dragons"
-            | "smb-strategy"
-            | "metroid-strategy"
-            | "mm2-strategy" => {}
+            game if STRATEGY_GAMES.contains(&game) => {}
             "smb" if request.shadow && !request.records => {}
             "metroid" if request.shadow && request.strategy.is_some() => {
                 return Err(
@@ -569,14 +562,7 @@ fn main() -> Result<()> {
             ),
             "ice-climbers" => evaluate_watching(
                 nes_workload::workload::configured(
-                    IceClimbersWorkload::new(
-                        ice_climbers_root(request.root_input.as_deref())?
-                            .map_or_else(IceClimbers::default, IceClimbers::rooted),
-                        &rom,
-                        p,
-                        h,
-                        &execution_sha256,
-                    )?,
+                    IceClimbersWorkload::new(IceClimbers, &rom, p, h, &execution_sha256)?,
                     &request,
                     &out,
                 )?,
@@ -705,17 +691,10 @@ mod tests {
 
     #[test]
     fn only_the_games_that_take_a_root_accept_root_input() {
-        for game in ROOT_GAMES {
+        for game in ROOT_GAMES.iter().chain(STRATEGY_GAMES) {
             assert!(root_input_taken(game, true).is_ok(), "{game}");
         }
-        for game in [
-            "smb-strategy",
-            "mm2-strategy",
-            "metroid-strategy",
-            "twin-dragons",
-            "joust",
-            "castlevania",
-        ] {
+        for game in ["stb", "castlevania"] {
             let error = root_input_taken(game, true).unwrap_err().to_string();
             assert!(
                 error.starts_with(&format!("{game} takes no root_input")),

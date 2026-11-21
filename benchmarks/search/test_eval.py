@@ -292,6 +292,10 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(command[command.index('--evidence')+1], 'run/campaign/result.json')
         self.assertNotIn('--level', command)
         self.assertNotIn('--whole-game', command)
+        self.assertNotIn('--root-input', command)
+        rooted = eval.film_command(Path('nes-film'), {**request, 'root_input': '/roots/smb.json'},
+                                   Path('run/campaign'), Path('run/film'), 4096, 180)
+        self.assertEqual(rooted[rooted.index('--root-input')+1], '/roots/smb.json')
 
     def test_a_run_with_no_renderable_input_reports_media_unavailable(self):
         matrix = self.root/'matrix'
@@ -325,7 +329,7 @@ class EvaluationTests(unittest.TestCase):
         binary.write_text('#!/bin/sh\nout=$(echo "$@" | tr " " "\\n" | grep -A1 -x -- --out | tail -1)\n'
                           'printf x > "$out/witness.mp4"\n'
                           'cat > "$out/film.json" <<\'JSON\'\n'
-                          '{"format":"nes-film-v1","endpoint_verified":true,"clip":{"policy":"whole input",'
+                          '{"format":"nes-film-v2","endpoint_verified":true,"clip":{"policy":"whole input",'
                           '"skipped_frames":0},"video":{"frames":300,"audio_frames":7350},'
                           '"capture":{"duration_seconds":5.0,"mp4_sha256":"c"}}\nJSON\n')
         binary.chmod(0o755)

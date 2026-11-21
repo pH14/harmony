@@ -288,7 +288,9 @@ python3 benchmarks/search/eval.py film /private/runs/evaluation-001 \
 `film` renders each completed cell's own recorded input to an MP4 with game
 audio through the `nes-film` renderer described in the
 [NES package README](../../workloads/nes/README.md). It reads the cell's
-`witness-input.json` and `result.json`, so it never starts a second search. A
+`witness-input.json` and `result.json`, so it never starts a second search, and
+passes a rooted cell's `root_input` as `--root-input`, so the film replays the
+root before the recorded input. A
 cell that produced no renderable input is recorded as unavailable with a reason;
 a render that fails is recorded as failed and fails the command. `films.json`
 indexes all three states beside each cell's `film/render.log`.

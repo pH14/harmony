@@ -1164,6 +1164,7 @@ mod tests {
                     },
                     &self.live_kept[0].state,
                     None,
+                    None,
                 )
                 .unwrap();
             let path = std::env::temp_dir().join(format!(
@@ -1208,6 +1209,7 @@ mod tests {
                 recorded: &recording.lowered.compiled,
                 strategy,
                 entry_limit: 256,
+                rooted: None,
             }
             .run(&records.header.genesis, &recording.jobs, &records.actions)
             .unwrap_or_else(|error| panic!("rekey of {:?}: {error}", recording.tape));

@@ -305,6 +305,9 @@ pub trait Game: Clone + Debug + Send + Sync + 'static {
         Vec::new()
     }
     fn genesis(&self, state: &Self::State) -> Result<(), String>;
+    fn rooted_genesis(&self, _state: &Self::State) -> Result<(), String> {
+        Ok(())
+    }
     fn genesis_id(&self) -> String {
         format!("{}-setup-v1", Self::NAME)
     }
@@ -528,7 +531,9 @@ impl<G: Game> Lowered<G> {
         stream: StreamIdentity,
         genesis: &G::State,
         choice_policy: Option<String>,
+        root: Option<(String, Accumulator)>,
     ) -> Result<RecordsHeader, Box<dyn Error>> {
+        let (root_sha256, accumulator_before_genesis) = root.unzip();
         Ok(RecordsHeader {
             format: RECORDS_FORMAT.to_owned(),
             stream,
@@ -538,6 +543,8 @@ impl<G: Game> Lowered<G> {
             catalog: self.records_catalog()?,
             memory_windows: G::MEMORY_WINDOWS.to_vec(),
             genesis: self.genesis_record(genesis),
+            root_sha256,
+            accumulator_before_genesis: accumulator_before_genesis.unwrap_or_default(),
         })
     }
 }
@@ -545,10 +552,28 @@ impl<G: Game> Lowered<G> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NesRun;
 
+fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
+    format!(
+        "{core};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
+    )
+}
+
+#[must_use]
+pub fn root_sha256(root: &[ButtonChord]) -> String {
+    let mut digest = Sha256::new();
+    for chord in root {
+        digest.update([chord.buttons, chord.hold_frames]);
+    }
+    format!("{:x}", digest.finalize())
+}
+
 pub struct NesWorkload<G: Game, M: NesBackend<Vec<u8>>> {
     lowered: Arc<Lowered<G>>,
     rom_sha256: String,
+    core: String,
+    core_sha256: String,
     identity: String,
+    root: Vec<ButtonChord>,
     machines: Machines<M>,
     records: Option<Arc<Records>>,
     choices: ChoicePolicy,
@@ -579,14 +604,14 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         core_sha256: &str,
         machines: Machines<M>,
     ) -> Result<Self, Box<dyn Error>> {
-        let identity = format!(
-            "{core};state=ppu-unused2-zero-v1;genesis={};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
-            game.genesis_id()
-        );
+        let identity = emulator_identity(core, &game.genesis_id(), core_sha256);
         Ok(Self {
             lowered: Arc::new(Lowered::new(game, strategy)?),
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
+            core: core.to_owned(),
+            core_sha256: core_sha256.to_owned(),
             identity,
+            root: Vec::new(),
             machines,
             records: None,
             choices: reproducing_choices::<G>(),
@@ -598,12 +623,41 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         Ok(Self {
             lowered: Arc::new(Lowered::new(self.lowered.game.clone(), strategy)?),
             rom_sha256: self.rom_sha256.clone(),
+            core: self.core.clone(),
+            core_sha256: self.core_sha256.clone(),
             identity: self.identity.clone(),
+            root: self.root.clone(),
             machines: Arc::clone(&self.machines),
             records: None,
             choices: self.choices,
             milestone_input_dir: self.milestone_input_dir.clone(),
         })
+    }
+
+    pub fn with_root(mut self, root: Vec<ButtonChord>) -> Result<Self, Box<dyn Error>> {
+        if root.is_empty() {
+            return Err(format!("the {} root carries no actions", G::NAME).into());
+        }
+        if self.records.is_some() {
+            return Err(format!(
+                "the {} records were opened for the unrooted genesis, so root the workload before opening its records",
+                G::NAME
+            )
+            .into());
+        }
+        let genesis = format!(
+            "{}:root-sha256={}",
+            self.lowered.game.genesis_id(),
+            root_sha256(&root)
+        );
+        self.identity = emulator_identity(&self.core, &genesis, &self.core_sha256);
+        self.root = root;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn root(&self) -> &[ButtonChord] {
+        &self.root
     }
 
     #[must_use]
@@ -626,6 +680,12 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             },
             &target.observation().state,
             Some(self.choices.identifier()),
+            (!self.root.is_empty()).then(|| {
+                (
+                    root_sha256(&self.root),
+                    target.accumulator_before_genesis().clone(),
+                )
+            }),
         )?;
         let writer = RecordsWriter::create(path, &header)?;
         self.records = Some(Arc::new(Records {
@@ -1219,7 +1279,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
 
     fn new_target(&self) -> Result<NesTarget<G, M>, String> {
         let machine = (self.machines)().map_err(|error| error.to_string())?;
-        let mut target = NesTarget::from_power_on(Arc::clone(&self.lowered), machine)
+        let mut target = NesTarget::from_power_on(Arc::clone(&self.lowered), machine, &self.root)
             .map_err(|error| error.to_string())?;
         target.record_frames(self.records.is_some());
         Ok(target)
@@ -1527,13 +1587,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::search::assertion::{RecordedJob, Recording, Rekeyed, Rekeying, same_decisions};
+    use crate::search::campaign::CampaignAdmissionDecision;
     use crate::search::campaign::{
         ArchiveSource, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
         CampaignExecutionOptions, CampaignOrigin, JobOutcome, MinimizeConfig, run_job,
     };
     use crate::search::cost::ShrinkCost;
     use crate::search::draw::DrawMixture;
-    use fixture::{Ledge, RIGHT, Stairs, Stepper, WARP};
+    use fixture::{LEFT, Ledge, RIGHT, Spot, Stairs, Stepper, WARP};
 
     type StairsWorkload = NesWorkload<Stairs, Stepper>;
 
@@ -1974,6 +2036,294 @@ mod tests {
             serde_json::from_slice(&std::fs::read(directory.join("far.json")).unwrap()).unwrap();
         assert_eq!(tape, input);
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    fn ledge() -> NesWorkload<Ledge, Stepper> {
+        NesWorkload::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rooted_workload_starts_where_its_root_ends_with_the_lineage_the_root_earned() {
+        let root = vec![ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 3)];
+        let unrooted = ledge();
+        let rooted = ledge().with_root(root.clone()).unwrap();
+        assert_eq!(
+            unrooted.emulator_identity(),
+            "stepper;state=ppu-unused2-zero-v1;genesis=ledge-setup-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256=0"
+        );
+        assert_eq!(
+            rooted.emulator_identity(),
+            format!(
+                "stepper;state=ppu-unused2-zero-v1;genesis=ledge-setup-v1:root-sha256={};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256=0",
+                root_sha256(&root)
+            )
+        );
+        assert_ne!(
+            root_sha256(&root),
+            root_sha256(&[ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 2)])
+        );
+        let mut played = unrooted.new_target().unwrap();
+        for action in &root {
+            played.apply(action);
+        }
+        let played = unrooted.snapshot(&mut played).unwrap();
+        let mut target = rooted.new_target().unwrap();
+        assert_eq!(target.execution_work(), 0);
+        let genesis = rooted.snapshot(&mut target).unwrap();
+        assert_eq!(genesis.observation.state, Spot { x: 1, room: 0 });
+        assert_eq!(genesis.observation.frame_count, 0);
+        assert_eq!(
+            NesObservation {
+                frame_count: played.observation.frame_count,
+                ..genesis.observation.clone()
+            },
+            played.observation
+        );
+        assert_eq!(genesis.accumulator, played.accumulator);
+        let fresh = NesWorkload::<Ledge, Stepper>::with_machines(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::at(1))),
+        )
+        .unwrap();
+        let fresh = fresh.new_target().unwrap();
+        assert_ne!(
+            fresh.observation().key.map(|key| key.scope),
+            genesis.observation.key.map(|key| key.scope)
+        );
+        target.apply(&ButtonChord::new(RIGHT, 2));
+        target.reset();
+        assert_eq!(rooted.snapshot(&mut target).unwrap(), genesis);
+        assert!(ledge().with_root(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_root_that_reaches_the_goal_is_refused_at_that_action() {
+        let error = ledge()
+            .with_root(vec![ButtonChord::new(RIGHT, 1), ButtonChord::new(WARP, 9)])
+            .unwrap()
+            .new_target()
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("ledge root action 1 reaches a goal"),
+            "{error}"
+        );
+    }
+
+    const LATCHED: &str = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = [\"highest(x)\", \"x\"]\n[[stage]]\nname = \"ledge\"\ngoal = \"far\"\nlatch = true\n[[stage]]\nname = \"beyond\"\ngoal = \"false\"\n";
+
+    fn header_of(workload: NesWorkload<Ledge, Stepper>, name: &str) -> RecordsHeader {
+        let path = std::env::temp_dir().join(format!(
+            "nes-records-header-{name}-{}.bin",
+            std::process::id()
+        ));
+        let workload = workload.with_records(&path, 7).unwrap();
+        workload.direct_records(None).unwrap();
+        let header = Recording::<ButtonChord>::from_bytes(&std::fs::read(&path).unwrap())
+            .unwrap()
+            .header;
+        std::fs::remove_file(&path).unwrap();
+        header
+    }
+
+    type Played = (
+        RecordsHeader,
+        Vec<RecordedJob>,
+        Vec<RecordedAction<ButtonChord>>,
+        Vec<Option<AssertionKey>>,
+    );
+
+    const PARENT_OBJECTIVE: &str = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = \"x\"\n[[stage]]\nname = \"ledge\"\nobjective = \"x\"\ngoal = \"highest(objective >= 3)\"\n[[stage]]\nname = \"beyond\"\ngoal = \"false\"\n";
+
+    fn ledge_with(strategy: &str) -> NesWorkload<Ledge, Stepper> {
+        NesWorkload::<Ledge, Stepper>::with_machines(
+            Ledge,
+            strategy,
+            b"ledge",
+            "stepper",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .unwrap()
+    }
+
+    fn rooted_run(strategy: &str, root: &[ButtonChord]) -> Played {
+        let unrooted = header_of(ledge_with(strategy), "unrooted");
+        assert_eq!(unrooted.root_sha256, None);
+        assert_eq!(unrooted.accumulator_before_genesis, Accumulator::default());
+        let workload = ledge_with(strategy).with_root(root.to_vec()).unwrap();
+        let mut target = workload.new_target().unwrap();
+        let header = header_of(workload, "rooted");
+        assert_eq!(header.root_sha256, Some(root_sha256(root)));
+        assert_eq!(
+            &header.accumulator_before_genesis,
+            target.accumulator_before_genesis()
+        );
+        let mut genesis = header.accumulator_before_genesis.clone();
+        let observed = Lowered::new(Ledge, strategy)
+            .unwrap()
+            .compiled
+            .observe(&header.genesis, &mut genesis);
+        assert_eq!(&genesis, target.genesis_accumulator());
+        assert_eq!(observed.key, target.observation().key);
+        target.record_frames(true);
+        let mut keys = vec![target.observation().key];
+        let mut actions = Vec::new();
+        let mut jobs = Vec::new();
+        for (sequence, hold) in (1..).zip([1, 1, 2]) {
+            let chord = ButtonChord::new(RIGHT, hold);
+            target.apply(&chord);
+            let emitted = target.last_action_observations();
+            actions.push(RecordedAction {
+                sequence,
+                action: chord,
+                failed: false,
+                cost: emitted.iter().map(|observation| observation.cost).sum(),
+                frames: emitted
+                    .iter()
+                    .flat_map(|observation| observation.records.iter().copied())
+                    .collect(),
+                choices: Vec::new(),
+                context: None,
+            });
+            jobs.push(RecordedJob {
+                sequence,
+                parent_id: sequence - 1,
+                decisions: vec![CampaignAdmissionDecision::Retained { id: sequence }],
+            });
+            keys.push(target.observation().key);
+        }
+        (header, jobs, actions, keys)
+    }
+
+    fn rekey(
+        (header, jobs, actions, _): &Played,
+        strategy: &str,
+        rooted: Option<&Accumulator>,
+    ) -> Result<Rekeyed, Box<dyn Error>> {
+        let recorded = Lowered::new(Ledge, &header.strategy)?;
+        let keyed = Lowered::new(Ledge, strategy)?;
+        Rekeying {
+            recorded: &recorded.compiled,
+            strategy: &keyed.compiled,
+            entry_limit: 64,
+            rooted,
+        }
+        .run(&header.genesis, jobs, actions)
+    }
+
+    fn held(rekeyed: &Rekeyed) -> Vec<Option<AssertionKey>> {
+        let held: BTreeMap<u64, AssertionKey> = rekeyed
+            .holders
+            .iter()
+            .flat_map(|held| held.ids.iter().copied().zip(held.keys.iter().copied()))
+            .collect();
+        (0..4).map(|id| held.get(&id).copied()).collect()
+    }
+
+    fn root() -> Vec<ButtonChord> {
+        vec![ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 3)]
+    }
+
+    #[test]
+    fn a_rooted_run_with_a_latched_stage_re_keys_to_the_keys_the_live_search_recorded() {
+        let played = rooted_run(LATCHED, &root());
+        let rooted = Some(&played.0.accumulator_before_genesis);
+        let rekeyed = rekey(&played, LATCHED, rooted).unwrap();
+        assert_eq!(same_decisions(&played.1, &rekeyed), played.1.len());
+        assert_eq!(held(&rekeyed), played.3);
+        let unseeded = rekey(&played, LATCHED, None)
+            .ok()
+            .map(|unseeded| held(&unseeded));
+        assert_ne!(unseeded, Some(played.3.clone()));
+    }
+
+    #[test]
+    fn a_rooted_genesis_re_keys_from_the_accumulator_before_its_record() {
+        let played = rooted_run(PARENT_OBJECTIVE, &[ButtonChord::new(RIGHT, 3)]);
+        let compiled = Lowered::new(Ledge, PARENT_OBJECTIVE).unwrap().compiled;
+        let mut genesis = played.0.accumulator_before_genesis.clone();
+        let _ = compiled.observe(&played.0.genesis, &mut genesis);
+        assert_eq!(genesis.stage(), Some(0));
+        let mut again = genesis.clone();
+        let _ = compiled.observe(&played.0.genesis, &mut again);
+        assert_eq!(again.stage(), Some(1));
+        let rooted = Some(&played.0.accumulator_before_genesis);
+        let rekeyed = rekey(&played, PARENT_OBJECTIVE, rooted).unwrap();
+        assert_eq!(held(&rekeyed), played.3);
+        assert_eq!(same_decisions(&played.1, &rekeyed), played.1.len());
+    }
+
+    #[test]
+    fn a_workload_with_open_records_refuses_a_root() {
+        let path = std::env::temp_dir().join(format!(
+            "nes-records-before-root-{}.bin",
+            std::process::id()
+        ));
+        let error = ledge_with(LATCHED)
+            .with_records(&path, 7)
+            .unwrap()
+            .with_root(root())
+            .err()
+            .unwrap()
+            .to_string();
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            error.contains("root the workload before opening its records"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_rooted_run_refuses_another_strategy_that_reads_its_lineage() {
+        let played = rooted_run(LATCHED, &root());
+        let rooted = Some(&played.0.accumulator_before_genesis);
+        let error = rekey(
+            &played,
+            &LATCHED.replace("capacity = 16", "capacity = 8"),
+            rooted,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("cannot be rebuilt without the root's frames"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_rooted_run_re_keys_under_another_strategy_without_lineage() {
+        let played = rooted_run(LATCHED, &root());
+        let rooted = Some(&played.0.accumulator_before_genesis);
+        let pure = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = \"x\"\n";
+        let rekeyed = rekey(&played, pure, rooted).unwrap();
+        assert_eq!(same_decisions(&played.1, &rekeyed), played.1.len());
+        let keyed = Lowered::new(Ledge, pure).unwrap();
+        let mut expected = vec![
+            keyed
+                .compiled
+                .observe(&played.0.genesis, &mut Accumulator::default())
+                .key,
+        ];
+        expected.extend(played.2.iter().map(|action| {
+            keyed
+                .compiled
+                .observe(action.frames.last().unwrap(), &mut Accumulator::default())
+                .key
+        }));
+        assert_eq!(held(&rekeyed), expected);
     }
 
     #[test]
