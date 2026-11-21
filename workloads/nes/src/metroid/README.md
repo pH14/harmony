@@ -344,7 +344,11 @@ label caps the count at 63. A
 closed door of palette 2 takes 10, any other closed missile door 5, the live
 Zebetite columns of the screen the hits they still need up to 8, one column's
 worth, and a boss in view its health over 4 rounded up, the damage one missile
-does; with several targets in the room the largest of these counts. Where no
+does, except Mother Brain, who takes one. She counts no second hit within 19
+frames of the last, while a volley fires about every 8 frames, so in the four
+tapes we measured a burst at her spent most of its missiles for nothing; one
+missile per answer spaces the shots by the actions between answers. With
+several targets in the room the largest of these counts. Where no
 volley can be offered the answer is an ordinary chord, while the hand target's
 volley waits 12 frames there. The hand
 target draws from 1 to every missile held, and a volley at a door it misses

@@ -270,8 +270,11 @@ impl MetroidMechanicalState {
             0
         };
         let zebetite = self.zebetite_hits_left.min(ZEBETITE_HITS_TO_KILL);
-        let boss =
-            u8::try_from(self.boss_health.div_ceil(BOSS_HEALTH_PER_MISSILE)).unwrap_or(u8::MAX);
+        let boss = if self.area == AREA_TOURIAN {
+            u8::from(self.boss_health > 0)
+        } else {
+            u8::try_from(self.boss_health.div_ceil(BOSS_HEALTH_PER_MISSILE)).unwrap_or(u8::MAX)
+        };
         door.max(zebetite).max(boss)
     }
 }

@@ -572,13 +572,26 @@ mod tests {
             boss_health: 128,
             ..stocked
         };
-        assert_eq!(largest(mother_brain), 32);
+        assert_eq!(largest(mother_brain), 1);
         assert_eq!(
             largest(MetroidMechanicalState {
-                missiles: 7,
+                zebetite_hits_left: 5,
                 ..mother_brain
             }),
-            7
+            5
+        );
+        let ridley = MetroidMechanicalState {
+            area: 0x14,
+            boss_health: 28,
+            ..stocked
+        };
+        assert_eq!(largest(ridley), 7);
+        assert_eq!(
+            largest(MetroidMechanicalState {
+                missiles: 3,
+                ..ridley
+            }),
+            3
         );
         assert_eq!(volley_offer(stocked), 0);
     }
