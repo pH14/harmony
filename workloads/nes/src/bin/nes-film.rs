@@ -40,7 +40,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const DEFAULT_TAIL_FRAMES: u32 = 180;
 const DEFAULT_MAX_FRAMES: u64 = 72_000;
-const FILM_FORMAT: &str = "nes-film-v2";
+const FILM_FORMAT: &str = "nes-film-v3";
 
 struct Args {
     game: String,
@@ -165,31 +165,22 @@ fn strategic<G: Game>(
 }
 
 fn rooted<G: Game>(
-    make: impl Fn() -> Result<NesWorkload<G, QuickNesMachine>>,
+    make: impl FnOnce() -> Result<NesWorkload<G, QuickNesMachine>>,
     args: &Args,
     identity: Value,
 ) -> Result<()> {
-    let Some(path) = &args.root_input else {
-        return produce(strategic(make()?, args)?, NesRun, args, identity, None);
+    let game = strategic(make()?, args)?;
+    let game = match &args.root_input {
+        Some(path) => {
+            let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(path)?)?;
+            game.with_root(root.actions)?
+        }
+        None => game,
     };
-    let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(path)?)?;
-    let game = strategic(make()?, args)?.with_root(root.actions.clone())?;
-    produce(
-        game,
-        NesRun,
-        args,
-        identity,
-        Some((strategic(make()?, args)?, root)),
-    )
+    produce(game, NesRun, args, identity)
 }
 
-fn produce<G: Filmable>(
-    game: G,
-    run: G::Run,
-    args: &Args,
-    identity: Value,
-    root: Option<(G, Input<G::Action>)>,
-) -> Result<()> {
+fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> Result<()> {
     let input_bytes = fs::read(&args.input)?;
     let input: Input<G::Action> = serde_json::from_slice(&input_bytes)?;
     if input.actions.is_empty() {
@@ -242,21 +233,21 @@ fn produce<G: Filmable>(
         }
     }
 
-    let (filmer, tape, root_actions, root_frames) = match &root {
-        Some((unrooted, root)) => {
-            let mut tape = root.clone();
-            tape.actions.extend(input.actions.iter().cloned());
-            (
-                unrooted,
-                tape,
-                root.actions.len(),
-                unrooted.input_frames(root)?,
-            )
-        }
-        None => (&game, input.clone(), 0, 0),
-    };
-    let input_frames = filmer.input_frames(&tape)?;
-    let requested_frames = input_frames + u64::from(args.tail_frames);
+    let preroll = game.preroll()?;
+    let (setup_frames, start_frames, root_frames) = preroll.as_ref().map_or((0, 0, 0), |preroll| {
+        (
+            preroll.setup_frames,
+            preroll.start_frames,
+            preroll.root_frames,
+        )
+    });
+    let setup_pokes = preroll
+        .as_ref()
+        .map(|preroll| preroll.setup_pokes.as_slice())
+        .unwrap_or_default();
+    let tape_frames = game.input_frames(&input)?;
+    let requested_frames =
+        setup_frames + start_frames + root_frames + tape_frames + u64::from(args.tail_frames);
     let skip_frames = requested_frames.saturating_sub(args.max_frames);
 
     fs::create_dir_all(&args.out)?;
@@ -268,7 +259,7 @@ fn produce<G: Filmable>(
     )?;
     let metadata: FilmMetadata = {
         let (video, audio) = reel.sinks()?;
-        filmer.film(&tape, args.tail_frames, skip_frames, video, audio)?
+        game.film(&input, args.tail_frames, skip_frames, video, audio)?
     };
     if metadata.skipped_frames != skip_frames {
         return Err("the renderer did not honour the declared frame budget".into());
@@ -313,9 +304,16 @@ fn produce<G: Filmable>(
             "input_sha256": sha256(&input_bytes),
             "milestone": args.milestone,
             "input_actions": input.actions.len(),
-            "root_actions": root_actions,
-            "root_frames": root_frames,
-            "input_frames": input_frames,
+            "root_actions": preroll.as_ref().map_or(0, |preroll| preroll.root_actions),
+            "starts_at": if preroll.is_some() { "power-on" } else { "genesis" },
+            "parts": {
+                "setup": setup_frames,
+                "start": start_frames,
+                "root": root_frames,
+                "tape": tape_frames,
+                "tail": args.tail_frames,
+            },
+            "setup_pokes": setup_pokes,
             "solved": recorded.get("solved").cloned().unwrap_or(Value::Null),
             "victory": replayed.get("victory").cloned().unwrap_or(Value::Null),
             "evidence_verified": native,
@@ -383,7 +381,6 @@ fn main() -> Result<()> {
                 StbCampaignRun,
                 &args,
                 identity,
-                None,
             )
         }
         "twin-dragons" => {
@@ -413,7 +410,6 @@ fn main() -> Result<()> {
                 CastlevaniaCampaignRun,
                 &args,
                 identity,
-                None,
             )
         }
         "punchout" => {

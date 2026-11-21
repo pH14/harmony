@@ -49,9 +49,13 @@ class FilmVerificationTests(unittest.TestCase):
                    audio=overrides.pop('audio', 'sine=frequency=440:sample_rate=44100'),
                    with_audio=overrides.pop('with_audio', True),
                    audio_seconds=overrides.pop('audio_seconds', None))
-        record = {'format': 'nes-film-v2', 'endpoint_verified': True,
+        record = {'format': 'nes-film-v3', 'endpoint_verified': True,
                   'provenance': 'native QuickNES replay of the input this run recorded',
                   'identity': {'game': 'smb'},
+                  'starts_at': 'power-on',
+                  'parts': {'setup': 30, 'start': 10, 'root': 20, 'tape': 40, 'tail': 20},
+                  'setup_pokes': [{'address': 1024, 'value': 3}],
+                  'clip': {'requested_frames': FRAMES, 'skipped_frames': 0},
                   'input_sha256': hashlib.sha256(tape.read_bytes()).hexdigest(),
                   'video': {'frames': FRAMES, 'audio_sample_rate': 44100,
                             'audio_frames': FRAMES * 44100 // 60},
@@ -67,8 +71,28 @@ class FilmVerificationTests(unittest.TestCase):
         self.assertEqual(VERIFY.verify(self.film(), 1.0), [])
 
     def test_a_film_of_another_format_is_refused(self):
-        problems = VERIFY.verify(self.film(format='nes-film-v1'), 1.0)
-        self.assertTrue(any('not nes-film-v2' in problem for problem in problems), problems)
+        problems = VERIFY.verify(self.film(format='nes-film-v2'), 1.0)
+        self.assertTrue(any('not nes-film-v3' in problem for problem in problems), problems)
+
+    def test_parts_that_do_not_sum_to_the_requested_frames_fail(self):
+        problems = VERIFY.verify(self.film(parts={'setup': 29}), 1.0)
+        self.assertTrue(any('parts sum to 119' in problem for problem in problems), problems)
+
+    def test_a_film_missing_a_part_fails(self):
+        path = self.film()
+        record = json.loads(path.read_text())
+        del record['parts']['start']
+        path.write_text(json.dumps(record))
+        self.assertTrue(any('names the parts' in problem for problem in VERIFY.verify(path, 1.0)))
+
+    def test_a_clip_whose_frames_are_not_the_request_less_the_skip_fails(self):
+        problems = VERIFY.verify(self.film(clip={'skipped_frames': 5}), 1.0)
+        self.assertTrue(any('it skipped' in problem for problem in problems), problems)
+
+    def test_a_clipped_film_counts_its_skipped_frames(self):
+        problems = VERIFY.verify(self.film(clip={'requested_frames': FRAMES + 5, 'skipped_frames': 5},
+                                           parts={'setup': 35}), 1.0)
+        self.assertEqual(problems, [])
 
     def test_a_silent_track_is_not_game_audio(self):
         problems = VERIFY.verify(self.film(audio='anullsrc=r=44100:cl=stereo'), 1.0)

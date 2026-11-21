@@ -329,8 +329,9 @@ class EvaluationTests(unittest.TestCase):
         binary.write_text('#!/bin/sh\nout=$(echo "$@" | tr " " "\\n" | grep -A1 -x -- --out | tail -1)\n'
                           'printf x > "$out/witness.mp4"\n'
                           'cat > "$out/film.json" <<\'JSON\'\n'
-                          '{"format":"nes-film-v2","endpoint_verified":true,"clip":{"policy":"whole input",'
-                          '"skipped_frames":0},"video":{"frames":300,"audio_frames":7350},'
+                          '{"format":"nes-film-v3","endpoint_verified":true,"clip":{"policy":"whole input",'
+                          '"skipped_frames":0},"starts_at":"power-on","parts":{"setup":40,"start":0,'
+                          '"root":0,"tape":80,"tail":180},"video":{"frames":300,"audio_frames":7350},'
                           '"capture":{"duration_seconds":5.0,"mp4_sha256":"c"}}\nJSON\n')
         binary.chmod(0o755)
         eval.film(self.film_args(matrix, binary))
@@ -345,6 +346,8 @@ class EvaluationTests(unittest.TestCase):
         media = eval.read_json(public/'roster.json')[0]['media']
         self.assertTrue(media['available'])
         self.assertEqual(media['mp4'], item['cell'] + '/film/witness.mp4')
+        self.assertEqual(media['starts_at'], 'power-on')
+        self.assertEqual(sum(media['parts'].values()), media['frames'])
         self.assertIn('films.json', eval.read_json(public/'checksums.json'))
         self.assertIn('film-verification.json', eval.read_json(public/'checksums.json'))
 

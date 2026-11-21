@@ -69,9 +69,16 @@ recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search. A run that `nes-eval` gave a `strategy` file, which it copies
 to `strategy.toml` in the run directory, is filmed with `--strategy` naming that file, and `film.json`
 records its hash as `identity.strategy_sha256`. A rooted run is filmed with `--root-input` naming
-its root: the film renders the root and then the input from power-on, its frame count includes the
-root's frames, and `film.json`, format `nes-film-v2`, records the root's hash as
-`identity.root_input_sha256` beside `root_actions` and `root_frames`.
+its root, and `film.json` records the root's hash as `identity.root_input_sha256` beside
+`root_actions`. A film of a `nes-games` workload starts at power-on: it renders the game's `setup`
+tape, the `start` tape where the game has one, the root where the run is rooted, and then the input
+and the tail (`NesWorkload::render_from_power_on`). `film.json`, format `nes-film-v3`, states where
+the video starts in `starts_at`: `power-on`, or `genesis` for the Super Tilt Bro and Castlevania
+campaigns, whose films still begin after their setup. `parts` gives the frames of `setup`, `start`,
+`root`, `tape` and `tail`, which sum to `clip.requested_frames`, and `setup_pokes` lists the
+address and value of each work RAM write a game makes after its setup tape (Famidash and Lucky
+Draw poke their level), which no frame shows. `nes-film` and `scripts/verify-nes-films.py` refuse
+a film of any other format.
 
 A witness's `snapshot_sha256` is the endpoint snapshot's `endpoint_identity_sha256`, which
 serializes the snapshot after `SnapshotState::endpoint_identity`. For a packed QuickNES state that
@@ -111,19 +118,24 @@ a native one by construction. Such a film is a native QuickNES replay of a tape
 the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
 `evidence_verified` false, and nothing is captured inside the guest.
 
-The film's expected length is the frame count of the input's headless replay
+The film's tape part is the frame count of the input's headless replay
 endpoint (`Endpointed::input_frames`), so it counts the frames the target
 plays rather than the holds on the tape: a forced move's chords and a chosen
 move's steps count, a move chord's own hold does not, and a chord cut at an
-offer or a stop counts up to its cut. `nes-film` refuses a render whose frame
-count differs from it.
+offer or a stop counts up to its cut. `Filmable::preroll` gives the parts before
+it: the setup and start parts are the holds of those tapes, and the root part is
+the frame count of the root's headless replay from the unrooted genesis. The
+film's expected length is the sum of the parts, and `nes-film` refuses a render
+whose frame count differs from it.
 
 `--max-frames` bounds the render. A whole-game input has no length bound and
 each action can hold up to 120 frames, so an unbounded film can run for hours. Frames past the
 ceiling are still emulated and are left out of the video, making the film a
 trailing window ending at the recorded endpoint plus `--tail-frames`. The
 ceiling, the clip policy and the dropped frame count are recorded in `film.json`
-under `clip`. `scripts/verify-nes-films.py` checks the MP4 against those
+under `clip`, so a clipped film drops its setup frames first. `scripts/verify-nes-films.py`
+checks that the parts sum to the requested frames and that the video holds the requested
+frames less the dropped ones, and checks the MP4 against those
 numbers: digest, frame count, a real audio stream, audible volume, audio that
 covers the video, and a duration floor. Its `--media` mode applies the same
 checks to an MP4 a workload wrote without a `film.json`, which is how the Super

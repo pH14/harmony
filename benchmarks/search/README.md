@@ -290,7 +290,9 @@ audio through the `nes-film` renderer described in the
 [NES package README](../../workloads/nes/README.md). It reads the cell's
 `witness-input.json` and `result.json`, so it never starts a second search, and
 passes a rooted cell's `root_input` as `--root-input`, so the film replays the
-root before the recorded input. A
+root before the recorded input. A strategy film starts at power-on with the
+game's setup, and each `film.json` states the frames of its setup, start, root,
+tape and tail under `parts`; the roster carries them with the media. A
 cell that produced no renderable input is recorded as unavailable with a reason;
 a render that fails is recorded as failed and fails the command. `films.json`
 indexes all three states beside each cell's `film/render.log`.

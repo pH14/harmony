@@ -14,7 +14,8 @@ SILENCE_DBFS = -90.0
 FPS = 60
 AUDIO_COVERAGE = 0.99
 REPORT_NAME = 'film-verification.json'
-FILM_FORMAT = 'nes-film-v2'
+FILM_FORMAT = 'nes-film-v3'
+PARTS = ('setup', 'start', 'root', 'tape', 'tail')
 
 
 def probe(*arguments):
@@ -102,6 +103,16 @@ def verify(record, minimum_seconds, expected=None, input_path=None):
     if not film.get('endpoint_verified'):
         problems.append(f'{record}: the capture did not verify its endpoint')
     frames = film['video']['frames']
+    parts = film['parts']
+    clip = film['clip']
+    if sorted(parts) != sorted(PARTS):
+        problems.append(f'{record}: names the parts {sorted(parts)}, not {list(PARTS)}')
+    elif sum(parts[name] for name in PARTS) != clip['requested_frames']:
+        problems.append(f'{record}: its parts sum to {sum(parts[name] for name in PARTS)} frames, '
+                        f'not the {clip["requested_frames"]} it requested')
+    if frames != clip['requested_frames'] - clip['skipped_frames']:
+        problems.append(f'{record}: holds {frames} video frames, not the {clip["requested_frames"]} '
+                        f'it requested less the {clip["skipped_frames"]} it skipped')
     rate = film['video']['audio_sample_rate']
     if film['video']['audio_frames'] < frames * rate // FPS * AUDIO_COVERAGE:
         problems.append(f'{record}: records {film["video"]["audio_frames"]} audio samples '

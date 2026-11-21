@@ -753,6 +753,125 @@ fn run_setup<G: Game, M: Machine>(
 }
 
 #[cfg(unix)]
+struct Footage<'a> {
+    video: &'a mut dyn Write,
+    audio: &'a mut dyn Write,
+    metadata: Option<VideoMetadata>,
+    skip_frames: u64,
+    skip: u64,
+}
+
+#[cfg(unix)]
+impl<'a> Footage<'a> {
+    fn new(video: &'a mut dyn Write, audio: &'a mut dyn Write, skip_frames: u64) -> Self {
+        Self {
+            video,
+            audio,
+            metadata: None,
+            skip_frames,
+            skip: skip_frames,
+        }
+    }
+
+    fn take<M: FilmMachine>(&mut self, machine: &mut M) -> Result<(), Box<dyn Error>> {
+        let frame = machine
+            .take_video_frame()
+            .ok_or("QuickNES omitted a requested video frame")?;
+        if self.skip > 0 {
+            self.skip -= 1;
+            machine.take_audio_samples();
+            return Ok(());
+        }
+        if let Some(existing) = &self.metadata
+            && (existing.width, existing.height) != (frame.width, frame.height)
+        {
+            return Err("QuickNES video geometry changed during replay".into());
+        }
+        let metadata = self.metadata.get_or_insert(VideoMetadata {
+            width: frame.width,
+            height: frame.height,
+            frames: 0,
+            audio_sample_rate: QUICKNES_AUDIO_SAMPLE_RATE,
+            audio_channels: QUICKNES_AUDIO_CHANNELS,
+            audio_frames: 0,
+            skipped_frames: 0,
+        });
+        metadata.frames = metadata.frames.saturating_add(1);
+        self.video.write_all(&frame.rgb24)?;
+        let audio = machine.take_audio_samples();
+        if !audio
+            .len()
+            .is_multiple_of(usize::from(QUICKNES_AUDIO_CHANNELS))
+        {
+            return Err("QuickNES produced a partial stereo audio frame".into());
+        }
+        for sample in &audio {
+            self.audio.write_all(&sample.to_le_bytes())?;
+        }
+        metadata.audio_frames = metadata.audio_frames.saturating_add(u64::try_from(
+            audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
+        )?);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<VideoMetadata, Box<dyn Error>> {
+        let mut metadata = self.metadata.ok_or("QuickNES produced no video frames")?;
+        if metadata.audio_frames == 0 {
+            return Err("QuickNES produced no audio samples".into());
+        }
+        metadata.skipped_frames = self.skip_frames - self.skip;
+        Ok(metadata)
+    }
+}
+
+#[cfg(unix)]
+fn render_setup<G: Game, M: Machine + FilmMachine>(
+    machine: &mut M,
+    tape: &[ButtonChord],
+    footage: &mut Footage<'_>,
+) -> Result<(), Box<dyn Error>> {
+    let from = machine.snapshot()?;
+    machine.branch(from, &nes::reproducer(tape))?;
+    machine.drop_snapshot(from)?;
+    for _ in 0..tape_frames(tape) {
+        if !run_one_frame(machine)? {
+            return Err(format!("{} setup ended before its last frame", G::NAME).into());
+        }
+        footage.take(machine)?;
+    }
+    if !matches!(
+        machine.run(StopConditions::default(), None)?,
+        machine::StopReason::Quiescent { .. }
+    ) {
+        return Err(format!("{} setup did not quiesce", G::NAME).into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_one_frame<M: Machine>(machine: &mut M) -> Result<bool, Box<dyn Error>> {
+    let deadline = machine::Moment(machine.now().0.saturating_add(1));
+    match machine.run(
+        StopConditions {
+            deadline: Some(deadline),
+            on: machine::StopMask::NONE,
+        },
+        None,
+    )? {
+        machine::StopReason::Deadline { .. } => Ok(true),
+        machine::StopReason::Quiescent { .. } => Ok(false),
+        _ => Err("QuickNES film stopped unexpectedly".into()),
+    }
+}
+
+#[must_use]
+pub(super) fn tape_frames(tape: &[ButtonChord]) -> u64 {
+    tape.iter()
+        .map(|chord| u64::from(chord.bounded_hold_frames()))
+        .sum()
+}
+
+#[cfg(unix)]
 impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
     pub fn render_input(
         &mut self,
@@ -780,6 +899,51 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
     ) -> Result<Filmed<G::State>, Box<dyn Error>> {
+        let mut footage = Footage::new(video_output, audio_output, skip_frames);
+        let endpoint = self.render_tape(actions, tail_frames, &mut footage)?;
+        Ok((footage.finish()?, endpoint))
+    }
+
+    pub fn render_from_power_on(
+        lowered: Arc<Lowered<G>>,
+        mut machine: M,
+        actions: &[ButtonChord],
+        tail_frames: u32,
+        skip_frames: u64,
+        video_output: &mut dyn Write,
+        audio_output: &mut dyn Write,
+    ) -> Result<Filmed<G::State>, Box<dyn Error>>
+    where
+        M: NesMemory,
+    {
+        let mut footage = Footage::new(video_output, audio_output, skip_frames);
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        let opened = (|| -> Result<(), Box<dyn Error>> {
+            render_setup::<G, M>(&mut machine, &lowered.game.setup(), &mut footage)?;
+            for (address, value) in lowered.game.setup_pokes() {
+                machine.poke_wram(address, value)?;
+            }
+            let start = lowered.game.start();
+            if !start.is_empty() {
+                render_setup::<G, M>(&mut machine, &start, &mut footage)?;
+            }
+            Ok(())
+        })();
+        machine.set_audio_capture(false);
+        machine.set_video_capture(false);
+        opened?;
+        let mut target = Self::from_machine(lowered, machine)?;
+        let endpoint = target.render_tape(actions, tail_frames, &mut footage)?;
+        Ok((footage.finish()?, endpoint))
+    }
+
+    fn render_tape(
+        &mut self,
+        actions: &[ButtonChord],
+        tail_frames: u32,
+        footage: &mut Footage<'_>,
+    ) -> Result<NesObservation<G::State>, Box<dyn Error>> {
         self.reset();
         if self.failed {
             return Err(format!("could not restore the {} genesis for film", G::NAME).into());
@@ -787,8 +951,6 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         self.machine.set_video_capture(true);
         self.machine.set_audio_capture(true);
         let result = (|| {
-            let mut metadata = None;
-            let mut skip = skip_frames;
             let mut accumulator = self.genesis_accumulator.clone();
             let mut tracked = self.observation.clone();
             for action in actions {
@@ -805,10 +967,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                         .render_action(
                             *action,
                             Some((&parent, &mut accumulator, &mut tracked)),
-                            video_output,
-                            audio_output,
-                            &mut metadata,
-                            &mut skip,
+                            footage,
                         )?
                         .map(|forced| (forced, false)),
                 };
@@ -822,14 +981,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
                         &accumulator,
                         wram,
                         |chord| -> Result<_, Box<dyn Error>> {
-                            self.render_action(
-                                chord,
-                                None,
-                                video_output,
-                                audio_output,
-                                &mut metadata,
-                                &mut skip,
-                            )?;
+                            self.render_action(chord, None, footage)?;
                             Ok((
                                 u64::from(chord.bounded_hold_frames()),
                                 read_wram(&self.machine)?,
@@ -860,23 +1012,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
             let mut remaining = tail_frames;
             while remaining > 0 {
                 let hold = remaining.min(u32::from(MAX_HOLD_FRAMES));
-                self.render_action(
-                    ButtonChord::new(0, u8::try_from(hold)?),
-                    None,
-                    video_output,
-                    audio_output,
-                    &mut metadata,
-                    &mut skip,
-                )?;
+                self.render_action(ButtonChord::new(0, u8::try_from(hold)?), None, footage)?;
                 remaining -= hold;
             }
-            let mut metadata: VideoMetadata =
-                metadata.ok_or("QuickNES produced no video frames")?;
-            if metadata.audio_frames == 0 {
-                return Err("QuickNES produced no audio samples".into());
-            }
-            metadata.skipped_frames = skip_frames - skip;
-            Ok((metadata, endpoint))
+            Ok(endpoint)
         })();
         self.machine.set_audio_capture(false);
         self.machine.set_video_capture(false);
@@ -887,10 +1026,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         &mut self,
         action: ButtonChord,
         mut tracked: Option<Tracked<'_, G::State>>,
-        video_output: &mut dyn Write,
-        audio_output: &mut dyn Write,
-        metadata: &mut Option<VideoMetadata>,
-        skip: &mut u64,
+        footage: &mut Footage<'_>,
     ) -> Result<Option<G::Move>, Box<dyn Error>> {
         let start = self.machine.snapshot()?;
         self.machine
@@ -898,67 +1034,15 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         self.machine.drop_snapshot(start)?;
         let hold = action.bounded_hold_frames();
         for frame in 0..hold {
-            if !self.run_one_frame()? {
+            if !run_one_frame(&mut self.machine)? {
                 break;
             }
-            let last_frame = frame + 1 == hold;
-            let frame = self
-                .machine
-                .take_video_frame()
-                .ok_or("QuickNES omitted a requested video frame")?;
-            if *skip > 0 {
-                *skip -= 1;
-                self.machine.take_audio_samples();
-                if let Some(forced) = self.film_cut(
-                    tracked.as_mut().map(|(parent, accumulator, observation)| {
-                        (*parent, &mut **accumulator, &mut **observation)
-                    }),
-                    last_frame,
-                )? {
-                    return Ok(forced);
-                }
-                continue;
-            }
-            match metadata {
-                Some(existing)
-                    if (existing.width, existing.height) != (frame.width, frame.height) =>
-                {
-                    return Err("QuickNES video geometry changed during replay".into());
-                }
-                Some(existing) => existing.frames = existing.frames.saturating_add(1),
-                None => {
-                    *metadata = Some(VideoMetadata {
-                        width: frame.width,
-                        height: frame.height,
-                        frames: 1,
-                        audio_sample_rate: QUICKNES_AUDIO_SAMPLE_RATE,
-                        audio_channels: QUICKNES_AUDIO_CHANNELS,
-                        audio_frames: 0,
-                        skipped_frames: 0,
-                    });
-                }
-            }
-            video_output.write_all(&frame.rgb24)?;
-            let audio = self.machine.take_audio_samples();
-            if !audio
-                .len()
-                .is_multiple_of(usize::from(QUICKNES_AUDIO_CHANNELS))
-            {
-                return Err("QuickNES produced a partial stereo audio frame".into());
-            }
-            for sample in &audio {
-                audio_output.write_all(&sample.to_le_bytes())?;
-            }
-            if let Some(existing) = metadata {
-                existing.audio_frames = existing.audio_frames.saturating_add(u64::try_from(
-                    audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
-                )?);
-            }
+            footage.take(&mut self.machine)?;
             if let Some(forced) = self.film_cut(
                 tracked.as_mut().map(|(parent, accumulator, observation)| {
                     (*parent, &mut **accumulator, &mut **observation)
                 }),
-                last_frame,
+                frame + 1 == hold,
             )? {
                 return Ok(forced);
             }
@@ -987,21 +1071,6 @@ impl<G: Game, M: NesBackend<Vec<u8>> + FilmMachine> NesTarget<G, M> {
         let cut = framed.cuts().then_some(framed.forced);
         *tracked = framed.observation;
         Ok(cut)
-    }
-
-    fn run_one_frame(&mut self) -> Result<bool, Box<dyn Error>> {
-        let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
-        match self.machine.run(
-            StopConditions {
-                deadline: Some(deadline),
-                on: machine::StopMask::NONE,
-            },
-            None,
-        )? {
-            machine::StopReason::Deadline { .. } => Ok(true),
-            machine::StopReason::Quiescent { .. } => Ok(false),
-            _ => Err("QuickNES film stopped unexpectedly".into()),
-        }
     }
 }
 
@@ -1310,8 +1379,8 @@ mod moves {
         },
         target::{ExitKind, Target},
         workload::{
-            EVERY_OPTION, Game, Lowered, Moves, NesRun, NesWorkload, Offer, Play, Satisfied, Step,
-            move_answer, move_chord,
+            EVERY_OPTION, Game, Lowered, Moves, NesRun, NesWorkload, Offer, Play, Preroll,
+            Satisfied, SetupPoke, Step, move_answer, move_chord,
         },
     };
 
@@ -1756,6 +1825,159 @@ mod moves {
     fn trail(strategy: &str) -> NesTarget<Trail, Stepper> {
         let lowered = Arc::new(Lowered::new(Trail, strategy).expect("the trail compiles"));
         NesTarget::from_machine(lowered, Stepper::default()).expect("a trail target")
+    }
+
+    #[cfg(unix)]
+    #[derive(Clone, Debug)]
+    struct Primed;
+
+    #[cfg(unix)]
+    impl Game for Primed {
+        type State = Spot;
+        type Move = usize;
+
+        const NAME: &'static str = "primed";
+        const STRATEGY: &'static str = PLAIN;
+        const CHORDS: ChordVocabulary = Trail::CHORDS;
+
+        fn setup(&self) -> Vec<ButtonChord> {
+            vec![ButtonChord::new(RIGHT, 2)]
+        }
+
+        fn setup_pokes(&self) -> Vec<(usize, u8)> {
+            vec![(1, 1)]
+        }
+
+        fn start(&self) -> Vec<ButtonChord> {
+            vec![ButtonChord::new(LEFT, 1)]
+        }
+
+        fn genesis(&self, _: &Spot) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn decode(&self, parent: Option<&Spot>, previous: Option<&Spot>, ram: &[u8]) -> Spot {
+            Trail.decode(parent, previous, ram)
+        }
+
+        fn declare(&self, state: &Spot, out: &mut impl Declarations) {
+            Trail.declare(state, out);
+        }
+
+        fn moves(&self, spot: &Spot) -> Moves<usize> {
+            Trail.moves(spot)
+        }
+
+        fn move_sites(&self) -> Vec<ChoiceSite> {
+            Trail.move_sites()
+        }
+
+        fn play(&self, at: usize, spot: &Spot) -> Option<Step<usize>> {
+            Trail.play(at, spot)
+        }
+
+        fn move_frames(&self, at: usize) -> u64 {
+            Trail.move_frames(at)
+        }
+
+        fn answer_frames(site: u16, label: u16) -> u64 {
+            Trail::answer_frames(site, label)
+        }
+    }
+
+    #[cfg(unix)]
+    fn primed() -> NesWorkload<Primed, Stepper> {
+        NesWorkload::with_machines(
+            Primed,
+            PLAIN,
+            &[],
+            "primed",
+            "0",
+            Arc::new(|| Ok(Stepper::default())),
+        )
+        .expect("a primed workload")
+    }
+
+    #[cfg(unix)]
+    fn from_genesis(
+        workload: &NesWorkload<Primed, Stepper>,
+        actions: &[ButtonChord],
+    ) -> (u64, Vec<u8>, Spot) {
+        let mut target = workload.new_target().expect("a primed target");
+        let (mut video, mut audio) = (Vec::new(), Vec::new());
+        let (metadata, endpoint) = target
+            .render_input(actions, 1, 0, &mut video, &mut audio)
+            .expect("a film from the genesis");
+        (metadata.frames, video, endpoint)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_film_from_power_on_shows_the_setup_and_start_before_the_tape() {
+        let workload = primed();
+        let actions = [walk_out_and_back(), ButtonChord::new(RIGHT, 2)];
+        let (genesis_frames, genesis_video, genesis_endpoint) = from_genesis(&workload, &actions);
+        let (mut video, mut audio) = (Vec::new(), Vec::new());
+        let (metadata, endpoint) = workload
+            .render_from_power_on(&actions, 1, 0, &mut video, &mut audio)
+            .expect("a film from power-on");
+        let mut expected = vec![1, 0, 0, 2, 0, 0, 1, 1, 0];
+        expected.extend(&genesis_video);
+        assert_eq!(video, expected);
+        assert_eq!(metadata.frames, 3 + genesis_frames);
+        assert_eq!(metadata.skipped_frames, 0);
+        assert_eq!(metadata.audio_frames, metadata.frames);
+        assert_eq!(endpoint.state, genesis_endpoint);
+        assert_eq!(
+            workload.preroll().expect("a preroll"),
+            Preroll {
+                setup_frames: 2,
+                setup_pokes: vec![SetupPoke {
+                    address: 1,
+                    value: 1
+                }],
+                start_frames: 1,
+                root_actions: 0,
+                root_frames: 0,
+            }
+        );
+
+        let (mut clipped, mut clipped_audio) = (Vec::new(), Vec::new());
+        let (skipped, _) = workload
+            .render_from_power_on(&actions, 1, 2, &mut clipped, &mut clipped_audio)
+            .expect("a clipped film from power-on");
+        assert_eq!(skipped.skipped_frames, 2);
+        assert_eq!(skipped.frames, metadata.frames - 2);
+        assert_eq!(clipped, video[6..]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rooted_film_from_power_on_shows_the_root_after_the_start() {
+        let root = [ButtonChord::new(RIGHT, 2)];
+        let actions = [ButtonChord::new(RIGHT, 3)];
+        let unrooted = primed();
+        let mut tape = root.to_vec();
+        tape.extend(actions);
+        let (_, genesis_video, genesis_endpoint) = from_genesis(&unrooted, &tape);
+        let rooted = primed()
+            .with_root(root.to_vec())
+            .expect("a rooted workload");
+        let (mut video, mut audio) = (Vec::new(), Vec::new());
+        let (metadata, endpoint) = rooted
+            .render_from_power_on(&actions, 1, 0, &mut video, &mut audio)
+            .expect("a rooted film from power-on");
+        let mut expected = vec![1, 0, 0, 2, 0, 0, 1, 1, 0];
+        expected.extend(&genesis_video);
+        assert_eq!(video, expected);
+        assert_eq!(video[9..15], [2, 1, 0, 3, 1, 0]);
+        assert_eq!(endpoint.state, genesis_endpoint);
+        let preroll = rooted.preroll().expect("a preroll");
+        assert_eq!((preroll.root_actions, preroll.root_frames), (1, 2));
+        assert_eq!(
+            metadata.frames,
+            preroll.setup_frames + preroll.start_frames + preroll.root_frames + 3 + 1
+        );
     }
 
     fn spot(target: &NesTarget<Trail, Stepper>) -> (u64, u8, u8) {
