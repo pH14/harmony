@@ -13,7 +13,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: metroid-strategy-probe <root.json> [--strategy STRATEGY.toml] [--every] [--wram START:LEN] [--cartridge START:LEN]";
+const USAGE: &str = "usage: metroid-strategy-probe <root.json> [--strategy STRATEGY.toml] [--every] [--wram START:LEN] [--cartridge START:LEN] [--frames FIRST:LAST] [--terms NAME,...]";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
@@ -22,6 +22,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut every = false;
     let mut window = None;
     let mut cartridge = None;
+    let mut frames = None;
+    let mut terms = vec![
+        "missiles".to_owned(),
+        "health".to_owned(),
+        "x".to_owned(),
+        "y".to_owned(),
+        "boss_health".to_owned(),
+    ];
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--strategy" => strategy = fs::read_to_string(args.next().ok_or(USAGE)?)?,
@@ -41,6 +49,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                     usize::from_str_radix(start.trim_start_matches("0x"), 16)?,
                     len.parse::<u32>()?,
                 ));
+            }
+            "--frames" => {
+                let value = args.next().ok_or(USAGE)?;
+                let (first, last) = value.split_once(':').ok_or(USAGE)?;
+                frames = Some((first.parse::<usize>()?, last.parse::<usize>()?));
+            }
+            "--terms" => {
+                terms = args
+                    .next()
+                    .ok_or(USAGE)?
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect();
             }
             _ => return Err(USAGE.into()),
         }
@@ -67,9 +88,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "action frames stage objective area map_x map_y health missiles capacity tanks bosses mb ending zeb_left zeb_dead"
     );
+    let catalog = lowered.records_catalog()?;
+    let slots = terms
+        .iter()
+        .map(|term| {
+            catalog
+                .slot(term)
+                .ok_or_else(|| format!("the strategy declares no term {term}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if frames.is_some() {
+        println!("# frame action offset {}", terms.join(" "));
+    }
     let mut last_stage = None;
     for (index, action) in root.actions.iter().enumerate() {
+        let recorded = frames.is_some_and(|(first, last)| (first..=last).contains(&index));
+        target.record_frames(recorded);
         target.apply(action);
+        if recorded {
+            let records = target
+                .last_action_observations()
+                .iter()
+                .flat_map(|observed| observed.records.iter());
+            for (offset, record) in records.enumerate() {
+                let values: Vec<String> = slots
+                    .iter()
+                    .map(|&slot| {
+                        record
+                            .values()
+                            .get(slot)
+                            .map_or_else(|| "-".to_owned(), i64::to_string)
+                    })
+                    .collect();
+                println!("# frame {index} {offset} {}", values.join(" "));
+            }
+        }
         if target.exit_kind() != ExitKind::Ok {
             return Err(
                 format!("action {index} ended the target: {:?}", target.exit_kind()).into(),

@@ -320,7 +320,9 @@ target under `metroid.toml` or `--strategy`, and prints the stage, objective
 and resources at every action where the stage changes and at the last one
 (`--every` prints every action, `--wram START:LEN` the frame bytes there, work
 RAM first and then the cartridge window, and `--cartridge START:LEN` any span
-of cartridge RAM, such as the room's tiles from offset 0). It ends with the frame's sha256 and
+of cartridge RAM, such as the room's tiles from offset 0; `--frames FIRST:LAST`
+prints every frame's record of the `--terms` it names, by default missiles,
+health, x, y and boss health, for the actions in that range). It ends with the frame's sha256 and
 the `rooted_genesis` verdict, so it shows whether a tape roots a
 `metroid-strategy` run and which stages the root earns on the way.
 
