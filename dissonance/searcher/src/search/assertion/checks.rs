@@ -55,7 +55,8 @@ impl Checker<'_> {
         let mut child = parent.clone();
         let observation = self.strategy.observe(record, &mut child);
         self.goal_met |= observation.goal;
-        if let (Some(from), Some(to)) = (departure.stage(), child.stage())
+        if observation.key.is_some()
+            && let (Some(from), Some(to)) = (departure.stage(), child.stage())
             && to < from
             && let Some(falls) = self.falls.get_mut(usize::from(to))
         {

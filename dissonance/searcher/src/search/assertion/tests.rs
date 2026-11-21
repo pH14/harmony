@@ -1392,6 +1392,62 @@ fn the_checker_counts_the_records_whose_stage_falls_below_their_parents() {
     );
 }
 
+#[test]
+fn the_checker_counts_no_stage_fall_for_a_rejected_endpoint() {
+    let catalog = catalog();
+    let compiled = Compiled::parse(
+        r#"
+        spread = "position"
+        reject = "time >= 8000"
+        [[stage]]
+        goal = "far room"
+        [[stage]]
+        name = "sword"
+        goal = "'items.sword'"
+        latch = true
+        [[stage]]
+        goal = "items"
+        "#,
+        &catalog,
+    )
+    .unwrap();
+    let back = Walk {
+        room: 1,
+        ..Walk::default()
+    };
+    let mut sword = Accumulator::default();
+    let _ = compiled.observe(
+        &record(Walk {
+            room: 6,
+            items: 0b001,
+            ..Walk::default()
+        }),
+        &mut sword,
+    );
+    let mut fallen = sword.clone();
+    let _ = compiled.observe(&record(back), &mut fallen);
+    assert_eq!((sword.stage(), fallen.stage()), (Some(2), Some(0)));
+    let falls = |endpoint: Walk| {
+        let mut checker = compiled.checker();
+        checker.observe_action(&record(endpoint), &fallen, &sword);
+        checker
+            .stage_falls()
+            .iter()
+            .map(|falls| falls.records)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(falls(back), [1, 0, 0]);
+    assert_eq!(
+        falls(Walk {
+            room: 6,
+            items: 0b001,
+            time: 9850,
+            ..Walk::default()
+        }),
+        [0, 0, 0]
+    );
+}
+
 fn walk_frames(room: u8, from: u8, to: u8) -> Vec<Record> {
     [from, to]
         .into_iter()
