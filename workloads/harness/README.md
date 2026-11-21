@@ -662,6 +662,33 @@ until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
 first. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
 
+`bundle-admin` is `bundle` with a fifth hook, `rqlite-harness snapshot`, which
+sends `POST /snapshot` to one node drawn at site `rqlite.snapshot.node`. Three
+times in four it passes `trailing_logs=N`, with N log-uniform from 1 to 1023
+(sites `rqlite.snapshot.exponent` and `rqlite.snapshot.offset`); otherwise the
+request leaves the node's setting as it is. rqlite sets N as the node's Raft
+`TrailingLogs` while the request runs and then restores the configured value,
+so an automatic snapshot or a second request to the same node that compacts in
+that time uses whichever value is set then. When the last index is above N,
+compaction deletes entries from the first index through the snapshot index or
+through N entries before the last index, whichever is lower, and deletes
+nothing when the first index is already past that bound. The node answers 204
+when it has nothing new to snapshot. The request goes to that node alone,
+without `redirect`, and the hook waits 10 seconds for the answer. rqlite does
+not stop the snapshot when the hook stops waiting, so a node can still be
+writing it after the hook has logged a timeout and exited. Each call appends
+the node, N and the answer to `/tmp/rqlite/snapshot.log`, and its outcome is
+not part of the register model. The hook exits 0 whatever the answer, or 1
+when it cannot open or write the log. As with `bundle-stepdown`, the `heal`
+line makes the supervisor count the hook as a cut. It is a hook (ours) rather
+than a client operation so that the search draws when it happens and no
+request starts after faults end. A snapshot on the leader after the heal can
+end a follower's stall: once the leader has compacted the entries the follower
+lacks, replication sends the follower that snapshot instead. A client
+operation would keep requesting such snapshots, so a stall could end before the
+check 30 seconds after faults end could see it. Build with
+`--build-arg HARNESS_BUNDLE=bundle-admin`.
+
 A read pinned to node `nI` in every bundle first runs
 `UPDATE ready SET n = n + 1 WHERE k = 1` with `raft_index` through a random
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that
