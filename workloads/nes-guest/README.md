@@ -31,14 +31,32 @@ dynamic loader before the guest clock is enabled.
 `build-base-image.sh` builds the `nes.oci` OCI layout, a ROM-free image
 containing BusyBox and a static QuickNES `play-agent`. It uses the pinned Linux
 image helpers in `consonance/harmony-linux/linux/lib-build.sh` and must run on
-the native Linux host for its architecture. Supply a prebuilt archive named
-`libquicknes_libretro.a` unless `PLAY_AGENT_BIN` points at an already-built
-static agent:
+the native Linux host for its architecture. On x86_64, supply a prebuilt
+archive named `libquicknes_libretro.a`, from `scripts/build-quicknes-core.sh`
+with `HARMONY_QUICKNES_STATIC_OUTPUT`, unless `PLAY_AGENT_BIN` points at an
+already-built static agent:
 
 ```sh
 HARMONY_QUICKNES_STATIC_LIB=/path/to/libquicknes_libretro.a \
   ./workloads/nes-guest/build-base-image.sh
 ```
+
+On arm64 the agent links against musl, so the builder compiles the pinned core
+itself after it builds the platform's patched musl: `build-quicknes-core.sh`
+runs with that musl's `musl-gcc` as the C and C++ compiler and
+`-march=armv8.1-a+lse -mno-outline-atomics`, the flags of the musl and BusyBox
+builds. Run it with no archive:
+
+```sh
+./workloads/nes-guest/build-base-image.sh
+```
+
+An archive passed in `HARMONY_QUICKNES_STATIC_LIB` on arm64 is used instead.
+Before linking, the builder requires every symbol the archive leaves undefined
+to be defined by the archive, musl's `libc.a` or libgcc. An archive compiled
+with the host compiler against glibc 2.38 or later fails this check, because
+those headers turn `strtol` and `atoi` into `__isoc23_strtol`, which musl does
+not define.
 
 The artifact is written to `consonance/harmony-linux/build/nes.oci` by default
 and contains no ROM, `/init`, supervisor, or execution control files. The
