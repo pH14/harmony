@@ -147,6 +147,19 @@ const emulator = await createEngine(localBase, twinDragons, {
 });
 const emulatorRoot = emulator.boot();
 const catalog = JSON.parse(await readFile(new URL("maps.json", localBase)));
+const diagState = () => page.evaluate(() => ({
+  map: document.querySelector("#map").dataset.map,
+  pressed: document.querySelector('#level-strip [aria-pressed="true"]')?.textContent,
+  live: document.querySelector("#level-strip .level-live")?.parentElement?.dataset.level,
+  viz: document.querySelector("#visualization").dataset.value,
+  cellTitle: document.querySelector("#cell-title").textContent,
+  rows: document.querySelectorAll("#state-list .state").length,
+  film: document.querySelector("#film-title").dataset.stateId,
+  pause: document.querySelector("#pause").getAttribute("aria-label"),
+  camera: document.querySelector(".map-wrap").dataset.camera,
+  attempts: document.querySelector("#attempts").textContent,
+  fixturePending: window.tdTestFixture !== null,
+}));
 async function selectFixture(tape, id) {
   emulator.restore(emulatorRoot);
   const frames = tape.actions.reduce((n, a) => n + a.frames, 0);
@@ -166,8 +179,11 @@ async function selectFixture(tape, id) {
     window.tdTestLastFixture = state;
     window.tdTestFixtureRequest = null;
   }, state);
-  if (await page.locator("#map").getAttribute("data-map") !== "0")
+  console.log("diag selectFixture before", id, JSON.stringify(await diagState()));
+  if (await page.locator("#map").getAttribute("data-map") !== "0") {
     await page.locator('#level-strip button[data-level="0"]').click();
+    console.log("diag selectFixture after level click", id, JSON.stringify(await diagState()));
+  }
   if (await page.evaluate(() => window.tdTestFixture !== null))
     await selectFixtureCell();
   await page.waitForFunction(() => window.tdTestFixtureRequest !== null);
@@ -303,15 +319,30 @@ try {
       .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
       .sort((a, b) => b.ids.size - a.ids.size)[0];
     window.tdTestRouteCells = null;
+    console.log("diag pick", JSON.stringify({ level, x: cell.observation.x, y: cell.observation.y, ids: cell.ids.size, cleared: cell.observation.cleared }));
     return cell.observation;
   });
+  console.log("diag pick", x, y);
   const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
   const clickIntroCell = async () => {
     const room = Number(await introMap.getAttribute("data-map"));
     const point = await showOnMap(page, room, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
     await page.mouse.move(point.x, point.y);
-    assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
+    const cursor = await introMap.evaluate((c) => getComputedStyle(c).cursor);
+    if (cursor !== "pointer") {
+      const info = await page.evaluate(([px, py]) => {
+        const c = document.querySelector(".map-row .area-map"), r = c.getBoundingClientRect(), e = document.elementFromPoint(px, py);
+        return { px, py, rect: [r.left, r.top, r.width, r.height], data: { ...c.dataset }, under: e && `${e.tagName}#${e.id}.${e.className}`, inline: c.style.cursor, scrollY };
+      }, [point.x, point.y]);
+      console.log("diag cursor mismatch", JSON.stringify({ x, y, room, point, cursor, info, state: await diagState() }));
+      await page.waitForTimeout(500);
+      console.log("diag cursor after 500ms", await introMap.evaluate((c) => getComputedStyle(c).cursor));
+      await page.mouse.move(point.x + 1, point.y + 1);
+      console.log("diag cursor after 1px move", await introMap.evaluate((c) => getComputedStyle(c).cursor));
+      await page.screenshot({ path: `test-results/diag-${process.env.TD_RUN}.png` });
+    }
+    assert.equal(cursor, "pointer");
     await page.mouse.click(point.x, point.y);
   };
   selectFixtureCell = clickIntroCell;
@@ -553,6 +584,10 @@ try {
       document.querySelector("#film-title").dataset.stateId ===
         "fixture-level-one-cached",
   );
+  if (process.env.TD_DIAG) {
+    console.log("diag fixture step passed");
+    process.exit(0);
+  }
   assert.ok(
     Number(await page.locator("#film").getAttribute("data-seek-start")) >
       mainFrames / 2,
