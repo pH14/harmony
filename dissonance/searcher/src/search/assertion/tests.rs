@@ -430,6 +430,104 @@ fn observe_ending_ends_the_action_at_a_frame_whose_first_observation_stops() {
 }
 
 #[test]
+fn a_rejected_record_without_the_goal_advances_no_stage() {
+    let catalog = catalog();
+    let strategy = |reject: &str| {
+        Compiled::parse(
+            &format!(
+                r#"
+                goal = "items"
+                {reject}
+                [[stage]]
+                name = "energy"
+                goal = "action_end and time / 10 >= 80"
+                latch = true
+                [[stage]]
+                name = "after"
+                goal = "false"
+                "#
+            ),
+            &catalog,
+        )
+        .unwrap()
+    };
+    let observe = |compiled: &Compiled, accumulator: &mut Accumulator, state: Walk, ends: bool| {
+        compiled.observe_ending(&mut record(state), accumulator, ends)
+    };
+    let stage =
+        |compiled: &Compiled, observed: Observed| compiled.view(observed.key.unwrap()).stage;
+    let living = Walk {
+        time: 90,
+        ..Walk::default()
+    };
+    let dying = Walk {
+        time: 9850,
+        ..Walk::default()
+    };
+    let unguarded = strategy("");
+    let mut accumulator = Accumulator::default();
+    let _ = observe(&unguarded, &mut accumulator, living, true);
+    let (died, _) = observe(&unguarded, &mut accumulator, dying, true);
+    assert_eq!(stage(&unguarded, died).as_deref(), Some("after"));
+    let guarded = strategy(r#"reject = "time >= 8000""#);
+    let mut accumulator = Accumulator::default();
+    let (alive, _) = observe(&guarded, &mut accumulator, living, true);
+    assert_eq!(stage(&guarded, alive).as_deref(), Some("energy"));
+    let before = accumulator.clone();
+    let (died, ended) = observe(&guarded, &mut accumulator, dying, false);
+    assert_eq!(
+        (died, ended),
+        (
+            Observed {
+                key: None,
+                rejected: Some(0),
+                goal: false,
+            },
+            true
+        )
+    );
+    assert_eq!(accumulator, before);
+    let won = Walk {
+        items: 0b111,
+        ..dying
+    };
+    let (won, _) = observe(&guarded, &mut accumulator, won, true);
+    assert_eq!((won.rejected, won.goal), (Some(0), true));
+    assert_eq!(stage(&guarded, won).as_deref(), Some("after"));
+    assert_eq!(accumulator.stage(), Some(1));
+}
+
+#[test]
+fn a_rejected_record_without_the_goal_folds_into_no_aggregate() {
+    let catalog = catalog();
+    let carried = |reject: &str| {
+        let compiled =
+            Compiled::parse(&format!("spread = \"highest(time)\"\n{reject}"), &catalog).unwrap();
+        let mut accumulator = Accumulator::default();
+        [90, 9850, 50].map(|time| {
+            compiled
+                .observe(
+                    &record(Walk {
+                        time,
+                        ..Walk::default()
+                    }),
+                    &mut accumulator,
+                )
+                .key
+                .map(|key| compiled.view(key).place)
+        })
+    };
+    assert_eq!(
+        carried(""),
+        [Some(vec![90]), Some(vec![9850]), Some(vec![9850])]
+    );
+    assert_eq!(
+        carried(r#"reject = "time >= 8000""#),
+        [Some(vec![90]), None, Some(vec![90])]
+    );
+}
+
+#[test]
 fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
     let compiled = Compiled::parse(
         r#"

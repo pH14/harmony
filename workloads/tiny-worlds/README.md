@@ -389,9 +389,12 @@ made the snapshot. The strategy's lane is its `Accumulator` and the key
 the world's goal. The world's goal (`World::goal`) is the one goal signal: the
 campaign's objective, the rejection rule and the shadow all read it, whatever
 the strategy's own `goal` line says. A rejected state ends its path as doomed
-(`Keying::rejected`), as in `NesTarget`, so the archive never keys it; a hand
-key's lane is empty, since the campaign completes a hand key against its parent
-with `ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying,
+(`Keying::rejected`), as in `NesTarget`, so the archive never keys it. A
+strategy keeps no key for a state that a `reject` line matches unless its own
+`goal` line holds there, so where the world's goal holds `Keying::key` refuses
+the state: "a tiny-world strategy's reject line matches a state where the
+world's goal holds". A hand key's lane is empty, since the campaign completes a
+hand key against its parent with `ArchiveKey::complete`. The shadow keying `Shadowed` wraps a hand keying,
 and its lane adds a searcher `ShadowCursor`: at each arrival the cursor
 observes the state's record under the strategy with the world's goal as its
 objective (`observe_with_objective`), takes no hand key where the hand keying

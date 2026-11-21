@@ -244,7 +244,9 @@ the records file charge an action the frames it ran. An action a stop cuts
 short costs the frames up to the stop, while its planned cost
 (`planned_cost_fn`, the chord's hold) counts the whole hold. A snapshot holds
 the `NesObservation` and the accumulator alone. A goal frame is a terminal objective, and a rejected
-frame is a doomed terminal. Named progress reports each `sometimes`
+frame is a doomed terminal. A rejected frame that is not a goal has no key, so
+it raises neither the progress watermark nor the champion, whose input is the
+witness `nes-eval` writes. Named progress reports each `sometimes`
 declaration by name with its first execution. With `with_milestone_input_dir`,
 the input of each first sighting is written to `<name>.json` by
 `publish_milestone_inputs`, the writer the Castlevania and Metroid

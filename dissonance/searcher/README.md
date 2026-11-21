@@ -683,7 +683,7 @@ catalog names:
 | `prefer` | Up to two preference lists of `expression: more` or `expression: less`. A list after the first that ends in `"above"` breaks its ties by the lists above it, so it orders as one comparison that continues with the earlier lists' terms. It exists because such a comparison does not fit in one key field: the list's own terms plus the earlier lists' terms need more bits than a field holds. The mark is the strategy's, carried in `KeyShape::ties_above`, so every list holds 2^32 values. A list that needs more, a first list that ends in `"above"`, or a stage whose lists are marked differently from the shared lists, fails to compile. |
 | `prefer_scope`, `prefer_across` | Two keys whose scope values differ compare by the across list instead of `prefer`. |
 | `absent` | A condition under which the state gets no key. |
-| `reject` | Named conditions; the first that holds is reported by index. |
+| `reject` | Named conditions; the first that holds is reported by index. A record one of them matches gets no key and leaves the accumulator as it was, unless the `goal` holds. |
 | `[table]`, `[define]` | Integer tables for `in`, `index` and `bucket`, and named sub-expressions. |
 | `every_stage` | Lines every stage inherits unless it gives its own. |
 | `goal` | The campaign objective: a declared `sometimes` name (a `sometimes_all` holds when every term holds) or a condition. |
@@ -891,7 +891,12 @@ route index an action passes through and leaves
 
 **Front ends.** `Compiled::observe` advances the accumulator and returns the
 key, the index of the first `reject` line that holds, and whether the `goal`
-holds.
+holds. A record that a `reject` line matches and that is not a goal returns no
+key and leaves the accumulator unchanged, so it advances no stage and folds into
+no aggregate: a front end ends the path there as doomed, and a shadow lane whose
+hand target goes on past it departs from the accumulator before it. A goal
+record keeps its key and advances the accumulator even when a `reject` line
+matches it.
 
 **Shadow keys.** `assertion/shadow.rs` compares a hand `ArchiveKey` with a
 strategy over the same states. A `ShadowCursor` lives beside a front end's

@@ -1769,6 +1769,17 @@ impl Compiled {
             .iter()
             .position(|(_, ops)| truth(ops, &mut stack))
             .and_then(|index| u8::try_from(index).ok());
+        let goal = self
+            .goal
+            .as_deref()
+            .is_some_and(|ops| truth(ops, &mut stack));
+        if rejected.is_some() && !goal {
+            return Observed {
+                key: None,
+                rejected,
+                goal,
+            };
+        }
         let key = (!absent).then(|| {
             let mut prefer = [0; MAX_PREFERENCES];
             for (slot, tuple) in prefer.iter_mut().zip(&lines.prefer) {
@@ -1786,10 +1797,6 @@ impl Compiled {
                 ),
             }
         });
-        let goal = self
-            .goal
-            .as_deref()
-            .is_some_and(|ops| truth(ops, &mut stack));
         if let Some((index, objective)) = stage
             && key.is_some()
         {
