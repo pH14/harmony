@@ -280,7 +280,7 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
         );
         shared.search.wall_seconds = request.budget.wall_seconds;
         shared.validate()?;
-        SearchStart::Checkpoint(checkpoint)
+        resume_start(checkpoint, &original)
     } else {
         SearchStart::Actions(super::investigate::prefix(
             &original,
@@ -305,6 +305,18 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
         Ok(report_code(&report))
     });
     finish(&out, &mut manifest, result)
+}
+
+fn resume_start(
+    checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
+    original: &Manifest,
+) -> SearchStart {
+    SearchStart::Checkpoint {
+        checkpoint,
+        previous: serde_json::from_value(original.record.payload["outcome"].clone())
+            .ok()
+            .map(Box::new),
+    }
 }
 
 pub(super) fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
@@ -1000,6 +1012,42 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn resume_passes_the_manifest_copy_of_the_earlier_report_to_the_package() {
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let report = serde_json::json!({
+            "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
+            "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":7,
+            "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],
+            "execution_ticks":1,"wall_seconds":1,"execution_failures":0
+        });
+        let previous = |outcome: serde_json::Value| {
+            let mut record = crate::runs::Manifest::new(shared.clone(), "search").unwrap();
+            record.payload = serde_json::json!({
+                "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":outcome
+            });
+            let checkpoint = searcher::search::checkpoint::PinnedCheckpoint {
+                path: "checkpoint".into(),
+                sha256: "digest".into(),
+            };
+            match resume_start(checkpoint, &Manifest::from_record(record).unwrap()) {
+                SearchStart::Checkpoint {
+                    checkpoint,
+                    previous,
+                } => {
+                    assert_eq!(checkpoint.sha256, "digest");
+                    previous
+                }
+                _ => panic!("resume must start from the checkpoint"),
+            }
+        };
+        assert_eq!(previous(report).map(|report| report.executions), Some(7));
+        assert!(previous(serde_json::Value::Null).is_none());
+        assert!(previous(serde_json::json!({"bugs":[]})).is_none());
     }
 
     #[test]

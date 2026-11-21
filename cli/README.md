@@ -741,8 +741,12 @@ Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even
 if a source outcome file changes later. Search resume restores its
-checkpoint and does not consume the report;
+checkpoint and does not read `report.json`;
 an interrupted report write does not invalidate an earlier checkpoint.
+Resume passes the manifest's copy of the earlier report to the package, which
+carries the replay results of inherited findings from it instead of replaying
+them. It replays an inherited finding when there is no readable copy, or when
+the copy holds no replay result for it because that replay returned an error.
 Faults `show`, `--timeline` and report-backed `--logs` display the manifest's
 saved outcome, so later edits to an outcome file cannot change the displayed
 recording. Command runs with a saved serial digest check it before displaying

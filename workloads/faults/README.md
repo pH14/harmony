@@ -1167,12 +1167,19 @@ an action. The setup point comes from the host boot cache
 earlier boot with the same image, executable, configuration and host stored
 it, and from a fresh boot otherwise; both give the same setup state hash. Each run records
 the actions it applied beside the horizons it ran in the guest, and the two are
-equal when nothing came from a cache. A search replays every bug it records the
-same way, and reports the bug as confirmed only when the replay reproduced the
+equal when nothing came from a cache. A search replays each bug it records the
+same way, except the bugs a resumed search carries as described below, and reports the bug as confirmed only when the replay reproduced the
 evidence the campaign saw: the assertions it violated, or the same stop when
 the stop was the only evidence. `bug_found` and `first_bug_execution` come from
 the confirmed bugs, so a hit that no replay reproduced is reported and does not
-count as a rediscovery.
+count as a rediscovery. A search that resumes a checkpoint carries a bug's
+entry forward from the report of the run it resumed instead of replaying it.
+It does so when that report has the same identity, image, kernel and memory size,
+and holds an entry with the same execution, actions, stop and assertion sets
+whose stored replay agrees with its `confirmed` flag. A replay that ran and did
+not confirm is carried as unconfirmed. An entry without a replay result, because
+its replay returned an error, is replayed again, and so is every inherited bug
+when the earlier report is missing or does not parse.
 
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
