@@ -1215,6 +1215,38 @@ The archive key is a strategy key compiled by the searcher's assertion keys
   `workload.finished`, `event.kill_fires`, `event.park_fires`,
   `event.park_held` and `event.kill_armed`.
 
+A search config's key table can also name facts, each a list of terms:
+
+```toml
+[workload.options.key.facts]
+r5 = ["transfer_timeout", "second_transfer"]
+```
+
+Each fact declares one `sometimes_all` after the 18 values, in name order: a
+count `r5`, the number of its terms that hold, and one flag per term,
+`r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
+Sometimes record that the target's guest processes write; the kit SDK uses
+the message as the id. A term holds while the latest hit record with that id
+has a true condition, so a guest clears a fact by writing the same Sometimes
+with a false condition. The binary SDK reports a Sometimes point only when it
+passes, so a fact term must be written as a JSON record. A strategy reads a
+term by its dotted name, quoted when the id is not a plain word, for example
+`'r5.harness: a check read succeeded'`. A term the guest never writes
+declares a flag that never holds, and nothing reports it, as with a declared
+game value that never changes; the archive report's `assertions` lists the
+ids the guest wrote. A fact term's records also count in `sometimes.count`
+and `sometimes.set` like every other passed Sometimes, and stay there after
+the fact clears.
+
+A fact name is ASCII letters, digits and underscores, starts with a letter or
+an underscore, and is not the first part of a built-in value's name, such as
+`sometimes` or `alive`. A fact holds 1 to 64 terms, and the facts together
+declare at most 77 values: a record holds 95 values beside the reserved
+`action_end`, and the built-in values take 18. The key policy identifier
+covers the catalog, so it pins the facts, and the vocabulary identifier does
+not change. A target keeps its key table in the search config it runs with,
+beside `[workload.options]` lines such as `hold_hooks`.
+
 The shipped strategy's tier is the passed count. Its place is the
 passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
@@ -1272,7 +1304,8 @@ duration context the shipped strategy gives 64 sampled states for each of 1,
 3, 8 and 10 nodes, and a test checks that the strategy still gives them.
 
 `workload.options.key.strategy` in a search config replaces the shipped
-strategy text. The key table accepts no other field.
+strategy text, and `workload.options.key.facts` names the facts. The key
+table accepts no other field.
 
 The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
 needs Linux. The action model, the bundle

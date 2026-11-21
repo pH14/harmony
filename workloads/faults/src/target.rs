@@ -1125,6 +1125,7 @@ fn declare_sdk_catalog(bytes: &[u8], assertions: &mut Assertions) -> Result<bool
                 location: String::new(),
                 passed: false,
                 failed: false,
+                holds: false,
             },
         );
     }
@@ -1154,6 +1155,7 @@ fn record_sdk_assertion(
             location: String::new(),
             passed,
             failed: !passed,
+            holds: passed,
         },
     );
     Ok(())

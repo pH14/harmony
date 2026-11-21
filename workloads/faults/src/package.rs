@@ -672,7 +672,7 @@ mod live {
                 "the search's hold_hooks option differs from its fault vocabulary's".into(),
             );
         }
-        let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
+        let keys = FaultKeys::requested(&options.key, vocabulary.nodes())?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
@@ -996,7 +996,7 @@ mod live {
             memory.workers,
             memory_needs(options.ram_mib).transient,
         ));
-        let keys = FaultKeys::new(options.key.strategy(), run.vocabulary.nodes())?;
+        let keys = FaultKeys::requested(&options.key, run.vocabulary.nodes())?;
         let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)));
         let workers = memory.workers;

@@ -2786,6 +2786,7 @@ mod tests {
                 location: "l".repeat(16384),
                 passed: true,
                 failed: false,
+                holds: true,
             };
             string_bytes += id.len() + outcome.message.len() + outcome.location.len();
             snapshot.observation.assertions.record(id, outcome);

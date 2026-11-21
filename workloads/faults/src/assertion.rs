@@ -34,6 +34,7 @@ pub struct AssertionOutcome {
     pub location: String,
     pub passed: bool,
     pub failed: bool,
+    pub holds: bool,
 }
 
 impl AssertionOutcome {
@@ -66,6 +67,9 @@ impl AssertionOutcome {
     pub fn merge(&mut self, other: &Self) {
         self.passed |= other.passed;
         self.failed |= other.failed;
+        if other.passed || other.failed {
+            self.holds = other.holds;
+        }
     }
 }
 
@@ -262,6 +266,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
                 location,
                 passed,
                 failed,
+                holds: passed,
             },
         ))
     });
@@ -387,5 +392,34 @@ mod tests {
             AssertionSet::of(["a", "b", "a"])
         );
         assert_ne!(AssertionSet::of(["ab"]), AssertionSet::of(["a", "b"]));
+    }
+
+    #[test]
+    fn holds_follows_the_latest_hit_record_while_passed_stays_set() {
+        let mut assertions = Assertions::default();
+        let (id, declared) = decode(&record("sometimes", true, false, false));
+        let (_, true_now) = decode(&record("sometimes", true, true, true));
+        let (_, false_now) = decode(&record("sometimes", true, true, false));
+        let holds = |assertions: &Assertions| {
+            let outcome = &assertions.0[&id];
+            (outcome.passed, outcome.holds)
+        };
+        assertions.record(id.clone(), declared.clone());
+        assert_eq!(holds(&assertions), (false, false));
+        assertions.record(id.clone(), true_now.clone());
+        assert_eq!(holds(&assertions), (true, true));
+        assertions.record(id.clone(), declared.clone());
+        assert_eq!(holds(&assertions), (true, true));
+        assertions.record(id.clone(), false_now.clone());
+        assert_eq!(holds(&assertions), (true, false));
+        assert_eq!(assertions.key(), AssertionSet::of([id.as_str()]));
+        let mut later = Assertions::default();
+        later.record(id.clone(), true_now);
+        assertions.merge(&later);
+        assert_eq!(holds(&assertions), (true, true));
+        let mut cleared = Assertions::default();
+        cleared.record(id.clone(), false_now);
+        assertions.merge(&cleared);
+        assert_eq!(holds(&assertions), (true, false));
     }
 }

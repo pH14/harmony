@@ -921,6 +921,7 @@ mod tests {
                     location: String::new(),
                     passed: true,
                     failed: false,
+                    holds: true,
                 },
             );
         }

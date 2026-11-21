@@ -56,6 +56,7 @@ fn observation(rand: &mut RomuDuoJrRand, nodes: u16, edges: &[u64]) -> FaultObse
                 location: String::new(),
                 passed,
                 failed: !passed,
+                holds: passed,
             },
         );
     }
@@ -176,10 +177,158 @@ fn the_declarations_saturate_into_their_ranges() {
         ..FaultObservations::default()
     };
     let keys = FaultKeys::new(STRATEGY, 3).unwrap();
+    let mut declared = Vec::new();
+    declare(&observations, 3, &[], &mut declared);
     keys.catalog()
-        .checked_record(declare(&observations, 3))
+        .checked_record(declared)
         .expect("every value lies in its declared range");
     assert_eq!(keys.catalog().signals().len(), DECLARATIONS);
+}
+
+fn request(strategy: Option<&str>, facts: &[(&str, &[&str])]) -> KeyRequest {
+    KeyRequest {
+        strategy: strategy.map(str::to_owned),
+        facts: facts
+            .iter()
+            .map(|(name, terms)| {
+                (
+                    (*name).to_owned(),
+                    terms.iter().map(|term| (*term).to_owned()).collect(),
+                )
+            })
+            .collect(),
+    }
+}
+
+const R5: (&str, &[&str]) = ("r5", &["transfer_timeout", "second_transfer"]);
+
+fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
+    observations.assertions.record(
+        id.to_owned(),
+        AssertionOutcome {
+            kind: AssertionKind::Sometimes,
+            message: id.to_owned(),
+            location: String::new(),
+            passed: holds,
+            failed: !holds,
+            holds,
+        },
+    );
+}
+
+#[test]
+fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
+    let parsed: KeyRequest = serde_json::from_str(
+        r#"{"facts": {"r5": ["transfer_timeout", "second_transfer"], "r13": ["paused_leader_behind"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed,
+        request(None, &[R5, ("r13", &["paused_leader_behind"])])
+    );
+    let keys = FaultKeys::requested(&parsed, 3).unwrap();
+    let declarations = keys.catalog().declarations();
+    assert_eq!(declarations.len(), DECLARATIONS + 2);
+    let facts: Vec<(&str, &str)> = declarations[DECLARATIONS..]
+        .iter()
+        .map(|declared| (declared.name.as_str(), declared.form.as_str()))
+        .collect();
+    assert_eq!(facts, [("r13", "sometimes_all"), ("r5", "sometimes_all")]);
+    let signals: Vec<&str> = keys.catalog().signals()[DECLARATIONS..]
+        .iter()
+        .map(|signal| signal.name.as_str())
+        .collect();
+    assert_eq!(
+        signals,
+        [
+            "r13",
+            "r13.paused_leader_behind",
+            "r5",
+            "r5.transfer_timeout",
+            "r5.second_transfer",
+        ]
+    );
+    assert_ne!(
+        keys.compiled().policy_identifier(),
+        shipped().compiled().policy_identifier()
+    );
+    let mut observations = FaultObservations::default();
+    fact_record(&mut observations, "second_transfer", true);
+    let record = keys.record(&observations);
+    let slot = |name| record.values()[keys.catalog().slot(name).unwrap()];
+    assert_eq!(slot("r5"), 1);
+    assert_eq!(slot("r5.transfer_timeout"), 0);
+    assert_eq!(slot("r5.second_transfer"), 1);
+    assert_eq!(slot("r13"), 0);
+}
+
+#[test]
+fn a_key_table_without_facts_keeps_the_shipped_catalog_and_policy() {
+    let absent: KeyRequest = serde_json::from_str("{}").unwrap();
+    assert_eq!(absent, KeyRequest::default());
+    assert_eq!(serde_json::to_string(&absent).unwrap(), "{}");
+    let keys = FaultKeys::requested(&absent, 3).unwrap();
+    assert_eq!(keys.catalog(), shipped().catalog());
+    assert_eq!(
+        keys.compiled().policy_identifier(),
+        shipped().compiled().policy_identifier()
+    );
+    assert_eq!(
+        keys.compiled().policy_identifier(),
+        SHIPPED_POLICY_AT_THREE_NODES
+    );
+}
+
+const SHIPPED_POLICY_AT_THREE_NODES: &str = "assertion_key_1e87540489cc2523";
+
+#[test]
+fn malformed_facts_are_refused() {
+    let many: Vec<String> = (0..64).map(|term| format!("t{term}")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let too_many = [("a", &many[..]), ("b", &many[..12])];
+    let wide: Vec<String> = (0..65).map(|term| format!("t{term}")).collect();
+    let wide: Vec<&str> = wide.iter().map(String::as_str).collect();
+    let fits = [("a", &many[..]), ("b", &many[..11])];
+    assert!(FaultKeys::requested(&request(None, &fits), 3).is_ok());
+    for (facts, refusal) in [
+        (&[("r-5", &["a"][..])][..], "is not a name"),
+        (&[("5r", &["a"][..])][..], "is not a name"),
+        (&[("r.5", &["a"][..])][..], "is not a name"),
+        (&[("alive", &["a"][..])][..], "built-in"),
+        (&[("sometimes", &["a"][..])][..], "built-in"),
+        (&[("r5", &[][..])][..], "not 1 to 64"),
+        (&[("r5", &wide[..])][..], "not 1 to 64"),
+        (&[("r5", &["a", "a"][..])][..], "twice"),
+        (&[("r5", &["it's"][..])][..], "cannot quote"),
+        (&[("r5", &[""][..])][..], "cannot quote"),
+        (&too_many[..], "a record holds 77"),
+    ] {
+        let error = FaultKeys::requested(&request(None, facts), 3)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(refusal), "{facts:?}: {error}");
+    }
+    let unknown = serde_json::from_str::<KeyRequest>(r#"{"fact": 1}"#).unwrap_err();
+    assert!(unknown.to_string().contains("unknown field"), "{unknown}");
+}
+
+#[test]
+fn a_tier_reading_a_fact_keys_a_state_whose_fact_cleared_lower() {
+    let strategy = STRATEGY.replace(
+        "tier = \"sometimes.count\"",
+        "tier = [\"r5\", \"sometimes.count\"]",
+    );
+    let keys = FaultKeys::requested(&request(Some(&strategy), &[R5]), 3).unwrap();
+    let mut holds = FaultObservations::default();
+    fact_record(&mut holds, "transfer_timeout", true);
+    fact_record(&mut holds, "second_transfer", true);
+    let mut cleared = holds.clone();
+    fact_record(&mut cleared, "transfer_timeout", false);
+    assert_eq!(holds.assertions.key(), cleared.assertions.key());
+    let (holds, cleared) = (key(&keys, &holds), key(&keys, &cleared));
+    assert!(cleared.progress < holds.progress, "{cleared:?} {holds:?}");
+    assert_eq!(keys.view(holds).progress, [2, 2]);
+    assert_eq!(keys.view(cleared).progress, [1, 2]);
 }
 
 fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
@@ -197,6 +346,7 @@ fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservat
                 location: String::new(),
                 passed: true,
                 failed: false,
+                holds: true,
             },
         );
     }

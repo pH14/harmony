@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fmt::Debug};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt::Debug,
+    sync::{Mutex, PoisonError},
+};
 
 use searcher::search::assertion::{
-    Assertion, AssertionKey, Catalog, Compiled, KeyView, Lines, Number, Record, Strategy, Wide,
+    Assertion, AssertionKey, Catalog, Compiled, Declarations, KeyView, Lines, Number, RECORD_SLOTS,
+    Record, Strategy, Wide,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +30,8 @@ const MASK_LANES: [&str; 2] = ["alive", "event.ready"];
 pub struct KeyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub facts: BTreeMap<String, Vec<String>>,
 }
 
 impl KeyRequest {
@@ -67,15 +75,117 @@ fn masks_fit(strategy: &str, nodes: u16) -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn compile(strategy: &Strategy, nodes: u16) -> Result<(Compiled, Catalog), Box<dyn Error>> {
-    let catalog = Catalog::from_assertions(declare(&FaultObservations::default(), nodes))?;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Fact {
+    name: &'static str,
+    terms: &'static [&'static str],
+}
+
+static NAMES: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+static TERMS: Mutex<BTreeSet<&'static [&'static str]>> = Mutex::new(BTreeSet::new());
+
+fn intern(name: &str) -> &'static str {
+    let mut names = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(known) = names.get(name).copied() {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.insert(leaked);
+    leaked
+}
+
+fn intern_terms(terms: Vec<&'static str>) -> &'static [&'static str] {
+    let mut lists = TERMS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(known) = lists.get(terms.as_slice()).copied() {
+        return known;
+    }
+    let leaked: &'static [&'static str] = Box::leak(terms.into_boxed_slice());
+    lists.insert(leaked);
+    leaked
+}
+
+fn built_in_names() -> BTreeSet<&'static str> {
+    let mut declared = Vec::new();
+    declare(&FaultObservations::default(), 1, &[], &mut declared);
+    declared
+        .iter()
+        .map(|assertion| {
+            let name = assertion.name();
+            name.split_once('.').map_or(name, |(head, _)| head)
+        })
+        .collect()
+}
+
+fn facts(requested: &BTreeMap<String, Vec<String>>) -> Result<Vec<Fact>, Box<dyn Error>> {
+    let built_in = built_in_names();
+    let room = RECORD_SLOTS - 1 - DECLARATIONS;
+    let signals: usize = requested.values().map(|terms| 1 + terms.len()).sum();
+    if signals > room {
+        return Err(format!(
+            "the key table's facts declare {signals} values and a record holds {room} beside the {DECLARATIONS} built-in values"
+        )
+        .into());
+    }
+    requested
+        .iter()
+        .map(|(name, terms)| -> Result<Fact, Box<dyn Error>> {
+            let mut letters = name.chars();
+            let word = letters
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+                && letters.all(|letter| letter.is_ascii_alphanumeric() || letter == '_');
+            if !word {
+                return Err(format!(
+                    "fact `{name}` is not a name of ASCII letters, digits and underscores starting with a letter or underscore"
+                )
+                .into());
+            }
+            if built_in.contains(name.as_str()) {
+                return Err(format!("fact `{name}` reuses a built-in value's name").into());
+            }
+            if terms.is_empty() || terms.len() > 64 {
+                return Err(format!("fact `{name}` names {} terms, not 1 to 64", terms.len()).into());
+            }
+            let mut seen = BTreeSet::new();
+            for term in terms {
+                if term.is_empty() || term.contains('\'') || term.chars().any(char::is_control) {
+                    return Err(format!(
+                        "fact `{name}` names the term {term:?}, which a strategy cannot quote"
+                    )
+                    .into());
+                }
+                if !seen.insert(term.as_str()) {
+                    return Err(format!("fact `{name}` names the term {term:?} twice").into());
+                }
+            }
+            Ok(Fact {
+                name: intern(name),
+                terms: intern_terms(terms.iter().map(|term| intern(term)).collect()),
+            })
+        })
+        .collect()
+}
+
+fn compile(
+    strategy: &Strategy,
+    nodes: u16,
+    facts: &[Fact],
+) -> Result<(Compiled, Catalog), Box<dyn Error>> {
+    let mut declared = Vec::new();
+    declare(&FaultObservations::default(), nodes, facts, &mut declared);
+    let catalog = Catalog::from_assertions(declared)?;
     Ok((Compiled::new(strategy, &catalog)?, catalog))
 }
 
-fn node_limit(strategy: &Strategy, nodes: u16, error: Box<dyn Error>) -> Box<dyn Error> {
+fn node_limit(
+    strategy: &Strategy,
+    nodes: u16,
+    facts: &[Fact],
+    error: Box<dyn Error>,
+) -> Box<dyn Error> {
     match (1..nodes)
         .rev()
-        .find(|fewer| compile(strategy, *fewer).is_ok())
+        .find(|fewer| compile(strategy, *fewer, facts).is_ok())
     {
         Some(limit) => {
             format!("this strategy keys at most {limit} nodes, not {nodes}: {error}").into()
@@ -84,8 +194,12 @@ fn node_limit(strategy: &Strategy, nodes: u16, error: Box<dyn Error>) -> Box<dyn
     }
 }
 
-#[must_use]
-pub fn declare(observations: &FaultObservations, nodes: u16) -> [Assertion; DECLARATIONS] {
+pub fn declare(
+    observations: &FaultObservations,
+    nodes: u16,
+    facts: &[Fact],
+    out: &mut impl Declarations,
+) {
     let mask = node_mask(nodes);
     let set = observations.assertions.key();
     let value = |name: &'static str, value: i64, max: i64| Assertion::Value {
@@ -94,7 +208,7 @@ pub fn declare(observations: &FaultObservations, nodes: u16) -> [Assertion; DECL
     };
     let counter = |name: &'static str, count: u64| value(name, wide(count), WIDE);
     let violated = observations.violations().len();
-    [
+    let values = [
         value("sometimes.count", i64::from(set.count), COUNT),
         value("sometimes.set", wide((set.digest >> 66) as u64), WIDE),
         value(
@@ -121,7 +235,29 @@ pub fn declare(observations: &FaultObservations, nodes: u16) -> [Assertion; DECL
         counter("event.park_fires", observations.event_park_fires),
         counter("event.park_held", observations.event_park_held),
         counter("event.kill_armed", observations.event_kill_armed),
-    ]
+    ];
+    for value in values {
+        out.declare(value);
+    }
+    for fact in facts {
+        let holding = fact
+            .terms
+            .iter()
+            .enumerate()
+            .filter(|(_, term)| {
+                observations
+                    .assertions
+                    .0
+                    .get(**term)
+                    .is_some_and(|outcome| outcome.holds)
+            })
+            .fold(0_u64, |holding, (index, _)| holding | 1 << index);
+        out.declare(Assertion::SometimesAll {
+            name: fact.name,
+            terms: fact.terms,
+            holding,
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -189,6 +325,7 @@ pub struct FaultKeys {
     compiled: Compiled,
     catalog: Catalog,
     nodes: u16,
+    facts: Vec<Fact>,
     lanes: ContextLanes,
 }
 
@@ -204,6 +341,19 @@ impl Debug for FaultKeys {
 
 impl FaultKeys {
     pub fn new(strategy: &str, nodes: u16) -> Result<Self, Box<dyn Error>> {
+        Self::with_facts(strategy, &BTreeMap::new(), nodes)
+    }
+
+    pub fn requested(request: &KeyRequest, nodes: u16) -> Result<Self, Box<dyn Error>> {
+        Self::with_facts(request.strategy(), &request.facts, nodes)
+    }
+
+    fn with_facts(
+        strategy: &str,
+        facts: &BTreeMap<String, Vec<String>>,
+        nodes: u16,
+    ) -> Result<Self, Box<dyn Error>> {
+        let facts = self::facts(facts)?;
         let parsed = Strategy::parse(strategy)?;
         let lanes = ContextLanes::find(&parsed)?;
         lanes.check(nodes)?;
@@ -214,8 +364,8 @@ impl FaultKeys {
         if parsed.lines()?.reject.is_some() {
             return Err("the faults workload reads no reject line".into());
         }
-        let (compiled, catalog) =
-            compile(&parsed, nodes).map_err(|error| node_limit(&parsed, nodes, error))?;
+        let (compiled, catalog) = compile(&parsed, nodes, &facts)
+            .map_err(|error| node_limit(&parsed, nodes, &facts, error))?;
         if !compiled.is_pure() {
             return Err(
                 "the faults workload keeps no accumulator, so its strategy holds no aggregates"
@@ -227,6 +377,7 @@ impl FaultKeys {
             compiled,
             catalog,
             nodes,
+            facts,
         })
     }
 
@@ -242,7 +393,9 @@ impl FaultKeys {
 
     #[must_use]
     pub fn record(&self, observations: &FaultObservations) -> Record {
-        Record::from_assertions(declare(observations, self.nodes))
+        let mut record = Record::default();
+        declare(observations, self.nodes, &self.facts, &mut record);
+        record
     }
 
     #[must_use]
