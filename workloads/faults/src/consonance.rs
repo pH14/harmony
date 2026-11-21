@@ -36,6 +36,7 @@ use fault_policy::{
     CHOICE_NAMESPACE, STANDING_NAMESPACE, StandingWindow, choice_answer, encode_standing,
     encode_windows,
 };
+use searcher::search::assertion::{Accumulator, Observed};
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,6 +44,7 @@ use sha2::{Digest, Sha256};
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::guest::{GuestAnswers, GuestChoice, GuestChoices, GuestChooser};
 use crate::history::{FaultHistory, HistoryReceipt};
+use crate::key::{FaultKeys, UNOBSERVED};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
     FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
@@ -767,6 +769,9 @@ pub struct FaultTarget {
     execution_ticks: u64,
     guest_horizons_run: u64,
     root_seal: u64,
+    keys: Option<Arc<FaultKeys>>,
+    accumulator: Accumulator,
+    observed: Observed,
 }
 
 #[cfg(target_os = "macos")]
@@ -835,7 +840,41 @@ impl FaultTarget {
             execution_ticks: 0,
             guest_horizons_run: 0,
             root_seal,
+            keys: None,
+            accumulator: Accumulator::default(),
+            observed: UNOBSERVED,
         })
+    }
+
+    #[must_use]
+    pub fn with_keys(mut self, keys: Arc<FaultKeys>) -> Self {
+        self.keys = Some(keys);
+        self.start_accumulator();
+        self
+    }
+
+    pub(crate) fn start_accumulator(&mut self) {
+        self.accumulator = Accumulator::default();
+        self.observed = match &self.keys {
+            Some(keys) => keys.observe(&self.observation, &mut self.accumulator, false),
+            None => UNOBSERVED,
+        };
+    }
+
+    fn observe_endpoint(&mut self) {
+        if let Some(keys) = &self.keys {
+            self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
+        }
+    }
+
+    #[must_use]
+    pub fn observed(&self) -> Observed {
+        self.observed
+    }
+
+    #[must_use]
+    pub fn accumulator(&self) -> &Accumulator {
+        &self.accumulator
     }
 
     pub fn fresh(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
@@ -1039,8 +1078,12 @@ impl FaultTarget {
 
     pub fn probe<T>(&mut self, inspect: impl FnOnce(&mut Self) -> T) -> T {
         let observation = self.observation.clone();
+        let accumulator = self.accumulator.clone();
+        let observed = self.observed;
         let result = inspect(self);
         self.observation = observation;
+        self.accumulator = accumulator;
+        self.observed = observed;
         result
     }
 
@@ -1107,10 +1150,13 @@ impl FaultTarget {
                 self.failed = false;
                 self.watchdog_cutoffs = 0;
                 self.infrastructure_failure = false;
+                self.start_accumulator();
             }
             Err(error) => {
                 eprintln!("fault target reset failed: {error}");
                 self.history = FaultHistory::default();
+                self.accumulator = Accumulator::default();
+                self.observed = UNOBSERVED;
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
                 self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
@@ -1212,6 +1258,8 @@ impl FaultTarget {
                 self.actions.take();
                 self.history = FaultHistory::default();
                 self.observation = FaultObservations::default();
+                self.accumulator = Accumulator::default();
+                self.observed = UNOBSERVED;
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
                 self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
@@ -1227,6 +1275,8 @@ impl FaultTarget {
         self.actions.take();
         self.history = snapshot.history.clone();
         self.observation = snapshot.observation.clone();
+        self.accumulator = snapshot.accumulator.clone();
+        self.observed = snapshot.observed;
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         self.watchdog_cutoffs = 0;
@@ -1263,6 +1313,8 @@ impl FaultTarget {
             failed: false,
             endpoint: Some(endpoint),
             event_history,
+            accumulator: self.accumulator.clone(),
+            observed: self.observed,
         };
         validate_snapshot_prefix_certificates(&snapshot, self.config.uml.is_some())?;
         Ok(Some(snapshot))
@@ -1384,6 +1436,7 @@ impl FaultTarget {
                     .saturating_add(crate::target::action_ticks(&action));
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
+                self.observe_endpoint();
                 self.action_observations.push(observation);
                 endpoint
             }
@@ -2643,6 +2696,7 @@ impl Live {
 #[must_use]
 pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
     size_of::<FaultSnapshot>()
+        .saturating_add(snapshot.accumulator.heap_bytes())
         .saturating_add(
             snapshot
                 .observation
@@ -2969,7 +3023,11 @@ mod tests {
             execution_ticks: 17,
             guest_horizons_run: 0,
             root_seal: 0,
+            keys: None,
+            accumulator: Accumulator::default(),
+            observed: UNOBSERVED,
         }
+        .with_keys(Arc::new(crate::campaign::fixture_keys()))
     }
 
     fn fixture_genesis() -> HistoryReceipt {
@@ -4850,6 +4908,37 @@ mod tests {
     }
 
     #[test]
+    fn a_target_keys_each_endpoint_by_its_fold_and_restores_the_snapshot_fold() {
+        let keys = crate::campaign::fixture_keys();
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; 2], false))
+        });
+        let root = target.snapshot().unwrap().unwrap();
+        assert_eq!(root.accumulator, *target.accumulator());
+        assert_eq!(root.observed, target.observed());
+        assert_eq!(root.observed.key, keys.key(&root.observation));
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let first = target.apply_and_snapshot(action).unwrap().unwrap();
+        let mut expected = Accumulator::default();
+        assert_eq!(
+            keys.observe(&root.observation, &mut expected, false),
+            root.observed
+        );
+        assert_eq!(
+            keys.observe(&first.observation, &mut expected, true),
+            first.observed
+        );
+        assert_eq!(first.accumulator, expected);
+        assert_eq!(first.observed.key, keys.key(&first.observation));
+        assert_eq!(target.observed(), first.observed);
+        target.restore(&root).unwrap();
+        assert_eq!(*target.accumulator(), root.accumulator);
+        assert_eq!(target.observed(), root.observed);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
     fn action_capture_hashes_once_and_standalone_snapshot_reads_the_live_endpoint() {
         let mut target = unbooted_target();
         LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
@@ -4920,7 +5009,6 @@ mod tests {
             }));
         });
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4972,7 +5060,6 @@ mod tests {
                 .collect::<Vec<_>>();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5023,7 +5110,6 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let error = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5066,7 +5152,6 @@ mod tests {
             .unwrap(),
         );
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5097,7 +5182,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5141,7 +5225,6 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5169,7 +5252,6 @@ mod tests {
         let before = capture_hash_calls();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5404,6 +5486,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
@@ -5643,7 +5726,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let keyframe = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &keyframe,
@@ -5677,10 +5759,10 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5714,6 +5796,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
@@ -5746,7 +5829,6 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5780,6 +5862,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
@@ -5812,7 +5895,6 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5866,7 +5948,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -6034,6 +6115,7 @@ mod tests {
             observation,
             failed: false,
             endpoint: Some(endpoint),
+            ..Default::default()
         };
         let mut importer = scripted_capture_live(Vec::new(), false);
         importer.chain = Chain::new(
@@ -7172,7 +7254,6 @@ mod tests {
                 );
             }
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &keyframe,
@@ -7293,6 +7374,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         target.finish_restore(&snapshot, Err(error)).unwrap();
         assert_eq!(target.watchdog_cutoffs(), 1);
@@ -7349,6 +7431,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..FaultSnapshot::default()
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
@@ -7393,6 +7476,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         for phase in ["run", "snapshot"] {
             for error in [
@@ -7463,6 +7547,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(hash)),
             event_history: Some(history),
+            ..Default::default()
         };
         validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
         for previous in [
@@ -7917,6 +8002,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         let error = target
             .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))

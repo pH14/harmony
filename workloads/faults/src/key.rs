@@ -8,8 +8,8 @@ use std::{
 };
 
 use searcher::search::assertion::{
-    Assertion, AssertionKey, Catalog, Compiled, Declarations, KeyView, Lines, Number, RECORD_SLOTS,
-    Record, Strategy, Wide,
+    Accumulator, Assertion, AssertionKey, Catalog, Compiled, Declarations, KeyView, Lines, Number,
+    Observed, RECORD_SLOTS, Record, Strategy, Wide,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +73,20 @@ fn masks_fit(strategy: &str, nodes: u16) -> Result<(), Box<dyn Error>> {
         .into()),
         None => Ok(()),
     }
+}
+
+pub const UNOBSERVED: Observed = Observed {
+    key: None,
+    rejected: None,
+    goal: false,
+};
+
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "Observed")]
+pub(crate) struct ObservedDef {
+    key: Option<AssertionKey>,
+    rejected: Option<u8>,
+    goal: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -401,6 +415,17 @@ impl FaultKeys {
     #[must_use]
     pub fn key(&self, observations: &FaultObservations) -> Option<AssertionKey> {
         self.compiled.key(&self.record(observations))
+    }
+
+    pub fn observe(
+        &self,
+        observations: &FaultObservations,
+        accumulator: &mut Accumulator,
+        action_end: bool,
+    ) -> Observed {
+        let mut record = self.record(observations);
+        record.set_action_end(action_end);
+        self.compiled.observe(&record, accumulator)
     }
 
     #[must_use]

@@ -62,10 +62,10 @@ use crate::{
 
 pub(crate) mod settle;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v14";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v11";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v11";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v12";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v7";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -171,6 +171,11 @@ impl FaultWorkload {
     pub fn key_of(&self, observations: &FaultObservations) -> Option<AssertionKey> {
         self.keys.key(observations)
     }
+
+    pub fn fresh_target(&self) -> Result<FaultTarget, String> {
+        FaultTarget::fresh(&self.kernel, &self.initramfs, &self.config)
+            .map(|target| target.with_keys(Arc::clone(&self.keys)))
+    }
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -234,7 +239,7 @@ type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
 fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&(
-        "fault-snapshot-identity-v2",
+        "fault-snapshot-identity-v3",
         snapshot.history.receipt().root(),
         &snapshot.observation,
         snapshot.failed,
@@ -242,6 +247,12 @@ fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
         snapshot
             .event_history
             .map(|history| (control_proto::EventHistory::VERSION, history)),
+        &snapshot.accumulator,
+        (
+            snapshot.observed.key,
+            snapshot.observed.rejected,
+            snapshot.observed.goal,
+        ),
     ))
 }
 
@@ -498,7 +509,11 @@ pub(crate) fn capture_replayed_prefix(
     } else {
         endpoint
     };
-    snapshot.ok_or_else(|| "cannot search from a terminal point; rewind further".into())
+    let mut snapshot = snapshot.ok_or("cannot search from a terminal point; rewind further")?;
+    target.start_accumulator();
+    snapshot.accumulator = target.accumulator().clone();
+    snapshot.observed = target.observed();
+    Ok(snapshot)
 }
 
 fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultAction> {
@@ -596,7 +611,6 @@ fn apply_settled(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
-    key_of: impl Fn(&FaultObservations) -> Option<AssertionKey>,
     run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
@@ -673,7 +687,7 @@ pub(crate) fn execute_job(
         let captured = captured?;
         let outcome = steps.record(run, target, *action, |target, disposition| match captured {
             Some(snapshot) if matches!(disposition, ExecutionDisposition::Runnable) => {
-                key_of(target.observation()).map(|key| CampaignCandidate {
+                target.observed().key.map(|key| CampaignCandidate {
                     key,
                     viable: true,
                     snapshot,
@@ -809,7 +823,7 @@ impl Reporting for FaultWorkload {
                 result,
                 target.actions(),
                 target.observation(),
-                self.keys.key(target.observation()),
+                target.observed().key,
                 || target.state_hash_current(),
             )?
         };
@@ -1194,7 +1208,8 @@ impl TargetExecution for FaultWorkload {
             &self.config,
             self.snapshot_cache.clone(),
             self.session_worker.clone(),
-        )?;
+        )?
+        .with_keys(Arc::clone(&self.keys));
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
         if seal != target.root_seal() {
             return Err(format!(
@@ -1327,7 +1342,6 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
-            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1352,7 +1366,6 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
-            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1393,7 +1406,9 @@ impl Evaluation for FaultWorkload {
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<AssertionKey, Box<dyn Error>> {
-        self.key_of(target.observation())
+        target
+            .observed()
+            .key
             .ok_or_else(|| "the faults strategy gives this state no key".into())
     }
 
@@ -1929,6 +1944,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let game = game();
         let identity = game.snapshot_identity_sha256(&snapshot).unwrap();

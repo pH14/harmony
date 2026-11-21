@@ -1295,9 +1295,22 @@ validates the recorded context. It is read from the key's lanes named
 `hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
 `checks_finished`, `workload_running` and the identity lane `alive`; a
 strategy without one of them leaves that part of the context zero, and packs
-no bits for a node mask it does not read. A strategy
-with stages, a reject line or aggregates is refused, because the workload
-keeps no accumulator and draws its tier directly.
+no bits for a node mask it does not read. `FaultKeys::new` refuses a strategy
+with stages, a reject line or aggregates.
+
+Each `FaultTarget` carries the strategy's accumulator, the searcher's
+`Accumulator`. The target folds its observation into a fresh accumulator with
+`action_end` false when it starts or resets, and folds each completed action's
+endpoint observation once with `action_end` true. Every way of applying an
+action goes through that one fold: a new action, a replayed parent action, a
+rebuilt prefix action and a settle action. A `FaultSnapshot` saves the
+accumulator and the endpoint's `Observed` key, and a restore takes both from
+the snapshot, so a job's parent, a detached settle run and the action applied
+after it continue from the fold the snapshot saved. The snapshot codec
+`fault-history-dag-v3` and the campaign stream and checkpoint formats carry
+both. A rooted search (`search --from BRANCH`) starts the accumulator at the
+root: a branch root carries only its endpoint observation, so its accumulator
+is that observation folded into a fresh accumulator, as at genesis.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
 duration context the shipped strategy gives 64 sampled states for each of 1,
@@ -1460,11 +1473,12 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v2`. Every receipt frame retains
+The shared history codec is `fault-history-dag-v3`, whose endpoint frame also
+carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.
 Changing assurance is refused even if the receipt root and frame checksum are
 recomputed. The codec does not upgrade an ordinary execution into a qualified
-composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
+composition. Older DAG codecs and flat snapshot envelopes are refused;
 whole-search checkpoints require the distinct v10 envelope. The current
 execution identity remains v11 and ordered event history remains v3.

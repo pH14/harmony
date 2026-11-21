@@ -7,6 +7,7 @@ use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
 use process_proto::EVERY_NODE;
 use process_proto::registers as reg;
+use searcher::search::assertion::{Accumulator, Observed};
 use searcher::target::ExitKind;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
@@ -477,13 +478,30 @@ pub enum FaultEndpointCertificate {
     UmlWholeStateUnavailable,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
     pub history: crate::history::FaultHistory,
     pub observation: FaultObservations,
     pub failed: bool,
     pub endpoint: Option<FaultEndpointCertificate>,
     pub event_history: Option<(u64, [u8; 32])>,
+    pub accumulator: Accumulator,
+    #[serde(with = "crate::key::ObservedDef")]
+    pub observed: Observed,
+}
+
+impl Default for FaultSnapshot {
+    fn default() -> Self {
+        Self {
+            history: crate::history::FaultHistory::default(),
+            observation: FaultObservations::default(),
+            failed: false,
+            endpoint: None,
+            event_history: None,
+            accumulator: Accumulator::default(),
+            observed: crate::key::UNOBSERVED,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

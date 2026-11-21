@@ -725,8 +725,7 @@ mod live {
                 expected_sha256: Some(checkpoint.sha256.clone()),
             },
             super::SearchStart::Actions(actions) => {
-                let mut target =
-                    FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;
+                let mut target = game.fresh_target()?;
                 let snapshot = crate::campaign::capture_replayed_prefix(&mut target, actions)?;
                 let snapshots = SnapshotCheckpoint {
                     format: game.checkpoint_format().into(),
