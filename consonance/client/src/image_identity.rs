@@ -22,6 +22,13 @@ enum AdmittedImage {
     TestFixture,
 }
 
+#[cfg(feature = "in-process")]
+#[derive(Clone, Copy, Debug)]
+enum CheckScope {
+    Full,
+    Code,
+}
+
 #[cfg(all(test, feature = "in-process"))]
 thread_local! {
     static CHECK_TRACE: std::cell::Cell<(usize, usize, Option<usize>)> = const { std::cell::Cell::new((0, 0, None)) };
@@ -33,8 +40,18 @@ thread_local! {
 }
 
 #[cfg(all(test, feature = "in-process"))]
+thread_local! {
+    static CODE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, feature = "in-process"))]
 pub(crate) fn write_code() {
     CODE_WRITTEN.with(|written| written.set(true));
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn code_checks() -> usize {
+    CODE_CHECKS.with(std::cell::Cell::get)
 }
 
 #[cfg(all(test, feature = "in-process"))]
@@ -42,16 +59,18 @@ pub(crate) fn trace_checks<T>(
     fail_at: Option<usize>,
     run: impl FnOnce() -> T,
 ) -> (T, usize, usize) {
-    struct Reset((usize, usize, Option<usize>), bool);
+    struct Reset((usize, usize, Option<usize>), bool, usize);
     impl Drop for Reset {
         fn drop(&mut self) {
             CHECK_TRACE.with(|trace| trace.set(self.0));
             CODE_WRITTEN.with(|written| written.set(self.1));
+            CODE_CHECKS.with(|checks| checks.set(self.2));
         }
     }
     let _reset = Reset(
         CHECK_TRACE.with(|trace| trace.replace((0, 0, fail_at))),
         CODE_WRITTEN.with(|written| written.replace(false)),
+        CODE_CHECKS.with(|checks| checks.replace(0)),
     );
     let result = run();
     let (entries, strict, _) = CHECK_TRACE.with(std::cell::Cell::get);
@@ -132,34 +151,21 @@ impl LoadedImageGuard {
     }
 
     pub(crate) fn check_at(&self, site: GuardSite) -> io::Result<()> {
-        self.check_measured_at(
-            site,
-            host_code_identity::StrictExecutableGuard::check_measured,
-        )
+        self.check_measured_at(site, CheckScope::Full)
     }
 
     pub(crate) fn check_code_at(&self, site: GuardSite) -> io::Result<()> {
-        self.check_measured_at(
-            site,
-            host_code_identity::StrictExecutableGuard::check_code_measured,
-        )
+        self.check_measured_at(site, CheckScope::Code)
     }
 
-    fn check_measured_at(
-        &self,
-        site: GuardSite,
-        check: fn(
-            host_code_identity::StrictExecutableGuard,
-            &mut host_code_identity::GuardMeasurement,
-        ) -> io::Result<()>,
-    ) -> io::Result<()> {
+    fn check_measured_at(&self, site: GuardSite, scope: CheckScope) -> io::Result<()> {
         let started = guard_started();
         let mut work = host_code_identity::GuardMeasurement::default();
         #[cfg(test)]
         let fixture = matches!(self.admitted, AdmittedImage::TestFixture);
         #[cfg(not(test))]
         let fixture = false;
-        let result = self.check_inner(&mut work, check);
+        let result = self.check_inner(&mut work, scope);
         self.telemetry.record(
             site,
             GuardDispatch::Check,
@@ -174,11 +180,12 @@ impl LoadedImageGuard {
     fn check_inner(
         &self,
         work: &mut host_code_identity::GuardMeasurement,
-        check: fn(
-            host_code_identity::StrictExecutableGuard,
-            &mut host_code_identity::GuardMeasurement,
-        ) -> io::Result<()>,
+        scope: CheckScope,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        if matches!(scope, CheckScope::Code) {
+            CODE_CHECKS.with(|checks| checks.set(checks.get() + 1));
+        }
         #[cfg(test)]
         CHECK_TRACE.with(|trace| {
             let (entries, strict, fail_at) = trace.get();
@@ -207,7 +214,14 @@ impl LoadedImageGuard {
             let (entries, strict, fail_at) = trace.get();
             trace.set((entries, strict + 1, fail_at));
         });
-        check(admitted, work)
+        match scope {
+            CheckScope::Full => {
+                host_code_identity::StrictExecutableGuard::check_measured(admitted, work)
+            }
+            CheckScope::Code => {
+                host_code_identity::StrictExecutableGuard::check_code_measured(admitted, work)
+            }
+        }
     }
 
     pub(crate) fn current_identity(&self) -> io::Result<String> {

@@ -5387,13 +5387,22 @@ mod tests {
         (session, server, completed)
     }
 
-    fn received_replies(session: &WorkerSession, group: &str) -> u64 {
-        session
+    fn received_replies(session: &WorkerSession, group: &str) -> (u64, u64) {
+        let counters = session
             .transport
             .counters("fixture")
             .into_iter()
-            .find(|(key, _)| *key == format!("fixture.{group}.receive.completed"))
-            .map_or(0, |(_, value)| value)
+            .collect::<BTreeMap<_, _>>();
+        let counter = |name: &str| {
+            counters
+                .get(&format!("fixture.{group}.receive.{name}"))
+                .copied()
+                .unwrap_or(0)
+        };
+        (
+            counter("completed"),
+            counter("header_bytes") + counter("body_bytes"),
+        )
     }
 
     #[test]
@@ -5405,10 +5414,12 @@ mod tests {
             CodeWrite::EndpointExit,
         ] {
             let (mut worker, server, completed) = writing_worker(code_write);
-            assert_eq!(received_replies(&worker, "setup"), 1);
+            let (setup_replies, setup_bytes) = received_replies(&worker, "setup");
+            assert_eq!(setup_replies, 1);
+            assert!(setup_bytes > 0);
             assert!(ExecutionEndpoint::execute(&mut worker, endpoint_request(20)).is_err());
             assert_eq!(*completed.lock().unwrap(), ["run", "endpoint"]);
-            assert_eq!(received_replies(&worker, "endpoint"), 0);
+            assert_eq!(received_replies(&worker, "endpoint"), (0, 0));
             assert!(worker.abandoned());
             assert!(worker.state_hash().is_err());
             assert!(worker.snapshot().is_err());
@@ -5418,7 +5429,7 @@ mod tests {
         let (mut worker, server, completed) = writing_worker(CodeWrite::Run);
         assert!(worker.run_until(20).is_err());
         assert_eq!(*completed.lock().unwrap(), ["run"]);
-        assert_eq!(received_replies(&worker, "run"), 0);
+        assert_eq!(received_replies(&worker, "run"), (0, 0));
         assert!(worker.state_hash().is_err());
         drop(worker);
         server.join().unwrap();

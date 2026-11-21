@@ -1251,10 +1251,14 @@ mod tests {
                 HostOperationSite::SdkResponse,
                 HostOperationSite::ControlAfter,
             ];
-            let (results, entries, _) =
-                crate::image_identity::trace_checks(None, || sites.map(|site| check(site).is_ok()));
+            let ((results, code_checks), entries, _) =
+                crate::image_identity::trace_checks(None, || {
+                    let results = sites.map(|site| check(site).is_ok());
+                    (results, crate::image_identity::code_checks())
+                });
             assert_eq!(results, [true; 3]);
             assert_eq!(entries, if control_checks { 3 } else { 1 });
+            assert_eq!(code_checks, 1);
             let counters = guard
                 .counters("guard.session")
                 .into_iter()
