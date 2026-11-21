@@ -466,6 +466,7 @@ enum Arrival {
     Absent,
     Keyed(AssertionKey),
     Rejected,
+    RejectedGoal,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -491,6 +492,7 @@ impl Keying for Strategic {
         lane.arrival = match observed.key {
             _ if observed.rejected.is_some() && !world.goal(state) => Arrival::Rejected,
             Some(key) => Arrival::Keyed(key),
+            None if observed.rejected.is_some() => Arrival::RejectedGoal,
             None => Arrival::Absent,
         };
     }
@@ -505,6 +507,10 @@ impl Keying for Strategic {
             Arrival::Keyed(key) => Ok(key),
             Arrival::Absent => Err("a tiny-world strategy marked a state absent".into()),
             Arrival::Rejected => Err("a tiny-world strategy rejected the state".into()),
+            Arrival::RejectedGoal => Err(
+                "a tiny-world strategy's reject line matches a state where the world's goal holds"
+                    .into(),
+            ),
         }
     }
     fn rejected(&self, _: &World, _: State, _: bool, lane: &StrategyLane) -> bool {

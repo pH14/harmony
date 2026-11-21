@@ -683,7 +683,7 @@ catalog names:
 | `prefer` | Up to two preference lists of `expression: more` or `expression: less`. A list after the first that ends in `"above"` breaks its ties by the lists above it, so it orders as one comparison that continues with the earlier lists' terms. It exists because such a comparison does not fit in one key field: the list's own terms plus the earlier lists' terms need more bits than a field holds. The mark is the strategy's, carried in `KeyShape::ties_above`, so every list holds 2^32 values. A list that needs more, a first list that ends in `"above"`, or a stage whose lists are marked differently from the shared lists, fails to compile. |
 | `prefer_scope`, `prefer_across` | Two keys whose scope values differ compare by the across list instead of `prefer`. |
 | `absent` | A condition under which the state gets no key. |
-| `reject` | Named conditions; the first that holds is reported by index. |
+| `reject` | Named conditions; the first that holds is reported by index. A record one of them matches gets no key and leaves the accumulator as it was, unless the `goal` holds. |
 | `[table]`, `[define]` | Integer tables for `in`, `index` and `bucket`, and named sub-expressions. |
 | `every_stage` | Lines every stage inherits unless it gives its own. |
 | `goal` | The campaign objective: a declared `sometimes` name (a `sometimes_all` holds when every term holds) or a condition. |
@@ -869,16 +869,17 @@ the last frame of every action.
 
 The checker also counts stage falls (`Checker::stage_falls`), every stage with
 the number of observed states whose stage index is below their parent's,
-counted under the stage they fall back to. Re-keying compares each action's
-last frame with the state the action departed from. A fall means a goal the
-parent had passed stopped holding: `Compiled::locate` evaluates every stage
-goal again on each frame and skips only a latched stage the parent is above,
-so an unlatched goal that reads a value that holds only in one room drops the
-state back to that stage when the player leaves it. It is the
-measurement for whether a stage needs `latch = true`. The count runs for every
-staged strategy, and a count of zero bounds only the states the run kept: a
-fall on a path the search never kept, or on an interior frame of an action, is
-not seen.
+counted under the stage they fall back to. Only a record with a key counts, as
+for the tiers, so an absent endpoint, or one that a `reject` line matches and
+that is not a goal, counts no fall. Re-keying compares each action's last frame
+with the state the action departed from. A fall means a goal the parent had
+passed stopped holding: `Compiled::locate` evaluates every stage goal again on
+each frame and skips only a latched stage the parent is above, so an unlatched
+goal that reads a value that holds only in one room drops the state back to that
+stage when the player leaves it. It is the measurement for whether a stage needs
+`latch = true`. The count runs for every staged strategy, and a count of zero
+bounds only the states the run kept: a fall on a path the search never kept, or
+on an interior frame of an action, is not seen.
 
 A port of a hand key to a strategy checks every value it reads for the same
 class of fault: a value read on every frame where the hand key read only action
@@ -891,7 +892,17 @@ route index an action passes through and leaves
 
 **Front ends.** `Compiled::observe` advances the accumulator and returns the
 key, the index of the first `reject` line that holds, and whether the `goal`
-holds.
+holds. A record that a `reject` line matches and that is not a goal returns no
+key and leaves the accumulator unchanged, so it advances no stage and folds into
+no aggregate: a front end ends the path there as doomed, and a shadow lane whose
+hand target goes on past it departs from the accumulator before it. A goal
+record that a `reject` line matches still returns the rejection, but its key and
+accumulator are those of a record no `reject` line matches: it keeps its key and
+advances the accumulator, or, where `absent` holds, has no key and keeps its
+stage while its aggregates advance. The exception reads the strategy's own
+`goal` line, also under `ShadowCursor::observe_with_objective`, which filters
+the key by the objective it is given only after `Compiled::observe` has run
+([#1114](https://github.com/pH14/harmony/issues/1114)).
 
 **Shadow keys.** `assertion/shadow.rs` compares a hand `ArchiveKey` with a
 strategy over the same states. A `ShadowCursor` lives beside a front end's

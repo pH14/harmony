@@ -120,7 +120,7 @@ mod tests {
             door: byte(3),
             missiles: byte(4) * 5,
             missile_capacity: byte(3) * 10,
-            health: u16::from(byte(8)) * 125,
+            health: u16::from(byte(7) + 1) * 125,
             equipment: byte(32),
             boss_health: u16::from(byte(3)) * 32,
             mode: 3,
