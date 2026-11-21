@@ -84,6 +84,8 @@ type client struct {
 	base    string
 	http    *http.Client
 	forward bool
+	attempt *writeAttempt
+	hop     func(target string)
 }
 
 type result struct {
@@ -243,26 +245,33 @@ func (s *statusAnswers) err(node string, attempt error, now time.Time) error {
 	return fmt.Errorf("%s; last attempt: %w", state, attempt)
 }
 
-func (c *client) appliedIndex(ctx context.Context) (uint64, error) {
+func (c *client) status(ctx context.Context, into any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/status", nil)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	httpResp, err := c.http.Do(req)
+	httpResp, err := c.do(req, nil)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer httpResp.Body.Close()
 	if httpResp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("status: %s", httpResp.Status)
+		return fmt.Errorf("status: %s", httpResp.Status)
 	}
+	if err := json.NewDecoder(httpResp.Body).Decode(into); err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	return nil
+}
+
+func (c *client) appliedIndex(ctx context.Context) (uint64, error) {
 	var status struct {
 		Store struct {
 			DBAppliedIndex uint64 `json:"db_applied_index"`
 		} `json:"store"`
 	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&status); err != nil {
-		return 0, fmt.Errorf("status: %w", err)
+	if err := c.status(ctx, &status); err != nil {
+		return 0, err
 	}
 	return status.Store.DBAppliedIndex, nil
 }
@@ -364,11 +373,11 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	switch op.F {
 	case family.RegisterWrite:
 		value := op.V.(string)
-		_, err := c.execute(ctx, [][]any{{upsertSQL, k, value, digest(value)}})
+		_, err := c.write(ctx, [][]any{{upsertSQL, k, value, digest(value)}})
 		return nil, err
 	case family.RegisterCAS:
 		pair := op.V.([]string)
-		res, err := c.execute(ctx, [][]any{{casSQL, pair[1], digest(pair[1]), k, pair[0]}})
+		res, err := c.write(ctx, [][]any{{casSQL, pair[1], digest(pair[1]), k, pair[0]}})
 		if err != nil {
 			return nil, err
 		}
@@ -567,6 +576,9 @@ func (c *client) postRedirect(ctx context.Context, path string, body []byte) (in
 	}
 	target := c.base + path + separator + "redirect"
 	for hop := 0; ; hop++ {
+		if c.hop != nil {
+			c.hop(target)
+		}
 		status, text, location, err := c.send(ctx, target, body)
 		if err != nil || status != http.StatusMovedPermanently || hop > 0 || location == "" {
 			return status, text, err
@@ -581,7 +593,7 @@ func (c *client) send(ctx context.Context, target string, body []byte) (int, str
 		return 0, "", "", runner.Definite(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	httpResp, err := c.http.Do(req)
+	httpResp, err := c.do(req, c.attempt)
 	if err != nil {
 		var opErr *net.OpError
 		if errors.As(err, &opErr) && opErr.Op == "dial" {
@@ -631,8 +643,9 @@ func (c *client) stepdown(ctx context.Context, id string) stepdownAnswer {
 	return stepdownAnswer{status: status, text: strings.TrimSpace(text), err: err}
 }
 
-func (c *client) stepdownRetrying(ctx context.Context, id string, retries int, wait func() time.Duration, record func(stepdownAnswer)) {
+func (c *client) stepdownRetrying(ctx context.Context, id string, retries int, wait func() time.Duration, before func(), record func(stepdownAnswer)) {
 	for attempt := 0; ; attempt++ {
+		before()
 		answer := c.stepdown(ctx, id)
 		record(answer)
 		if attempt == retries || !answer.timedOut() {
@@ -643,30 +656,45 @@ func (c *client) stepdownRetrying(ctx context.Context, id string, retries int, w
 }
 
 func runStepdown() error {
-	via := sdk.Below("rqlite.stepdown.via", uint64(len(nodes)))
+	via := int(sdk.Below("rqlite.stepdown.via", uint64(len(nodes))))
 	target := stepdownTargets[sdk.Below("rqlite.stepdown.target", uint64(len(stepdownTargets)))]
 	retries := int(sdk.Below("rqlite.stepdown.retries", stepdownRetryChoices))
 	out, err := os.OpenFile(stepdownLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	named := target
-	if named == "" {
-		named = "any"
-	}
-	c := newClient(nodes[via])
-	defer c.Close()
 	wait := func() time.Duration {
 		return time.Duration(sdk.Below("rqlite.stepdown.wait", stepdownWaitChoices)) * stepdownWaitStep
 	}
-	var written error
-	c.stepdownRetrying(context.Background(), target, retries, wait, func(answer stepdownAnswer) {
-		if _, err := fmt.Fprintf(out, "%s via=%s target=%s retries=%d %s\n", uptime(), nodeNames[via], named, retries, answer); err != nil && written == nil {
-			written = err
+	return errors.Join(stepdownFrom(via, target, retries, wait, out, newStepdownFacts()), out.Close())
+}
+
+func stepdownFrom(via int, target string, retries int, wait func() time.Duration, out io.Writer, facts *stepdownFacts) error {
+	named := target
+	if named == "" {
+		named = anyTarget
+	}
+	c := newClient(nodes[via])
+	defer c.Close()
+	ctx := context.Background()
+	before := func() {}
+	if facts != nil {
+		facts.via, facts.target = via, named
+		before = func() { facts.before(ctx) }
+		c.hop = facts.hop
+	}
+	var failed error
+	c.stepdownRetrying(ctx, target, retries, wait, before, func(answer stepdownAnswer) {
+		if facts != nil {
+			facts.after(answer)
 		}
+		_, err := fmt.Fprintf(out, "%s via=%s target=%s retries=%d %s\n", uptime(), nodeNames[via], named, retries, answer)
+		failed = errors.Join(failed, err)
 	})
-	return written
+	if facts != nil {
+		failed = errors.Join(failed, facts.err)
+	}
+	return failed
 }
 
 func uptime() string {
@@ -755,8 +783,13 @@ func main() {
 	}
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
+		writes = newWriteFacts()
 		runner.Main(adapter{})
 	case "forward":
+		if factsOn() {
+			fmt.Fprintf(os.Stderr, "%s needs the register mode\n", factsEnv)
+			os.Exit(2)
+		}
 		runner.Main(adapter{forward: true})
 	default:
 		fmt.Fprintf(os.Stderr, "unknown %s %q\n", modeEnv, mode)

@@ -653,7 +653,7 @@ sends the same request again, up to a number of times drawn at
 `rqlite.stepdown.wait` (0 to 1 second in steps of 100 ms). The retry is ours. Each request, with its one redirect, has 10
 seconds, so the hook runs for at most about 32 seconds. It appends each answer
 to `/tmp/rqlite/stepdown.log` and exits 0 whatever the answers, or 1 when it
-cannot open or write the log. The bundle's `heal` line makes the supervisor
+cannot open, write or close the log. The bundle's `heal` line makes the supervisor
 count the hook as a cut, so it is a fault in force until the heal hook runs
 after its window closes. The supervisor also holds that heal until every
 running cut hook exits, so a stepdown still waiting on an answer when the last
@@ -661,6 +661,48 @@ cut window closes keeps an overlapping partition, isolation or delay in force
 until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
 first. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
+
+`bundle-stepdown-facts` is `bundle-stepdown` with `HARNESS_RQLITE_FACTS=1` on
+the stepdown hook and the workload, which then write four `Sometimes`
+assertions of ours through the JSON record, each evaluated with its condition,
+true or false, every time it is checked. Before each request the hook reads
+the `/status` of the node drawn at `rqlite.stepdown.via` and, when that node
+does not lead, of the node it names as leader. The leader is the node that
+reports itself leader, with its term; when neither does, the leader and term
+are unknown. The term is a sample taken before the request, and leadership can
+move after it. Those reads are the only requests `bundle-stepdown` does not
+send. A redirect names the request's next hop, and a request counts toward the
+sampled leader only when one of its hops goes to that node. A timeout answered
+by that hop to a request with a target is appended to
+`/tmp/rqlite/stepdown-timeouts` as the sampled term and the target before the
+hook logs the answer, so later hook runs read it. A request without a target
+lets Raft choose the peer, so it is never a second transfer and its timeouts
+are not kept. When the hook cannot read that file, or a line in it is not a
+nonzero term and a node ID, `second_transfer` is false; when it cannot read or
+append the file, the hook still sends its requests and exits 1. The register
+client's facts read only the requests it already sends. A request counts as
+sent once the client has written it, and as answered once an HTTP reply
+arrives, whatever its status.
+
+- `transfer_timeout` (ours): checked at each stepdown answer; holds when the
+  answer is HTTP 500 with the error `leadership transfer timeout` itself.
+- `second_transfer` (ours): checked once per stepdown request, just before its
+  hop to the sampled leader is sent, or at its answer when no hop goes there;
+  holds when a hop goes to the sampled leader and the file holds a timeout of
+  the request's target in the sampled term. The hop can still fail or redirect
+  after the check.
+- `write_unanswered` (ours): checked once for each `write` and `cas`; holds
+  when the last node the write was sent to gave no reply before the deadline
+  or before the connection closed.
+- `first_node_answers` (ours): checked at each request sent to a node that left
+  a write unanswered, until it holds; holds when that node replies.
+
+A third register fact, a different node leading in a higher term than the one
+the write was sent under, is left out. The client would have to read a term
+from `/status` before every write and poll the other nodes. That is added work
+on the guest's one vCPU, and the reads sent to a paused leader are answered at
+its resume, where the order that forms the `hashicorp/raft` issue 695
+divergence is decided.
 
 `bundle-admin` is `bundle` with a fifth hook, `rqlite-harness snapshot`, which
 sends `POST /snapshot` to one node drawn at site `rqlite.snapshot.node`. Three

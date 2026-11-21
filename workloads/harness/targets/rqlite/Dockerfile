@@ -23,12 +23,12 @@ COPY workloads/harness/kit/go.mod workloads/harness/kit/go.sum kit/
 COPY workloads/harness/targets/rqlite/go.mod workloads/harness/targets/rqlite/go.sum targets/rqlite/
 RUN (cd kit && go mod download) && (cd targets/rqlite && go mod download)
 COPY workloads/harness/kit kit
-COPY workloads/harness/targets/rqlite/main.go targets/rqlite/
+COPY workloads/harness/targets/rqlite/*.go targets/rqlite/
 COPY workloads/harness/image/go-env.sh consonance/harmony-linux/linux/patches/go/ /build/harness-go/
 RUN mkdir -p /out \
     && . /build/harness-go/go-env.sh \
     && (cd kit && go test -mod=readonly ./...) \
-    && (cd targets/rqlite && go vet -mod=readonly ./... \
+    && (cd targets/rqlite && go vet -mod=readonly ./... && go test -mod=readonly ./... \
         && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \
            go build -mod=readonly -buildvcs=false -ldflags="${HARNESS_GO_LDFLAGS}" -o /out/rqlite-harness .) \
     && (cd kit && CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" GOFLAGS=-trimpath \

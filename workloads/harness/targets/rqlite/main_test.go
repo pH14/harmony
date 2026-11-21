@@ -120,7 +120,7 @@ func runRetrying(server *httptest.Server, id string, retries int) []stepdownAnsw
 	var answers []stepdownAnswer
 	c := newClient(server.URL)
 	defer c.Close()
-	c.stepdownRetrying(context.Background(), id, retries, func() time.Duration { return 0 }, func(a stepdownAnswer) {
+	c.stepdownRetrying(context.Background(), id, retries, func() time.Duration { return 0 }, func() {}, func(a stepdownAnswer) {
 		answers = append(answers, a)
 	})
 	return answers
