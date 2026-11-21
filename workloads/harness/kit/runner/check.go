@@ -220,36 +220,10 @@ func pinnedRead(ctx context.Context, adapter Adapter, recorder family.Recorder, 
 	}
 }
 
-type appliedRead struct {
-	index uint64
-	err   error
-}
-
-func (r appliedRead) String() string {
-	if r.err != nil {
-		return "no applied index (" + r.err.Error() + ")"
-	}
-	return "applied index " + strconv.FormatUint(r.index, 10)
-}
-
-func readApplied(ctx context.Context, progresser Progresser, nodes map[string]string, timeout time.Duration) map[string]appliedRead {
-	reads := make(map[string]appliedRead, len(nodes))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for node := range nodes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			index, err := progresser.Applied(ctx, node)
-			mu.Lock()
-			reads[node] = appliedRead{index: index, err: err}
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	return reads
+func readApplied(ctx context.Context, progresser Progresser, node string, timeout time.Duration) (uint64, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return progresser.Applied(ctx, node)
 }
 
 func stalled(ctx context.Context, progresser Progresser, unanswered map[string]string, timeout time.Duration) map[string]string {
@@ -263,30 +237,32 @@ func stalled(ctx context.Context, progresser Progresser, unanswered map[string]s
 		}
 		return result
 	}
-	first := readApplied(ctx, progresser, unanswered, timeout)
-	behind := map[string]string{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for node, reason := range unanswered {
-		if read := first[node]; read.err != nil || read.index < fence {
-			behind[node] = reason
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			before, err := readApplied(ctx, progresser, node, timeout)
+			if err != nil || before >= fence {
+				return
+			}
+			timer := time.NewTimer(progressInterval)
+			select {
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
+			after, err := readApplied(ctx, progresser, node, timeout)
+			if err != nil || after > before {
+				return
+			}
+			mu.Lock()
+			result[node] = fmt.Sprintf("applied index %d, then applied index %d %s later, below progress fence %d; last pinned read: %s", before, after, progressInterval, fence, reason)
+			mu.Unlock()
+		}()
 	}
-	if len(behind) == 0 {
-		return result
-	}
-	timer := time.NewTimer(progressInterval)
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
-	timer.Stop()
-	second := readApplied(ctx, progresser, behind, timeout)
-	for node, reason := range behind {
-		before, after := first[node], second[node]
-		if after.err == nil && (before.err != nil || after.index > before.index) {
-			continue
-		}
-		result[node] = fmt.Sprintf("%s, then %s %s later, below progress fence %d; last pinned read: %s", before, after, progressInterval, fence, reason)
-	}
+	wg.Wait()
 	return result
 }
 

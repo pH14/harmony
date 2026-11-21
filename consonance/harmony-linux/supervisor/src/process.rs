@@ -413,6 +413,18 @@ pub fn node_recovery_record(violation: Option<(&str, u64, &str)>) -> String {
     ) + "\n"
 }
 
+pub fn read_check_nodes(path: &std::path::Path) -> Result<String, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(format!("{}: not a regular file", path.display())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    }
+    std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 #[must_use]
 pub fn unanswered_nodes(text: &str) -> Vec<(&str, &str)> {
     text.lines()
@@ -581,6 +593,27 @@ mod tests {
             unanswered_nodes("n2\tcontext deadline exceeded\nn3\n\n"),
             vec![("n2", "context deadline exceeded"), ("n3", "")]
         );
+    }
+
+    #[test]
+    fn check_nodes_are_read_only_from_a_regular_file() {
+        let root = std::env::temp_dir().join(format!("hs-check-nodes-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("nodes");
+        assert_eq!(read_check_nodes(&path), Ok(String::new()));
+        std::fs::write(&path, b"n2\tstuck \xff\n").unwrap();
+        assert_eq!(
+            read_check_nodes(&path),
+            Ok("n2\tstuck \u{fffd}\n".to_owned())
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            read_check_nodes(&path)
+                .unwrap_err()
+                .ends_with("not a regular file")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn spec(argv: &[&str]) -> ExecutionSpec {

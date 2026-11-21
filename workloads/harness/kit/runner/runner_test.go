@@ -534,7 +534,9 @@ type progressingNode struct {
 	fence        uint64
 	fenceErr     error
 	applied      []uint64
+	appliedErrs  []error
 	appliedCalls int
+	appliedAt    []time.Time
 }
 
 func (p *progressingNode) Fence(context.Context) (uint64, error) { return p.fence, p.fenceErr }
@@ -545,9 +547,13 @@ func (p *progressingNode) Applied(_ context.Context, node string) (uint64, error
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	index := p.applied[min(p.appliedCalls, len(p.applied)-1)]
+	call := p.appliedCalls
 	p.appliedCalls++
-	return index, nil
+	p.appliedAt = append(p.appliedAt, time.Now())
+	if call < len(p.appliedErrs) && p.appliedErrs[call] != nil {
+		return 0, p.appliedErrs[call]
+	}
+	return p.applied[min(call, len(p.applied)-1)], nil
 }
 
 func checkProgress(t *testing.T, adapter *progressingNode) (CheckResult, string) {
@@ -572,13 +578,33 @@ func checkProgress(t *testing.T, adapter *progressingNode) (CheckResult, string)
 }
 
 func TestANodeBehindTheFenceThatAppliesNothingIsUnrecovered(t *testing.T) {
-	result, text := checkProgress(t, &progressingNode{fence: 20, applied: []uint64{7, 7}})
+	adapter := &progressingNode{fence: 20, applied: []uint64{7, 7}}
+	result, text := checkProgress(t, adapter)
 	want := "applied index 7, then applied index 7 50ms later, below progress fence 20; last pinned read: index not applied"
 	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want {
 		t.Fatalf("result %s", result)
 	}
 	if text != "n2\t"+want+"\n" {
 		t.Fatalf("nodes file %q", text)
+	}
+	if len(adapter.appliedAt) != 2 || adapter.appliedAt[1].Sub(adapter.appliedAt[0]) < progressInterval {
+		t.Fatalf("applied reads at %v", adapter.appliedAt)
+	}
+}
+
+func TestANodeWithoutTwoAppliedIndexesIsNotReported(t *testing.T) {
+	unanswered := errors.New("status timeout")
+	for name, errs := range map[string][]error{
+		"first read fails":  {unanswered},
+		"second read fails": {nil, unanswered},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &progressingNode{fence: 20, applied: []uint64{7, 7}, appliedErrs: errs}
+			result, text := checkProgress(t, adapter)
+			if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != len(errs) {
+				t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+			}
+		})
 	}
 }
 

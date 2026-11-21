@@ -870,6 +870,7 @@ mod runtime {
         let quiet = runtime
             .recovery_watch
             .quiet_nanos(supervisor.moment().unwrap_or(0), in_force);
+        remove_check_nodes(tick);
         let mut check = spawn_check(
             spec,
             argv,
@@ -1746,7 +1747,6 @@ mod runtime {
         faults_in_force: bool,
         quiet_nanos: u64,
     ) -> Result<Check, String> {
-        remove_check_nodes()?;
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
         command
@@ -1776,12 +1776,14 @@ mod runtime {
         })
     }
 
-    fn remove_check_nodes() -> Result<(), String> {
-        match std::fs::remove_file(harmony_supervisor::CHECK_NODES_PATH) {
-            Err(error) if error.kind() != ErrorKind::NotFound => {
-                Err(format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH))
-            }
-            _ => Ok(()),
+    fn remove_check_nodes(tick: u64) {
+        if let Err(error) = std::fs::remove_file(harmony_supervisor::CHECK_NODES_PATH)
+            && error.kind() != ErrorKind::NotFound
+        {
+            log(
+                tick,
+                &format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH),
+            );
         }
     }
 
@@ -1793,11 +1795,13 @@ mod runtime {
         if quiet_nanos < harmony_supervisor::recovery::RECOVERY_NANOS {
             return Ok(());
         }
-        let text = match std::fs::read_to_string(harmony_supervisor::CHECK_NODES_PATH) {
+        let text = match process::read_check_nodes(std::path::Path::new(
+            harmony_supervisor::CHECK_NODES_PATH,
+        )) {
             Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
             Err(error) => {
-                return Err(format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH));
+                log(tick, &error);
+                return Ok(());
             }
         };
         for (node, reason) in process::unanswered_nodes(&text) {
