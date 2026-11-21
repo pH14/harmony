@@ -104,7 +104,9 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		return CheckResult{}, err
 	}
 	recorder := fam.Recorder(prior)
+	progresser, progresses := adapter.(Progresser)
 	window, retry := recoveryWindow(config.CheckTimeout)
+	retry = retry && progresses
 	outcomes := make([]history.Type, len(nodes)+1)
 	reasons := make([]string, len(nodes)+1)
 	errs := make([]error, len(nodes)+2)
@@ -175,7 +177,7 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 					result.Unrecovered[node] = reasons[index+1]
 				}
 			}
-			if progresser, ok := adapter.(Progresser); ok && len(result.Unrecovered) > 0 {
+			if len(result.Unrecovered) > 0 {
 				result.Unrecovered = stalled(ctx, progresser, result.Unrecovered, config.CheckTimeout)
 			}
 			if err := writeUnrecovered(os.Getenv(checkNodesEnv), nodes, result.Unrecovered); err != nil {

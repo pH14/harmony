@@ -102,8 +102,9 @@ state without a fence. A check that starts before a cut still compares. A
 violation needs every round to disagree, so only a cut that starts before the
 first round's reads can cause one.
 
-A pinned read that fails is retried when the supervisor reports no fault in
-force at the check's start and passes the recovery bound. The check then
+A pinned read that fails is retried when the adapter also implements
+`Progresser` (below) and the supervisor reports no fault in force at the
+check's start and passes the recovery bound. The check then
 repeats each node's pinned read, each attempt bounded by `--check-timeout` and
 500 ms of guest time apart, until it succeeds or until
 `HARMONY_RECOVERY_NS - HARMONY_QUIET_NS` (at least one `--check-timeout`) has
@@ -114,20 +115,31 @@ JSON line. The supervisor reports those nodes under
 `every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`
 (see `consonance/harmony-linux/supervisor/README.md`).
 
-An adapter that implements `Progresser` separates a node that is still
-replaying its log from one that has stopped. For the nodes that never answered,
-the check then writes a progress fence through the cluster and reads each such
-node's applied index, waits 10 seconds of guest time and reads the applied
+```go
+type Progresser interface {
+	Fence(ctx context.Context) (uint64, error)
+	Applied(ctx context.Context, node string) (uint64, error)
+}
+```
+
+`Progresser` separates a node that is still replaying its log from one that
+has stopped. For the nodes that never answered, the check then writes a
+progress fence through the cluster and reads each such node's applied index, waits 10 seconds of guest time and reads the applied
 indexes again. It reports a node when the fence write fails, or when the node
 was below the fence's index at the first read and has no higher applied index
 at the second. A node at or above the fence, or one whose applied index rose,
 is not reported, so a restart that replays a long log is not a violation. The
 first read comes at least 30 seconds after faults end and the second 10 seconds
-later. An adapter without `Progresser` reports every node that never answered. The 30 seconds are ours
-and follow the Antithesis practice of checking recovery once faults stop. The
+later. The 30 seconds are ours and follow the Antithesis practice of checking recovery once faults stop. The
 ready probe passes when any member answers, so this is the property that names
-a member still stuck after the rest of the cluster recovered. Without those
-variables, as in a native run, each node gets one attempt.
+a member still stuck after the rest of the cluster recovered. An adapter
+without `Progresser`, or a check without those variables, as in a native run,
+gives each node one attempt and reports no node. A node that never answers
+pinned reads is not enough evidence on its own: on rqlite, restarted nodes
+replaying a long log answered no pinned read for more than 30 seconds after
+faults ended and then caught up. Only rqlite implements `Progresser`; consul,
+dgraph, etcd, nats, nats-kv, nomad, openbao, tarantool and xline implement
+`Pinner` alone, so the property does not cover them.
 
 What an answer shows depends on the target's pinned read:
 
@@ -136,8 +148,8 @@ What an answer shows depends on the target's pinned read:
 | consul, dgraph, etcd, nats, nats-kv, nomad, rqlite, tarantool, xline | applied a fence written after the read started, so it holds every write acknowledged before it |
 | openbao | answered a read sent to it, which a standby forwards to the active node; it says nothing about the node's own copy |
 
-On openbao the property shows that every node serves requests, not that every
-node has caught up.
+On openbao a pinned read shows that the node serves requests, not that it has
+caught up.
 
 rqlite implements `Progresser`. Its progress fence is the same write to the
 `ready` table that a pinned read makes, sent to a random node, and the fence's

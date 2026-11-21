@@ -119,9 +119,9 @@ supervisor removes the file before each check. When a check that started with
 ran, and at least 30 seconds have passed since faults ended, the supervisor
 reports each listed node as a violation whose details give the node, the quiet
 time in nanoseconds and the error. A check that does not write the file reports
-nothing. The harness kit writes it for every adapter that pins reads to nodes,
-retrying each pinned read until the bound has passed and, where the adapter
-reports applied indexes, leaving out a node whose applied index still rises
+nothing. The harness kit writes it only for an adapter that reports applied
+indexes, today rqlite's, retrying each pinned read until the bound has passed
+and leaving out a node whose applied index still rises
 (see `workloads/harness/README.md`).
 
 After initial readiness, an optional `workload` command starts once and remains
