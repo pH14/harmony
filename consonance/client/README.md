@@ -453,7 +453,8 @@ memory, less the reserve. The budget is that room up to the planned budget. A
 worker can move up to one transient of pages between two checks, and it holds
 two copies of them while it moves them: an import holds the decompressed page
 list while the store copies the pages it lacks, and an export's encoding holds
-the packed pages while it copies them into the extent buffer. The budget rises
+the packed pages while it copies them into a second buffer, before the worker
+requests its extent and the index measures. The budget rises
 above the planned budget only when the free memory beyond it holds the reserve
 and one transient per worker, and also two transients per worker, with the
 reserve counting toward the second copy. It is then the room less
