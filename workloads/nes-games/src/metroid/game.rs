@@ -5,17 +5,21 @@ use std::sync::OnceLock;
 use machine::nes::{ButtonChord, SAVE_RAM_BASE, WRAM_SIZE};
 
 use crate::{
-    chord::{ChordVocabulary, Tap},
+    chord::ChordVocabulary,
     metroid::{
+        action::{FIRE_ODDS, FIRE_PLANNED_FRAMES, FireMissiles, MetroidReading},
         archive::CHORDS,
         target::{
-            CARTRIDGE_FRAME_RANGE, CARTRIDGE_RAM_SIZE, JOYPAD_SELECT, MAX_ENERGY_TANKS,
-            MetroidMechanicalState, MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state,
-            follow_frame, health_cap, power_on_walk,
+            CARTRIDGE_FRAME_RANGE, CARTRIDGE_RAM_SIZE, MAX_ENERGY_TANKS, MetroidMechanicalState,
+            MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state, follow_frame, health_cap,
+            power_on_walk,
         },
     },
-    search::assertion::{Assertion, Declarations, Number},
-    workload::{Game, Moves, Never, Step},
+    search::{
+        assertion::{Assertion, Declarations, Number},
+        choice::{CERTAIN, ChoiceSite},
+    },
+    workload::{Game, MAX_OFFER_OPTIONS, Moves, Offer, Play, Step},
 };
 
 const CARTRIDGE_WINDOW: (u64, u32) = (
@@ -23,14 +27,28 @@ const CARTRIDGE_WINDOW: (u64, u32) = (
     (CARTRIDGE_FRAME_RANGE.end - CARTRIDGE_FRAME_RANGE.start) as u32,
 );
 
-const SELECT_TAP_CHORDS: ChordVocabulary = ChordVocabulary {
-    tap: Some(Tap {
-        buttons: JOYPAD_SELECT,
-        odds: 12,
-        hold_frames: (2, 7),
-    }),
-    ..CHORDS
-};
+const CHORD_LABEL: u16 = 0;
+pub const MISSILE_SITE: u16 = 0;
+pub const VOLLEYS: [(u16, Play<FireMissiles>); MAX_OFFER_OPTIONS] = volleys();
+
+const fn volleys() -> [(u16, Play<FireMissiles>); MAX_OFFER_OPTIONS] {
+    let mut options = [(CHORD_LABEL, Play::Chord); MAX_OFFER_OPTIONS];
+    let mut count = 1;
+    while count < MAX_OFFER_OPTIONS {
+        options[count] = (count as u16, Play::Move(FireMissiles::volley(count as u8)));
+        count += 1;
+    }
+    options
+}
+
+#[must_use]
+pub fn volley_offer(state: MetroidMechanicalState) -> u64 {
+    if !state.in_play() || state.is_dead() || !state.missile_target() {
+        return 0;
+    }
+    let largest = usize::from(state.missiles).min(MAX_OFFER_OPTIONS - 1);
+    (1..=largest).fold(0, |offered, count| offered | 1 << count)
+}
 
 const MAX_HEALTH: i64 = 16_665;
 const MORPH_BALL: u8 = 0x10;
@@ -150,11 +168,11 @@ fn decode_memory(frame: &[u8]) -> MetroidMechanicalState {
 
 impl Game for Metroid {
     type State = MetroidMechanicalState;
-    type Move = Never;
+    type Move = FireMissiles;
 
     const NAME: &'static str = "metroid";
     const STRATEGY: &'static str = include_str!("metroid.toml");
-    const CHORDS: ChordVocabulary = SELECT_TAP_CHORDS;
+    const CHORDS: ChordVocabulary = CHORDS;
     const MEMORY_WINDOWS: &'static [(u64, u32)] = &[CARTRIDGE_WINDOW];
 
     fn setup(&self) -> Vec<ButtonChord> {
@@ -245,16 +263,45 @@ impl Game for Metroid {
         out.declare(sometimes("ending", state.ending));
     }
 
-    fn moves(&self, _state: &MetroidMechanicalState) -> Moves<Never> {
-        Moves::none()
+    fn moves(&self, state: &MetroidMechanicalState) -> Moves<FireMissiles> {
+        match volley_offer(*state) {
+            0 => Moves::none(),
+            offered => Moves::offer(Offer {
+                site: MISSILE_SITE,
+                default: CHORD_LABEL,
+                options: &VOLLEYS,
+                offered,
+            }),
+        }
     }
 
-    fn play(&self, mv: Never, _state: &MetroidMechanicalState) -> Option<Step<Never>> {
-        match mv {}
+    fn move_sites(&self) -> Vec<ChoiceSite> {
+        let labels = std::iter::once("chord".to_owned())
+            .chain((1..MAX_OFFER_OPTIONS).map(|count| format!("fire_{count}")));
+        vec![ChoiceSite::new("missiles", labels).with_contrary(CERTAIN / FIRE_ODDS as u32)]
     }
 
-    fn move_frames(&self, mv: Never) -> u64 {
-        match mv {}
+    fn play(
+        &self,
+        mut mv: FireMissiles,
+        state: &MetroidMechanicalState,
+    ) -> Option<Step<FireMissiles>> {
+        mv.next(MetroidReading::of(*state)).map(|chord| Step {
+            chord,
+            rest: Some(mv),
+        })
+    }
+
+    fn move_frames(&self, mv: FireMissiles) -> u64 {
+        mv.frame_limit()
+    }
+
+    fn answer_frames(site: u16, label: u16) -> u64 {
+        if site == MISSILE_SITE && label != CHORD_LABEL && usize::from(label) < MAX_OFFER_OPTIONS {
+            FIRE_PLANNED_FRAMES
+        } else {
+            1
+        }
     }
 }
 
@@ -264,7 +311,7 @@ mod tests {
     use crate::{
         metroid::{
             plan::{self, PLAN},
-            target::JOYPAD_B,
+            target::{JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED},
         },
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
         workload::{Lowered, target::windowed},
@@ -425,28 +472,83 @@ mod tests {
     }
 
     #[test]
-    fn drawn_chords_arm_missiles_with_a_select_press_and_fire_one_with_b() {
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_0e10);
-        let mut previous: Option<ButtonChord> = None;
-        let mut armed = false;
-        let mut missiles = 5_u8;
-        let mut arms = 0_u32;
-        for _ in 0..2_000 {
-            let chord = Metroid::CHORDS.draw(&mut rand, previous.as_ref()).unwrap();
-            let held = previous.map_or(0, |chord| chord.buttons);
-            let pressed = chord.buttons & !held;
-            if pressed & JOYPAD_SELECT != 0 {
-                armed = !armed;
-                arms += u32::from(armed);
-            }
-            if armed && pressed & JOYPAD_B != 0 {
-                missiles = missiles.saturating_sub(1);
-            }
-            previous = Some(chord);
+    fn the_volley_offer_needs_play_missiles_and_a_missile_target() {
+        let door = MetroidMechanicalState {
+            area: 0x10,
+            health: 300,
+            mode: 3,
+            missiles: 5,
+            missile_capacity: 5,
+            missile_flags: MISSILE_DOOR,
+            ..MetroidMechanicalState::default()
+        };
+        assert_eq!(volley_offer(door), 0b11_1110);
+        assert_eq!(
+            volley_offer(MetroidMechanicalState {
+                missiles: 2,
+                ..door
+            }),
+            0b110
+        );
+        let boss = MetroidMechanicalState {
+            missile_flags: 0,
+            boss_health: 10,
+            ..door
+        };
+        assert_eq!(volley_offer(boss), 0b11_1110);
+        for state in [
+            MetroidMechanicalState {
+                missile_flags: 0,
+                ..door
+            },
+            MetroidMechanicalState {
+                missiles: 0,
+                ..door
+            },
+            MetroidMechanicalState { health: 0, ..door },
+            MetroidMechanicalState { mode: 9, ..door },
+        ] {
+            assert_eq!(volley_offer(state), 0, "{state:?}");
+            assert!(Metroid.moves(&state).offer.is_none());
         }
-        assert!(arms > 0);
-        assert!(missiles < 5);
+        let offer = Metroid.moves(&door).offer.unwrap();
+        assert_eq!(offer.labels(), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(Metroid.move_sites()[0].labels.len(), VOLLEYS.len());
         assert_eq!(CHORDS.tap, None);
+    }
+
+    #[test]
+    fn a_volley_arms_fires_its_count_and_disarms() {
+        let mut state = MetroidMechanicalState {
+            area: 0x10,
+            health: 300,
+            mode: 3,
+            missiles: 5,
+            missile_capacity: 5,
+            missile_flags: MISSILE_DOOR,
+            ..MetroidMechanicalState::default()
+        };
+        let Play::Move(volley) = VOLLEYS[2].1 else {
+            panic!("label 2 is a volley");
+        };
+        let mut mv = volley;
+        let mut previous = 0_u8;
+        let mut frames = 0_u64;
+        while let Some(step) = Metroid.play(mv, &state) {
+            frames += u64::from(step.chord.hold_frames);
+            let pressed = step.chord.buttons & !previous;
+            if pressed & JOYPAD_SELECT != 0 {
+                state.missile_flags ^= MISSILES_ARMED;
+            }
+            if state.missiles_armed() && pressed & JOYPAD_B != 0 {
+                state.missiles -= 1;
+            }
+            previous = step.chord.buttons;
+            mv = step.rest.unwrap();
+        }
+        assert_eq!(state.missiles, 3);
+        assert!(!state.missiles_armed());
+        assert!(frames <= Metroid.move_frames(volley));
     }
 
     #[test]

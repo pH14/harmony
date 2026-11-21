@@ -302,12 +302,14 @@ game on the shared `NesWorkload` target with no hand campaign, under
 image gains cartridge RAM, as in the hand target, because the game declares a
 memory window there. Its setup tape is the hand target's power-on walk followed
 by the 261 idle frames the hand target waits on this ROM until play starts, so
-both start from the same genesis. Its chords are the hand target's with a
-Select tap, with the odds and hold of Zelda's Start tap: one draw in 12 adds
-Select to the chord before it for 2 to 7 frames and the next chord that is not
-a tap drops it. A tap drawn right after a tap keeps Select held, so only the
-first of them is a press. Each press arms or disarms missiles, and B then fires
-whichever is armed. It has no volley. A `root_input` tape must end alive before the
+both start from the same genesis. Its chords are the hand target's, and
+its one move is the hand target's volley from [Actions](#actions). The game
+offers it at a `missiles` choice site while Samus is in play, alive, holding
+missiles and in a room with a missile target. One answer in 12 leaves the
+default chord, and the label is the count to fire, drawn evenly from 1 to the
+missiles held, as the hand target draws it, except that the label caps the
+count at 63. Where no volley can be offered the answer is an ordinary chord,
+while the hand target's volley waits 12 frames there. A `root_input` tape must end alive before the
 ending in play or the item pickup pause, so a milestone tape the search
 produced roots unedited. `nes-film --game metroid-strategy` films its
 witness and milestone tapes, with `--root-input` for a rooted run, from power-on
