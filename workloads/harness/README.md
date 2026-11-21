@@ -108,11 +108,22 @@ repeats each node's pinned read, each attempt bounded by `--check-timeout` and
 500 ms of guest time apart, until it succeeds or until
 `HARMONY_RECOVERY_NS - HARMONY_QUIET_NS` (at least one `--check-timeout`) has
 passed. Every attempt goes into the check journal, and a failed attempt
-constrains nothing. The check writes each node that never answered, with its
-last error, to the file `HARMONY_CHECK_NODES` names, and lists them under
-`unanswered` in its JSON line. The supervisor reports those nodes under
-`every workload node answers a pinned check read within 30 seconds after faults end`
-(see `consonance/harmony-linux/supervisor/README.md`). The 30 seconds are ours
+constrains nothing. The check writes each node it reports, with the reason, to
+the file `HARMONY_CHECK_NODES` names, and lists them under `unrecovered` in its
+JSON line. The supervisor reports those nodes under
+`every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`
+(see `consonance/harmony-linux/supervisor/README.md`).
+
+An adapter that implements `Progresser` separates a node that is still
+replaying its log from one that has stopped. For the nodes that never answered,
+the check then writes a progress fence through the cluster and reads each such
+node's applied index, waits 10 seconds of guest time and reads the applied
+indexes again. It reports a node when the fence write fails, or when the node
+was below the fence's index at the first read and has no higher applied index
+at the second. A node at or above the fence, or one whose applied index rose,
+is not reported, so a restart that replays a long log is not a violation. The
+first read comes at least 30 seconds after faults end and the second 10 seconds
+later. An adapter without `Progresser` reports every node that never answered. The 30 seconds are ours
 and follow the Antithesis practice of checking recovery once faults stop. The
 ready probe passes when any member answers, so this is the property that names
 a member still stuck after the rest of the cluster recovered. Without those
@@ -127,6 +138,16 @@ What an answer shows depends on the target's pinned read:
 
 On openbao the property shows that every node serves requests, not that every
 node has caught up.
+
+rqlite implements `Progresser`. Its progress fence is the same write to the
+`ready` table that a pinned read makes, sent to a random node, and the fence's
+raft index stands for the leader's commit index. The applied index is
+`store.db_applied_index` from the node's `/status`. The last pinned read's
+error in a reason gives the last index any of the node's `/status` answers
+returned, in this or an earlier attempt, and how long before the error that
+answer came, then the last attempt's own error, which may be the fence write's.
+A failed `/status` attempt returns no index, so the last attempt alone does not
+show how far the node got.
 
 ## Randomness
 
@@ -285,8 +306,8 @@ when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
 them. The check then loads every journal and runs the family checker. It
 prints one JSON line with the read outcome, each node's read outcome under
-`nodes`, the nodes that never answered under `unanswered` when pinned reads are
-retried, the violations and, for the register family, `replicas`: the rounds
+`nodes`, the reported nodes and their reasons under `unrecovered` when pinned
+reads are retried, the violations and, for the register family, `replicas`: the rounds
 run, whether the last round agreed, each node's outcome in that round, or
 `skipped` with the reason when the adapter pins reads to fewer than two nodes.
 It writes one failing `Always` per violation, at most three per kind and node,

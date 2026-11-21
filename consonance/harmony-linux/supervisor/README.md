@@ -107,21 +107,22 @@ regains readiness after a restart, reports through this assertion.
 The ready probe passes when any one node answers, so a cluster whose majority
 recovered stays ready while one member is still stuck. The third built-in
 assertion is the per-node form of the second:
-`every workload node answers a pinned check read within 30 seconds after faults end`.
+`every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`.
 It uses the same 30 second bound (ours), which follows the Antithesis practice
 of checking recovery only once faults stop. Each check receives
 `HARMONY_QUIET_NS`, the virtual time since faults last ended at the check's
 start (`0` while a fault is in force), `HARMONY_RECOVERY_NS`, the bound, and
 `HARMONY_CHECK_NODES`, the path of a file the check may write with one line per
-node that never answered, holding the node, a tab and the last error. The
+node it reports, holding the node, a tab and the reason. The
 supervisor removes the file before each check. When a check that started with
 `HARMONY_FAULTS_IN_FORCE=0` exits successfully, no disturbance happened while it
 ran, and at least 30 seconds have passed since faults ended, the supervisor
 reports each listed node as a violation whose details give the node, the quiet
 time in nanoseconds and the error. A check that does not write the file reports
 nothing. The harness kit writes it for every adapter that pins reads to nodes,
-retrying each pinned read until the bound has passed (see
-`workloads/harness/README.md`).
+retrying each pinned read until the bound has passed and, where the adapter
+reports applied indexes, leaving out a node whose applied index still rises
+(see `workloads/harness/README.md`).
 
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and

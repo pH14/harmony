@@ -37,6 +37,8 @@ const checkNodesEnv = "HARMONY_CHECK_NODES"
 
 const pinnedRetryPause = 500 * time.Millisecond
 
+var progressInterval = 10 * time.Second
+
 const baselineFile = "disturbance-baseline"
 
 const checkProcess = 0
@@ -44,7 +46,7 @@ const checkProcess = 0
 type CheckResult struct {
 	Read          history.Type            `json:"read"`
 	Nodes         map[string]history.Type `json:"nodes,omitempty"`
-	Unanswered    map[string]string       `json:"unanswered,omitempty"`
+	Unrecovered   map[string]string       `json:"unrecovered,omitempty"`
 	Ops           int                     `json:"ops"`
 	Decided       bool                    `json:"decided"`
 	UndecidedKeys int                     `json:"undecided_keys"`
@@ -167,13 +169,16 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		}
 		sdk.Sometimes(nodeOK, CheckNodeReadSucceeded, nil)
 		if retry {
-			result.Unanswered = map[string]string{}
+			result.Unrecovered = map[string]string{}
 			for index, node := range nodes {
 				if outcomes[index+1] != history.OK {
-					result.Unanswered[node] = reasons[index+1]
+					result.Unrecovered[node] = reasons[index+1]
 				}
 			}
-			if err := writeUnanswered(os.Getenv(checkNodesEnv), nodes, result.Unanswered); err != nil {
+			if progresser, ok := adapter.(Progresser); ok && len(result.Unrecovered) > 0 {
+				result.Unrecovered = stalled(ctx, progresser, result.Unrecovered, config.CheckTimeout)
+			}
+			if err := writeUnrecovered(os.Getenv(checkNodesEnv), nodes, result.Unrecovered); err != nil {
 				return CheckResult{}, err
 			}
 		}
@@ -213,10 +218,80 @@ func pinnedRead(ctx context.Context, adapter Adapter, recorder family.Recorder, 
 	}
 }
 
-func writeUnanswered(path string, nodes []string, unanswered map[string]string) error {
+type appliedRead struct {
+	index uint64
+	err   error
+}
+
+func (r appliedRead) String() string {
+	if r.err != nil {
+		return "no applied index (" + r.err.Error() + ")"
+	}
+	return "applied index " + strconv.FormatUint(r.index, 10)
+}
+
+func readApplied(ctx context.Context, progresser Progresser, nodes map[string]string, timeout time.Duration) map[string]appliedRead {
+	reads := make(map[string]appliedRead, len(nodes))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for node := range nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			index, err := progresser.Applied(ctx, node)
+			mu.Lock()
+			reads[node] = appliedRead{index: index, err: err}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return reads
+}
+
+func stalled(ctx context.Context, progresser Progresser, unanswered map[string]string, timeout time.Duration) map[string]string {
+	fenceCtx, cancel := context.WithTimeout(ctx, timeout)
+	fence, err := progresser.Fence(fenceCtx)
+	cancel()
+	result := map[string]string{}
+	if err != nil {
+		for node, reason := range unanswered {
+			result[node] = fmt.Sprintf("progress fence: %v; last pinned read: %s", err, reason)
+		}
+		return result
+	}
+	first := readApplied(ctx, progresser, unanswered, timeout)
+	behind := map[string]string{}
+	for node, reason := range unanswered {
+		if read := first[node]; read.err != nil || read.index < fence {
+			behind[node] = reason
+		}
+	}
+	if len(behind) == 0 {
+		return result
+	}
+	timer := time.NewTimer(progressInterval)
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	timer.Stop()
+	second := readApplied(ctx, progresser, behind, timeout)
+	for node, reason := range behind {
+		before, after := first[node], second[node]
+		if after.err == nil && (before.err != nil || after.index > before.index) {
+			continue
+		}
+		result[node] = fmt.Sprintf("%s, then %s %s later, below progress fence %d; last pinned read: %s", before, after, progressInterval, fence, reason)
+	}
+	return result
+}
+
+func writeUnrecovered(path string, nodes []string, unrecovered map[string]string) error {
 	var text strings.Builder
 	for _, node := range nodes {
-		reason, ok := unanswered[node]
+		reason, ok := unrecovered[node]
 		if !ok {
 			continue
 		}

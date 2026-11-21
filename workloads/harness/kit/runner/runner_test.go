@@ -438,7 +438,7 @@ func TestPinnedReadsRetryWhileANodeCatchesUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Nodes["n2"] != history.OK || len(result.Unanswered) != 0 || adapter.attempts != 3 {
+	if result.Nodes["n2"] != history.OK || len(result.Unrecovered) != 0 || adapter.attempts != 3 {
 		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
 	}
 	if text, err := os.ReadFile(path); err != nil || len(text) != 0 {
@@ -464,7 +464,7 @@ func TestANodeThatNeverAnswersIsListedAfterTheRecoveryBound(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < time.Second {
 		t.Fatalf("gave up after %s", elapsed)
 	}
-	if len(result.Unanswered) != 1 || result.Unanswered["n2"] != "index not applied" || result.Nodes["n1"] != history.OK || result.Nodes["n3"] != history.OK {
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != "index not applied" || result.Nodes["n1"] != history.OK || result.Nodes["n3"] != history.OK {
 		t.Fatalf("result %s", result)
 	}
 	text, err := os.ReadFile(path)
@@ -487,7 +487,7 @@ func TestPinnedReadsAreNotRetriedWhileAFaultIsInForce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adapter.attempts != 1 || result.Unanswered != nil || result.Nodes["n2"] != history.Info {
+	if adapter.attempts != 1 || result.Unrecovered != nil || result.Nodes["n2"] != history.Info {
 		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -505,8 +505,86 @@ func TestPinnedReadsAreNotRetriedWithoutARecoveryBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adapter.attempts != 1 || result.Unanswered != nil {
+	if adapter.attempts != 1 || result.Unrecovered != nil {
 		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+}
+
+type progressingNode struct {
+	laggingNode
+	fence        uint64
+	fenceErr     error
+	applied      []uint64
+	appliedCalls int
+}
+
+func (p *progressingNode) Fence(context.Context) (uint64, error) { return p.fence, p.fenceErr }
+
+func (p *progressingNode) Applied(_ context.Context, node string) (uint64, error) {
+	if node != p.node {
+		return p.fence, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	index := p.applied[min(p.appliedCalls, len(p.applied)-1)]
+	p.appliedCalls++
+	return index, nil
+}
+
+func checkProgress(t *testing.T, adapter *progressingNode) (CheckResult, string) {
+	t.Helper()
+	config, path := recoveryConfig(t, 300*time.Millisecond)
+	saved := progressInterval
+	progressInterval = 50 * time.Millisecond
+	t.Cleanup(func() { progressInterval = saved })
+	adapter.node, adapter.failures = "n2", -1
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result, string(text)
+}
+
+func TestANodeBehindTheFenceThatAppliesNothingIsUnrecovered(t *testing.T) {
+	result, text := checkProgress(t, &progressingNode{fence: 20, applied: []uint64{7, 7}})
+	want := "applied index 7, then applied index 7 50ms later, below progress fence 20; last pinned read: index not applied"
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want {
+		t.Fatalf("result %s", result)
+	}
+	if text != "n2\t"+want+"\n" {
+		t.Fatalf("nodes file %q", text)
+	}
+}
+
+func TestANodeBehindTheFenceThatAppliesMoreIsRecovering(t *testing.T) {
+	adapter := &progressingNode{fence: 20, applied: []uint64{7, 9}}
+	result, text := checkProgress(t, adapter)
+	if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != 2 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+	}
+}
+
+func TestANodeAtTheFenceIsReadOnce(t *testing.T) {
+	adapter := &progressingNode{fence: 20, applied: []uint64{20}}
+	result, text := checkProgress(t, adapter)
+	if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != 1 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+	}
+}
+
+func TestAFailedProgressFenceReportsEachUnansweredNode(t *testing.T) {
+	adapter := &progressingNode{fenceErr: errors.New("not leader"), applied: []uint64{7}}
+	result, text := checkProgress(t, adapter)
+	want := "progress fence: not leader; last pinned read: index not applied"
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want || text != "n2\t"+want+"\n" || adapter.appliedCalls != 0 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
 	}
 }
 

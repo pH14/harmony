@@ -59,6 +59,11 @@ type Pinner interface {
 	Nodes() []string
 }
 
+type Progresser interface {
+	Fence(ctx context.Context) (uint64, error)
+	Applied(ctx context.Context, node string) (uint64, error)
+}
+
 type Config struct {
 	Dir          string
 	Processes    int

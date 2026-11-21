@@ -393,8 +393,7 @@ pub fn recovery_record(violation: Option<(u64, u64)>) -> String {
     ) + "\n"
 }
 
-pub const NODE_RECOVERY_ASSERTION: &str =
-    "every workload node answers a pinned check read within 30 seconds after faults end";
+pub const NODE_RECOVERY_ASSERTION: &str = "every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries";
 
 #[must_use]
 pub fn node_recovery_record(violation: Option<(&str, u64, &str)>) -> String {
