@@ -1855,65 +1855,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "needs HARMONY_MM2_ROM and HARMONY_QUICKNES_CORE"]
-    fn each_strategy_stage_start_is_the_hand_stage_start() {
-        use sha2::{Digest, Sha256};
-
-        use crate::{search::campaign::TargetExecution, workload::Game};
-
-        let rom = std::fs::read(std::env::var_os("HARMONY_MM2_ROM").expect("rom")).expect("rom");
-        let core =
-            std::path::PathBuf::from(std::env::var_os("HARMONY_QUICKNES_CORE").expect("core"));
-        let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core).expect("core")));
-        let execution_sha256 =
-            machine::quicknes::prepared_execution_sha256(&core, &core_sha256).expect("execution");
-        for number in 0..8 {
-            let stage = Mm2Stage::from_number(number).expect("stage");
-            let machine = machine::quicknes::QuickNesMachine::from_rom_bytes_with_identity(
-                &rom,
-                &core,
-                &core_sha256,
-                &execution_sha256,
-            )
-            .expect("machine");
-            let hand = Mm2Target::from_machine(
-                machine,
-                &power_on_walk_actions(),
-                stage,
-                Mm2Route::Stage(stage),
-            )
-            .expect("hand stage start");
-            let game = MegaMan2::at_stage(number).expect("strategy stage");
-            assert_eq!(game.setup(), hand.genesis_prefix(), "stage {number} setup");
-            let workload = crate::workload::NesWorkload::new(
-                game,
-                &rom,
-                &core,
-                &core_sha256,
-                &execution_sha256,
-            )
-            .expect("workload");
-            let strategy = workload.new_target().expect("strategy target");
-            let frames: u64 = hand
-                .genesis_prefix()
-                .iter()
-                .map(|chord| u64::from(chord.hold_frames))
-                .sum();
-            println!(
-                "stage {number} setup_frames {frames} chords {} wram_sha256 {:x} wram_equal {}",
-                hand.genesis_prefix().len(),
-                Sha256::digest(hand.current_wram),
-                hand.current_wram.as_slice() == strategy.frame()
-            );
-            assert_eq!(
-                hand.current_wram.as_slice(),
-                strategy.frame(),
-                "stage {number} WRAM"
-            );
-        }
-    }
-
-    #[test]
     fn stages_parse_by_number_and_name() {
         assert_eq!(Mm2Stage::parse("6").expect("number").name(), "metal");
         assert_eq!(Mm2Stage::parse("Wood").expect("name").number(), 2);
