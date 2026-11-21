@@ -128,7 +128,24 @@ Each stage climbs one integer:
   done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
-  few touches of margin.
+  few touches of margin. The strategy in `metroid.toml` continues past Kraid,
+  where this plan ends. Its stage after Kraid is done at 120 energy, six
+  touches for the six screens of the hideout shaft at map column 12 that the
+  route out climbs, which needs the energy tank in Kraid's room. A touch in
+  Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
+  the Ridley elevator is done at 80, one touch for each of the eight screens
+  of the shaft at Norfair column 30. A touch in Ridley's hideout costs 24
+  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there are done at 96,
+  four touches. Its routes run from Kraid's door to the Norfair elevator
+  `(22,13)`, from there to the Ridley elevator `(25,24)` and on to Ridley's
+  door `(18,29)`, built from the same tables as the routes below, with the
+  elevators Brinstar `(22,11)` to Norfair `(22,13)` and Norfair `(25,22)` to
+  Ridley's hideout `(25,24)`. A tile is solid below `$80` in Brinstar and below
+  `$70` elsewhere (routine `LD651`), and blast tiles run from that bound to
+  `$9F` in Brinstar and `$97` elsewhere. In the Ridley bank, room pointers 0
+  and 1 point to the same data, so rooms are read through the pointer table
+  rather than the disassembly's room labels. The Ridley stage is done on
+  Ridley's defeat bit at `$687C`.
 - The boss stage climbs boss damage. It is done when Kraid is defeated, read
   from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
   0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would

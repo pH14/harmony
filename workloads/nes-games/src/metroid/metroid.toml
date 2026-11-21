@@ -60,7 +60,54 @@ objective = "boss_damage"
 goal = "kraid_defeated"
 
 [[stage]]
-name = "after_kraid"
+name = "energy_after_kraid"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 120"
+latch = true
+
+[[stage]]
+name = "norfair_elevator"
+objective = "max(last(if action_end then index(cell, to_norfair) else none, stage), 0)"
+goal = "action_end and objective + 1 >= len(to_norfair)"
+latch = true
+
+[[stage]]
+name = "energy_before_ridley_elevator"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 80"
+latch = true
+
+[[stage]]
+name = "ridley_elevator"
+objective = "max(last(if action_end then index(cell, to_ridley_elevator) else none, stage), 0)"
+goal = "action_end and objective + 1 >= len(to_ridley_elevator)"
+latch = true
+
+[[stage]]
+name = "energy_before_ridley_door"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 96"
+latch = true
+
+[[stage]]
+name = "ridley_door"
+objective = "max(last(if action_end then index(cell, to_ridley_door) else none, stage), 0)"
+goal = "action_end and objective + 1 >= len(to_ridley_door)"
+latch = true
+
+[[stage]]
+name = "energy_before_ridley"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 96"
+latch = true
+
+[[stage]]
+name = "ridley"
+objective = "boss_damage"
+goal = "ridley_defeated"
+
+[[stage]]
+name = "after_ridley"
 goal = "false"
 
 [define]
@@ -88,4 +135,22 @@ to_kraid_door = [
     160616, 160617, 160618, 160718, 160719, 180719, 180720, 180721, 180722, 180723,
     180724, 180725, 180726, 180826, 180926, 180927, 181027, 181127, 181128, 181028,
     180928, 180929,
+]
+to_norfair = [
+    180929, 181029, 181129, 181229, 181228, 181227, 181226, 181225, 181224, 181124,
+    181024, 180924, 180824, 180724, 180723, 180722, 180721, 180720, 180719, 160719,
+    160718, 160618, 160617, 160616, 160615, 160614, 160714, 160814, 160914, 161014,
+    161114, 161113, 161112, 161111, 161110, 161109, 161108, 161107, 161207, 161307,
+    161308, 161309, 161310, 161311, 161411, 161511, 161611, 161711, 161811, 161911,
+    162011, 162111, 162211, 162212, 172212, 172213,
+]
+to_ridley_elevator = [
+    172213, 172214, 172314, 172414, 172514, 172614, 172714, 172814, 172914, 173014,
+    173015, 173016, 173017, 173018, 173019, 173020, 173021, 172921, 172821, 172721,
+    172621, 172521, 172421, 172422, 172522, 172523, 202523, 202524,
+]
+to_ridley_door = [
+    202524, 202525, 202425, 202325, 202225, 202125, 202025, 201925, 201825, 201725,
+    201726, 201727, 201827, 201927, 202027, 202127, 202227, 202228, 202229, 202129,
+    202029, 201929, 201829,
 ]

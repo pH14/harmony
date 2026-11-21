@@ -260,6 +260,14 @@ impl Game for Metroid {
             state.area == KRAID && (state.map_x, state.map_y) == KRAID_DOOR,
         ));
         out.declare(sometimes("kraid_defeated", state.kraid_defeated));
+        out.declare(sometimes(
+            "ridley_defeated",
+            state.bosses > u8::from(state.kraid_defeated),
+        ));
+        out.declare(sometimes(
+            "mother_brain_defeated",
+            state.mother_brain_defeated,
+        ));
         out.declare(sometimes("ending", state.ending));
     }
 
@@ -334,7 +342,8 @@ mod tests {
     }
 
     fn step(lowered: &Lowered<Metroid>, path: &mut Path) -> StageProgress {
-        let hand = plan::locate(path.state, 0, path.hand);
+        let parent = path.hand;
+        let hand = plan::locate(path.state, 0, parent);
         let (mut record, _) = lowered.record(&path.state);
         record.set_action_end(true);
         let key = lowered
@@ -343,6 +352,16 @@ mod tests {
             .key
             .unwrap();
         let view = lowered.compiled.view(key);
+        path.hand = Some(hand);
+        if usize::from(hand.0) + 1 == PLAN.len() {
+            let stage = view.stage.as_deref().unwrap();
+            assert!(
+                PLAN[..PLAN.len() - 1].iter().all(|kept| kept.name != stage),
+                "{stage} after Kraid's defeat in {:?}",
+                path.state
+            );
+            return hand;
+        }
         assert_eq!(
             view.stage.as_deref(),
             Some(plan::stage_name(hand.0)),
@@ -354,9 +373,8 @@ mod tests {
             [i64::from(hand.1)],
             "{:?} after {:?}",
             path.state,
-            path.hand
+            parent
         );
-        path.hand = Some(hand);
         hand
     }
 

@@ -514,7 +514,14 @@ from the same bytes. It still runs in its own `target` and `campaign`.
 `action_end`, because the plan latches from the parent key at the action's
 end), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
-and the two hand preferences. A route stage's objective is the last route index
+and the two hand preferences. Past Kraid's defeat the strategy continues where
+the hand plan stops: energy for the hideout shaft (120), the route to the
+Norfair elevator, energy (80), the route to the Ridley elevator, energy (96),
+the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
+damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. The routes
+and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
+the equivalence test compares the stages up to Kraid and checks that every
+state past his defeat is located past the hand plan's stages. A route stage's objective is the last route index
 a kept state stood on within that stage,
 `last(if action_end then index(cell, route) else none, stage)`, and 0 when the
 stage is entered off the route, as the hand plan locates from action endpoints
