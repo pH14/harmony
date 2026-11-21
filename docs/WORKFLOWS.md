@@ -516,7 +516,8 @@ renders from a second search.
   endpoint plus `--tail-frames`. The ceiling, the clip policy and the dropped
   frame count are in `film.json` under `clip` and in the published report.
 - `scripts/verify-nes-films.py` checks every film, whether a matrix produced it
-  or a workload wrote it directly. It checks the digest, frame count, audio
+  or a workload wrote it directly. It checks the digest, the frame count against
+  the film's parts (setup, start, root, tape and tail) and its clip, audio
   stream, mean volume, duration floor, and that the decoded audio covers the
   video rather than a padded fragment of it. Against a `films.json` index it
   also checks each film against the digest, input and identity that index

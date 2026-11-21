@@ -330,6 +330,17 @@ state that counts frames, such as Lucky Draw's `menu_wait`, ends a film where
 it ends the run. `action_choices` reports a move chord's answer, so a job's
 first ask at that site can hold its parent's last answer.
 
+A film starts at power-on. `NesWorkload::render_from_power_on` hands a fresh
+machine to `NesTarget::render_from_power_on`, which renders the `setup` tape,
+applies `setup_pokes`, renders the `start` tape, takes the genesis there, and
+renders the root and then the tape from it. Each setup tape runs as one branch,
+stepped a frame at a time and required to quiesce after its last hold, as
+`from_power_on` runs it headless, so the film reaches the same genesis. The
+pokes write work RAM between two frames and show in none.
+`NesWorkload::preroll` reports what comes before the tape: the setup and start
+frames, the pokes, and the root's actions and its frames from the unrooted
+genesis.
+
 A move chord's planned cost (`chord_time`) is the frames its answer plays
 before any forced move it leads to, as the game's `Game::answer_frames` gives
 them (one unless the game says otherwise): Lucky Draw's idle wait plans its

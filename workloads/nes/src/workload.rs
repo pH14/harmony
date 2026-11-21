@@ -3,7 +3,9 @@
 use std::{error::Error, fmt::Debug, fs, io::Write, path::Path, sync::Arc};
 
 use machine::quicknes::QuickNesMachine;
-use nes_games::workload::{Game, NesObservation, NesSnapshot, NesWorkload, RECORDS_FILE, Shadow};
+use nes_games::workload::{
+    Game, NesObservation, NesSnapshot, NesWorkload, Preroll, RECORDS_FILE, Shadow,
+};
 use serde::Serialize;
 
 use crate::{
@@ -113,6 +115,10 @@ fn replayed<G: Game>(
 }
 
 impl<G: Game> Filmable for NesWorkload<G, QuickNesMachine> {
+    fn preroll(&self) -> Result<Option<Preroll>, Box<dyn Error>> {
+        NesWorkload::preroll(self).map(Some)
+    }
+
     fn film(
         &self,
         input: &Input<machine::nes::ButtonChord>,
@@ -121,8 +127,7 @@ impl<G: Game> Filmable for NesWorkload<G, QuickNesMachine> {
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
     ) -> Result<FilmMetadata, Box<dyn Error>> {
-        let mut target = self.new_target()?;
-        let (video, endpoint) = target.render_input(
+        let (video, endpoint) = self.render_from_power_on(
             &input.actions,
             tail_frames,
             skip_frames,
@@ -137,7 +142,7 @@ impl<G: Game> Filmable for NesWorkload<G, QuickNesMachine> {
             audio_sample_rate: video.audio_sample_rate,
             audio_channels: video.audio_channels,
             audio_frames: video.audio_frames,
-            input_endpoint: serde_json::to_value(endpoint)?,
+            input_endpoint: serde_json::to_value(endpoint.state)?,
         })
     }
 }

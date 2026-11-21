@@ -522,7 +522,8 @@ def film_index(matrix):
                                  + '; '.join(rejected.get(row['cell'], ['no verdict was recorded']))}
             continue
         rows[row['cell']] = {'available': True, 'mp4': row['cell'] + '/film/witness.mp4',
-                             'frames': row['video']['frames'], 'audio_frames': row['video']['audio_frames'],
+                             'frames': row['video']['frames'], 'parts': row['parts'],
+                             'starts_at': row['starts_at'], 'audio_frames': row['video']['audio_frames'],
                              'duration_seconds': row['capture']['duration_seconds'],
                              'mp4_sha256': row['capture']['mp4_sha256'],
                              'endpoint_verified': row['endpoint_verified'], 'clip': row['clip']}

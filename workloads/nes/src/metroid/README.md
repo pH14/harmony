@@ -310,7 +310,8 @@ first of them is a press. Each press arms or disarms missiles, and B then fires
 whichever is armed. It has no volley. A `root_input` tape must end alive before the
 ending in play or the item pickup pause, so a milestone tape the search
 produced roots unedited. `nes-film --game metroid-strategy` films its
-witness and milestone tapes, with `--root-input` for a rooted run. Its live view reads the same `View` as the hand campaign,
+witness and milestone tapes, with `--root-input` for a rooted run, from power-on
+through the setup walk and the root as for the other strategy games. Its live view reads the same `View` as the hand campaign,
 and its trail motion carries no facing, which the decoded state does not hold.
 
 ## Archive memory

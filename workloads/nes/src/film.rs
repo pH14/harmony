@@ -9,6 +9,7 @@ use std::{
 };
 
 use machine::quicknes::VideoFrame;
+use nes_games::workload::Preroll;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -303,6 +304,10 @@ pub trait Endpointed: Workload<Snapshot: crate::witness::EndpointIdentity> {
 }
 
 pub trait Filmable: Endpointed {
+    fn preroll(&self) -> Result<Option<Preroll>, Box<dyn Error>> {
+        Ok(None)
+    }
+
     fn film(
         &self,
         input: &Input<Self::Action>,

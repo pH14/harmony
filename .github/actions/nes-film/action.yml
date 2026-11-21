@@ -45,16 +45,18 @@ runs:
         index = json.load(open(sys.argv[1]))
         print('## Scenario films')
         print()
-        print('| Scenario | Seconds | Frames | Clip | Endpoint |')
-        print('| --- | --- | --- | --- | --- |')
+        print('| Scenario | Seconds | Frames | Setup + start + root + tape + tail | Clip | Endpoint |')
+        print('| --- | --- | --- | --- | --- | --- |')
         for row in index['films']:
             clip = row['clip']
+            parts = ' + '.join(f"{row['parts'][name]:,}"
+                               for name in ('setup', 'start', 'root', 'tape', 'tail'))
             print(f"| {row['cell']} | {row['capture']['duration_seconds']:.1f} | "
-                  f"{row['video']['frames']:,} | {clip['policy']} | "
+                  f"{row['video']['frames']:,} | {parts} | {clip['policy']} | "
                   f"{'verified' if row['endpoint_verified'] else 'unverified'} |")
         for row in index['unavailable']:
-            print(f"| {row['cell']} | media unavailable | {row['reason']} | | |")
+            print(f"| {row['cell']} | media unavailable | {row['reason']} | | | |")
         print()
         print('Each film replays the input its own run recorded through native QuickNES and '
-              'ends at the endpoint that run verified.')
+              'ends at the endpoint that run verified. A strategy film starts at power-on.')
         PY

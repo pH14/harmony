@@ -704,6 +704,75 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
+
+    pub fn preroll(&self) -> Result<Preroll, Box<dyn Error>> {
+        let game = &self.lowered.game;
+        let root_frames = if self.root.is_empty() {
+            0
+        } else {
+            let machine = (self.machines)().map_err(|error| error.to_string())?;
+            let mut unrooted = NesTarget::from_power_on(Arc::clone(&self.lowered), machine, &[])?;
+            for action in &self.root {
+                unrooted.apply(action);
+            }
+            if unrooted.exit_kind() != ExitKind::Ok {
+                return Err(format!("the {} root failed from power-on", G::NAME).into());
+            }
+            unrooted.observation().frame_count
+        };
+        Ok(Preroll {
+            setup_frames: target::tape_frames(&game.setup()),
+            setup_pokes: game
+                .setup_pokes()
+                .into_iter()
+                .map(|(address, value)| SetupPoke { address, value })
+                .collect(),
+            start_frames: target::tape_frames(&game.start()),
+            root_actions: self.root.len(),
+            root_frames,
+        })
+    }
+}
+
+#[cfg(unix)]
+impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory + crate::nes_backend::FilmMachine>
+    NesWorkload<G, M>
+{
+    pub fn render_from_power_on(
+        &self,
+        actions: &[ButtonChord],
+        tail_frames: u32,
+        skip_frames: u64,
+        video_output: &mut dyn std::io::Write,
+        audio_output: &mut dyn std::io::Write,
+    ) -> Result<target::Filmed<G::State>, Box<dyn Error>> {
+        let machine = (self.machines)().map_err(|error| error.to_string())?;
+        let tape: Vec<ButtonChord> = self.root.iter().chain(actions).copied().collect();
+        NesTarget::render_from_power_on(
+            Arc::clone(&self.lowered),
+            machine,
+            &tape,
+            tail_frames,
+            skip_frames,
+            video_output,
+            audio_output,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Preroll {
+    pub setup_frames: u64,
+    pub setup_pokes: Vec<SetupPoke>,
+    pub start_frames: u64,
+    pub root_actions: usize,
+    pub root_frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SetupPoke {
+    pub address: usize,
+    pub value: u8,
 }
 
 #[cfg(unix)]
