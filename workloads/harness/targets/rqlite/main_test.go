@@ -3,12 +3,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"math/bits"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,23 +68,24 @@ func TestExecuteDecodesTheBodyAsSent(t *testing.T) {
 	}
 }
 
-type stepdownRequest struct {
-	path  string
-	query string
-	body  string
+type recordedRequest struct {
+	method string
+	path   string
+	query  string
+	body   string
 }
 
-func leaderServer(t *testing.T, answers ...func(http.ResponseWriter)) (*httptest.Server, func() []stepdownRequest) {
+func leaderServer(t *testing.T, answers ...func(http.ResponseWriter)) (*httptest.Server, func() []recordedRequest) {
 	t.Helper()
 	var mu sync.Mutex
-	var requests []stepdownRequest
+	var requests []recordedRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error(err)
 		}
 		mu.Lock()
-		requests = append(requests, stepdownRequest{r.URL.Path, r.URL.RawQuery, string(body)})
+		requests = append(requests, recordedRequest{r.Method, r.URL.Path, r.URL.RawQuery, string(body)})
 		n := len(requests)
 		mu.Unlock()
 		if n > len(answers) {
@@ -92,7 +96,7 @@ func leaderServer(t *testing.T, answers ...func(http.ResponseWriter)) (*httptest
 		answers[n-1](w)
 	}))
 	t.Cleanup(server.Close)
-	return server, func() []stepdownRequest {
+	return server, func() []recordedRequest {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(requests)
@@ -165,5 +169,89 @@ func TestStepdownWithoutTargetSendsNoBodyAndFollowsOneRedirect(t *testing.T) {
 	}
 	if got := leaderRequests(); len(got) != 1 || got[0].body != "" {
 		t.Fatalf("leader requests %v", got)
+	}
+}
+
+func TestSnapshotURLNamesTrailingLogsOnlyWhenDrawn(t *testing.T) {
+	if got := snapshotURL("http://127.0.0.1:4001", 7, true); got != "http://127.0.0.1:4001/snapshot?trailing_logs=7" {
+		t.Fatalf("drawn %q", got)
+	}
+	if got := snapshotURL("http://127.0.0.1:4003", 0, false); got != "http://127.0.0.1:4003/snapshot" {
+		t.Fatalf("default %q", got)
+	}
+}
+
+func TestSnapshotGoesToTheDrawnNodeAloneAndRecordsItsAnswer(t *testing.T) {
+	trap, _ := leaderServer(t)
+	hit := map[string]bool{}
+	for range 40 {
+		var bases []string
+		var requests []func() []recordedRequest
+		for range nodeNames {
+			server, recorded := leaderServer(t, func(w http.ResponseWriter) {
+				w.Header().Set("Location", trap.URL+"/snapshot")
+				w.WriteHeader(http.StatusMovedPermanently)
+				_, _ = io.WriteString(w, "moved\n")
+			})
+			bases = append(bases, server.URL)
+			requests = append(requests, recorded)
+		}
+		var out bytes.Buffer
+		if err := recordSnapshot(&out, bases); err != nil {
+			t.Fatal(err)
+		}
+		fields := strings.Fields(out.String())
+		var sent []recordedRequest
+		for i, recorded := range requests {
+			if got := recorded(); len(got) > 0 {
+				if fields[1] != "node="+nodeNames[i] {
+					t.Fatalf("%s answered for line %q", nodeNames[i], out.String())
+				}
+				sent = append(sent, got...)
+			}
+		}
+		if len(sent) != 1 || sent[0].method != http.MethodPost || sent[0].path != "/snapshot" || sent[0].body != "" {
+			t.Fatalf("requests %+v", sent)
+		}
+		want := "trailing_logs=default"
+		if sent[0].query != "" {
+			want = sent[0].query
+		}
+		if len(fields) != 6 || fields[2] != want || strings.Join(fields[3:], " ") != `status 301 "moved"` {
+			t.Fatalf("line %q for query %q", out.String(), sent[0].query)
+		}
+		hit[fields[1]] = true
+	}
+	if len(hit) != len(nodeNames) {
+		t.Fatalf("nodes reached %v", hit)
+	}
+}
+
+func TestSnapshotTrailingLogsAreLogUniformFromOneTo1023(t *testing.T) {
+	var ranges [snapshotExponents]int
+	seen := map[uint64]bool{}
+	defaults := 0
+	for range 4000 {
+		trailing, set := snapshotTrailing()
+		if !set {
+			defaults++
+			continue
+		}
+		if trailing < 1 || trailing > 1023 {
+			t.Fatalf("trailing_logs %d", trailing)
+		}
+		ranges[bits.Len64(trailing)-1]++
+		seen[trailing] = true
+	}
+	if defaults < 850 || defaults > 1150 {
+		t.Fatalf("%d defaults in 4000", defaults)
+	}
+	for e, n := range ranges {
+		if n < 220 || n > 380 {
+			t.Fatalf("%d draws from %d to %d", n, 1<<e, 1<<(e+1)-1)
+		}
+	}
+	if len(seen) < 500 {
+		t.Fatalf("%d distinct counts", len(seen))
 	}
 }

@@ -56,6 +56,12 @@ const (
 	stepdownWaitStep     = 100 * time.Millisecond
 )
 
+const (
+	snapshotLog       = "/tmp/rqlite/snapshot.log"
+	snapshotTimeout   = 10 * time.Second
+	snapshotExponents = 10
+)
+
 var readySQL = [][]any{
 	{"CREATE TABLE IF NOT EXISTS kv (k INTEGER PRIMARY KEY, v TEXT, n INTEGER NOT NULL DEFAULT 0, h INTEGER NOT NULL DEFAULT 0)"},
 	{"CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY, v TEXT)"},
@@ -671,6 +677,53 @@ func uptime() string {
 	return "uptime=" + strings.Fields(string(text))[0]
 }
 
+func snapshotTrailing() (uint64, bool) {
+	if sdk.Below("rqlite.snapshot.default", 4) == 0 {
+		return 0, false
+	}
+	low := uint64(1) << sdk.Below("rqlite.snapshot.exponent", snapshotExponents)
+	return low + sdk.Below("rqlite.snapshot.offset", low), true
+}
+
+func snapshotURL(base string, trailing uint64, set bool) string {
+	if !set {
+		return base + "/snapshot"
+	}
+	return base + "/snapshot?trailing_logs=" + strconv.FormatUint(trailing, 10)
+}
+
+func runSnapshot() error {
+	out, err := os.OpenFile(snapshotLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return recordSnapshot(out, nodes)
+}
+
+func recordSnapshot(out io.Writer, bases []string) error {
+	via := sdk.Below("rqlite.snapshot.node", uint64(len(bases)))
+	trailing, set := snapshotTrailing()
+	named := "default"
+	if set {
+		named = strconv.FormatUint(trailing, 10)
+	}
+	c := newClient(bases[via])
+	defer c.Close()
+	_, err := fmt.Fprintf(out, "%s node=%s trailing_logs=%s %s\n", uptime(), nodeNames[via], named, c.snapshot(context.Background(), trailing, set))
+	return err
+}
+
+func (c *client) snapshot(ctx context.Context, trailing uint64, set bool) string {
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout)
+	defer cancel()
+	status, text, _, err := c.send(ctx, snapshotURL(c.base, trailing, set), nil)
+	if err != nil {
+		return "error " + strconv.Quote(err.Error())
+	}
+	return fmt.Sprintf("status %d %s", status, strconv.Quote(strings.TrimSpace(text)))
+}
+
 func (adapter) Ready(ctx context.Context) error {
 	return runner.AnyMember(ctx, nodes, func(ctx context.Context, base string) error {
 		c := newClient(base)
@@ -684,12 +737,21 @@ func (adapter) Ready(ctx context.Context) error {
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "stepdown" {
-		if err := runStepdown(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+	if len(os.Args) == 2 {
+		var run func() error
+		switch os.Args[1] {
+		case "stepdown":
+			run = runStepdown
+		case "snapshot":
+			run = runSnapshot
 		}
-		return
+		if run != nil {
+			if err := run(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
