@@ -11,14 +11,14 @@ impl Session {
         &mut self,
         request: EndpointRequest,
     ) -> Result<EndpointReply, EndpointError> {
-        if let Err(error) = self.loaded_image_guard.check() {
+        if let Err(error) = self.check_request_boundary() {
             self.abandon_execution_endpoint();
             return Err(error.into());
         }
         let mut state = std::mem::take(&mut self.endpoint_state);
         let result = state.exchange(self, request);
         self.endpoint_state = state;
-        if let Err(error) = self.loaded_image_guard.check() {
+        if let Err(error) = self.check_request_boundary() {
             self.abandon_execution_endpoint();
             return match result {
                 Err(primary) => Err(primary),
@@ -26,6 +26,14 @@ impl Session {
             };
         }
         result
+    }
+
+    fn check_request_boundary(&self) -> std::io::Result<()> {
+        if self.serving_loop_checks {
+            Ok(())
+        } else {
+            self.loaded_image_guard.check()
+        }
     }
 
     pub(super) fn ensure_mutation_available(&self) -> Result<(), EndpointError> {

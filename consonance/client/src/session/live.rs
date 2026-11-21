@@ -108,6 +108,28 @@ pub struct Session {
     snapshot_times: BTreeMap<SnapId, u64>,
     extent_writes: std::cell::Cell<ExtentWrites>,
     abandoned: bool,
+    serving_loop_checks: bool,
+}
+
+fn host_operation_guard(
+    guard: crate::image_identity::LoadedImageGuard,
+    control_checks: bool,
+) -> vmm_core::vmm::HostOperationGuard {
+    use crate::image_identity::GuardSite;
+    use vmm_core::vmm::HostOperationSite;
+    Arc::new(move |site| {
+        match site {
+            HostOperationSite::ControlBefore if control_checks => {
+                guard.check_at(GuardSite::ControlBefore)
+            }
+            HostOperationSite::ControlAfter if control_checks => {
+                guard.check_at(GuardSite::ControlAfter)
+            }
+            HostOperationSite::ControlBefore | HostOperationSite::ControlAfter => Ok(()),
+            HostOperationSite::SdkResponse => guard.check_code_at(GuardSite::SdkResponse),
+        }
+        .map_err(|error| error.to_string())
+    })
 }
 
 impl std::fmt::Debug for Session {
@@ -240,17 +262,7 @@ impl Session {
                 .map_err(vmm_core::vmm::VmmError::ContractViolation)
         });
         let mut server = ControlServer::new(live, factory);
-        let core_guard = loaded_image_guard.clone();
-        server.set_host_operation_guard(Arc::new(move |site| {
-            use crate::image_identity::GuardSite;
-            use vmm_core::vmm::HostOperationSite;
-            match site {
-                HostOperationSite::ControlBefore => core_guard.check_at(GuardSite::ControlBefore),
-                HostOperationSite::ControlAfter => core_guard.check_at(GuardSite::ControlAfter),
-                HostOperationSite::SdkResponse => core_guard.check_code_at(GuardSite::SdkResponse),
-            }
-            .map_err(|error| error.to_string())
-        }));
+        server.set_host_operation_guard(host_operation_guard(loaded_image_guard.clone(), true));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
             .map_err(|error| SessionError::Control(error.to_string()))?;
@@ -308,7 +320,15 @@ impl Session {
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
             endpoint_state: crate::endpoint::EndpointState::default(),
+            serving_loop_checks: false,
         })
+    }
+
+    pub(super) fn check_requests_in_serving_loop(&mut self) {
+        self.serving_loop_checks = true;
+        self.client
+            .transport_mut()
+            .set_host_operation_guard(host_operation_guard(self.loaded_image_guard.clone(), false));
     }
 
     pub fn from_paths(kernel: &Path, initramfs: &Path) -> Result<Self, Box<dyn Error>> {
@@ -1188,6 +1208,7 @@ mod tests {
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
             endpoint_state: crate::endpoint::EndpointState::default(),
+            serving_loop_checks: false,
         }
     }
 
@@ -1216,6 +1237,124 @@ mod tests {
             .unwrap_err()
             .to_string();
             assert!(error.contains("qualification refused"), "{error}");
+        }
+    }
+
+    #[test]
+    fn serving_loop_checks_leave_the_control_server_only_the_sdk_page_check() {
+        use vmm_core::vmm::HostOperationSite;
+        for control_checks in [true, false] {
+            let guard = crate::image_identity::LoadedImageGuard::fixture();
+            let check = host_operation_guard(guard.clone(), control_checks);
+            let sites = [
+                HostOperationSite::ControlBefore,
+                HostOperationSite::SdkResponse,
+                HostOperationSite::ControlAfter,
+            ];
+            let (results, entries, _) =
+                crate::image_identity::trace_checks(None, || sites.map(|site| check(site).is_ok()));
+            assert_eq!(results, [true; 3]);
+            assert_eq!(entries, if control_checks { 3 } else { 1 });
+            let counters = guard
+                .counters("guard.session")
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+            for (site, dispatches) in [
+                ("control_before", u64::from(control_checks)),
+                ("sdk_response", 1),
+                ("control_after", u64::from(control_checks)),
+            ] {
+                assert_eq!(
+                    counters
+                        .get(&format!("guard.session.{site}.dispatches"))
+                        .copied()
+                        .unwrap_or(0),
+                    dispatches,
+                    "{site}"
+                );
+            }
+            let (results, _, _) = crate::image_identity::trace_checks(None, || {
+                crate::image_identity::write_code();
+                sites.map(|site| check(site).is_ok())
+            });
+            assert_eq!(results, [!control_checks, false, !control_checks]);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn served_endpoint_leaves_full_checks_to_the_serving_loop() {
+        use crate::endpoint::*;
+        for served in [false, true] {
+            let image = vmm_core::vendor::arm64::image_loader::wrap_image(
+                &[0x1f, 0x20, 0x03, 0xd5],
+                0,
+                0xa,
+            );
+            let mut session = mock_arm_session(
+                SessionConfig::new(16 << 20, 7, 19, "console=ttyAMA0"),
+                &image,
+            );
+            if served {
+                session.check_requests_in_serving_loop();
+            } else {
+                let guard = host_operation_guard(session.loaded_image_guard.clone(), true);
+                session
+                    .client
+                    .transport_mut()
+                    .set_host_operation_guard(guard);
+            }
+            let (reply, entries, _) = crate::image_identity::trace_checks(None, || {
+                session.execution_endpoint(EndpointRequest::Execute(ExecutionRequest {
+                    branch: None,
+                    until: StopConditions {
+                        deadline: Some(control_proto::Moment(0)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                    sdk_cursor: 0,
+                    snapshot_on: EndpointStops::NONE,
+                    proof: EndpointProofRequest::Omit,
+                }))
+            });
+            let EndpointReply::Page(page) = reply.unwrap() else {
+                panic!("expected pending endpoint");
+            };
+            let counters = session
+                .loaded_image_guard
+                .counters("guard.session")
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+            let dispatches = |site: &str| {
+                counters
+                    .get(&format!("guard.session.{site}.dispatches"))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            assert_eq!(
+                u64::try_from(entries).unwrap(),
+                counters
+                    .iter()
+                    .filter(|(key, _)| key.ends_with(".dispatches"))
+                    .map(|(_, value)| value)
+                    .sum::<u64>()
+            );
+            if served {
+                assert_eq!(dispatches("session_boundary"), 0);
+                assert_eq!(dispatches("control_before"), 0);
+                assert_eq!(dispatches("control_after"), 0);
+            } else {
+                assert_eq!(dispatches("session_boundary"), 2);
+                assert!(dispatches("control_before") > 0);
+                assert_eq!(dispatches("control_before"), dispatches("control_after"));
+            }
+            let (aborted, _, _) = crate::image_identity::trace_checks(None, || {
+                crate::image_identity::write_code();
+                session.execution_endpoint(EndpointRequest::Abort {
+                    token: page.binding.token,
+                })
+            });
+            assert_eq!(aborted.is_ok(), served);
         }
     }
 

@@ -28,17 +28,31 @@ thread_local! {
 }
 
 #[cfg(all(test, feature = "in-process"))]
+thread_local! {
+    static CODE_WRITTEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn write_code() {
+    CODE_WRITTEN.with(|written| written.set(true));
+}
+
+#[cfg(all(test, feature = "in-process"))]
 pub(crate) fn trace_checks<T>(
     fail_at: Option<usize>,
     run: impl FnOnce() -> T,
 ) -> (T, usize, usize) {
-    struct Reset((usize, usize, Option<usize>));
+    struct Reset((usize, usize, Option<usize>), bool);
     impl Drop for Reset {
         fn drop(&mut self) {
             CHECK_TRACE.with(|trace| trace.set(self.0));
+            CODE_WRITTEN.with(|written| written.set(self.1));
         }
     }
-    let _reset = Reset(CHECK_TRACE.with(|trace| trace.replace((0, 0, fail_at))));
+    let _reset = Reset(
+        CHECK_TRACE.with(|trace| trace.replace((0, 0, fail_at))),
+        CODE_WRITTEN.with(|written| written.replace(false)),
+    );
     let result = run();
     let (entries, strict, _) = CHECK_TRACE.with(std::cell::Cell::get);
     (result, entries, strict)
@@ -171,6 +185,10 @@ impl LoadedImageGuard {
             trace.set((entries + 1, strict, fail_at));
             if fail_at == Some(entries + 1) {
                 Err(io::Error::other("injected loaded-image refusal"))
+            } else if CODE_WRITTEN.with(std::cell::Cell::get) {
+                Err(io::Error::other(
+                    "live code page was written after it was loaded",
+                ))
             } else {
                 Ok(())
             }
