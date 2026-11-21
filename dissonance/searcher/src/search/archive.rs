@@ -9164,6 +9164,32 @@ mod tests {
     }
 
     #[test]
+    fn entry_reports_omit_selector_counts_missing_from_a_short_archive() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
+        let root = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1, 2],
+                    key: FlatKey([1, 1, 0, 0]),
+                    milestones: (),
+                    cost: 2,
+                },
+                (),
+            )
+            .expect("insert")
+            .expect("retain");
+        let full = archive.entry_reports().expect("reports");
+        assert!(full[root].0.selector.is_some());
+        assert_eq!(full[root].0.input.actions, vec![1, 2]);
+        archive.selected.clear();
+        let short = archive.entry_reports().expect("reports");
+        assert!(short.iter().all(|(report, _)| report.selector.is_none()));
+        assert_eq!(short[root].0.input.actions, vec![1, 2]);
+    }
+
+    #[test]
     fn saved_state_records_skip_a_dropped_parent_to_its_nearest_saved_prefix() {
         let mut archive = Archive::<u8, FlatKey, (), ()>::new();
         let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,

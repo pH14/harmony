@@ -32,7 +32,8 @@ pub fn saved(mut request: Request) -> Result<u8> {
 }
 pub fn archive_entries(run: &str) -> Result<u8> {
     let given = std::path::Path::new(run);
-    let root = if given.is_file() {
+    let explicit = given.is_file();
+    let root = if explicit {
         given
             .parent()
             .and_then(std::path::Path::parent)
@@ -42,18 +43,19 @@ pub fn archive_entries(run: &str) -> Result<u8> {
         locate(run)?
     };
     let manifest = Manifest::read(&root)?;
-    let (checkpoint, expected_sha256) = if given.is_file() {
+    let (checkpoint, expected_sha256) = if explicit {
         (given.to_path_buf(), None)
     } else {
         let (pinned, _) = crate::runs::checkpoint_record_verified(&root, &manifest)?;
         (pinned.path, Some(pinned.sha256))
     };
     match crate::adapters::select(&manifest.config.workload)?.name() {
-        "faults" => {
-            print_archive_entries(searcher::search::campaign::checkpoint_archive_entries::<
+        "faults" => write_archive_entries(
+            searcher::search::campaign::checkpoint_archive_entries::<
                 faults_workload::campaign::FaultWorkload,
-            >(&checkpoint, expected_sha256.as_deref())?)
-        }
+            >(&checkpoint, expected_sha256.as_deref())?,
+            &mut std::io::stdout().lock(),
+        ),
         name => Err(format!("workload {name} has no archive entry listing").into()),
     }
 }
@@ -80,21 +82,21 @@ where
         "actions": entry.input.actions,
     })
 }
-fn print_archive_entries<A, K, M>(
+fn write_archive_entries<A, K, M>(
     entries: Vec<(searcher::search::archive::ArchiveEntryReport<A, K, M>, bool)>,
+    out: &mut impl std::io::Write,
 ) -> Result<u8>
 where
     A: Ord + serde::Serialize,
     K: serde::Serialize,
     M: serde::Serialize,
 {
-    use std::io::Write;
-    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let mut out = std::io::BufWriter::new(out);
     for (entry, active) in entries {
         serde_json::to_writer(&mut out, &archive_entry_line(entry, active))?;
-        out.write_all(b"\n")?;
+        std::io::Write::write_all(&mut out, b"\n")?;
     }
-    out.flush()?;
+    std::io::Write::flush(&mut out)?;
     Ok(0)
 }
 pub fn list(json: bool) -> Result<u8> {
@@ -163,39 +165,60 @@ mod tests {
     use std::num::NonZeroU16;
 
     #[test]
-    fn an_archive_entry_line_carries_the_settle_line_action_path() {
+    fn each_archive_entry_line_carries_the_settle_line_action_path() {
         let ticks = NonZeroU16::new(8).unwrap();
-        let actions = vec![
-            FaultAction::new(FaultOperation::Wait(ticks), NonZeroU16::MIN),
-            FaultAction::new(FaultOperation::Hook(5, ticks), NonZeroU16::MIN),
+        let paths = [
+            vec![FaultAction::new(
+                FaultOperation::Wait(ticks),
+                NonZeroU16::MIN,
+            )],
+            vec![
+                FaultAction::new(FaultOperation::Wait(ticks), NonZeroU16::MIN),
+                FaultAction::new(FaultOperation::Hook(5, ticks), NonZeroU16::MIN),
+            ],
         ];
-        let line = archive_entry_line(
-            ArchiveEntryReport {
-                id: 7,
-                parent_id: Some(3),
-                created_execution: 2,
-                input: Input {
-                    actions: actions.clone(),
-                },
-                key: (),
-                milestones: (),
-                snapshot_identity_sha256: None,
-                selector: None,
-                shrink_total: None,
-                cost_total: None,
-            },
-            false,
-        );
-        assert_eq!(line["id"], 7);
-        assert_eq!(line["parent_id"], 3);
-        assert_eq!(line["depth"], 2);
-        assert_eq!(line["active"], false);
-        assert_eq!(line["actions"], serde_json::to_value(&actions).unwrap());
+        let entries = paths
+            .iter()
+            .enumerate()
+            .map(|(id, actions)| {
+                (
+                    ArchiveEntryReport {
+                        id: id as u64 + 1,
+                        parent_id: id.checked_sub(1).map(|parent| parent as u64 + 1),
+                        created_execution: 2,
+                        input: Input {
+                            actions: actions.clone(),
+                        },
+                        key: (),
+                        milestones: (),
+                        snapshot_identity_sha256: None,
+                        selector: None,
+                        shrink_total: None,
+                        cost_total: None,
+                    },
+                    id == 0,
+                )
+            })
+            .collect();
+        let mut out = Vec::new();
+        assert_eq!(write_archive_entries(entries, &mut out).unwrap(), 0);
+        let text = String::from_utf8(out).unwrap();
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), paths.len());
+        for (index, (line, actions)) in lines.iter().zip(&paths).enumerate() {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(value["id"], index as u64 + 1);
+            assert_eq!(value["depth"], actions.len());
+            assert_eq!(value["active"], index == 0);
+            assert_eq!(value["actions"], serde_json::to_value(actions).unwrap());
+            assert_eq!(
+                &faults_workload::parse_recorded_input(line).unwrap().actions,
+                actions
+            );
+        }
         assert_eq!(
-            faults_workload::parse_recorded_input(&line.to_string())
-                .unwrap()
-                .actions,
-            actions
+            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["parent_id"],
+            1
         );
     }
 }
