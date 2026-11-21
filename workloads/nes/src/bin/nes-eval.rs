@@ -24,12 +24,7 @@ use nes_workload::{
         keying::StrategyKeying,
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
-    mm2::{
-        Mm2Workload,
-        archive::Mm2ArchiveKey,
-        campaign::{Mm2CampaignRun, Mm2Game},
-        target::{Mm2Input, Mm2Stage},
-    },
+    mm2::Mm2Workload,
     pac_man::{PacMan, PacManWorkload},
     punchout::{PunchOut, PunchOutWorkload},
     search::campaign::TargetExecution,
@@ -118,7 +113,15 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "smb" => {
             evaluate_live::<SmbGame<NativeMachine>>(rom, request, out, started, "super-mario-bros")
         }
-        "mm2" => evaluate_live::<Mm2Game<NativeMachine>>(rom, request, out, started, "mega-man-2"),
+        "mm2-strategy" => {
+            evaluate_live::<nes_games::workload::NesWorkload<MegaMan2, NativeMachine>>(
+                rom,
+                request,
+                out,
+                started,
+                "mega-man-2",
+            )
+        }
         "metroid" => {
             evaluate_live::<MetroidGame<NativeMachine>>(rom, request, out, started, "metroid")
         }
@@ -196,8 +199,8 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
     })
 }
 
-const SHADOW_GAMES: &[&str] = &["smb", "metroid", "mm2"];
-const ROOT_GAMES: &[&str] = &["smb", "mm2", "metroid"];
+const SHADOW_GAMES: &[&str] = &["smb", "metroid"];
+const ROOT_GAMES: &[&str] = &["smb", "metroid"];
 const STRATEGY_GAMES: &[&str] = &[
     "joust",
     "zelda",
@@ -240,17 +243,6 @@ fn main() -> Result<()> {
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
             }
-            "mm2"
-                if request.ai.is_some()
-                    || (request.whole_game && request.stage.is_some())
-                    || (!request.whole_game
-                        && (request.root_input.is_some() || request.shadow)) =>
-            {
-                return Err(
-                    "MM2 takes a stage, or whole_game with an optional root_input and shadow"
-                        .into(),
-                );
-            }
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
@@ -270,9 +262,14 @@ fn main() -> Result<()> {
                 return Err("this game takes no stage, ai or whole_game option".into());
             }
             "mm2-strategy"
-                if request.stage.is_some() || request.ai.is_some() || !request.whole_game =>
+                if request.ai.is_some()
+                    || request.whole_game == request.stage.is_some()
+                    || (request.stage.is_some() && request.root_input.is_some()) =>
             {
-                return Err("the strategy MM2 runs the whole game from power-on".into());
+                return Err(
+                    "the strategy MM2 takes a stage, or whole_game with an optional root_input"
+                        .into(),
+                );
             }
             "famidash"
                 if request.ai.is_some() || (request.stage.is_none() && !request.whole_game) =>
@@ -365,40 +362,9 @@ fn main() -> Result<()> {
                 )?;
                 nes_workload::workload::write_shadow(shadow.as_ref(), &out)
             }
-            "mm2" if request.whole_game => {
-                let shadow = request
-                    .shadow
-                    .then(|| Shadow::<MegaMan2, Mm2ArchiveKey>::new(MegaMan2))
-                    .transpose()?;
-                let mut game = Mm2Game::new_whole_game(
-                    &rom,
-                    p,
-                    h,
-                    &execution_sha256,
-                    root_actions::<Mm2Input>(request.root_input.as_deref())?
-                        .map(|input| input.actions)
-                        .unwrap_or_default(),
-                )
-                .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR));
-                if let Some(shadow) = &shadow {
-                    game = game.with_shadow(shadow.hook());
-                }
-                evaluate_watching(
-                    game,
-                    Mm2CampaignRun,
-                    &rom,
-                    &request,
-                    &execution_sha256,
-                    &out,
-                    started,
-                    "mega-man-2",
-                    <Mm2Game>::memory_view,
-                )?;
-                nes_workload::workload::write_shadow(shadow.as_ref(), &out)
-            }
             "mm2-strategy" => evaluate_watching(
                 nes_workload::workload::configured(
-                    Mm2Workload::new(MegaMan2, &rom, p, h, &execution_sha256)?,
+                    mm2_strategy_workload(&request, &rom, &execution_sha256, &out)?,
                     &request,
                     &out,
                 )?,
@@ -410,23 +376,6 @@ fn main() -> Result<()> {
                 started,
                 "mega-man-2",
                 <Mm2Workload>::memory_view,
-            ),
-            "mm2" => evaluate_watching(
-                Mm2Game::new_at_stage(
-                    &rom,
-                    p,
-                    h,
-                    &execution_sha256,
-                    Mm2Stage::from_number(request.stage.unwrap_or(0))?,
-                ),
-                Mm2CampaignRun,
-                &rom,
-                &request,
-                &execution_sha256,
-                &out,
-                started,
-                "mega-man-2",
-                <Mm2Game>::memory_view,
             ),
             "metroid" => {
                 let game =
@@ -683,6 +632,32 @@ fn main() -> Result<()> {
             _ => Err("unsupported game".into()),
         }
     })
+}
+
+fn mm2_strategy_workload(
+    request: &Request,
+    rom: &[u8],
+    execution_sha256: &str,
+    out: &Path,
+) -> Result<Mm2Workload> {
+    let game = match request.stage {
+        Some(stage) => MegaMan2::at_stage(stage)?,
+        None => MegaMan2::WHOLE_GAME,
+    };
+    let workload = Mm2Workload::new(
+        game,
+        rom,
+        &request.core,
+        &request.core_sha256,
+        execution_sha256,
+    )?;
+    if game.stage().is_none() || request.strategy.is_some() {
+        return Ok(workload);
+    }
+    let strategy = game.strategy();
+    fs::create_dir_all(out)?;
+    fs::write(out.join(nes_workload::workload::STRATEGY_FILE), &strategy)?;
+    workload.with_strategy(&strategy)
 }
 
 #[cfg(test)]

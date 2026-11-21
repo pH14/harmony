@@ -32,10 +32,10 @@
       }
     },
     {
-      "id": "mm2-metal",
-      "game": "mm2",
-      "stage": 6,
-      "origin": "power-on menus selecting Metal stage; independent stage",
+      "id": "mm2-whole-game",
+      "game": "mm2-strategy",
+      "whole_game": true,
+      "origin": "power-on menus selecting Crash stage; Robot Masters in the fixed order",
       "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
       "search": {
         "executions": 50000,

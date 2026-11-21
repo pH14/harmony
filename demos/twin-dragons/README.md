@@ -861,13 +861,13 @@ screen on a grid of 256 by 224 cells from that table, so a map is one image per
 stage. `boot(level)` picks Heat Man from stage select and writes the target
 stage during the load.
 
-The search is the whole-game `Mm2Game` workload from `nes-games`, as
-`nes-eval` runs it with `whole_game`. `workloads/nes/src/mm2/README.md`
-describes its archive key, chords, Start taps, weapon menu and admission
-rules. The target picks each next stage itself after a boss.
-`rust/src/mega_man.rs` builds the page's observation from the workload's
-decoders. A level jump becomes a `CampaignOrigin::SnapshotRoot` only when the
-workload's admission probe accepts it. A jump writes the weapons, items and
+The search is the whole-game `MegaMan2` strategy workload,
+`NesWorkload<MegaMan2, _>` from `nes-games`, as `nes-eval` runs `mm2-strategy`
+with `whole_game`. `workloads/nes/src/mm2/README.md` describes its key, chords,
+weapon switch and stage drives. The workload drives each next stage itself
+after a boss. `rust/src/mega_man.rs` builds the page's observation from the
+workload's decoder. A level jump becomes a `CampaignOrigin::SnapshotRoot` only
+when its state decodes as playable. A jump writes the weapons, items and
 full weapon energy of every stage before it, so the Wily 1 jump matches a
 player who has just beaten Quick Man.
 

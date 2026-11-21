@@ -19,7 +19,7 @@ const memoryMiB = 1024;
 const CASES = [
   { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), eval: { game: "twin-dragons" }, executions: 600 },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
-  { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
+  { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2-strategy", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
   { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash", whole_game: true }, mixture: "alphabet_only", executions: 10000 },
 ];
