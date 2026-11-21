@@ -157,6 +157,29 @@ func TestStatusAnswersCompareWithTheHighestThatArrivedBeforeTheRequest(t *testin
 	}
 }
 
+func TestStatusAnswersKeepOnlyTheHighsAPendingRequestCanUse(t *testing.T) {
+	answers, got := recordingAnswers()
+	for applied := uint64(1); applied <= 1000; applied++ {
+		answer1(answers, "n1", indexed(applied, applied, "a"))
+	}
+	h := answers.high[lifetime{node: "n1", started: "a"}]
+	if len(h.applied.rises) != 1 || len(h.snapshot.rises) != 1 {
+		t.Fatalf("kept %d applied and %d snapshot highs, want 1 each", len(h.applied.rises), len(h.snapshot.rises))
+	}
+	slow := answers.tick()
+	for applied := uint64(1001); applied <= 1010; applied++ {
+		answer1(answers, "n1", indexed(applied, applied, "a"))
+	}
+	answers.observe("n1", slow, indexed(999, 999, "a"), time.Unix(100, 0))
+	failed := failures(*got)
+	if len(failed) != 2 || failed[0].details["highest"] != uint64(1000) {
+		t.Fatalf("failures %v", failed)
+	}
+	if len(h.applied.rises) != 1 {
+		t.Fatalf("kept %d applied highs after the slow answer, want 1", len(h.applied.rises))
+	}
+}
+
 func TestStatusAnswersCompareOnlyTheIndexesAnAnswerHolds(t *testing.T) {
 	answers, got := recordingAnswers()
 	answer1(answers, "n2", indexed(482, 482, "a"))

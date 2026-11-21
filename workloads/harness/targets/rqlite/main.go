@@ -234,13 +234,14 @@ func declareStatusProperties() {
 // answer that leaves an index out, as /status does while the store is closed,
 // is not compared for that index.
 type statusAnswers struct {
-	mu     sync.Mutex
-	clock  uint64
-	last   map[string]statusAnswer
-	high   map[lifetime]*highs
-	assert func(bool, string, map[string]any)
-	held   map[string]bool
-	failed map[failure]bool
+	mu      sync.Mutex
+	clock   uint64
+	pending map[uint64]bool
+	last    map[string]statusAnswer
+	high    map[lifetime]*highs
+	assert  func(bool, string, map[string]any)
+	held    map[string]bool
+	failed  map[failure]bool
 }
 
 type statusAnswer struct {
@@ -279,10 +280,17 @@ func (h *high) before(sent uint64) (uint64, bool) {
 	return 0, false
 }
 
-func (h *high) observe(value, received uint64) {
+func (h *high) observe(value, received, oldest uint64) {
 	if n := len(h.rises); n == 0 || value > h.rises[n-1].value {
 		h.rises = append(h.rises, rise{value: value, received: received})
 	}
+	keep := 0
+	for i, r := range h.rises {
+		if r.received < oldest {
+			keep = i
+		}
+	}
+	h.rises = h.rises[keep:]
 }
 
 type highs struct {
@@ -297,11 +305,12 @@ type failure struct {
 
 func newStatusAnswers(assert func(bool, string, map[string]any)) *statusAnswers {
 	return &statusAnswers{
-		last:   map[string]statusAnswer{},
-		high:   map[lifetime]*highs{},
-		assert: assert,
-		held:   map[string]bool{},
-		failed: map[failure]bool{},
+		pending: map[uint64]bool{},
+		last:    map[string]statusAnswer{},
+		high:    map[lifetime]*highs{},
+		assert:  assert,
+		held:    map[string]bool{},
+		failed:  map[failure]bool{},
 	}
 }
 
@@ -310,22 +319,40 @@ var answers = newStatusAnswers(sdk.Always)
 func (s *statusAnswers) poll(ctx context.Context, c *client, node string) (nodeStatus, error) {
 	sent := s.tick()
 	status, err := c.indexes(ctx)
-	if err == nil {
-		s.observe(node, sent, status, time.Now())
+	if err != nil {
+		s.forget(sent)
+		return status, err
 	}
-	return status, err
+	s.observe(node, sent, status, time.Now())
+	return status, nil
 }
 
 func (s *statusAnswers) tick() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clock++
+	s.pending[s.clock] = true
 	return s.clock
+}
+
+func (s *statusAnswers) forget(sent uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending, sent)
+}
+
+func (s *statusAnswers) oldest() uint64 {
+	oldest := s.clock + 1
+	for sent := range s.pending {
+		oldest = min(oldest, sent)
+	}
+	return oldest
 }
 
 func (s *statusAnswers) observe(node string, sent uint64, status nodeStatus, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.pending, sent)
 	s.clock++
 	s.last[node] = statusAnswer{applied: status.applied, at: now}
 	if status.started == "" {
@@ -356,7 +383,7 @@ func (s *statusAnswers) check(key lifetime, property string, h *high, value, sen
 		s.held[property] = true
 		s.assert(true, property, nil)
 	}
-	h.observe(value, s.clock)
+	h.observe(value, s.clock, s.oldest())
 }
 
 func (s *statusAnswers) err(node string, attempt error, now time.Time) error {
