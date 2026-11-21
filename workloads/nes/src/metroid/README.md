@@ -199,10 +199,14 @@ preferences keep the one with more missiles. A column healing or respawning
 moves the state to another place without ranking it above or below the rest of
 Tourian. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
-alive, 2 destroyed) and its missile hit count at offset 3; a column dies at
-eight hits while healing one hit every 64 frames it is not hit, and the game
-loads the columns of each screen as Samus enters it. The state also counts the
-destroyed columns for the `zebetite_destroyed` milestone.
+alive, 2 on the frames the column breaks, 3 once its tiles are cleared) and
+its missile hit count at offset 3; a column dies at eight hits while healing
+one hit every 64 frames it is not hit, at offset 4's timer, and the game loads
+the columns of each screen as Samus enters it and clears a slot whose screen
+scrolls out. The state counts the columns reading 2 or 3 as destroyed for the
+`zebetite_destroyed` milestone, since a RAM trace of a run to the ending reads
+3 at every action end after a column broke. The count falls when a cleared column's slot is reused, so it
+is not a progress measure.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
 hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds

@@ -142,6 +142,7 @@ const ZEBETITE_HITS: usize = 3;
 const ZEBETITE_HITS_TO_KILL: u8 = 8;
 const ZEBETITE_ALIVE: u8 = 1;
 const ZEBETITE_DESTROYED: u8 = 2;
+const ZEBETITE_CLEARED: u8 = 3;
 const TOURIAN_HEALTH_PER_HIT: u16 = 4;
 const MOTHER_BRAIN_IN_VIEW_STATUSES: [u8; 2] = [1, 2];
 const MOTHER_BRAIN_FULL_HEALTH: u16 = MOTHER_BRAIN_HITS_TO_KILL as u16 * TOURIAN_HEALTH_PER_HIT;
@@ -391,7 +392,7 @@ fn zebetite_slots(wram: &[u8]) -> Result<(u8, u8), MachineError> {
                 remaining +=
                     ZEBETITE_HITS_TO_KILL.saturating_sub(read_byte(wram, base + ZEBETITE_HITS)?);
             }
-            ZEBETITE_DESTROYED => destroyed += 1,
+            ZEBETITE_DESTROYED | ZEBETITE_CLEARED => destroyed += 1,
             _ => {}
         }
     }
@@ -2283,6 +2284,8 @@ mod boss_status_tests {
             (0, 13, 0)
         );
         wram[ZEBETITE_SLOT_BASE] = 2;
+        assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 8, 1));
+        wram[ZEBETITE_SLOT_BASE] = 3;
         assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 8, 1));
         wram[MOTHER_BRAIN_STATUS] = 1;
         wram[MOTHER_BRAIN_HITS] = 5;
