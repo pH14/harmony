@@ -332,9 +332,17 @@ its one move is the hand target's volley from [Actions](#actions). The game
 offers it at a `missiles` choice site while Samus is in play, alive, holding
 missiles and in a room with a missile target. One answer in 12 leaves the
 default chord, and the label is the count to fire, drawn evenly from 1 to the
-missiles held, as the hand target draws it, except that the label caps the
-count at 63. Where no volley can be offered the answer is an ordinary chord,
-while the hand target's volley waits 12 frames there. A `root_input` tape must end alive before the
+smaller of the missiles held and the missiles the room's target takes, and the
+label caps the count at 63. A
+closed door of palette 2 takes 10, any other closed missile door 5, the live
+Zebetite columns of the screen the hits they still need up to 8, one column's
+worth, and a boss in view its health over 4 rounded up, the damage one missile
+does; with several targets in the room the largest of these counts. Where no
+volley can be offered the answer is an ordinary chord, while the hand target's
+volley waits 12 frames there. The hand
+target draws from 1 to every missile held, and a volley at a door it misses
+then spends the whole stock: Tourian's missile doors took 120 to 160 missiles
+in one volley in the hand campaign. A `root_input` tape must end alive before the
 ending in play or the item pickup pause, so a milestone tape the search
 produced roots unedited. `nes-film --game metroid-strategy` films its
 witness and milestone tapes, with `--root-input` for a rooted run, from power-on

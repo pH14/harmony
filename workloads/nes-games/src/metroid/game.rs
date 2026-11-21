@@ -46,7 +46,8 @@ pub fn volley_offer(state: MetroidMechanicalState) -> u64 {
     if !state.in_play() || state.is_dead() || !state.missile_target() {
         return 0;
     }
-    let largest = usize::from(state.missiles).min(MAX_OFFER_OPTIONS - 1);
+    let largest =
+        usize::from(state.missiles.min(state.missiles_needed())).min(MAX_OFFER_OPTIONS - 1);
     (1..=largest).fold(0, |offered, count| offered | 1 << count)
 }
 
@@ -319,7 +320,7 @@ mod tests {
     use crate::{
         metroid::{
             plan::{self, PLAN},
-            target::{JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED},
+            target::{JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED, TEN_MISSILE_DOOR},
         },
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
         workload::{Lowered, target::windowed},
@@ -513,7 +514,7 @@ mod tests {
             boss_health: 10,
             ..door
         };
-        assert_eq!(volley_offer(boss), 0b11_1110);
+        assert_eq!(volley_offer(boss), 0b1110);
         for state in [
             MetroidMechanicalState {
                 missile_flags: 0,
@@ -533,6 +534,52 @@ mod tests {
         assert_eq!(offer.labels(), [0, 1, 2, 3, 4, 5]);
         assert_eq!(Metroid.move_sites()[0].labels.len(), VOLLEYS.len());
         assert_eq!(CHORDS.tap, None);
+    }
+
+    #[test]
+    fn the_volley_offers_no_more_missiles_than_the_room_target_takes() {
+        let stocked = MetroidMechanicalState {
+            area: 0x13,
+            health: 300,
+            mode: 3,
+            missiles: 150,
+            missile_capacity: 155,
+            ..MetroidMechanicalState::default()
+        };
+        let largest = |state| 63 - u64::leading_zeros(volley_offer(state));
+        let red = MetroidMechanicalState {
+            missile_flags: MISSILE_DOOR,
+            ..stocked
+        };
+        assert_eq!(largest(red), 5);
+        let orange = MetroidMechanicalState {
+            missile_flags: MISSILE_DOOR | TEN_MISSILE_DOOR,
+            ..stocked
+        };
+        assert_eq!(largest(orange), 10);
+        let columns = MetroidMechanicalState {
+            zebetite_hits_left: 13,
+            ..stocked
+        };
+        assert_eq!(largest(columns), 8);
+        let damaged = MetroidMechanicalState {
+            zebetite_hits_left: 3,
+            ..stocked
+        };
+        assert_eq!(largest(damaged), 3);
+        let mother_brain = MetroidMechanicalState {
+            boss_health: 128,
+            ..stocked
+        };
+        assert_eq!(largest(mother_brain), 32);
+        assert_eq!(
+            largest(MetroidMechanicalState {
+                missiles: 7,
+                ..mother_brain
+            }),
+            7
+        );
+        assert_eq!(volley_offer(stocked), 0);
     }
 
     #[test]

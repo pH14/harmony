@@ -157,6 +157,11 @@ pub(crate) const JOYPAD_SELECT: u8 = 1 << 2;
 
 pub const MISSILES_ARMED: u8 = 1;
 pub const MISSILE_DOOR: u8 = 1 << 1;
+pub const TEN_MISSILE_DOOR: u8 = 1 << 2;
+const TEN_MISSILE_DOOR_PALETTE: u8 = 2;
+const MISSILE_DOOR_HITS: u8 = 5;
+const TEN_MISSILE_DOOR_HITS: u8 = 10;
+const BOSS_HEALTH_PER_MISSILE: u16 = 4;
 
 pub type MetroidInput = crate::search::archive::Input<MetroidAction>;
 
@@ -253,14 +258,28 @@ impl MetroidMechanicalState {
             || self.zebetite_hits_left > 0
             || self.missile_flags & MISSILE_DOOR != 0
     }
+
+    #[must_use]
+    pub fn missiles_needed(self) -> u8 {
+        let door = if self.missile_flags & TEN_MISSILE_DOOR != 0 {
+            TEN_MISSILE_DOOR_HITS
+        } else if self.missile_flags & MISSILE_DOOR != 0 {
+            MISSILE_DOOR_HITS
+        } else {
+            0
+        };
+        let zebetite = self.zebetite_hits_left.min(ZEBETITE_HITS_TO_KILL);
+        let boss =
+            u8::try_from(self.boss_health.div_ceil(BOSS_HEALTH_PER_MISSILE)).unwrap_or(u8::MAX);
+        door.max(zebetite).max(boss)
+    }
 }
 
 pub fn missiles_armed(wram: &[u8]) -> bool {
     wram.get(MISSILE_TOGGLE).is_some_and(|toggle| *toggle != 0)
 }
 
-#[must_use]
-pub fn missile_door_in_room(wram: &[u8]) -> bool {
+fn closed_door_in_room(wram: &[u8], palettes: &[u8]) -> bool {
     let Some(&samus_name_table) = wram.get(SAMUS_NAME_TABLE) else {
         return false;
     };
@@ -268,9 +287,14 @@ pub fn missile_door_in_room(wram: &[u8]) -> bool {
         wram.get(slot) == Some(&DOOR_CLOSED)
             && wram
                 .get(slot + DOOR_PALETTE)
-                .is_some_and(|palette| MISSILE_DOOR_PALETTES.contains(palette))
+                .is_some_and(|palette| palettes.contains(palette))
             && wram.get(slot + DOOR_NAME_TABLE) == Some(&samus_name_table)
     })
+}
+
+#[must_use]
+pub fn missile_door_in_room(wram: &[u8]) -> bool {
+    closed_door_in_room(wram, &MISSILE_DOOR_PALETTES)
 }
 
 #[must_use]
@@ -432,7 +456,8 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         ending: read_byte(cartridge, ENDING)? != 0,
         kraid_defeated: boss_defeated(read_byte(cartridge, KRAID_STATUS)?, KRAID_DEFEATED_BIT),
         missile_flags: (u8::from(missiles_armed(wram)) * MISSILES_ARMED)
-            | (u8::from(missile_door_in_room(wram)) * MISSILE_DOOR),
+            | (u8::from(missile_door_in_room(wram)) * MISSILE_DOOR)
+            | (u8::from(closed_door_in_room(wram, &[TEN_MISSILE_DOOR_PALETTE])) * TEN_MISSILE_DOOR),
     })
 }
 
