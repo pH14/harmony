@@ -2108,9 +2108,11 @@ mod tests {
     const LATCHED: &str = "capacity = 16\ngoal = \"room >= 9\"\nspread = \"room\"\nidentity = [\"highest(x)\", \"x\"]\n[[stage]]\nname = \"ledge\"\ngoal = \"far\"\nlatch = true\n[[stage]]\nname = \"beyond\"\ngoal = \"false\"\n";
 
     fn header_of(workload: NesWorkload<Ledge, Stepper>, name: &str) -> RecordsHeader {
+        static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "nes-records-header-{name}-{}.bin",
-            std::process::id()
+            "nes-records-header-{name}-{}-{}.bin",
+            std::process::id(),
+            FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let workload = workload.with_records(&path, 7).unwrap();
         workload.direct_records(None).unwrap();
