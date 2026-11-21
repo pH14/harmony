@@ -1246,8 +1246,14 @@ fn checkpoint_archive_entries_match_the_saved_state_records() {
     .unwrap();
     let checkpoint = directory.join("000000000008-final.ckpt");
     let before = std::fs::read(&checkpoint).unwrap();
-    let entries = checkpoint_archive_entries::<TestWorkload>(&checkpoint).unwrap();
+    let entries = checkpoint_archive_entries::<TestWorkload>(&checkpoint, None).unwrap();
     assert_eq!(std::fs::read(&checkpoint).unwrap(), before);
+    let sha256 = format!("{:x}", Sha256::digest(&before));
+    assert_eq!(
+        checkpoint_archive_entries::<TestWorkload>(&checkpoint, Some(&sha256)).unwrap(),
+        entries
+    );
+    assert!(checkpoint_archive_entries::<TestWorkload>(&checkpoint, Some("0")).is_err());
     let saved = SavedStates::open(&TestWorkload, &checkpoint).unwrap();
     assert_eq!(
         entries
@@ -1275,7 +1281,7 @@ fn checkpoint_archive_entries_match_the_saved_state_records() {
     }
     assert!(entries.iter().any(|(_, active)| *active));
     std::fs::write(&checkpoint, &before[..before.len() - 1]).unwrap();
-    assert!(checkpoint_archive_entries::<TestWorkload>(&checkpoint).is_err());
+    assert!(checkpoint_archive_entries::<TestWorkload>(&checkpoint, None).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
 

@@ -32,52 +32,66 @@ pub fn saved(mut request: Request) -> Result<u8> {
 }
 pub fn archive_entries(run: &str) -> Result<u8> {
     let given = std::path::Path::new(run);
-    let (root, checkpoint) = if given.is_file() {
-        let root = given
+    let root = if given.is_file() {
+        given
             .parent()
             .and_then(std::path::Path::parent)
-            .ok_or("a checkpoint path must sit in its run's checkpoints directory")?;
-        (root.to_path_buf(), Some(given.to_path_buf()))
+            .ok_or("a checkpoint path must sit in its run's checkpoints directory")?
+            .to_path_buf()
     } else {
-        (locate(run)?, None)
+        locate(run)?
     };
     let manifest = Manifest::read(&root)?;
-    let checkpoint = match checkpoint {
-        Some(checkpoint) => checkpoint,
-        None => {
-            crate::runs::checkpoint_record_verified(&root, &manifest)?
-                .0
-                .path
-        }
+    let (checkpoint, expected_sha256) = if given.is_file() {
+        (given.to_path_buf(), None)
+    } else {
+        let (pinned, _) = crate::runs::checkpoint_record_verified(&root, &manifest)?;
+        (pinned.path, Some(pinned.sha256))
     };
     match crate::adapters::select(&manifest.config.workload)?.name() {
-        "faults" => print_archive_entries::<faults_workload::campaign::FaultWorkload>(&checkpoint),
+        "faults" => {
+            print_archive_entries(searcher::search::campaign::checkpoint_archive_entries::<
+                faults_workload::campaign::FaultWorkload,
+            >(&checkpoint, expected_sha256.as_deref())?)
+        }
         name => Err(format!("workload {name} has no archive entry listing").into()),
     }
 }
-fn print_archive_entries<G: searcher::search::campaign::Workload>(
-    checkpoint: &std::path::Path,
-) -> Result<u8> {
+fn archive_entry_line<A, K, M>(
+    entry: searcher::search::archive::ArchiveEntryReport<A, K, M>,
+    active: bool,
+) -> serde_json::Value
+where
+    A: Ord + serde::Serialize,
+    K: serde::Serialize,
+    M: serde::Serialize,
+{
+    serde_json::json!({
+        "id": entry.id,
+        "parent_id": entry.parent_id,
+        "created_execution": entry.created_execution,
+        "depth": entry.input.actions.len(),
+        "active": active,
+        "key": entry.key,
+        "milestones": entry.milestones,
+        "selector": entry.selector,
+        "shrink_total": entry.shrink_total,
+        "cost_total": entry.cost_total,
+        "actions": entry.input.actions,
+    })
+}
+fn print_archive_entries<A, K, M>(
+    entries: Vec<(searcher::search::archive::ArchiveEntryReport<A, K, M>, bool)>,
+) -> Result<u8>
+where
+    A: Ord + serde::Serialize,
+    K: serde::Serialize,
+    M: serde::Serialize,
+{
     use std::io::Write;
-    let entries = searcher::search::campaign::checkpoint_archive_entries::<G>(checkpoint)?;
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     for (entry, active) in entries {
-        serde_json::to_writer(
-            &mut out,
-            &serde_json::json!({
-                "id": entry.id,
-                "parent_id": entry.parent_id,
-                "created_execution": entry.created_execution,
-                "depth": entry.input.actions.len(),
-                "active": active,
-                "key": entry.key,
-                "milestones": entry.milestones,
-                "selector": entry.selector,
-                "shrink_total": entry.shrink_total,
-                "cost_total": entry.cost_total,
-                "actions": entry.input.actions,
-            }),
-        )?;
+        serde_json::to_writer(&mut out, &archive_entry_line(entry, active))?;
         out.write_all(b"\n")?;
     }
     out.flush()?;
@@ -140,4 +154,48 @@ pub fn diff(left: &str, right: &str) -> Result<u8> {
     }
     println!("{}", serde_json::to_string_pretty(&changes)?);
     Ok(0)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use faults_workload::{FaultAction, FaultOperation};
+    use searcher::search::archive::{ArchiveEntryReport, Input};
+    use std::num::NonZeroU16;
+
+    #[test]
+    fn an_archive_entry_line_carries_the_settle_line_action_path() {
+        let ticks = NonZeroU16::new(8).unwrap();
+        let actions = vec![
+            FaultAction::new(FaultOperation::Wait(ticks), NonZeroU16::MIN),
+            FaultAction::new(FaultOperation::Hook(5, ticks), NonZeroU16::MIN),
+        ];
+        let line = archive_entry_line(
+            ArchiveEntryReport {
+                id: 7,
+                parent_id: Some(3),
+                created_execution: 2,
+                input: Input {
+                    actions: actions.clone(),
+                },
+                key: (),
+                milestones: (),
+                snapshot_identity_sha256: None,
+                selector: None,
+                shrink_total: None,
+                cost_total: None,
+            },
+            false,
+        );
+        assert_eq!(line["id"], 7);
+        assert_eq!(line["parent_id"], 3);
+        assert_eq!(line["depth"], 2);
+        assert_eq!(line["active"], false);
+        assert_eq!(line["actions"], serde_json::to_value(&actions).unwrap());
+        assert_eq!(
+            faults_workload::parse_recorded_input(&line.to_string())
+                .unwrap()
+                .actions,
+            actions
+        );
+    }
 }

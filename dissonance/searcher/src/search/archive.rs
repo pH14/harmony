@@ -4365,10 +4365,12 @@ where
             key: entry.key,
             milestones: entry.milestones,
             snapshot_identity_sha256: None,
-            selector: Some(EntrySelectorCounters {
-                selected: self.selected[id],
-                productive: self.productive[id],
-            }),
+            selector: self.selected.get(id).zip(self.productive.get(id)).map(
+                |(&selected, &productive)| EntrySelectorCounters {
+                    selected,
+                    productive,
+                },
+            ),
             shrink_total: self.shrink_total.get(id).copied(),
             cost_total: self.cost_total.get(id).copied(),
         }

@@ -1437,8 +1437,9 @@ checkpoints are kept; only the last two interval checkpoints are kept.
 `checkpoint_archive_entries::<G>` reads a checkpoint's archive without the
 snapshot store and returns each entry's `ArchiveEntryReport`, with its full
 input materialized from the input index, and whether the entry is active. It
-refuses a checkpoint of another format or with a bad checksum, and it does not
-check the workload identity, so the caller names the workload type.
+refuses a checkpoint of another format, with a bad checksum, or whose SHA-256
+differs from the expected digest when one is given. It does not check the
+workload identity, so the caller names the workload type.
 
 With `CheckpointPlan::on_stall`, the coordinator also watches the leading tier
 after each admission. When that tier starts to lose draw weight to the tier

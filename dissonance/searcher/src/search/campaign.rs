@@ -920,8 +920,12 @@ impl<G: Workload> SavedStates<G> {
 #[allow(clippy::type_complexity)]
 pub fn checkpoint_archive_entries<G: Workload>(
     path: &Path,
+    expected_sha256: Option<&str>,
 ) -> Result<Vec<(ArchiveEntryReport<G::Action, G::Key, G::Milestones>, bool)>, Box<dyn Error>> {
     let mut reader = CheckpointReader::open(path)?;
+    if expected_sha256.is_some_and(|expected| expected != reader.file_sha256) {
+        return Err("search checkpoint differs from its journal record".into());
+    }
     let _: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
     let _: CoreCheckpoint<G> = reader.next()?;
     let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
