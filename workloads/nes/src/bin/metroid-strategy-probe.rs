@@ -13,7 +13,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: metroid-strategy-probe <root.json> [--strategy STRATEGY.toml] [--every] [--wram START:LEN]";
+const USAGE: &str = "usage: metroid-strategy-probe <root.json> [--strategy STRATEGY.toml] [--every] [--wram START:LEN] [--cartridge START:LEN]";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut strategy = Metroid::STRATEGY.to_owned();
     let mut every = false;
     let mut window = None;
+    let mut cartridge = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--strategy" => strategy = fs::read_to_string(args.next().ok_or(USAGE)?)?,
@@ -31,6 +32,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 window = Some((
                     usize::from_str_radix(start.trim_start_matches("0x"), 16)?,
                     len.parse::<usize>()?,
+                ));
+            }
+            "--cartridge" => {
+                let value = args.next().ok_or(USAGE)?;
+                let (start, len) = value.split_once(':').ok_or(USAGE)?;
+                cartridge = Some((
+                    usize::from_str_radix(start.trim_start_matches("0x"), 16)?,
+                    len.parse::<u32>()?,
                 ));
             }
             _ => return Err(USAGE.into()),
@@ -102,6 +111,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .map(|byte| format!("{byte:02x}"))
                     .collect();
                 println!("# wram {index} {start:#x} {bytes}");
+            }
+            if let Some((start, len)) = cartridge {
+                let bytes: String = target
+                    .read_save_ram(start, len)?
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                println!("# cartridge {index} {start:#x} {bytes}");
             }
         }
         last_stage = stage;
