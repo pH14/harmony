@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::{film::Endpointed, witness::replay_witness};
+use machine::nes::ButtonChord;
 use nes_games::{
     smb::game::SuperMarioBros,
-    workload::{EMULATOR_BACKEND_FIELD, NesRun, NesWorkload},
+    workload::{EMULATOR_BACKEND_FIELD, NesArchiveReport, NesRun, NesWorkload},
 };
 use searcher::search::{
-    archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
+    archive::{Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
     campaign::{
         CampaignConfig, CampaignOrigin, InputPolicy, default_window,
         run_campaign_checkpointed_with_options,
@@ -66,8 +67,7 @@ pub struct SearchEvidence {
 pub fn canonical_origin_input(
     value: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    let input: searcher::search::archive::Input<machine::nes::ButtonChord> =
-        serde_json::from_value(value)?;
+    let input: Input<ButtonChord> = serde_json::from_value(value)?;
     Ok(serde_json::to_value(input)?)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -148,7 +148,17 @@ fn record_identity(
     )?;
     Ok(())
 }
-fn search<G: Endpointed>(
+fn best_input(
+    prefix: Input<ButtonChord>,
+    objective_witness: Option<&Input<ButtonChord>>,
+    archive: &NesArchiveReport,
+) -> Input<ButtonChord> {
+    let found = objective_witness.unwrap_or(&archive.champion_input);
+    let mut actions = prefix.actions;
+    actions.extend_from_slice(&found.actions);
+    Input { actions }
+}
+fn search<G>(
     game: G,
     run: G::Run,
     backend: &str,
@@ -156,7 +166,7 @@ fn search<G: Endpointed>(
     start: &SearchStart,
 ) -> Result<SearchEvidence, Box<dyn Error>>
 where
-    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G: Endpointed<Action = ButtonChord, ArchiveReport = NesArchiveReport>,
 {
     fs::create_dir_all(&options.output)?;
     let mut stream = BufWriter::new(fs::File::create(options.output.join("stream.jsonl"))?);
@@ -181,7 +191,7 @@ where
     use searcher::search::campaign::{
         CampaignCheckpoint, SnapshotCheckpoint, SnapshotCheckpointEntry,
     };
-    let prefix: searcher::search::archive::Input<G::Action> = match start {
+    let prefix: Input<ButtonChord> = match start {
         SearchStart::Genesis => Default::default(),
         SearchStart::Actions(value) => serde_json::from_value(value.clone())?,
         SearchStart::Checkpoint { origin_input, .. } => {
@@ -199,8 +209,7 @@ where
             expected_sha256: Some(checkpoint.sha256.clone()),
         },
         SearchStart::Actions(value) => {
-            let input: searcher::search::archive::Input<G::Action> =
-                serde_json::from_value(value.clone())?;
+            let input: Input<ButtonChord> = serde_json::from_value(value.clone())?;
             let mut target = game.new_target()?;
             let initial = game.snapshot(&mut target)?;
             let result = game.execute_job(
@@ -262,18 +271,7 @@ where
     checkpoint.write_to(&mut fs::File::create(
         options.output.join("checkpoint.bin"),
     )?)?;
-    let mut best = match report.objective_witness.clone() {
-        Some(input) => input,
-        None => serde_json::from_value(
-            serde_json::to_value(&report.archive)?
-                .get("champion_input")
-                .cloned()
-                .ok_or("the campaign retained no champion input to replay")?,
-        )?,
-    };
-    let mut actions = prefix.actions;
-    actions.extend(best.actions);
-    best.actions = actions;
+    let best = best_input(prefix, report.objective_witness.as_ref(), &report.archive);
     if report.objective_witness.is_some() {
         fs::write(
             options.output.join("victory.json"),
@@ -489,5 +487,43 @@ mod tests {
         fs::write(&core, b"different core").unwrap();
         let error = replay_native(&[], &core, &expected, serde_json::Value::Null).unwrap_err();
         assert_eq!(error.to_string(), "saved QuickNES core has changed");
+    }
+
+    #[test]
+    fn the_best_input_follows_the_prefix_with_the_objective_witness_or_the_archive_champion() {
+        let input = |buttons: &[u8]| Input {
+            actions: buttons
+                .iter()
+                .map(|&mask| ButtonChord::new(mask, 4))
+                .collect(),
+        };
+        let archive = NesArchiveReport {
+            format: Default::default(),
+            seed: 1,
+            executions: 2,
+            milestones: Default::default(),
+            progress_watermark: 0,
+            first_seen: Vec::new(),
+            violations: Vec::new(),
+            champion_input: input(&[0x01, 0x81]),
+            entries: Vec::new(),
+            progress_curve: Vec::new(),
+            retained: 0,
+            rejected: 0,
+            deaths: 0,
+            selector: Default::default(),
+        };
+        assert_eq!(
+            best_input(input(&[0x08]), None, &archive),
+            input(&[0x08, 0x01, 0x81])
+        );
+        assert_eq!(
+            best_input(input(&[0x08]), Some(&input(&[0x02])), &archive),
+            input(&[0x08, 0x02])
+        );
+        assert_eq!(
+            best_input(input(&[]), None, &archive),
+            archive.champion_input
+        );
     }
 }
