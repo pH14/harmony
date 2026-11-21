@@ -5,13 +5,13 @@ use std::sync::OnceLock;
 use machine::nes::{ButtonChord, SAVE_RAM_BASE, WRAM_SIZE};
 
 use crate::{
-    chord::ChordVocabulary,
+    chord::{ChordVocabulary, Tap},
     metroid::{
         archive::CHORDS,
         target::{
-            CARTRIDGE_FRAME_RANGE, CARTRIDGE_RAM_SIZE, MAX_ENERGY_TANKS, MetroidMechanicalState,
-            MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state, follow_frame, health_cap,
-            power_on_walk,
+            CARTRIDGE_FRAME_RANGE, CARTRIDGE_RAM_SIZE, JOYPAD_SELECT, MAX_ENERGY_TANKS,
+            MetroidMechanicalState, MetroidTerminalPolicy, STARTING_HEALTH_TENTHS, decode_state,
+            follow_frame, health_cap, power_on_walk,
         },
     },
     search::assertion::{Assertion, Declarations, Number},
@@ -22,6 +22,15 @@ const CARTRIDGE_WINDOW: (u64, u32) = (
     SAVE_RAM_BASE + CARTRIDGE_FRAME_RANGE.start as u64,
     (CARTRIDGE_FRAME_RANGE.end - CARTRIDGE_FRAME_RANGE.start) as u32,
 );
+
+const SELECT_TAP_CHORDS: ChordVocabulary = ChordVocabulary {
+    tap: Some(Tap {
+        buttons: JOYPAD_SELECT,
+        odds: 12,
+        hold_frames: (2, 7),
+    }),
+    ..CHORDS
+};
 
 const MAX_HEALTH: i64 = 16_665;
 const MORPH_BALL: u8 = 0x10;
@@ -145,7 +154,7 @@ impl Game for Metroid {
 
     const NAME: &'static str = "metroid";
     const STRATEGY: &'static str = include_str!("metroid.toml");
-    const CHORDS: ChordVocabulary = CHORDS;
+    const CHORDS: ChordVocabulary = SELECT_TAP_CHORDS;
     const MEMORY_WINDOWS: &'static [(u64, u32)] = &[CARTRIDGE_WINDOW];
 
     fn setup(&self) -> Vec<ButtonChord> {
@@ -253,7 +262,10 @@ impl Game for Metroid {
 mod tests {
     use super::*;
     use crate::{
-        metroid::plan::{self, PLAN},
+        metroid::{
+            plan::{self, PLAN},
+            target::JOYPAD_B,
+        },
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
         workload::{Lowered, target::windowed},
     };
@@ -410,6 +422,31 @@ mod tests {
         ] {
             assert!(Metroid.rooted_genesis(&state).is_err(), "{state:?}");
         }
+    }
+
+    #[test]
+    fn drawn_chords_arm_missiles_with_a_select_press_and_fire_one_with_b() {
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_0e10);
+        let mut previous: Option<ButtonChord> = None;
+        let mut armed = false;
+        let mut missiles = 5_u8;
+        let mut arms = 0_u32;
+        for _ in 0..2_000 {
+            let chord = Metroid::CHORDS.draw(&mut rand, previous.as_ref()).unwrap();
+            let held = previous.map_or(0, |chord| chord.buttons);
+            let pressed = chord.buttons & !held;
+            if pressed & JOYPAD_SELECT != 0 {
+                armed = !armed;
+                arms += u32::from(armed);
+            }
+            if armed && pressed & JOYPAD_B != 0 {
+                missiles = missiles.saturating_sub(1);
+            }
+            previous = Some(chord);
+        }
+        assert!(arms > 0);
+        assert!(missiles < 5);
+        assert_eq!(CHORDS.tap, None);
     }
 
     #[test]
