@@ -21,11 +21,11 @@ require_tools cargo cc cut git ld make nproc patch readelf rustc sha256sum sort 
 
 quicknes_archive=${HARMONY_QUICKNES_STATIC_LIB:-}
 agent_override=${PLAY_AGENT_BIN:-}
-if [ -z "$agent_override" ]; then
-    [ -n "$quicknes_archive" ] || {
-        echo "FAIL: set HARMONY_QUICKNES_STATIC_LIB to libquicknes_libretro.a" >&2
-        exit 1
-    }
+if [ -z "$agent_override" ] && [ -z "$quicknes_archive" ] && [ "$(uname -m)" != aarch64 ]; then
+    echo "FAIL: set HARMONY_QUICKNES_STATIC_LIB to libquicknes_libretro.a" >&2
+    exit 1
+fi
+if [ -z "$agent_override" ] && [ -n "$quicknes_archive" ]; then
     [ -f "$quicknes_archive" ] || {
         echo "FAIL: QuickNES archive missing: $quicknes_archive" >&2
         exit 1
@@ -123,11 +123,62 @@ build_agent_x86() {
     printf '%s\n' "$output"
 }
 
+# The arm64 agent links against musl, so the pinned core is compiled with the
+# musl wrapper and the LSE-only flags of the platform's musl and BusyBox, which
+# keep LL/SC exclusives out of the scanned agent. The wrapper has no libstdc++
+# headers; build-quicknes-core.sh rewrites the core's three C++ header uses.
+build_arm64_quicknes() {
+    local quicknes_build=$BUILD_ROOT/quicknes-arm64
+    rm -rf "$quicknes_build"
+    mkdir -p "$quicknes_build"
+    HARMONY_QUICKNES_STATIC_OUTPUT="$quicknes_build/libquicknes_libretro.a" \
+        HARMONY_QUICKNES_CC="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
+        HARMONY_QUICKNES_CXX="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
+        HARMONY_QUICKNES_AR=ar \
+        HARMONY_QUICKNES_CXXFLAGS='-march=armv8.1-a+lse -mno-outline-atomics' \
+        sh "$REPO_ROOT/scripts/build-quicknes-core.sh" "$quicknes_build/quicknes_libretro.so" >&2 || {
+        echo "FAIL: the arm64 QuickNES archive did not build" >&2
+        exit 1
+    }
+    printf '%s\n' "$quicknes_build/libquicknes_libretro.a"
+}
+
+# Every symbol the archive leaves undefined must be defined by the archive,
+# musl or libgcc. An archive compiled against glibc 2.38 or later headers fails
+# here: they turn strtol and atoi into __isoc23_strtol, which musl lacks.
+require_musl_quicknes_archive() {
+    local archive=$1 libgcc undefined defined missing
+    libgcc=$("$ARM64_MUSL_PREFIX/bin/musl-gcc" -print-libgcc-file-name)
+    [ -f "$libgcc" ] || {
+        echo "FAIL: the arm64 musl compiler has no libgcc archive: $libgcc" >&2
+        exit 1
+    }
+    undefined=$(nm -u "$archive" | awk '$1 == "U" { print $2 }' | sort -u) || {
+        echo "FAIL: cannot list the symbols of QuickNES archive $archive" >&2
+        exit 1
+    }
+    defined=$(nm -g --defined-only "$archive" "$ARM64_MUSL_PREFIX/lib/libc.a" "$libgcc" |
+        awk 'NF == 3 { print $3 }' | sort -u) || {
+        echo "FAIL: cannot list the symbols musl defines for QuickNES archive $archive" >&2
+        exit 1
+    }
+    missing=$(comm -23 <(printf '%s\n' "$undefined") <(printf '%s\n' "$defined"))
+    [ -z "$missing" ] || {
+        echo "FAIL: QuickNES archive $archive needs symbols that musl does not define:" \
+            "$(printf '%s\n' "$missing" | paste -sd ' ' -)" >&2
+        echo "FAIL: the archive was compiled against another C library's headers;" \
+            "leave HARMONY_QUICKNES_STATIC_LIB unset on arm64 to compile the pinned core with musl" >&2
+        exit 1
+    }
+}
+
 build_agent_arm64() {
     if [ -n "$agent_override" ]; then
         printf '%s\n' "$agent_override"
         return
     fi
+    require_tools awk comm nm paste
+    require_musl_quicknes_archive "$quicknes_archive"
     local play_target=aarch64-unknown-linux-musl
     local agent_target=$BUILD_ROOT/play-agent-target
     local rust_sysroot rust_unwind_dir agent_rustflags
@@ -170,6 +221,9 @@ case "$(uname -m)" in
     aarch64)
         OCI_ARCH=arm64
         build_arm64_busybox
+        if [ -z "$agent_override" ] && [ -z "$quicknes_archive" ]; then
+            quicknes_archive=$(build_arm64_quicknes)
+        fi
         agent=$(build_agent_arm64)
         ;;
     *)

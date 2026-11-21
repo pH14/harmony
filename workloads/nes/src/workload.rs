@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::{
     eval::{MILESTONE_INPUTS_DIR, Request},
     film::{Endpointed, FilmMetadata, Filmable},
+    nes_backend::{NesBackend, SnapshotState},
     search::{
         archive::{ArchiveKey, Input},
         campaign::TargetExecution,
@@ -73,13 +74,13 @@ pub fn configured<G: Game>(
     }
 }
 
-impl<S: Clone + Serialize> EndpointIdentity for NesSnapshot<S> {
+impl<S: Clone + Serialize, P: SnapshotState> EndpointIdentity for NesSnapshot<S, P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
         self.endpoint_identity_sha256()
     }
 }
 
-impl<G: Game> Endpointed for NesWorkload<G, QuickNesMachine> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> Endpointed for NesWorkload<G, M, P> {
     fn headless_endpoint(
         &self,
         input: &Input<machine::nes::ButtonChord>,
@@ -95,8 +96,8 @@ impl<G: Game> Endpointed for NesWorkload<G, QuickNesMachine> {
     }
 }
 
-fn replayed<G: Game>(
-    workload: &NesWorkload<G, QuickNesMachine>,
+fn replayed<G: Game, M: NesBackend<P>, P: SnapshotState>(
+    workload: &NesWorkload<G, M, P>,
     input: &Input<machine::nes::ButtonChord>,
 ) -> Result<NesObservation<G::State>, Box<dyn Error>> {
     let mut target = workload.new_target()?;
@@ -177,6 +178,7 @@ mod tests {
             },
             accumulator,
             failed: false,
+            work_ram: (),
         }
     }
 

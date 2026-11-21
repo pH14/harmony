@@ -104,8 +104,9 @@ endpoint-state change even when its decoded game observations and archive key
 agree. The games in `nes-games` digest only the decoded result so a browser
 campaign and a native one produce the same stream. Replay binds each archive
 checkpoint snapshot to the digest its source archive entry records. SMB entries
-record the logical snapshot identity; the other games record the serialized
-snapshot. The checkpoint file hash continues to cover its exact serialized
+and those of the games declared through assertions record the logical snapshot
+identity, which for a QuickNES snapshot is the serialized snapshot; the other
+games record the serialized snapshot. The checkpoint file hash continues to cover its exact serialized
 bytes. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
@@ -244,8 +245,8 @@ A snapshot keeps the decoded observation it was taken at. QuickNES serves
 reads right after a restore, so a game that needs work RAM after a restore
 reads it from the machine. The Consonance backend serves reads only after a
 run. `SnapshotState::WorkRam` is the copy of work RAM that a snapshot of that
-state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
-RAM there. Observations carry no list of changed RAM
+state keeps: none for QuickNES and 2 KiB for Consonance. SMB and
+`NesSnapshot` store their work RAM there. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
 Checkpoint freezing accounts for owned emulator/work-RAM capacities before
 cloning. Portable Consonance state exposes its immutable shared page/sidecar
@@ -266,7 +267,7 @@ and platform evidence is not uniform:
 | Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
-| SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
+| SMB/Consonance | `nes-backend-oracle` compares a native leg and a VM leg of `NesWorkload<SuperMarioBros>`. It passes in local runs on a Linux/KVM x86_64 host and a Linux/KVM aarch64 host, which print the same `NES_BACKEND_ORACLE_OK` line: 104 actions, 400 executions, and equal target-record and campaign-stream hashes. No repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, a musl build of the oracle, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin run through `nes-eval` as `mm2-strategy`, and each stage win replays as a witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in, and `demos/twin-dragons/tests/campaign-oracle.mjs` compares a `nes-eval` campaign with the browser campaign; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
@@ -274,25 +275,60 @@ and platform evidence is not uniform:
 | Donkey Kong/native | Unit tests are checked in and `nes-eval` clears eight rounds from power-on on seeds 1 to 3 and ten rounds on seed 3, each with a replayed witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Donkey Kong (World, Rev 1) ROM. |
 | Castlevania/native | Unit tests are checked in and a short cold `nes-eval` probe replays its witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Castlevania (USA) (Rev 1) ROM. |
 | Famidash/native | Unit tests are checked in, and `nes-eval` clears Stereo Madness with a replayed victory witness on seeds 1 to 5; no CI lane runs it yet. | Host QuickNES core with the four-screen state patch and the four official 1.2.8 release ROMs. |
-| Ice Climber/native | Unit tests are checked in. Three `nes-eval` searches from power-on (seeds 21, 31 and 32, 1 to 2.5 hours) clear mountains 1 to 4 with a tape that replays from power-on in a fresh `castlevania-probe` process; none clears mountain 5. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Ice Climber (USA) ROM. |
-| Pac-Man/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first maze; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Pac-Man (Namco, NES) ROM. |
 | Ice Climber/native | Unit tests are checked in. Three `nes-eval` searches from power-on (seeds 21 to 23, 5 workers, 29 to 50 minutes) clear all 32 mountains with a replayed victory witness, in 6.9M, 10.1M and 11.3M executions. Each tape replays from power-on in a fresh `castlevania-probe` process and ends with `$59` = 32 and 3 lives. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Ice Climber (USA) ROM. |
+| Pac-Man/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first maze; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Pac-Man (Namco, NES) ROM. |
 | Punch-Out!!/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first round against Glass Joe; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Punch-Out!! (USA) ROM. |
 | Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
-On Linux/KVM, the shared oracle is invoked as:
+On Linux/KVM, the oracle runs as two legs and a compare step. A Consonance
+session admits only a static musl executable started from a sealed memfd, and
+the musl build cannot load the native QuickNES core, so no single build runs
+both backends. Build the oracle twice with
+`cargo build --release --locked --manifest-path workloads/nes/Cargo.toml --features consonance --bin nes-backend-oracle`,
+once as is and once with `--target x86_64-unknown-linux-musl`
+(`aarch64-unknown-linux-musl` on ARM), then run:
 
 ```sh
-cargo run --release --manifest-path workloads/nes/Cargo.toml \
-  --features consonance --bin nes-backend-oracle -- \
-  ROM QUICKNES_CORE KERNEL PLATFORM_INITRAMFS NES_OCI_IMAGE
+nes-backend-oracle native ROM QUICKNES_CORE OUT/native
+python3 scripts/linux-sealed-test-runner.py MUSL/nes-backend-oracle \
+  vm ROM KERNEL PLATFORM_INITRAMFS NES_OCI_IMAGE OUT/vm
+nes-backend-oracle compare OUT/native OUT/vm
 ```
 
-The oracle identifies SMB from the ROM and compares native and
-whole-VM observations, restored continuations, terminal outcomes, and probes.
+The native leg refuses the musl build and the VM leg refuses the GNU build.
+Each leg builds `NesWorkload<SuperMarioBros>` on its backend and writes two
+things into its directory. `target.jsonl` (format
+`nes-backend-oracle-leg-v1`) records the genesis observation and then 8
+sequences of 16 planned chords, each sequence restored from the genesis
+snapshot and ended early at a goal, reject or overrun. For each chord it
+records the action observations, the observation and the terminal outcome
+after the chord, the observation after the snapshot taken before the chord is
+restored, and the same fields after the chord is applied again. `campaign/`
+holds one package search with seed 1, one worker and 400 executions.
+
+The compare step reads files only. It fails on a differing record, naming its
+sequence, action and first differing field; on a boundary that one leg has and
+the other lacks; on a leg without its end record; on a chord that is not the
+plan's, or a sequence that ends before its 16th chord without a terminal
+outcome; and, within each leg, on an exit other than `Ok`, a reapplied chord
+that differs from its first run, a restore that does not return to the
+observation before the chord, a chord that records no actions or whose last
+action observation is not its observation, or an outcome that does not follow
+from its observation's `goal`, `rejected` and `overran` fields. A chord
+without an outcome must advance the frame count by exactly its planned hold. A goal or rejection seen on a frame ends the chord on that frame,
+so a chord with an outcome must advance at least one frame and at most its
+planned hold. Its unit tests run these checks on hand-made record files, so
+they need no ROM or KVM. For the campaigns it requires equal stream lines after the header, stream headers equal except
+`emulator_backend` and `executable_identity`, as many `job` lines between the
+header and the end record as the end record's `executions_completed`, a
+byte-equal `witness-input.json`, and `result.json` in `harmony-search-result-v2`
+and equal except `backend` and `witness.snapshot_sha256`. On success it writes
+`OUT/compare.json` and prints
+`NES_BACKEND_ORACLE_OK actions=N sha256=H executions=E stream_sha256=S`, where
+`H` and `S` hash the target records and the stream lines after their headers.
 ROMs are not redistributed by this package. On aarch64, the caller must supply
-a kernel, platform runtime, and NES OCI image built for that architecture; no
-current ARM result is claimed by this matrix.
+a kernel, platform runtime, and NES OCI image built for that architecture. The
+SMB/Consonance row is the only row of the matrix that claims an aarch64 result.
 
 `nes-core-oracle` writes the native QuickNES reference for the browser demo's
 WebAssembly core. It runs a game's setup tape followed by seeded chords from
@@ -504,6 +540,16 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+It runs `NesWorkload<SuperMarioBros>`, the workload `nes-eval smb-strategy`
+runs, on QuickNES through `NesWorkload::new` and on Consonance through
+`NesWorkload::new_consonance`, from the fixed setup tape
+`super-mario-bros-setup-v1`. Its package version is `nes-v2` (`PACKAGE`):
+`prepared.json` records it with the workload's sorted search policy fields,
+and `result.json` has format `harmony-search-result-v2`, whose `witness` is the
+`replay_witness` object an `nes-eval-result-v4` witness carries, so a native
+`nes-film` checks it the same way. The package has no probe admission, routes
+or shrink window; those belong to the hand-written `SmbGame`, which `nes-eval
+smb`, `smb-campaign` and the arcade feed still run.
 Native search and replay require the saved core digest from the run manifest;
 the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
@@ -526,7 +572,9 @@ passing those bytes to the package.
 The Consonance SMB campaign's emulator policy and prepared execution identity
 also bind the loaded Harmony executable through the exact client session
 identity, so a saved stream or checkpoint from another build is refused before
-the guest is replayed.
+the guest is replayed. `new_consonance` refuses a game that pokes work RAM
+during setup or declares memory windows, because the VM backend publishes
+neither; issue 1073 tracks that work.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search

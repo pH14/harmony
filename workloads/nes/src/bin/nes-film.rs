@@ -26,6 +26,7 @@ use nes_workload::{
     metroid::MetroidStrategyGame,
     mm2::{MegaMan2, Mm2Workload},
     pac_man::{PacMan, PacManWorkload},
+    package::SEARCH_RESULT_FORMAT,
     punchout::{PunchOut, PunchOutWorkload},
     search::archive::Input,
     smb::SmbStrategyGame,
@@ -208,9 +209,9 @@ fn produce<G: Filmable>(game: G, run: G::Run, args: &Args, identity: Value) -> R
     let replayed = replay_witness(&game, &run, &input)?;
     if native {
         let format = recorded.get("format").and_then(Value::as_str);
-        if format != Some(RESULT_FORMAT) {
+        if format != Some(RESULT_FORMAT) && format != Some(SEARCH_RESULT_FORMAT) {
             return Err(format!(
-                "the recorded result has format {}; this nes-film checks witnesses in {RESULT_FORMAT}, so rerun the search with this nes-eval",
+                "the recorded result has format {}; this nes-film checks witnesses in {RESULT_FORMAT} and {SEARCH_RESULT_FORMAT}, so rerun the search with this build",
                 format.unwrap_or("none")
             )
             .into());

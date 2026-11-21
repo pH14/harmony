@@ -9,6 +9,7 @@ pub mod target;
 use std::{
     error::Error,
     fmt::Debug,
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -21,12 +22,12 @@ use sha2::{Digest, Sha256};
 
 pub use arcade::Arcade;
 pub use shadow::{Shadow, ShadowHook, ShadowToken, StateHook};
-pub use target::{ActionObservation, NesObservation, NesSnapshot, NesTarget};
+pub use target::{ActionObservation, NativeMemory, NesObservation, NesSnapshot, NesTarget};
 
 use crate::{
     arcade::Machines,
     chord::{self, CHORD_DRAW_FIELD, CHORD_SITES, CHORD_TREE_IDENTIFIER, ChordVocabulary},
-    nes_backend::{NesBackend, NesMemory, SnapshotState},
+    nes_backend::{NesBackend, NesMemory, SnapshotState, WorkRamCopy},
     search::{
         archive::{
             ArchiveEntryReport, Input, KeyShape, ProgressPoint, RetentionPolicy,
@@ -52,6 +53,8 @@ use crate::{
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v3";
+pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str =
+    "nes-workload-consonance-snapshot-checkpoint-v1";
 pub const NAMED_PROGRESS_FORMAT: &str = "nes-named-progress-v1";
 pub const ARCHIVE_FORMAT: &str = "nes-workload-archive-v1";
 pub const MAX_SOMETIMES: usize = 128;
@@ -64,10 +67,11 @@ const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
-const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
+pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 const TERMINAL_IDENTIFIER: &str = "strategy_goal_or_reject_v1";
+const RESULT_DIGEST: &str = "result_digest=semantic-postcard-1.1.3-sha256-hex-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum Never {}
@@ -552,10 +556,8 @@ impl<G: Game> Lowered<G> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NesRun;
 
-fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
-    format!(
-        "{core};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
-    )
+fn emulator_identity(before_genesis: &str, genesis: &str, after_genesis: &str) -> String {
+    format!("{before_genesis};genesis={genesis};{after_genesis}")
 }
 
 #[must_use]
@@ -567,17 +569,20 @@ pub fn root_sha256(root: &[ButtonChord]) -> String {
     format!("{:x}", digest.finalize())
 }
 
-pub struct NesWorkload<G: Game, M: NesBackend<Vec<u8>>> {
+pub struct NesWorkload<G: Game, M: NesBackend<P>, P: SnapshotState = Vec<u8>> {
     lowered: Arc<Lowered<G>>,
     rom_sha256: String,
-    core: String,
-    core_sha256: String,
+    identity_before_genesis: String,
+    identity_after_genesis: String,
     identity: String,
+    checkpoint_format: &'static str,
+    native_memory: Option<NativeMemory<M>>,
     root: Vec<ButtonChord>,
     machines: Machines<M>,
     records: Option<Arc<Records>>,
     choices: ChoicePolicy,
     milestone_input_dir: Option<PathBuf>,
+    state: PhantomData<fn() -> P>,
 }
 
 struct Records {
@@ -586,7 +591,62 @@ struct Records {
 }
 
 impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
-    fn merge_root(&self, evidence: &mut NesEvidence, target: &NesTarget<G, M>) -> Vec<String> {
+    pub fn with_machines(
+        game: G,
+        strategy: &str,
+        rom: &[u8],
+        core: &str,
+        core_sha256: &str,
+        machines: Machines<M>,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::assemble(
+            game,
+            strategy,
+            rom,
+            format!("{core};state=ppu-unused2-zero-v1"),
+            format!("{RESULT_DIGEST};sha256={core_sha256}"),
+            SNAPSHOT_CHECKPOINT_FORMAT,
+            Some(NativeMemory::of()),
+            machines,
+        )
+    }
+}
+
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> NesWorkload<G, M, P> {
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        game: G,
+        strategy: &str,
+        rom: &[u8],
+        identity_before_genesis: String,
+        identity_after_genesis: String,
+        checkpoint_format: &'static str,
+        native_memory: Option<NativeMemory<M>>,
+        machines: Machines<M>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let identity = emulator_identity(
+            &identity_before_genesis,
+            &game.genesis_id(),
+            &identity_after_genesis,
+        );
+        Ok(Self {
+            lowered: Arc::new(Lowered::new(game, strategy)?),
+            rom_sha256: format!("{:x}", Sha256::digest(rom)),
+            identity_before_genesis,
+            identity_after_genesis,
+            identity,
+            checkpoint_format,
+            native_memory,
+            root: Vec::new(),
+            machines,
+            records: None,
+            choices: reproducing_choices::<G>(),
+            milestone_input_dir: None,
+            state: PhantomData,
+        })
+    }
+
+    fn merge_root(&self, evidence: &mut NesEvidence, target: &NesTarget<G, M, P>) -> Vec<String> {
         evidence.name(&self.lowered);
         let observation = target.observation();
         if let Some(key) = observation.key {
@@ -596,41 +656,21 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
         evidence.update_first_seen(observation.satisfied, 0, Some(&Input::default()))
     }
 
-    pub fn with_machines(
-        game: G,
-        strategy: &str,
-        rom: &[u8],
-        core: &str,
-        core_sha256: &str,
-        machines: Machines<M>,
-    ) -> Result<Self, Box<dyn Error>> {
-        let identity = emulator_identity(core, &game.genesis_id(), core_sha256);
-        Ok(Self {
-            lowered: Arc::new(Lowered::new(game, strategy)?),
-            rom_sha256: format!("{:x}", Sha256::digest(rom)),
-            core: core.to_owned(),
-            core_sha256: core_sha256.to_owned(),
-            identity,
-            root: Vec::new(),
-            machines,
-            records: None,
-            choices: reproducing_choices::<G>(),
-            milestone_input_dir: None,
-        })
-    }
-
     pub fn with_strategy(&self, strategy: &str) -> Result<Self, Box<dyn Error>> {
         Ok(Self {
             lowered: Arc::new(Lowered::new(self.lowered.game.clone(), strategy)?),
             rom_sha256: self.rom_sha256.clone(),
-            core: self.core.clone(),
-            core_sha256: self.core_sha256.clone(),
+            identity_before_genesis: self.identity_before_genesis.clone(),
+            identity_after_genesis: self.identity_after_genesis.clone(),
             identity: self.identity.clone(),
+            checkpoint_format: self.checkpoint_format,
+            native_memory: self.native_memory,
             root: self.root.clone(),
             machines: Arc::clone(&self.machines),
             records: None,
             choices: self.choices,
             milestone_input_dir: self.milestone_input_dir.clone(),
+            state: PhantomData,
         })
     }
 
@@ -650,7 +690,11 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             self.lowered.game.genesis_id(),
             root_sha256(&root)
         );
-        self.identity = emulator_identity(&self.core, &genesis, &self.core_sha256);
+        self.identity = emulator_identity(
+            &self.identity_before_genesis,
+            &genesis,
+            &self.identity_after_genesis,
+        );
         self.root = root;
         Ok(self)
     }
@@ -711,7 +755,12 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesWorkload<G, M> {
             0
         } else {
             let machine = (self.machines)().map_err(|error| error.to_string())?;
-            let mut unrooted = NesTarget::from_power_on(Arc::clone(&self.lowered), machine, &[])?;
+            let mut unrooted = NesTarget::from_power_on(
+                Arc::clone(&self.lowered),
+                machine,
+                &[],
+                self.native_memory,
+            )?;
             for action in &self.root {
                 unrooted.apply(action);
             }
@@ -818,6 +867,54 @@ impl<G: Game> NesWorkload<G, QuickNesMachine> {
         let execution_sha256 =
             machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
         Self::new(game, rom, &core_path, &core_sha256, &execution_sha256)
+    }
+}
+
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl<G: Game>
+    NesWorkload<G, machine::consonance::ConsonanceMachine, machine::consonance::ConsonancePortable>
+{
+    pub fn new_consonance(
+        game: G,
+        rom: &[u8],
+        kernel: &[u8],
+        initramfs: &[u8],
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::refuse_native_memory(&game)?;
+        let identity_before_genesis = machine::consonance::identity(kernel, initramfs)?;
+        let target_kernel = kernel.to_vec();
+        let target_initramfs = initramfs.to_vec();
+        Self::assemble(
+            game,
+            G::STRATEGY,
+            rom,
+            identity_before_genesis,
+            RESULT_DIGEST.to_owned(),
+            CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
+            None,
+            Arc::new(move || {
+                machine::consonance::ConsonanceMachine::new(&target_kernel, &target_initramfs)
+            }),
+        )
+    }
+
+    fn refuse_native_memory(game: &G) -> Result<(), machine::MachineError> {
+        if !game.setup_pokes().is_empty() {
+            return Err(target::without_native_memory::<G>(
+                "pokes work RAM during setup",
+            ));
+        }
+        if !G::MEMORY_WINDOWS.is_empty() {
+            return Err(target::without_native_memory::<G>(
+                "reads save RAM on every frame",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -937,8 +1034,8 @@ pub struct NesArchiveReport {
     pub selector: SelectorAccounting,
 }
 
-type NesActionResult<G, M> = CampaignActionResult<NesWorkload<G, M>>;
-type NesJobResult<G, M> = CampaignJobResult<NesWorkload<G, M>>;
+type NesActionResult<G, M, P> = CampaignActionResult<NesWorkload<G, M, P>>;
+type NesJobResult<G, M, P> = CampaignJobResult<NesWorkload<G, M, P>>;
 
 pub fn chord_time<G: Game>(action: &ButtonChord) -> u64 {
     move_answer(action).map_or_else(
@@ -947,9 +1044,9 @@ pub fn chord_time<G: Game>(action: &ButtonChord) -> u64 {
     )
 }
 
-fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
+fn merge_action_milestones<G: Game, M: NesBackend<P>, P: SnapshotState>(
     aggregate: &mut Satisfied,
-    target: &NesTarget<G, M>,
+    target: &NesTarget<G, M, P>,
 ) {
     if target.exit_kind() != ExitKind::Ok {
         return;
@@ -959,7 +1056,7 @@ fn merge_action_milestones<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
     }
 }
 
-fn outcome<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(target: &NesTarget<G, M>) -> Outcome {
+fn outcome<G: Game, M: NesBackend<P>, P: SnapshotState>(target: &NesTarget<G, M, P>) -> Outcome {
     let observation = target.observation();
     if target.exit_kind() != ExitKind::Ok {
         return Outcome {
@@ -996,16 +1093,16 @@ fn asked_chord<M: Copy>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_suffix<G: Game, M: NesBackend<Vec<u8>> + NesMemory>(
-    game: &NesWorkload<G, M>,
+fn execute_suffix<G: Game, M: NesBackend<P>, P: SnapshotState>(
+    game: &NesWorkload<G, M, P>,
     run: &NesRun,
-    target: &mut NesTarget<G, M>,
+    target: &mut NesTarget<G, M, P>,
     parent_milestones: Satisfied,
     mut previous: Option<ButtonChord>,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
     stop: RolloutStop,
-) -> Result<NesJobResult<G, M>, Box<dyn Error>> {
+) -> Result<NesJobResult<G, M, P>, Box<dyn Error>> {
     if matches!(retention, RetentionPolicy::ProbeAtAdmission) {
         return Err(format!(
             "{} rejects ProbeAtAdmission: ordinary admission is sufficient",
@@ -1119,14 +1216,14 @@ fn watermark<S>(observations: &[ActionObservation<S>]) -> Option<u32> {
         .max()
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> CampaignTypes for NesWorkload<G, M, P> {
     type JobObservation = ();
-    type Target = NesTarget<G, M>;
+    type Target = NesTarget<G, M, P>;
     type Action = ButtonChord;
     type Key = AssertionKey;
     type Milestones = Satisfied;
     type Progress = u32;
-    type Snapshot = NesSnapshot<G::State>;
+    type Snapshot = NesSnapshot<G::State, P>;
     type Observations = ActionObservation<G::State>;
     type Evidence = NesEvidence;
     type ArchiveReport = NesArchiveReport;
@@ -1166,7 +1263,7 @@ fn violations(evidence: &NesEvidence) -> serde_json::Value {
         .collect()
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> Reporting for NesWorkload<G, M, P> {
     fn diagnostics(evidence: &NesEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "named_progress": named_progress(evidence),
@@ -1224,7 +1321,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M
     }
 
     fn checkpoint_format(&self) -> &'static str {
-        SNAPSHOT_CHECKPOINT_FORMAT
+        self.checkpoint_format
     }
 
     fn workload_identity_sha256(&self) -> String {
@@ -1239,7 +1336,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M
         "frames"
     }
 
-    fn result_sha256(&self, result: &NesJobResult<G, M>) -> Result<String, Box<dyn Error>> {
+    fn result_sha256(&self, result: &NesJobResult<G, M, P>) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
     }
 
@@ -1247,7 +1344,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M
         &self,
         snapshot: &Self::Snapshot,
     ) -> Result<String, Box<dyn Error>> {
-        postcard_value_sha256(&(self.lowered.compiled.policy_identifier(), snapshot))
+        postcard_value_sha256(&(
+            self.lowered.compiled.policy_identifier(),
+            snapshot.logical_identity()?,
+        ))
     }
 
     fn archive_report(
@@ -1274,7 +1374,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Reporting for NesWorkload<G, M
     }
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> InputPolicy for NesWorkload<G, M, P> {
     fn policies(&self, _run: &NesRun) -> WorkloadPolicies {
         [
             (GAME_FIELD, G::NAME.to_owned()),
@@ -1335,7 +1435,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for NesWorkload<G,
     }
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> TargetExecution for NesWorkload<G, M, P> {
     fn planned_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time::<G>
     }
@@ -1343,30 +1443,36 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize {
         std::mem::size_of::<Self::Snapshot>()
             .saturating_add(snapshot.emulator_state.memory_charge())
+            .saturating_add(snapshot.work_ram.memory_charge())
             .saturating_add(snapshot.accumulator.heap_bytes())
     }
 
-    fn new_target(&self) -> Result<NesTarget<G, M>, String> {
+    fn new_target(&self) -> Result<NesTarget<G, M, P>, String> {
         let machine = (self.machines)().map_err(|error| error.to_string())?;
-        let mut target = NesTarget::from_power_on(Arc::clone(&self.lowered), machine, &self.root)
-            .map_err(|error| error.to_string())?;
+        let mut target = NesTarget::from_power_on(
+            Arc::clone(&self.lowered),
+            machine,
+            &self.root,
+            self.native_memory,
+        )
+        .map_err(|error| error.to_string())?;
         target.record_frames(self.records.is_some());
         Ok(target)
     }
 
-    fn reset(&self, target: &mut NesTarget<G, M>) {
+    fn reset(&self, target: &mut NesTarget<G, M, P>) {
         target.reset();
     }
 
     fn restore(
         &self,
-        target: &mut NesTarget<G, M>,
+        target: &mut NesTarget<G, M, P>,
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
 
-    fn execution_work(&self, target: &NesTarget<G, M>) -> u64 {
+    fn execution_work(&self, target: &NesTarget<G, M, P>) -> u64 {
         target.execution_work()
     }
 
@@ -1379,7 +1485,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
 
     fn apply_action(
         &self,
-        target: &mut NesTarget<G, M>,
+        target: &mut NesTarget<G, M, P>,
         action: &ButtonChord,
         aggregate: &mut Satisfied,
     ) -> Result<(), Box<dyn Error>> {
@@ -1388,7 +1494,10 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
         Ok(())
     }
 
-    fn rollout_observations(&self, target: &NesTarget<G, M>) -> Vec<ActionObservation<G::State>> {
+    fn rollout_observations(
+        &self,
+        target: &NesTarget<G, M, P>,
+    ) -> Vec<ActionObservation<G::State>> {
         if target.exit_kind() == ExitKind::Ok {
             target.last_action_observations().to_vec()
         } else {
@@ -1396,7 +1505,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
         }
     }
 
-    fn snapshot(&self, target: &mut NesTarget<G, M>) -> Result<Self::Snapshot, Box<dyn Error>> {
+    fn snapshot(&self, target: &mut NesTarget<G, M, P>) -> Result<Self::Snapshot, Box<dyn Error>> {
         target
             .snapshot()
             .ok_or_else(|| format!("failed to snapshot {}", G::NAME).into())
@@ -1433,12 +1542,12 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for NesWorkloa
     }
 }
 
-impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, M> {
+impl<G: Game, M: NesBackend<P>, P: SnapshotState> Evaluation for NesWorkload<G, M, P> {
     fn key_shape(&self) -> KeyShape {
         self.lowered.compiled.shape()
     }
 
-    fn execution_disposition(&self, target: &NesTarget<G, M>) -> ExecutionDisposition {
+    fn execution_disposition(&self, target: &NesTarget<G, M, P>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
         } else if target.observation().goal {
@@ -1451,12 +1560,12 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
     fn objective_reached(
         &self,
         _run: &NesRun,
-        target: &NesTarget<G, M>,
+        target: &NesTarget<G, M, P>,
     ) -> Result<bool, Box<dyn Error>> {
         Ok(target.exit_kind() == ExitKind::Ok && target.observation().goal)
     }
 
-    fn is_doomed(&self, target: &NesTarget<G, M>) -> bool {
+    fn is_doomed(&self, target: &NesTarget<G, M, P>) -> bool {
         target.observation().rejected.is_some() || target.observation().overran
     }
 
@@ -1471,7 +1580,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
             .fold(0, u64::saturating_add)
     }
 
-    fn current_key(&self, target: &NesTarget<G, M>) -> Result<AssertionKey, Box<dyn Error>> {
+    fn current_key(&self, target: &NesTarget<G, M, P>) -> Result<AssertionKey, Box<dyn Error>> {
         target
             .observation()
             .key
@@ -1505,7 +1614,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
     fn merge_snapshot_root_evidence(
         &self,
         evidence: &mut NesEvidence,
-        target: &NesTarget<G, M>,
+        target: &NesTarget<G, M, P>,
     ) -> Result<(), Box<dyn Error>> {
         self.merge_root(evidence, target);
         Ok(())
@@ -1514,7 +1623,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
     fn merge_genesis_evidence(
         &self,
         evidence: &mut NesEvidence,
-        target: &NesTarget<G, M>,
+        target: &NesTarget<G, M, P>,
     ) -> Result<(), Box<dyn Error>> {
         let named = self.merge_root(evidence, target);
         publish_milestone_inputs(
@@ -1541,7 +1650,7 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> Evaluation for NesWorkload<G, 
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut NesEvidence,
-        action: &NesActionResult<G, M>,
+        action: &NesActionResult<G, M, P>,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>
@@ -2175,6 +2284,118 @@ mod tests {
         target.reset();
         assert_eq!(rooted.snapshot(&mut target).unwrap(), genesis);
         assert!(ledge().with_root(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_native_snapshot_keeps_its_checkpoint_bytes_and_its_identities() {
+        let workload = ledge();
+        let mut target = workload.new_target().unwrap();
+        for action in [ButtonChord::new(RIGHT, 4), ButtonChord::new(LEFT, 3)] {
+            target.apply(&action);
+        }
+        let snapshot = workload.snapshot(&mut target).unwrap();
+        assert!(snapshot.accumulator.heap_bytes() > 0);
+        let mut bytes = Vec::new();
+        crate::search::snapshot_codec::write_checkpoint(
+            &crate::search::campaign::SnapshotCheckpoint {
+                format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                entries: vec![crate::search::campaign::SnapshotCheckpointEntry {
+                    id: 7,
+                    snapshot: snapshot.clone(),
+                }],
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            "3a19fa71f49a8102f96575684d8282ebe4f8f74a925be909d536daa0f3f902b2"
+        );
+        assert_eq!(
+            workload.snapshot_identity_sha256(&snapshot).unwrap(),
+            "958579e32174eab332eee50e54ab7c2b76c2d3ddb8ffe6a5c49d3d1c9f600296"
+        );
+        assert_eq!(
+            snapshot.endpoint_identity_sha256().unwrap(),
+            "6f55a776803f08bb739eb2b8246dc869a0e427310b422727e1f2b6d8e96c49ac"
+        );
+    }
+
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ))]
+    #[test]
+    fn a_consonance_workload_refuses_setup_pokes_and_memory_windows_before_it_starts_a_session() {
+        let poked = fixture::Preset {
+            setup: Vec::new(),
+            pokes: vec![(0, 5)],
+        };
+        assert_eq!(
+            NesWorkload::new_consonance(poked, b"preset", &[], &[])
+                .err()
+                .map(|error| error.to_string()),
+            Some(
+                "machine backend failed: preset pokes work RAM during setup, which only the native QuickNES backend provides"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            NesWorkload::new_consonance(fixture::Cellar, b"cellar", &[], &[])
+                .err()
+                .map(|error| error.to_string()),
+            Some(
+                "machine backend failed: cellar reads save RAM on every frame, which only the native QuickNES backend provides"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ))]
+    #[test]
+    fn consonance_policy_binds_the_admitted_identity_before_guest_replay() {
+        let expected = "consonance-whole-vm-v3;session=admitted-test-session";
+        let workload = NesWorkload::<
+            Ledge,
+            machine::consonance::ConsonanceMachine,
+            machine::consonance::ConsonancePortable,
+        >::assemble(
+            Ledge,
+            Ledge::STRATEGY,
+            b"ledge",
+            expected.to_owned(),
+            RESULT_DIGEST.to_owned(),
+            CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
+            None,
+            Arc::new(|| {
+                Err(machine::MachineError::Backend(
+                    "the policy check never builds a target".to_owned(),
+                ))
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            workload.emulator_identity(),
+            format!("{expected};genesis=ledge-setup-v1;{RESULT_DIGEST}")
+        );
+        assert_eq!(
+            workload.checkpoint_format(),
+            CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT
+        );
+        let mut policies = workload.policies(&NesRun);
+        assert!(workload.resolve_recorded(&policies).is_ok());
+        policies.insert(
+            EMULATOR_BACKEND_FIELD.to_owned(),
+            "another loaded executable".to_owned(),
+        );
+        assert!(workload.resolve_recorded(&policies).is_err());
     }
 
     #[test]

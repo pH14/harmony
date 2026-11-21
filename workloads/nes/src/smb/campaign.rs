@@ -226,39 +226,6 @@ mod tests {
         assert!(second.resolve_recorded(&first.policies(&run)).is_err());
     }
 
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
-        not(miri)
-    ))]
-    #[test]
-    fn consonance_policy_binds_the_admitted_identity_before_guest_replay() {
-        let expected = "consonance-whole-vm-v3;session=admitted-test-session";
-        let game = SmbGame::<
-            machine::consonance::ConsonanceMachine,
-            machine::consonance::ConsonancePortable,
-        >::with_targets(
-            &synthetic_nrom(),
-            format!("{expected};result_digest=semantic-postcard-1.1.3-sha256-hex-v1"),
-            super::CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
-            Box::new(|| Err("the policy check never builds a target".to_owned())),
-        );
-        assert!(game.emulator_identity().starts_with(expected));
-
-        let run = SmbCampaignRun {
-            vocabulary: SmbButtonVocabulary::default(),
-            terminal: None,
-        };
-        let mut policies = game.policies(&run);
-        assert!(game.resolve_recorded(&policies).is_ok());
-        policies.insert(
-            super::EMULATOR_BACKEND_FIELD.to_owned(),
-            "another loaded executable".to_owned(),
-        );
-        assert!(game.resolve_recorded(&policies).is_err());
-    }
-
     fn run_smb_campaign(
         rom: &[u8],
         config: &SmbCampaignConfig,

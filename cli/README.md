@@ -220,6 +220,18 @@ recorded-input execution, replay, branching, rooted search and continuation.
 NES controller recordings use `--actions FILE`; console logs and virtual-time
 rewinds are not available for these recordings.
 
+The NES package is version `nes-v2`. It runs SMB as the Super Mario Bros.
+strategy workload, the one `nes-eval smb-strategy` runs, from a fixed setup
+tape. That workload has no probe admission, no routes and no shrink window, so
+a search keeps every live execution its draws produce. The CLI does not offer
+`shrink` or `explain` for NES, so the missing shrink window removes no command.
+Each NES run records its package version in its payload. Every replay, branch,
+rooted search and continuation first requires the exact Harmony executable that
+recorded the run, so a run from another build, including every run recorded
+before `nes-v2`, is refused with that message. Behind that check, the adapter
+refuses a run recorded by another package version with a message that names
+both versions; that check is reached only when the executables match.
+
 ## Search and investigation
 
 ```text

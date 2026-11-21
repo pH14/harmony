@@ -29,7 +29,7 @@ test constructors and the scripted Super Tilt Bro machine to the tests of
 Super Mario Bros., Metroid and Castlevania
 also have a `campaign` module with their `Workload` implementation.
 `CastlevaniaGame<M>`, `SmbGame<M, P>`,
-`MetroidGame<M>` and `NesWorkload<G, M>` are
+`MetroidGame<M>` and `NesWorkload<G, M, P>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -100,9 +100,10 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Metroid v13, SMB
-QuickNES v5 and SMB Consonance v4; Super Tilt Bro's native campaign selects v5.
-The games declared through assertions share `nes-workload-snapshot-checkpoint-v3`,
+formats are Castlevania v1, Metroid v13 and SMB
+QuickNES v5; Super Tilt Bro's native campaign selects v5.
+The games declared through assertions share `nes-workload-snapshot-checkpoint-v3`
+natively and `nes-workload-consonance-snapshot-checkpoint-v1` on Consonance,
 and their archive reports carry `format: nes-workload-archive-v1`, which an
 archive import checks.
 These plain snapshots use the postcard payload codec inside the framed envelope.
@@ -110,8 +111,8 @@ Previous flat envelopes are refused. Native `nes` target modules remain
 re-export shims and do not supply separate checkpoint implementations.
 
 Immutable checkpoint images charge the full capacity of each game's emulator-state
-vector and the fixed snapshot/observation value. SMB also charges its backend's
-portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
+vector and the fixed snapshot/observation value. SMB and `NesWorkload` also
+charge their backend's portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
 use physical allocation identities; equivalent separately allocated states remain
 separate charges. Freeze clones owned buffers and retains immutable shared state.
 Metroid and SMB stream evidence from borrowed fields, preserving the
@@ -188,8 +189,25 @@ compiles the strategy, and turns a state into a `NesObservation`: its
 bitmask of the `sometimes` declarations that hold. The strategy must name a
 goal, and a game has at most 128 `sometimes` declarations.
 
-`NesWorkload<G, M>` is the `Workload` implementation for every such game, with
-`NesTarget<G, M>` as its target.
+`NesWorkload<G, M, P>` is the `Workload` implementation for every such game,
+with `NesTarget<G, M, P>` as its target and `NesSnapshot<G::State, P>` as its
+snapshot. `P` is the backend's `SnapshotState`, `Vec<u8>` by default, so
+`NesWorkload<G, M>` is the native workload. `with_machines`, `new` and
+`from_environment` build a native workload over any machine with `NesMemory`.
+`new_consonance` builds one over the Consonance machine, with the emulator
+identity `{consonance identity};genesis=..;result_digest=..` and the snapshot
+checkpoint format `nes-workload-consonance-snapshot-checkpoint-v1`. A
+Consonance snapshot keeps the 2 KiB work RAM of its frame (`P::WorkRam`), and
+`restore` uses that copy, because the VM machine reads memory only after a
+run. The snapshot identity hashes `SnapshotState::logical_identity` of the
+emulator state, which for Consonance drops the x87 sidecar state that differs
+between runs. The setup tape and the start tape each run as one branch, with
+the setup pokes between them, and the target calls `run` until the tape's
+frames have been produced: QuickNES runs the tape in one call, and the VM stops
+after every chord. An empty tape runs nothing. Setup pokes and memory windows need
+`NesMemory`, which only the native constructors pass to the target through
+`NativeMemory`, so `new_consonance` refuses a game that declares either (issue
+1073).
 `NesWorkload::with_root` roots the search at a tape state: every new target
 plays the root, a list of the workload's own actions, with `NesTarget::apply`
 after `start`, so move answers and forced moves play as in a search. A root

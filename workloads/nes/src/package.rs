@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use crate::{
-    film::Endpointed,
-    smb::campaign::{SmbCampaignRun, SmbGame},
-    witness::replay_witness,
+use crate::{film::Endpointed, witness::replay_witness};
+use nes_games::{
+    smb::game::SuperMarioBros,
+    workload::{EMULATOR_BACKEND_FIELD, NesRun, NesWorkload},
 };
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
     campaign::{
-        CampaignConfig, CampaignOrigin, default_window, run_campaign_checkpointed_with_options,
+        CampaignConfig, CampaignOrigin, InputPolicy, default_window,
+        run_campaign_checkpointed_with_options,
     },
     draw::DrawMixture,
 };
@@ -19,6 +20,9 @@ use std::{
     io::BufWriter,
     path::{Path, PathBuf},
 };
+
+pub const PACKAGE: &str = "nes-v2";
+pub const SEARCH_RESULT_FORMAT: &str = "harmony-search-result-v2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,21 +115,31 @@ fn validate_output(options: &SearchOptions) -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+fn search_policy(workload: &impl InputPolicy<Run = NesRun>) -> String {
+    let fields: Vec<String> = workload
+        .policies(&NesRun)
+        .into_iter()
+        .filter(|(field, _)| field != EMULATOR_BACKEND_FIELD)
+        .map(|(field, value)| format!("{field}={value}"))
+        .collect();
+    format!("campaign-v2;{}", fields.join(";"))
+}
 fn record_identity(
     rom: &[u8],
+    workload: &impl InputPolicy<Run = NesRun>,
     execution: ExecutionIdentity,
     options: &SearchOptions,
 ) -> Result<(), Box<dyn Error>> {
     let identity = PreparedIdentity {
         workload: WorkloadIdentity {
-            package: "nes-v1".into(),
+            package: PACKAGE.into(),
             adapter: RomKind::identify(rom)?,
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
-            semantics: "game-adapter-v1;action=button-hold-v1;observation=nes-ram-ring-v2".into(),
+            semantics: "game-adapter-v2;action=button-hold-v1;observation=nes-ram-ring-v2".into(),
         },
         execution,
         search: SearchIdentity::from(options),
-        search_policy: "campaign-v1;alphabet-only;group-uniform;admit-alive;default-suffix".into(),
+        search_policy: search_policy(workload),
     };
     fs::create_dir_all(&options.output)?;
     serde_json::to_writer_pretty(
@@ -271,7 +285,7 @@ where
     let witness = replay_witness(&game, &config.run, &best)?;
     let endpoint = game.headless_endpoint(&best)?;
     let result = serde_json::to_vec_pretty(&serde_json::json!({
-        "format": "harmony-search-result-v1",
+        "format": SEARCH_RESULT_FORMAT,
         "backend": backend,
         "solved": report.objectives_reached > 0,
         "witness": witness,
@@ -283,11 +297,35 @@ where
         result,
     })
 }
-fn smb_run() -> SmbCampaignRun {
-    SmbCampaignRun {
-        vocabulary: Default::default(),
-        terminal: None,
-    }
+fn native_workload(
+    rom: &[u8],
+    core: &Path,
+    core_sha256: &str,
+    execution_sha256: &str,
+) -> Result<NesWorkload<SuperMarioBros, machine::quicknes::QuickNesMachine>, Box<dyn Error>> {
+    RomKind::identify(rom)?;
+    NesWorkload::new(SuperMarioBros, rom, core, core_sha256, execution_sha256)
+}
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+fn consonance_workload(
+    rom: &[u8],
+    kernel: &[u8],
+    initramfs: &[u8],
+) -> Result<
+    NesWorkload<
+        SuperMarioBros,
+        machine::consonance::ConsonanceMachine,
+        machine::consonance::ConsonancePortable,
+    >,
+    Box<dyn Error>,
+> {
+    RomKind::identify(rom)?;
+    NesWorkload::new_consonance(SuperMarioBros, rom, kernel, initramfs)
 }
 pub fn search_native(
     rom: &[u8],
@@ -300,8 +338,10 @@ pub fn search_native(
     verify_native_core(core, expected_core_sha256)?;
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(core, expected_core_sha256)?;
+    let workload = native_workload(rom, core, expected_core_sha256, &execution_sha256)?;
     record_identity(
         rom,
+        &workload,
         ExecutionIdentity {
             backend: "native".into(),
             isa: std::env::consts::ARCH.into(),
@@ -319,13 +359,7 @@ pub fn search_native(
         },
         options,
     )?;
-    search(
-        SmbGame::new(rom, core, expected_core_sha256, &execution_sha256),
-        smb_run(),
-        "native",
-        options,
-        start,
-    )
+    search(workload, NesRun, "native", options, start)
 }
 #[cfg(all(
     feature = "consonance",
@@ -344,15 +378,16 @@ pub fn search_consonance(
     validate_output(options)?;
     let initramfs = prepared.initramfs(platform_initramfs);
     let prepared_identity = prepared.identity_hex();
-    let game = SmbGame::new_consonance(rom, kernel, &initramfs)?;
+    let workload = consonance_workload(rom, kernel, &initramfs)?;
     record_identity(
         rom,
+        &workload,
         ExecutionIdentity {
             backend: "consonance".into(),
             isa: std::env::consts::ARCH.into(),
             core_contract: format!(
                 "{};prepared-execution={prepared_identity}",
-                game.emulator_identity(),
+                workload.emulator_identity(),
             ),
             artifacts: [
                 ("kernel".into(), format!("{:x}", Sha256::digest(kernel))),
@@ -373,7 +408,7 @@ pub fn search_consonance(
         },
         options,
     )?;
-    search(game, smb_run(), "consonance", options, start)
+    search(workload, NesRun, "consonance", options, start)
 }
 
 pub fn replay_native(
@@ -383,12 +418,11 @@ pub fn replay_native(
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     verify_native_core(core, expected_core_sha256)?;
-    RomKind::identify(rom)?;
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(core, expected_core_sha256)?;
     replay_witness(
-        &SmbGame::new(rom, core, expected_core_sha256, &execution_sha256),
-        &smb_run(),
+        &native_workload(rom, core, expected_core_sha256, &execution_sha256)?,
+        &NesRun,
         &serde_json::from_value(input)?,
     )
 }
@@ -412,10 +446,9 @@ pub fn replay_consonance(
     initramfs: &[u8],
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    RomKind::identify(rom)?;
     replay_witness(
-        &SmbGame::new_consonance(rom, kernel, initramfs)?,
-        &smb_run(),
+        &consonance_workload(rom, kernel, initramfs)?,
+        &NesRun,
         &serde_json::from_value(input)?,
     )
 }
@@ -434,10 +467,9 @@ pub fn search_saved_guest(
     start: &SearchStart,
 ) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
-    RomKind::identify(rom)?;
     search(
-        SmbGame::new_consonance(rom, kernel, initramfs)?,
-        smb_run(),
+        consonance_workload(rom, kernel, initramfs)?,
+        NesRun,
         "consonance",
         options,
         start,
