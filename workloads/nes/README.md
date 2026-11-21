@@ -5,14 +5,14 @@ to Dissonance.
 It owns campaign drivers, binaries, films, evaluation and workload reporting.
 Game interpretation and controller policies come from
 [`../nes-games`](../nes-games/README.md). This package re-exports those modules
-under the same paths, so `nes_workload::mm2::target` names the Mega Man 2
+under the same paths, so `nes_workload::metroid::target` names the Metroid
 target, and its `target` modules make `QuickNesMachine` the default backend of
 each target type. Generic archive and campaign mechanisms come from `searcher`;
 emulator and guest execution support comes from `../nes-machine`. Consonance stages an
 OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
-The `smb-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
+The `smb-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
 points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB supports native QuickNES and whole-VM Consonance execution.
 The SMB campaign binary creates an `ArchiveSource` by parsing and hashing one
@@ -29,8 +29,8 @@ It also decodes and hashes snapshot checkpoints from the same read bytes, so a
 source replacement cannot label one snapshot set with another file's digest.
 SMB fixture extraction likewise pins its source archive digest to the entries it
 parses into a challenge.
-Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
-the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
+Mega Man 2 runs through the common `nes-eval` runner, and Metroid and Super
+Tilt Bro through their native campaigns or `nes-eval`; shared CLI dispatch and Consonance execution are
 not implemented for them.
 The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --backend
@@ -47,13 +47,12 @@ fails.
 
 `src/film.rs` renders a recorded tape to an H.264 MP4 with game audio: it
 streams RGB frames into FFmpeg, muxes the raw PCM track back in, and writes a
-four-times-faster copy beside the film. `smb-film`, `metroid-film` and
-`mm2-film` drive the same target the searcher drives, so the film is the
+four-times-faster copy beside the film. `smb-film` and `metroid-film`
+drive the same target the searcher drives, so the film is the
 recorded run rather than a re-derivation of it, and each needs `ffmpeg` on the
-path. `metroid-map-probe` and `mm2-energy-probe` replay a tape and print one
-line per action endpoint, for state the campaign report sums away: the map cell
-a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
-sum. `smb-route` replays a Super Mario Bros. tape and prints its frames from
+path. `metroid-map-probe` replays a tape and prints one line per action
+endpoint with the map cell a Metroid route crossed, state the campaign report
+sums away. `smb-route` replays a Super Mario Bros. tape and prints its frames from
 power-on (the boot walk's frames plus the tape's), the frame each level starts
 in play, its frames, and whether it ended into the next level or through a warp
 pipe. `smb-shrink` runs `search::shrink`, a minimize campaign, on a Super
@@ -176,6 +175,8 @@ running digest every 1,024 records. Two workloads that differ only in how they
 key states produce the same decision digest when the search made the same
 choices, and the first differing mark bounds where they parted. The digest is
 computed whether or not the stream is kept, so it covers runs of any length.
+`window` is per worker and the searcher's window is `window` times `workers`, so
+changing `workers` changes the search for a fixed seed.
 
 `nes-rekey GAME RUN_DIR [STRATEGY.toml]`, with GAME the `nes-eval` name of any
 game declared through assertions (`smb-strategy`, `mm2-strategy`, `joust` and
@@ -266,7 +267,7 @@ and platform evidence is not uniform:
 | --- | --- | --- |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
-| Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
+| Mega Man 2/native | All eight independent stage origins and the whole-game origin run through `nes-eval` as `mm2-strategy`, and each stage win replays as a witness; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in, and `demos/twin-dragons/tests/campaign-oracle.mjs` compares a `nes-eval` campaign with the browser campaign; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
 | Zelda/native | Unit tests are checked in and `nes-eval` runs a cold campaign from the first overworld screen; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed The Legend of Zelda (USA) (Rev 1) ROM. |
@@ -468,7 +469,7 @@ the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
 `smb_route`, `smb_terminal`, `minimize`, `resume`, `resume_states` and `mixture`. For Super
 Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
 `control_in:7,0`, and `root_input` a tape the game replays before its genesis.
-The hand campaigns `smb`, `mm2` and `metroid` and every strategy game take
+The hand campaigns `smb` and `metroid` and every strategy game take
 `root_input`, and STB and Castlevania reject a request that names one.
 For any game, `minimize` runs the campaign in the searcher's minimize mode
 (see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search

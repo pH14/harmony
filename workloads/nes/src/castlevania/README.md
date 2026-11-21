@@ -7,9 +7,8 @@ interfaces. The game logic lives in
 [`nes-games/src/castlevania`](../../../nes-games/src/castlevania): the RAM
 decoder, power-on setup, observations, archive key, named progress, terminal
 conditions and the `Workload` implementation. It follows the
-[Twin Dragons](../twin_dragons/README.md) adapter for target execution and the
-[Mega Man 2](../mm2/README.md) adapter for named progress, milestone tapes and
-checkpoint evidence. Rom files are never committed. The request pins the ROM
+[Twin Dragons](../twin_dragons/README.md) adapter for target execution. Rom
+files are never committed. The request pins the ROM
 by SHA-256 `5e859d77bc0e3a9f30a7c14d2637b9c2aae6ce19f6520a7c9b252a86974f7800`
 (mapper 2, CHR RAM, NES 2.0 header).
 

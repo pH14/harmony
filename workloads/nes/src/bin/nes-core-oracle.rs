@@ -52,8 +52,8 @@ fn game(name: &str) -> Result<Game, Box<dyn Error>> {
             cartridge_ram: false,
         },
         "mega-man-2" => Game {
-            setup: mm2::target::power_on_walk(),
-            chords: mm2::archive::CHORDS,
+            setup: mm2::game::power_on_walk(),
+            chords: mm2::MegaMan2::CHORDS,
             cartridge_ram: false,
         },
         "metroid" => Game {

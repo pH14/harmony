@@ -8,7 +8,6 @@ use serde_json::{Value, json};
 use crate::{
     castlevania::target::CastlevaniaSnapshot,
     metroid::target::MetroidSnapshot,
-    mm2::target::Mm2Snapshot,
     nes_backend::SnapshotState,
     search::{
         archive::{Input, RetentionPolicy},
@@ -30,12 +29,6 @@ impl EndpointIdentity for CastlevaniaSnapshot {
 }
 
 impl EndpointIdentity for MetroidSnapshot {
-    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        self.endpoint_identity_sha256()
-    }
-}
-
-impl EndpointIdentity for Mm2Snapshot {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
         self.endpoint_identity_sha256()
     }

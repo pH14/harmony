@@ -119,7 +119,7 @@ JOUST_MILESTONES = [f"wave_{wave}" for wave in range(1, 33)] + ["target_wave", "
 
 MILESTONES = {
     "metroid": METROID_MILESTONES,
-    "mm2": MM2_MILESTONES,
+    "mm2-strategy": MM2_MILESTONES,
     "punchout": PUNCHOUT_MILESTONES,
     "zelda": ZELDA_MILESTONES,
     "pac-man": PAC_MAN_MILESTONES,

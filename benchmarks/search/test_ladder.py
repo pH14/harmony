@@ -186,9 +186,9 @@ class MilestoneTableTests(unittest.TestCase):
 
     def test_mega_man_2_cells_report_route_milestones_without_rooms(self):
         write_cell(self.matrix, 'mm2-whole-game', 5,
-                   first_seen(crash_entered=0, crash_room_4=9, crash_defeated=40, wily5_machine=None), game='mm2')
+                   first_seen(crash_entered=0, crash_room_4=9, crash_defeated=40, wily5_machine=None), game='mm2-strategy')
         name, rows = milestones.collect(self.matrix)
-        self.assertEqual(rows[0]['game'], 'mm2')
+        self.assertEqual(rows[0]['game'], 'mm2-strategy')
         self.assertEqual(rows[0]['first_execution'], {'crash_entered': 0, 'crash_defeated': 40})
         self.assertEqual(milestones.MM2_MILESTONES[-1], 'ending')
 

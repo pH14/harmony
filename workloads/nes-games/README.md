@@ -10,7 +10,7 @@ game logic as the native workload.
 
 Each game module not declared through assertions (below) has a `target` with the RAM decoder, observations, snapshots,
 setup tapes and the `Target` implementation, and an `archive` with the
-controller vocabulary, archive keys and milestones. Mega Man 2, Metroid and
+controller vocabulary, archive keys and milestones. Metroid and
 Castlevania also have a `progress` module for named progress. Famidash has a `levels`
 module with each side's level names, lengths and groups. `chord` holds the
 controller chord draw. `nes_backend` holds the `NesBackend`, `NesMemory` and
@@ -26,9 +26,9 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Super Mario Bros., Mega Man 2, Metroid and Castlevania
+Super Mario Bros., Metroid and Castlevania
 also have a `campaign` module with their `Workload` implementation.
-`CastlevaniaGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>`,
+`CastlevaniaGame<M>`, `SmbGame<M, P>`,
 `MetroidGame<M>` and `NesWorkload<G, M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
@@ -54,7 +54,7 @@ prepared execution hash included. `endpoint_identity` is the witness identity:
 the emulated state, whichever binary reached it. It defaults to
 `logical_identity`, and for a packed QuickNES state it zeroes the prepared
 execution hash in the header, which differs between any two binaries.
-`NesSnapshot`, `StbSnapshot`, `MetroidSnapshot`, `Mm2Snapshot`,
+`NesSnapshot`, `StbSnapshot`, `MetroidSnapshot`,
 `CastlevaniaSnapshot` and `SmbSnapshot` expose `endpoint_identity_sha256`,
 which hashes the serialized snapshot with its emulator state replaced by
 `endpoint_identity`, through `nes_backend::endpoint_identity_sha256`.
@@ -100,7 +100,7 @@ cargo check --manifest-path workloads/nes-games/Cargo.toml --target wasm32-unkno
 
 Snapshot checkpoint codecs live with these shared target types so native and
 browser callers use the same checksummed `HMSNAP02` envelope. The standalone
-formats are Castlevania v1, Metroid v13, Mega Man 2 v4, SMB
+formats are Castlevania v1, Metroid v13, SMB
 QuickNES v5 and SMB Consonance v4; Super Tilt Bro's native campaign selects v5.
 The games declared through assertions share `nes-workload-snapshot-checkpoint-v3`,
 and their archive reports carry `format: nes-workload-archive-v1`, which an
@@ -114,7 +114,7 @@ vector and the fixed snapshot/observation value. SMB also charges its backend's
 portable state and owned work-RAM copy. Shared Consonance pages and sidecar chunks
 use physical allocation identities; equivalent separately allocated states remain
 separate charges. Freeze clones owned buffers and retains immutable shared state.
-Metroid, Mega Man 2 and SMB stream evidence from borrowed fields, preserving the
+Metroid and SMB stream evidence from borrowed fields, preserving the
 existing resume bytes without building another owned evidence graph. These shared
 implementations also serve native and browser consumers; file publication remains
 a native coordinator facility.
@@ -123,8 +123,8 @@ a native coordinator facility.
 
 `workload` lowers a game to the searcher's assertion representation
 (`search::assertion`, described in the searcher README). Joust, Zelda,
-Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
-written this way. The other games have their own `target`, `archive` and
+Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber, Pac-Man and
+Mega Man 2 are written this way. The other games have their own `target`, `archive` and
 `campaign` modules. A game implements `Game`:
 
 - `decode` turns a frame into the game's `State`, given two earlier states:
@@ -229,7 +229,7 @@ the `NesObservation` and the accumulator alone. A goal frame is a terminal objec
 frame is a doomed terminal. Named progress reports each `sometimes`
 declaration by name with its first execution. With `with_milestone_input_dir`,
 the input of each first sighting is written to `<name>.json` by
-`publish_milestone_inputs`, the writer the Mega Man 2, Castlevania and Metroid
+`publish_milestone_inputs`, the writer the Castlevania and Metroid
 campaigns also use. A witness replay names the declarations and records the
 replayed action that first satisfied each one, so `nes-eval` checks that every
 tape reproduces its name. The strategy's policy identifier
@@ -435,8 +435,7 @@ hand-keyed target with a strategy. `Shadow::new` lowers the game's strategy and
 `hook` gives the hand target a `ShadowHook`, which it calls with the genesis
 RAM (`start`), the frames of each action (`advance`), of which the shadow
 observes those up to the first that ends the action or departs on a forced
-move, the RAM after each step chord of the forced move (`forced`), each
-snapshot it takes (`saved`, which returns a `ShadowToken` the hand snapshot
+move, each snapshot it takes (`saved`, which returns a `ShadowToken` the hand snapshot
 keeps) and restores (`restored`, with a reference to that token, or `None`
 where the snapshot has none), and its raw key, or `None` where it has none,
 after every action (`observe`), including an action that ends the path: the
@@ -449,9 +448,8 @@ that a `reject` line matches with no strategy key, since the strategy target
 ends there as a doomed terminal, and keys a goal frame, even one a `reject`
 line matches, since the strategy target ends it as a terminal objective. The
 strategy target archives neither frame, since a rollout admits only runnable
-states. The shadow walks the steps `hook.forced` passes as `walk_move` does,
-each observed from the departure, up to the first step that ends the move, and
-ignores any after it. The report
+states. The RAM hook follows no forced move, so it shadows a hand target whose
+game declares none. The report
 counts an action applied before the previous action's state was observed as
 `unobserved`; a state that ends a path, observed and then left by a restore,
 counts nothing there. A restore brings back the cursor saved under its token,

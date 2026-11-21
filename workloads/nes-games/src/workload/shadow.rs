@@ -22,7 +22,6 @@ trait Lane<H>: Send + Sync {
     fn fork(&self) -> Box<dyn Lane<H>>;
     fn start(&self, ram: &[u8]);
     fn advance(&self, frames: &[[u8; WRAM_SIZE]]);
-    fn forced(&self, steps: &[[u8; WRAM_SIZE]]);
     fn saved(&self) -> ShadowToken;
     fn restored(&self, token: Option<&ShadowToken>, ram: &[u8]);
     fn observe(&self, hand: Option<H>) -> Option<H>;
@@ -98,10 +97,6 @@ impl<H> ShadowHook<H> {
 
     pub fn advance(&self, frames: &[[u8; WRAM_SIZE]]) {
         self.0.advance(frames);
-    }
-
-    pub fn forced(&self, steps: &[[u8; WRAM_SIZE]]) {
-        self.0.forced(steps);
     }
 
     #[must_use]
@@ -341,52 +336,6 @@ where
             }
             false
         });
-    }
-
-    fn forced(&self, steps: &[[u8; WRAM_SIZE]]) {
-        let Ok(mut current) = self.current.lock() else {
-            return;
-        };
-        let current = &mut *current;
-        current.pending = None;
-        current.awaiting = true;
-        let game = &self.shadow.lowered.game;
-        let departed = std::mem::take(&mut current.departed);
-        let Some(position) = current.position.as_mut().filter(|_| departed) else {
-            return;
-        };
-        let parent = std::mem::replace(&mut position.kept, position.state.clone());
-        let Some(mut mv) = game.moves(&position.state).forced else {
-            return;
-        };
-        let departure = position.cursor.clone();
-        for wram in steps {
-            let Some(step) = game.play(mv, &position.state) else {
-                break;
-            };
-            let mut cursor = departure.clone();
-            let (state, ends, _) = self.arrive(
-                Some(&parent),
-                Some(&position.state),
-                wram,
-                |state, moves| {
-                    let last_step = step
-                        .rest
-                        .is_none_or(|next| game.play(next, state).is_none());
-                    moves.ends_move(last_step, false)
-                },
-                &mut cursor,
-            );
-            *position = Position {
-                kept: state.clone(),
-                state,
-                cursor,
-            };
-            match step.rest {
-                Some(next) if !ends => mv = next,
-                _ => break,
-            }
-        }
     }
 
     fn saved(&self) -> ShadowToken {
@@ -895,84 +844,6 @@ mod tests {
         assert_eq!(report.unobserved, 4);
     }
 
-    struct Lockstep {
-        target: NesTarget<Stairs, Stepper>,
-        machine: Stepper,
-        at: SnapId,
-        hook: ShadowHook<AssertionKey>,
-    }
-
-    impl Lockstep {
-        fn new(hook: ShadowHook<AssertionKey>) -> Self {
-            let lowered = Arc::new(Lowered::new(Stairs, Stairs::STRATEGY).unwrap());
-            let target = NesTarget::from_machine(lowered, Stepper::default()).unwrap();
-            let mut machine = Stepper::default();
-            let at = machine.snapshot().unwrap();
-            hook.start(&read_wram(&machine).unwrap());
-            let mut lockstep = Self {
-                target,
-                machine,
-                at,
-                hook,
-            };
-            lockstep.key();
-            lockstep
-        }
-
-        fn key(&mut self) -> Option<AssertionKey> {
-            let key = self.target.observation().key;
-            self.hook.observe(key);
-            assert_eq!(self.hook.key(), key);
-            key
-        }
-
-        fn press(&mut self, buttons: u8, hold: u8) -> [u8; WRAM_SIZE] {
-            let chord = ButtonChord::new(buttons, hold);
-            self.machine
-                .branch(self.at, &reproducer(std::slice::from_ref(&chord)))
-                .unwrap();
-            self.machine.run(StopConditions::default(), None).unwrap();
-            self.at = self.machine.snapshot().unwrap();
-            read_wram(&self.machine).unwrap()
-        }
-
-        fn apply(&mut self, buttons: u8, hold: u8) -> Option<AssertionKey> {
-            self.target.apply(&ButtonChord::new(buttons, hold));
-            let departure = self.press(buttons, hold);
-            self.hook.advance(self.machine.frames());
-            if Stairs
-                .moves(&Stairs.decode(None, None, &departure))
-                .forced
-                .is_some()
-            {
-                let steps = [RIGHT, RIGHT, LEFT].map(|buttons| self.press(buttons, 1));
-                self.hook.forced(&steps);
-            }
-            self.key()
-        }
-    }
-
-    #[test]
-    fn a_forced_move_observes_each_step_from_its_departure_and_keeps_the_arrival() {
-        let shadow = Shadow::<Stairs, AssertionKey>::new(Stairs).unwrap();
-        let mut lockstep = Lockstep::new(shadow.hook());
-        let identities: Vec<Vec<i64>> = [(RIGHT, 6), (RIGHT, 1), (LEFT, 2), (WARP, 1), (RIGHT, 6)]
-            .into_iter()
-            .map(|(buttons, hold)| {
-                let key = lockstep.apply(buttons, hold).unwrap();
-                shadow.lowered.compiled.view(key).identity
-            })
-            .collect();
-        assert_eq!(
-            identities,
-            [[7, 9], [8, 10], [8, 15], [0, 0], [7, 9]].map(Vec::from)
-        );
-        let report = shadow.report().unwrap();
-        assert_eq!(report.disagreements.total(), 0, "{:?}", report.examples);
-        assert_eq!(report.keyed_states, 6);
-        assert_eq!(report.unobserved, 0);
-    }
-
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Kept {
         state: Landing,
@@ -1044,7 +915,8 @@ mod tests {
         jobs: Vec<RecordedJob>,
         cuts: Vec<u64>,
         live_kept: Vec<Kept>,
-        shadow_keys: Vec<Option<AssertionKey>>,
+        shadowed: bool,
+        shadow_keys: Vec<Option<Option<AssertionKey>>>,
         filmed: Vec<Kept>,
     }
 
@@ -1075,7 +947,8 @@ mod tests {
                 jobs: Vec::new(),
                 cuts: vec![0],
                 live_kept: vec![genesis],
-                shadow_keys: vec![shadow_key],
+                shadowed: true,
+                shadow_keys: vec![Some(shadow_key)],
                 filmed: vec![genesis_film],
             };
             (shadow, producers)
@@ -1096,8 +969,6 @@ mod tests {
 
         fn apply(&mut self, buttons: u8, hold: u8) {
             let chord = ButtonChord::new(buttons, hold);
-            let start = self.live.observation().frame_count;
-            let parent = self.live.observation().state;
             self.live.apply(&chord);
             let emitted = self.live.last_action_observations().to_vec();
             let arrival = emitted.last().unwrap().observation.clone();
@@ -1109,24 +980,15 @@ mod tests {
             self.tape.push(chord);
             let whole = self.press(chord);
             self.hook.advance(&whole);
-            if let Some(departure) = departure {
-                let input = usize::try_from(departure.frame_count - start).unwrap();
-                self.resync(&whole[input - 1]);
-                let mut next = self.game.moves(&departure.state).forced;
-                let mut state = departure.state;
-                let mut steps = Vec::new();
-                while let Some(step) = next.and_then(|mv| self.game.play(mv, &state)) {
-                    let wram = *self.press(step.chord).last().unwrap();
-                    state = self.game.decode(Some(&parent), Some(&state), &wram);
-                    steps.push(wram);
-                    next = step.rest;
-                }
-                self.hook.forced(&steps);
-            }
+            self.shadowed &= departure.is_none();
             let wram = self.live.frame().to_vec();
             self.resync(&wram);
-            self.hook.observe(arrival.key);
-            self.shadow_keys.push(self.hook.key());
+            if self.shadowed {
+                self.hook.observe(arrival.key);
+                self.shadow_keys.push(Some(self.hook.key()));
+            } else {
+                self.shadow_keys.push(None);
+            }
             self.live_kept.push(Kept::of(&arrival));
             self.cuts.push(arrival.frame_count);
             self.filmed.push(film_of(&self.lowered, &self.tape));
@@ -1298,13 +1160,14 @@ mod tests {
         let across = (plain.cuts == producers.cuts).then(|| producers.rekeyed(&plain));
         for (index, live) in producers.live_kept.iter().enumerate() {
             let at = format!("kept state {index} after {:?}", &producers.tape[..index]);
-            let shadow = producers.shadow_keys[index];
-            assert!(
-                shadow == live.key,
-                "{at}: shadow {}, live {}",
-                shown(shadow),
-                kept(live)
-            );
+            if let Some(shadow) = producers.shadow_keys[index] {
+                assert!(
+                    shadow == live.key,
+                    "{at}: shadow {}, live {}",
+                    shown(shadow),
+                    kept(live)
+                );
+            }
             let filmed = &producers.filmed[index];
             assert!(
                 filmed == live,
@@ -1357,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn the_live_target_the_shadow_rekey_and_film_agree_on_every_kept_state() {
+    fn live_rekey_and_film_agree_on_every_kept_state_and_the_shadow_before_a_forced_move() {
         let stairs: &[Case] = &[
             (
                 "ordinary stop",
