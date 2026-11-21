@@ -225,12 +225,14 @@ strategy workload, the one `nes-eval smb-strategy` runs, from a fixed setup
 tape. That workload has no probe admission, no routes and no shrink window, so
 a search keeps every live execution its draws produce. The CLI does not offer
 `shrink` or `explain` for NES, so the missing shrink window removes no command.
-Each NES run records its package version in its payload. Every replay, branch,
-rooted search and continuation first requires the exact Harmony executable that
-recorded the run, so a run from another build, including every run recorded
-before `nes-v2`, is refused with that message. Behind that check, the adapter
-refuses a run recorded by another package version with a message that names
-both versions; that check is reached only when the executables match.
+An NES run records its package version in its payload when its manifest saves
+a result or witness, so a fresh search that failed or was interrupted before
+then has none. Every replay, branch, rooted search and continuation first reads
+the run's manifest, which must be in the format this build writes, and then
+requires the run's architecture and the exact Harmony executable that recorded
+it. The package version is compiled into that executable, so these checks
+refuse a run from another package version, including every run recorded before
+`nes-v2`, before the NES adapter reads its payload.
 
 ## Search and investigation
 
