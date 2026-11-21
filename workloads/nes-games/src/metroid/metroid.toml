@@ -139,7 +139,7 @@ latch = true
 [[stage]]
 name = "energy_before_tourian"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 100 * tanks + 90"
+goal = "action_end and health / 10 >= 100 * energy_tanks + 90"
 latch = true
 
 [[stage]]

@@ -491,6 +491,58 @@ mod tests {
         }
     }
 
+    fn stage_goal(name: &str) -> &'static str {
+        let stage = Metroid::STRATEGY
+            .split("[[stage]]")
+            .find(|stage| stage.contains(&format!("name = \"{name}\"")))
+            .unwrap();
+        let line = stage
+            .lines()
+            .find_map(|line| line.strip_prefix("goal = "))
+            .unwrap();
+        line.trim_matches('"')
+    }
+
+    fn goal_holds(goal: &str, state: &MetroidMechanicalState) -> bool {
+        let lowered = Lowered::new(Metroid, &format!("goal = \"{goal}\"\n")).unwrap();
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(true);
+        lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal
+    }
+
+    #[test]
+    fn full_energy_before_the_tourian_elevator_is_reachable_with_full_missiles() {
+        let full = MetroidMechanicalState {
+            area: 0x10,
+            map_x: 20,
+            map_y: 11,
+            x: 68,
+            y: 155,
+            pose: 1,
+            mode: 3,
+            health: 3999,
+            equipment: 151,
+            missiles: 180,
+            missile_capacity: 180,
+            energy_tanks: 3,
+            bosses: 2,
+            statues: 1,
+            kraid_defeated: true,
+            ..MetroidMechanicalState::default()
+        };
+        let short = MetroidMechanicalState {
+            health: 2999,
+            ..full
+        };
+        let goal = stage_goal("energy_before_tourian");
+        assert!(goal_holds(goal, &full), "{goal}");
+        assert!(!goal_holds(goal, &short), "{goal}");
+        assert!(goal_holds(stage_goal("missiles_before_tourian"), &full));
+    }
+
     #[test]
     fn the_volley_offer_needs_play_missiles_and_a_missile_target() {
         let door = MetroidMechanicalState {
