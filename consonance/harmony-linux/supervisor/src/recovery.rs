@@ -174,6 +174,15 @@ impl RecoveryWatch {
         self.quiet_since = self.quiet_since.max(moment);
     }
 
+    #[must_use]
+    pub fn quiet_nanos(&self, moment: u64, disturbed: bool) -> u64 {
+        if disturbed {
+            0
+        } else {
+            moment.saturating_sub(self.quiet_since)
+        }
+    }
+
     pub fn observe(
         &mut self,
         moment: u64,
@@ -297,6 +306,19 @@ mod tests {
             watch.observe((tick + BOUND) * STEP, false, &readiness),
             Some(BOUND * STEP)
         );
+    }
+
+    #[test]
+    fn quiet_time_counts_from_the_end_of_the_last_fault() {
+        let readiness = RecoveryReadiness::initially_ready();
+        let mut watch = RecoveryWatch::default();
+        assert_eq!(watch.quiet_nanos(5 * STEP, false), 5 * STEP);
+        assert_eq!(watch.observe(10 * STEP, true, &readiness), None);
+        assert_eq!(watch.quiet_nanos(10 * STEP, true), 0);
+        assert_eq!(watch.quiet_nanos(25 * STEP, false), 15 * STEP);
+        watch.note_disturbed_until(20 * STEP);
+        assert_eq!(watch.quiet_nanos(25 * STEP, false), 5 * STEP);
+        assert_eq!(watch.quiet_nanos(15 * STEP, false), 0);
     }
 
     #[test]

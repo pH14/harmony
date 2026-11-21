@@ -29,6 +29,14 @@ const generationEnv = "HARMONY_DISTURBANCE_GENERATION"
 
 const faultsInForceEnv = "HARMONY_FAULTS_IN_FORCE"
 
+const quietEnv = "HARMONY_QUIET_NS"
+
+const recoveryEnv = "HARMONY_RECOVERY_NS"
+
+const checkNodesEnv = "HARMONY_CHECK_NODES"
+
+const pinnedRetryPause = 500 * time.Millisecond
+
 const baselineFile = "disturbance-baseline"
 
 const checkProcess = 0
@@ -36,6 +44,7 @@ const checkProcess = 0
 type CheckResult struct {
 	Read          history.Type            `json:"read"`
 	Nodes         map[string]history.Type `json:"nodes,omitempty"`
+	Unanswered    map[string]string       `json:"unanswered,omitempty"`
 	Ops           int                     `json:"ops"`
 	Decided       bool                    `json:"decided"`
 	UndecidedKeys int                     `json:"undecided_keys"`
@@ -93,7 +102,9 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		return CheckResult{}, err
 	}
 	recorder := fam.Recorder(prior)
+	window, retry := recoveryWindow(config.CheckTimeout)
 	outcomes := make([]history.Type, len(nodes)+1)
+	reasons := make([]string, len(nodes)+1)
 	errs := make([]error, len(nodes)+2)
 	var wg sync.WaitGroup
 	var replicas *ReplicaResult
@@ -112,7 +123,11 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			outcomes[index], errs[index] = checkRead(ctx, adapter, recorder, journal, checkProcess+index, op, config.CheckTimeout)
+			if index > 0 && retry {
+				outcomes[index], reasons[index], errs[index] = pinnedRead(ctx, adapter, recorder, journal, checkProcess+index, op, config.CheckTimeout, window)
+				return
+			}
+			outcomes[index], reasons[index], errs[index] = checkRead(ctx, adapter, recorder, journal, checkProcess+index, op, config.CheckTimeout)
 		}()
 	}
 	wg.Wait()
@@ -151,28 +166,89 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 			nodeOK = nodeOK || outcomes[index+1] == history.OK
 		}
 		sdk.Sometimes(nodeOK, CheckNodeReadSucceeded, nil)
+		if retry {
+			result.Unanswered = map[string]string{}
+			for index, node := range nodes {
+				if outcomes[index+1] != history.OK {
+					result.Unanswered[node] = reasons[index+1]
+				}
+			}
+			if err := writeUnanswered(os.Getenv(checkNodesEnv), nodes, result.Unanswered); err != nil {
+				return CheckResult{}, err
+			}
+		}
 	}
 	return result, nil
 }
 
-func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, error) {
+func recoveryWindow(timeout time.Duration) (time.Duration, bool) {
+	if os.Getenv(faultsInForceEnv) == "1" || os.Getenv(checkNodesEnv) == "" {
+		return 0, false
+	}
+	quiet, err := strconv.ParseUint(os.Getenv(quietEnv), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	recovery, err := strconv.ParseUint(os.Getenv(recoveryEnv), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return max(timeout, time.Duration(recovery-min(quiet, recovery))), true
+}
+
+func pinnedRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout, window time.Duration) (history.Type, string, error) {
+	end := time.Now().Add(window)
+	for {
+		outcome, reason, err := checkRead(ctx, adapter, recorder, journal, p, op, min(timeout, max(time.Until(end), time.Millisecond)))
+		remaining := time.Until(end)
+		if err != nil || outcome == history.OK || remaining <= 0 || ctx.Err() != nil {
+			return outcome, reason, err
+		}
+		timer := time.NewTimer(min(pinnedRetryPause, remaining))
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+	}
+}
+
+func writeUnanswered(path string, nodes []string, unanswered map[string]string) error {
+	var text strings.Builder
+	for _, node := range nodes {
+		reason, ok := unanswered[node]
+		if !ok {
+			continue
+		}
+		reason = strings.Map(func(r rune) rune {
+			if r == '\t' || r == '\n' || r == '\r' {
+				return ' '
+			}
+			return r
+		}, reason)
+		fmt.Fprintf(&text, "%s\t%s\n", node, reason)
+	}
+	return os.WriteFile(path, []byte(text.String()), 0o644)
+}
+
+func checkRead(ctx context.Context, adapter Adapter, recorder family.Recorder, journal *history.Journal, p int, op family.Op, timeout time.Duration) (history.Type, string, error) {
 	client, err := connect(ctx, adapter, p, timeout)
 	if err != nil {
-		return "", nil
+		return "", "connect: " + err.Error(), nil
 	}
 	defer client.Close()
 	index, err := journal.Invoke(p, op.F, op.K, op.Node, op.V)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	result, err := invoke(ctx, client, op, timeout)
 	switch {
 	case err == nil:
-		return history.OK, recorder.Record(journal, p, op, index, result)
+		return history.OK, "", recorder.Record(journal, p, op, index, result)
 	case IsDefinite(err):
-		return history.Fail, journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
+		return history.Fail, err.Error(), journal.Complete(p, history.Fail, op.F, op.K, index, errorValue(err))
 	default:
-		return history.Info, journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
+		return history.Info, err.Error(), journal.Complete(p, history.Info, op.F, op.K, index, errorValue(err))
 	}
 }
 
@@ -206,7 +282,7 @@ func compareReplicas(ctx context.Context, adapter Adapter, replicated family.Rep
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				outcomes[index], errs[index] = checkRead(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.CheckTimeout)
+				outcomes[index], _, errs[index] = checkRead(ctx, adapter, recorder, journal, len(nodes)+1+index, op, config.CheckTimeout)
 			}()
 		}
 		wg.Wait()

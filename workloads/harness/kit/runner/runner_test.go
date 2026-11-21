@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -388,6 +389,124 @@ func TestNodeThatSkipsValuesIsNamed(t *testing.T) {
 		if violation.Details["node"] != "n2" {
 			t.Fatalf("violation %+v", violation)
 		}
+	}
+}
+
+type laggingNode struct {
+	replicatedLog
+	node     string
+	failures int
+	attempts int
+}
+
+func (l *laggingNode) Connect(context.Context, int) (Client, error) { return l, nil }
+
+func (l *laggingNode) Invoke(ctx context.Context, op family.Op) (any, error) {
+	if op.Node == l.node {
+		l.mu.Lock()
+		l.attempts++
+		failing := l.failures != 0
+		if l.failures > 0 {
+			l.failures--
+		}
+		l.mu.Unlock()
+		if failing {
+			return nil, errors.New("index not applied")
+		}
+	}
+	return l.replicatedLog.Invoke(ctx, op)
+}
+
+func recoveryConfig(t *testing.T, recovery time.Duration) (Config, string) {
+	config := testConfig(t)
+	config.CheckTimeout = 50 * time.Millisecond
+	path := filepath.Join(t.TempDir(), "nodes")
+	t.Setenv(faultsInForceEnv, "0")
+	t.Setenv(quietEnv, "0")
+	t.Setenv(recoveryEnv, strconv.FormatInt(int64(recovery), 10))
+	t.Setenv(checkNodesEnv, path)
+	return config, path
+}
+
+func TestPinnedReadsRetryWhileANodeCatchesUp(t *testing.T) {
+	config, path := recoveryConfig(t, 5*time.Second)
+	adapter := &laggingNode{node: "n2", failures: 2}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Nodes["n2"] != history.OK || len(result.Unanswered) != 0 || adapter.attempts != 3 {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+	if text, err := os.ReadFile(path); err != nil || len(text) != 0 {
+		t.Fatalf("nodes file %q: %v", text, err)
+	}
+	if failed := failing(t); len(failed) != 0 {
+		t.Fatalf("failing %v", failed)
+	}
+}
+
+func TestANodeThatNeverAnswersIsListedAfterTheRecoveryBound(t *testing.T) {
+	config, path := recoveryConfig(t, 1200*time.Millisecond)
+	t.Setenv(quietEnv, strconv.FormatInt(int64(200*time.Millisecond), 10))
+	adapter := &laggingNode{node: "n2", failures: -1}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Fatalf("gave up after %s", elapsed)
+	}
+	if len(result.Unanswered) != 1 || result.Unanswered["n2"] != "index not applied" || result.Nodes["n1"] != history.OK || result.Nodes["n3"] != history.OK {
+		t.Fatalf("result %s", result)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil || string(text) != "n2\tindex not applied\n" {
+		t.Fatalf("nodes file %q: %v", text, err)
+	}
+	if adapter.attempts < 2 {
+		t.Fatalf("attempts %d", adapter.attempts)
+	}
+}
+
+func TestPinnedReadsAreNotRetriedWhileAFaultIsInForce(t *testing.T) {
+	config, path := recoveryConfig(t, 5*time.Second)
+	t.Setenv(faultsInForceEnv, "1")
+	adapter := &laggingNode{node: "n2", failures: -1}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.attempts != 1 || result.Unanswered != nil || result.Nodes["n2"] != history.Info {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nodes file written: %v", err)
+	}
+}
+
+func TestPinnedReadsAreNotRetriedWithoutARecoveryBound(t *testing.T) {
+	config := testConfig(t)
+	adapter := &laggingNode{node: "n2", failures: -1}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.attempts != 1 || result.Unanswered != nil {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
 	}
 }
 

@@ -746,6 +746,8 @@ mod runtime {
             .map_err(|error| format!("node exit declaration: {error}"))?;
         process::write_record(&mut assertion_output, &process::recovery_record(None))
             .map_err(|error| format!("recovery declaration: {error}"))?;
+        process::write_record(&mut assertion_output, &process::node_recovery_record(None))
+            .map_err(|error| format!("node recovery declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
             .iter()
@@ -865,12 +867,16 @@ mod runtime {
         sdk.state_set(REG_CHECKS_STARTED, supervisor.counters().checks_started)
             .map_err(|error| format!("state_set({REG_CHECKS_STARTED}): {error}"))?;
         let in_force = faults_in_force(supervisor, &runtime.hook_faults);
+        let quiet = runtime
+            .recovery_watch
+            .quiet_nanos(supervisor.moment().unwrap_or(0), in_force);
         let mut check = spawn_check(
             spec,
             argv,
             run,
             supervisor.disturbance_generation(),
             in_force,
+            quiet,
         )?;
         if !in_force {
             supervisor.note_fault_free_check_started();
@@ -909,6 +915,13 @@ mod runtime {
             });
             if let Some(ordinal) = check.fault_free {
                 supervisor.note_fault_free_check_passed(ordinal);
+                if check.start_generation == supervisor.disturbance_generation() {
+                    let quiet = runtime.recovery_watch.quiet_nanos(
+                        supervisor.moment().unwrap_or(0),
+                        faults_in_force(supervisor, &runtime.hook_faults),
+                    );
+                    report_unanswered_nodes(&mut runtime.assertion_output, quiet, tick)?;
+                }
             }
         } else {
             log(tick, &format!("check {run} exited {status}"));
@@ -1731,7 +1744,9 @@ mod runtime {
         run: u64,
         start_generation: u64,
         faults_in_force: bool,
+        quiet_nanos: u64,
     ) -> Result<Check, String> {
+        remove_check_nodes()?;
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
         command
@@ -1742,7 +1757,13 @@ mod runtime {
             .env(
                 "HARMONY_FAULTS_IN_FORCE",
                 u8::from(faults_in_force).to_string(),
-            );
+            )
+            .env("HARMONY_QUIET_NS", quiet_nanos.to_string())
+            .env(
+                "HARMONY_RECOVERY_NS",
+                harmony_supervisor::recovery::RECOVERY_NANOS.to_string(),
+            )
+            .env("HARMONY_CHECK_NODES", harmony_supervisor::CHECK_NODES_PATH);
         let child = command
             .stdout(Stdio::null())
             .spawn()
@@ -1753,6 +1774,46 @@ mod runtime {
             start_generation,
             fault_free: None,
         })
+    }
+
+    fn remove_check_nodes() -> Result<(), String> {
+        match std::fs::remove_file(harmony_supervisor::CHECK_NODES_PATH) {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                Err(format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn report_unanswered_nodes(
+        output: &mut File,
+        quiet_nanos: u64,
+        tick: u64,
+    ) -> Result<(), String> {
+        if quiet_nanos < harmony_supervisor::recovery::RECOVERY_NANOS {
+            return Ok(());
+        }
+        let text = match std::fs::read_to_string(harmony_supervisor::CHECK_NODES_PATH) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH));
+            }
+        };
+        for (node, reason) in process::unanswered_nodes(&text) {
+            log(
+                tick,
+                &format!(
+                    "node {node} answered no pinned check read {quiet_nanos} ns after faults ended: {reason}"
+                ),
+            );
+            process::write_record(
+                output,
+                &process::node_recovery_record(Some((node, quiet_nanos, reason))),
+            )
+            .map_err(|error| format!("node recovery record: {error}"))?;
+        }
+        Ok(())
     }
 
     fn drain_hooks(

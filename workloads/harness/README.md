@@ -102,6 +102,32 @@ state without a fence. A check that starts before a cut still compares. A
 violation needs every round to disagree, so only a cut that starts before the
 first round's reads can cause one.
 
+A pinned read that fails is retried when the supervisor reports no fault in
+force at the check's start and passes the recovery bound. The check then
+repeats each node's pinned read, each attempt bounded by `--check-timeout` and
+500 ms of guest time apart, until it succeeds or until
+`HARMONY_RECOVERY_NS - HARMONY_QUIET_NS` (at least one `--check-timeout`) has
+passed. Every attempt goes into the check journal, and a failed attempt
+constrains nothing. The check writes each node that never answered, with its
+last error, to the file `HARMONY_CHECK_NODES` names, and lists them under
+`unanswered` in its JSON line. The supervisor reports those nodes under
+`every workload node answers a pinned check read within 30 seconds after faults end`
+(see `consonance/harmony-linux/supervisor/README.md`). The 30 seconds are ours
+and follow the Antithesis practice of checking recovery once faults stop. The
+ready probe passes when any member answers, so this is the property that names
+a member still stuck after the rest of the cluster recovered. Without those
+variables, as in a native run, each node gets one attempt.
+
+What an answer shows depends on the target's pinned read:
+
+| Targets | A node that answers has |
+|---|---|
+| consul, dgraph, etcd, nats, nats-kv, nomad, rqlite, tarantool, xline | applied a fence written after the read started, so it holds every write acknowledged before it |
+| openbao | answered a read sent to it, which a standby forwards to the active node; it says nothing about the node's own copy |
+
+On openbao the property shows that every node serves requests, not that every
+node has caught up.
+
 ## Randomness
 
 Every random value the driver uses comes from `sdk.Random()`: the operation,
@@ -259,7 +285,8 @@ when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
 them. The check then loads every journal and runs the family checker. It
 prints one JSON line with the read outcome, each node's read outcome under
-`nodes`, the violations and, for the register family, `replicas`: the rounds
+`nodes`, the nodes that never answered under `unanswered` when pinned reads are
+retried, the violations and, for the register family, `replicas`: the rounds
 run, whether the last round agreed, each node's outcome in that round, or
 `skipped` with the reason when the adapter pins reads to fewer than two nodes.
 It writes one failing `Always` per violation, at most three per kind and node,
