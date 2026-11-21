@@ -49,7 +49,7 @@ class FilmVerificationTests(unittest.TestCase):
                    audio=overrides.pop('audio', 'sine=frequency=440:sample_rate=44100'),
                    with_audio=overrides.pop('with_audio', True),
                    audio_seconds=overrides.pop('audio_seconds', None))
-        record = {'format': 'nes-film-v1', 'endpoint_verified': True,
+        record = {'format': 'nes-film-v2', 'endpoint_verified': True,
                   'provenance': 'native QuickNES replay of the input this run recorded',
                   'identity': {'game': 'smb'},
                   'input_sha256': hashlib.sha256(tape.read_bytes()).hexdigest(),
@@ -65,6 +65,10 @@ class FilmVerificationTests(unittest.TestCase):
 
     def test_a_film_with_frames_duration_and_real_audio_passes(self):
         self.assertEqual(VERIFY.verify(self.film(), 1.0), [])
+
+    def test_a_film_of_another_format_is_refused(self):
+        problems = VERIFY.verify(self.film(format='nes-film-v1'), 1.0)
+        self.assertTrue(any('not nes-film-v2' in problem for problem in problems), problems)
 
     def test_a_silent_track_is_not_game_audio(self):
         problems = VERIFY.verify(self.film(audio='anullsrc=r=44100:cl=stereo'), 1.0)

@@ -949,6 +949,16 @@ impl Game for MegaMan2 {
         }
     }
 
+    fn rooted_genesis(&self, state: &Mm2State) -> Result<(), String> {
+        if state.arrived && !state.dead && state.driving.is_none() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Mega Man 2 root input did not end in play after a stage arrival: {state:?}"
+            ))
+        }
+    }
+
     fn genesis_id(&self) -> String {
         format!("{}-whole-game-crash-v1", Self::NAME)
     }
@@ -1120,6 +1130,32 @@ mod tests {
     #[test]
     fn the_strategy_lowers_against_the_decoder() {
         Lowered::new(MegaMan2, MegaMan2::STRATEGY).unwrap();
+    }
+
+    #[test]
+    fn a_root_must_end_in_play_after_an_arrival_and_outside_a_drive() {
+        let arrived = Mm2State {
+            stage: FIRST_WILY_STAGE + 3,
+            arrived: true,
+            ..Mm2State::default()
+        };
+        assert!(MegaMan2.rooted_genesis(&arrived).is_ok());
+        for state in [
+            Mm2State {
+                arrived: false,
+                ..arrived
+            },
+            Mm2State {
+                dead: true,
+                ..arrived
+            },
+            Mm2State {
+                driving: Some(Transition::Castle(FIRST_WILY_STAGE)),
+                ..arrived
+            },
+        ] {
+            assert!(MegaMan2.rooted_genesis(&state).is_err());
+        }
     }
 
     #[test]

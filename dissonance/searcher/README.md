@@ -711,8 +711,8 @@ interior frames observed with 0, and a middle step ends the move only when that
 observation stops, so a goal that requires `action_end` holds only at the frame
 where the action is kept. The target writes the decided flag into each recorded
 frame and into the genesis record of the records header, the assertion records
-format `assertion-records-v7` holds that slot, a records file of an earlier
-format is refused by its format string, and `Rekeying` reads the recorded flags
+format holds that slot, a records file of an earlier format is refused by its
+format string, and `Rekeying` reads the recorded flags
 instead of deciding them again. A latched stage whose goal includes
 `action_end` passes only on a kept state, as the hand plans latch from the
 parent key, so a value that crosses a threshold inside an action and ends below
@@ -774,7 +774,13 @@ from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 **Records.** A front end that keeps records writes a file beside the run's
 stream with `RecordsWriter`. The header holds the stream's identity (campaign
 seed and workload identity), the policy identifier, the choice policy
-identifier, the strategy text, the catalog and the genesis record. Each entry is one job: its sequence number,
+identifier, the strategy text, the catalog, the genesis record, the root's
+digest for a run rooted at a tape, and the recorded strategy's accumulator
+from before the genesis record, so observing the genesis record from it gives
+the genesis key and accumulator the live search had. For a rooted run it is the
+accumulator folded over the root's frames up to its last one, and for an
+unrooted run it is the default accumulator. The format is
+`assertion-records-v8`. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
 ran for it outside the tape), the record of every frame it decoded, stored
@@ -787,7 +793,8 @@ reads the whole jobs and reports the bytes left over, `RecordedJobs::from_bytes`
 reads them one job at a time without decoding frames into memory together,
 `check_stream` refuses a
 stream with another identity or key policy, and `continue_with` joins a resumed
-run's file, whose jobs replace the earlier file's from its first job on.
+run's file with the same policy, catalog and root, whose jobs replace the
+earlier file's from its first job on.
 
 **Re-keying.** `Rekeying::run` keys a recording again under another strategy
 without a target. It replays the stream's jobs in sequence order into a fresh
@@ -806,10 +813,15 @@ decisions equal the stream's, and `same_decisions` counts the jobs where they
 do. The archive does not drop entries for memory, so a run that dropped
 entries under its memory budget keys again with those entries still held. A
 re-keyed key and fall count are exact only when the game has no moves, or both
-strategies have no stages, no latched stage and no `highest` aggregate:
-re-keying folds a move's steps in sequence, where the live target observes each
+strategies have no stages, no latched stage and no `highest` aggregate, because
+re-keying folds a move's steps in sequence where the live target observes each
 step from the move's departure accumulator
-([#1062](https://github.com/pH14/harmony/issues/1062)).
+([#1062](https://github.com/pH14/harmony/issues/1062)), and, for a run rooted at
+a tape, only when the new strategy is the recorded one or has no latched stage
+and no `highest` aggregate, because the header holds only the recorded
+strategy's accumulator before the genesis record, which `Rekeying::rooted`
+carries;
+`Rekeying::run` refuses any other strategy for a rooted run.
 
 **Checks.** `Compiled::checker` reads observed states one at a time, each with
 the accumulator of its parent under the checked strategy, and `Compiled::check`

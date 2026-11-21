@@ -68,7 +68,10 @@ MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search. A run that `nes-eval` gave a `strategy` file, which it copies
 to `strategy.toml` in the run directory, is filmed with `--strategy` naming that file, and `film.json`
-records its hash as `identity.strategy_sha256`.
+records its hash as `identity.strategy_sha256`. A rooted run is filmed with `--root-input` naming
+its root: the film renders the root and then the input from power-on, its frame count includes the
+root's frames, and `film.json`, format `nes-film-v2`, records the root's hash as
+`identity.root_input_sha256` beside `root_actions` and `root_frames`.
 
 A witness's `snapshot_sha256` is the endpoint snapshot's `endpoint_identity_sha256`, which
 serializes the snapshot after `SnapshotState::endpoint_identity`. For a packed QuickNES state that
@@ -174,7 +177,12 @@ with no `stream.jsonl`, such as a witness-verified one, reports only those
 counts. The tool refuses a game with moves when the recorded or the given
 strategy has stages, a latched stage or a `highest` aggregate, because it
 cannot re-key that pair exactly
-([#1062](https://github.com/pH14/harmony/issues/1062)).
+([#1062](https://github.com/pH14/harmony/issues/1062)). A run rooted with `root_input`
+re-keys from the accumulator its records header holds from before the genesis
+record. The tool refuses records whose root digest differs from the root in the
+stream header's `emulator_backend`, and refuses a given strategy for a rooted run, other than the recorded one, that has a latched
+stage or a `highest` aggregate, because that strategy's accumulator at the root
+cannot be rebuilt without the root's frames.
 
 ## Chord draw
 
@@ -446,8 +454,8 @@ the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
 `smb_route`, `smb_terminal`, `minimize`, `resume`, `resume_states` and `mixture`. For Super
 Mario Bros., `smb_route` names a route plan, `smb_terminal` a goal such as
 `control_in:7,0`, and `root_input` a tape the game replays before its genesis.
-`smb`, `mm2`, `metroid` and `ice-climbers` take `root_input`, and every other
-game rejects a request that names one.
+The hand campaigns `smb`, `mm2` and `metroid` and every strategy game take
+`root_input`, and STB and Castlevania reject a request that names one.
 For any game, `minimize` runs the campaign in the searcher's minimize mode
 (see [Minimizing](../../dissonance/searcher/README.md#minimizing)): the search
 keeps going after its first goal and `victory-input.json` holds the cheapest

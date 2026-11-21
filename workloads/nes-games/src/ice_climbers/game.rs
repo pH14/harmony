@@ -3,7 +3,6 @@
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
@@ -167,17 +166,8 @@ impl IceClimbersState {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct IceClimbers {
-    root: Option<Vec<ButtonChord>>,
-}
-
-impl IceClimbers {
-    #[must_use]
-    pub fn rooted(prefix: Vec<ButtonChord>) -> Self {
-        Self { root: Some(prefix) }
-    }
-}
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IceClimbers;
 
 #[must_use]
 pub fn setup_tape() -> Vec<ButtonChord> {
@@ -247,36 +237,22 @@ impl Game for IceClimbers {
         setup_tape()
     }
 
-    fn start(&self) -> Vec<ButtonChord> {
-        self.root.clone().unwrap_or_default()
+    fn genesis_id(&self) -> String {
+        "ice-climbers-first-mountain-v1".to_owned()
     }
 
-    fn genesis_id(&self) -> String {
-        match &self.root {
-            Some(prefix) => {
-                let mut digest = Sha256::new();
-                for chord in prefix {
-                    digest.update([chord.buttons, chord.hold_frames]);
-                }
-                format!(
-                    "ice-climbers-rooted-v1:prefix-sha256={:x}",
-                    digest.finalize()
-                )
-            }
-            None => "ice-climbers-first-mountain-v1".to_owned(),
+    fn rooted_genesis(&self, state: &IceClimbersState) -> Result<(), String> {
+        if state.lives == START_LIVES && !state.terminal() && !state.in_transition() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Ice Climbers root input did not end in a live climbing state: {state:?}"
+            ))
         }
     }
 
     fn genesis(&self, state: &IceClimbersState) -> Result<(), String> {
         let state = *state;
-        if self.root.is_some() {
-            if state.lives == START_LIVES && !state.terminal() && !state.in_transition() {
-                return Ok(());
-            }
-            return Err(format!(
-                "Ice Climbers root input did not end in a live climbing state: {state:?}"
-            ));
-        }
         let valid = state.level == 0
             && state.lives == START_LIVES
             && (state.x, state.y) == (START_X, START_Y)
@@ -394,7 +370,7 @@ mod tests {
     }
 
     fn decode(wram: &[u8]) -> IceClimbersState {
-        IceClimbers::default().decode(None, None, wram)
+        IceClimbers.decode(None, None, wram)
     }
 
     fn at(x: u8, y: u8) -> IceClimbersState {
@@ -405,7 +381,7 @@ mod tests {
     }
 
     fn lowered() -> Lowered<IceClimbers> {
-        Lowered::new(IceClimbers::default(), IceClimbers::STRATEGY).unwrap()
+        Lowered::new(IceClimbers, IceClimbers::STRATEGY).unwrap()
     }
 
     fn observe(state: IceClimbersState) -> NesObservation<IceClimbersState> {
@@ -510,7 +486,7 @@ mod tests {
 
     #[test]
     fn genesis_requires_the_first_mountain_with_three_lives() {
-        let game = IceClimbers::default();
+        let game = IceClimbers;
         assert!(game.genesis(&decode(&start_wram())).is_ok());
         for (address, value) in [(LIVES, 2), (PLAYER_X, 0x40), (CAMERA, 0x10)] {
             let mut wram = start_wram();
@@ -521,31 +497,18 @@ mod tests {
 
     #[test]
     fn a_root_input_must_end_alive_and_in_play() {
-        let game = IceClimbers::rooted(vec![ButtonChord::new(0x01, 4)]);
-        assert!(game.genesis(&decode(&start_wram())).is_ok());
+        let game = IceClimbers;
+        assert!(game.rooted_genesis(&decode(&start_wram())).is_ok());
         let mut moved = start_wram();
         moved[PLAYER_X] = 0x80;
         moved[LEVEL] = 3;
-        assert!(game.genesis(&decode(&moved)).is_ok());
+        assert!(game.rooted_genesis(&decode(&moved)).is_ok());
+        assert!(game.genesis(&decode(&moved)).is_err());
         for (address, value) in [(LIVES, 2), (PHASE, 0), (LEVEL, MOUNTAINS)] {
             let mut wram = start_wram();
             wram[address] = value;
-            assert!(game.genesis(&decode(&wram)).is_err());
+            assert!(game.rooted_genesis(&decode(&wram)).is_err());
         }
-        assert_eq!(game.start(), [ButtonChord::new(0x01, 4)]);
-        assert!(IceClimbers::default().start().is_empty());
-    }
-
-    #[test]
-    fn the_genesis_identity_names_the_first_mountain_or_the_root_prefix() {
-        assert_eq!(
-            IceClimbers::default().genesis_id(),
-            "ice-climbers-first-mountain-v1"
-        );
-        let one = IceClimbers::rooted(vec![ButtonChord::new(0x01, 4)]).genesis_id();
-        let two = IceClimbers::rooted(vec![ButtonChord::new(0x01, 5)]).genesis_id();
-        assert!(one.starts_with("ice-climbers-rooted-v1:prefix-sha256="));
-        assert_ne!(one, two);
     }
 
     #[test]
@@ -658,7 +621,7 @@ mod tests {
 
     #[test]
     fn setup_tape_presses_only_start() {
-        let tape = IceClimbers::default().setup();
+        let tape = IceClimbers.setup();
         assert_eq!(
             tape.iter().filter(|chord| chord.buttons == START).count(),
             1

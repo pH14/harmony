@@ -208,6 +208,7 @@ pub struct NesTarget<G: Game, M: NesBackend<Vec<u8>>> {
     genesis_wram: [u8; WRAM_SIZE],
     current_wram: [u8; WRAM_SIZE],
     genesis_accumulator: Accumulator,
+    accumulator_before_genesis: Accumulator,
     accumulator: Accumulator,
     observation: NesObservation<G::State>,
     action_observations: Vec<ActionObservation<G::State>>,
@@ -238,6 +239,7 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
             genesis_wram: wram,
             current_wram: wram,
             genesis_accumulator: accumulator.clone(),
+            accumulator_before_genesis: Accumulator::default(),
             accumulator,
             observation: observation.clone(),
             action_observations: vec![observation.into()],
@@ -256,6 +258,16 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
     #[must_use]
     pub fn observation(&self) -> &NesObservation<G::State> {
         &self.observation
+    }
+
+    #[must_use]
+    pub fn genesis_accumulator(&self) -> &Accumulator {
+        &self.genesis_accumulator
+    }
+
+    #[must_use]
+    pub fn accumulator_before_genesis(&self) -> &Accumulator {
+        &self.accumulator_before_genesis
     }
 
     #[must_use]
@@ -625,7 +637,11 @@ impl<G: Game, M: NesBackend<Vec<u8>>> NesTarget<G, M> {
 }
 
 impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
-    pub fn from_power_on(lowered: Arc<Lowered<G>>, mut machine: M) -> Result<Self, MachineError> {
+    pub fn from_power_on(
+        lowered: Arc<Lowered<G>>,
+        mut machine: M,
+        root: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
         run_setup::<G, M>(&mut machine, &lowered.game.setup())?;
         for (address, value) in lowered.game.setup_pokes() {
             machine.poke_wram(address, value)?;
@@ -634,7 +650,70 @@ impl<G: Game, M: NesBackend<Vec<u8>> + NesMemory> NesTarget<G, M> {
         if !start.is_empty() {
             run_setup::<G, M>(&mut machine, &start)?;
         }
-        Self::from_machine(lowered, machine)
+        let mut target = Self::from_machine(lowered, machine)?;
+        if !root.is_empty() {
+            target.root_at(root).map_err(MachineError::Backend)?;
+        }
+        Ok(target)
+    }
+
+    fn root_at(&mut self, root: &[ButtonChord]) -> Result<(), String> {
+        let recording = std::mem::replace(&mut self.recording, true);
+        let mut before = self.accumulator.clone();
+        let mut pending = None;
+        for (index, action) in root.iter().enumerate() {
+            self.apply_internal(action);
+            if self.failed {
+                return Err(format!("{} root action {index} failed", G::NAME));
+            }
+            if self.observation.stops() {
+                return Err(format!(
+                    "{} root action {index} reaches a goal, a reject or a move overrun",
+                    G::NAME
+                ));
+            }
+            for record in self
+                .action_observations
+                .iter()
+                .flat_map(|observation| &observation.records)
+            {
+                if let Some(earlier) = pending.replace(*record) {
+                    let _ = self.lowered.compiled.observe(&earlier, &mut before);
+                }
+            }
+        }
+        self.recording = recording;
+        if self
+            .lowered
+            .game
+            .moves(&self.observation.state)
+            .forced
+            .is_some()
+        {
+            return Err(format!("{} root ends inside a forced move", G::NAME));
+        }
+        if self.observation.key.is_none() {
+            return Err(format!("{} root ends on a state with no key", G::NAME));
+        }
+        self.lowered.game.rooted_genesis(&self.observation.state)?;
+        if !self.settle() {
+            return Err(format!("{} root endpoint did not replay", G::NAME));
+        }
+        if self.current != self.genesis {
+            self.machine
+                .drop_snapshot(self.genesis)
+                .map_err(|error| error.to_string())?;
+            self.genesis = self.current;
+        }
+        self.genesis_wram = self.current_wram;
+        self.observation.frame_count = 0;
+        self.genesis_observation = self.observation.clone();
+        self.genesis_accumulator = self.accumulator.clone();
+        self.accumulator_before_genesis = before;
+        self.action_observations = vec![self.observation.clone().into()];
+        self.snapshot_base = None;
+        self.execution_work = 0;
+        Ok(())
     }
 }
 
@@ -1568,7 +1647,7 @@ mod moves {
     fn perched(chord: ButtonChord) -> NesTarget<Perch, Walker> {
         let lowered = Arc::new(Lowered::new(Perch, Perch::STRATEGY).expect("the perch compiles"));
         let mut target =
-            NesTarget::from_power_on(lowered, Walker::default()).expect("a perch target");
+            NesTarget::from_power_on(lowered, Walker::default(), &[]).expect("a perch target");
         target.apply(&chord);
         assert!(!target.observation().stops());
         assert_eq!(
@@ -1716,7 +1795,7 @@ mod moves {
 
     fn target() -> NesTarget<Walk, Walker> {
         let lowered = Arc::new(Lowered::new(Walk, Walk::STRATEGY).expect("the walk compiles"));
-        NesTarget::from_power_on(lowered, Walker::default()).expect("a walk target")
+        NesTarget::from_power_on(lowered, Walker::default(), &[]).expect("a walk target")
     }
 
     fn at(target: &NesTarget<Walk, Walker>) -> (u64, u8) {
@@ -1739,13 +1818,13 @@ mod moves {
     #[test]
     fn an_offered_move_that_ends_where_a_forced_move_starts_hands_off_as_a_chord_does() {
         let lowered = Arc::new(Lowered::new(Ledge, Ledge::STRATEGY).expect("the ledge compiles"));
-        let mut by_move = NesTarget::from_power_on(Arc::clone(&lowered), Walker::default())
+        let mut by_move = NesTarget::from_power_on(Arc::clone(&lowered), Walker::default(), &[])
             .expect("a ledge target");
         by_move.apply(&move_chord(0, 1).expect("a move chord"));
         assert_eq!(arrivals(&by_move), [(4, 4, 0), (7, 7, 7)]);
         assert_eq!(by_move.execution_work(), 7);
         let mut by_chord =
-            NesTarget::from_power_on(lowered, Walker::default()).expect("a ledge target");
+            NesTarget::from_power_on(lowered, Walker::default(), &[]).expect("a ledge target");
         by_chord.apply(&ButtonChord::new(1, 6));
         assert_eq!(arrivals(&by_chord)[3..], [(4, 4, 0), (7, 7, 7)]);
         assert_eq!(by_chord.execution_work(), by_move.execution_work() + 2);

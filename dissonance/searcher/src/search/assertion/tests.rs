@@ -1097,6 +1097,8 @@ fn walk_header(genesis: Record) -> RecordsHeader {
         strategy: "spread = \"position\"".to_owned(),
         catalog: catalog(),
         genesis,
+        root_sha256: None,
+        accumulator_before_genesis: Accumulator::default(),
     }
 }
 
@@ -1248,6 +1250,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         recorded: &recorded,
         strategy: &recorded,
         entry_limit: 1024,
+        rooted: None,
     }
     .run(&genesis, &jobs, &actions)
     .unwrap();
@@ -1265,6 +1268,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
         recorded: &recorded,
         strategy: &coarse,
         entry_limit: 1024,
+        rooted: None,
     }
     .run(&genesis, &jobs, &actions)
     .unwrap();
@@ -1277,6 +1281,7 @@ fn rekeying_under_the_recorded_strategy_reproduces_every_decision() {
             recorded: &recorded,
             strategy: &recorded,
             entry_limit: 1024,
+            rooted: None,
         }
         .run(&genesis, &short, &actions)
         .is_err()
@@ -1297,6 +1302,7 @@ fn rekeying_keeps_the_descendants_of_a_state_the_strategy_stops_at_stopped() {
         recorded: &recorded,
         strategy: &rejecting,
         entry_limit: 1024,
+        rooted: None,
     }
     .run(&genesis, &jobs, &actions)
     .unwrap();
