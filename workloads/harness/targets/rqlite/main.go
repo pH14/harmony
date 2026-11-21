@@ -229,8 +229,10 @@ func declareStatusProperties() {
 // process, which /status names by its start time. Within one process a correct
 // node applies entries in order and installs a snapshot only to move forward,
 // so a lower answer means the node went back to an older state. Answers to concurrent
-// requests can arrive out of order, so an answer is compared only with highs
-// whose answer arrived before its request was sent.
+// requests can arrive out of order, so an answer is compared only with the
+// highest value among answers that arrived before its request was sent. An
+// answer that leaves an index out, as /status does while the store is closed,
+// is not compared for that index.
 type statusAnswers struct {
 	mu     sync.Mutex
 	clock  uint64
@@ -247,9 +249,11 @@ type statusAnswer struct {
 }
 
 type nodeStatus struct {
-	applied  uint64
-	snapshot uint64
-	started  string
+	applied     uint64
+	snapshot    uint64
+	started     string
+	hasApplied  bool
+	hasSnapshot bool
 }
 
 type lifetime struct {
@@ -257,9 +261,28 @@ type lifetime struct {
 	started string
 }
 
-type high struct {
+type rise struct {
 	value    uint64
 	received uint64
+}
+
+type high struct {
+	rises []rise
+}
+
+func (h *high) before(sent uint64) (uint64, bool) {
+	for i := len(h.rises) - 1; i >= 0; i-- {
+		if h.rises[i].received < sent {
+			return h.rises[i].value, true
+		}
+	}
+	return 0, false
+}
+
+func (h *high) observe(value, received uint64) {
+	if n := len(h.rises); n == 0 || value > h.rises[n-1].value {
+		h.rises = append(h.rises, rise{value: value, received: received})
+	}
 }
 
 type highs struct {
@@ -314,24 +337,26 @@ func (s *statusAnswers) observe(node string, sent uint64, status nodeStatus, now
 		h = &highs{}
 		s.high[key] = h
 	}
-	s.check(key, appliedNeverFalls, &h.applied, status.applied, sent)
-	s.check(key, snapshotNeverFalls, &h.snapshot, status.snapshot, sent)
+	if status.hasApplied {
+		s.check(key, appliedNeverFalls, &h.applied, status.applied, sent)
+	}
+	if status.hasSnapshot {
+		s.check(key, snapshotNeverFalls, &h.snapshot, status.snapshot, sent)
+	}
 }
 
 func (s *statusAnswers) check(key lifetime, property string, h *high, value, sent uint64) {
-	if sent > h.received && value < h.value {
+	if highest, ok := h.before(sent); ok && value < highest {
 		f := failure{lifetime: key, property: property}
 		if !s.failed[f] {
 			s.failed[f] = true
-			s.assert(false, property, map[string]any{"node": key.node, "start_time": key.started, "highest": h.value, "answer": value})
+			s.assert(false, property, map[string]any{"node": key.node, "start_time": key.started, "highest": highest, "answer": value})
 		}
 	} else if !s.held[property] {
 		s.held[property] = true
 		s.assert(true, property, nil)
 	}
-	if value > h.value {
-		*h = high{value: value, received: s.clock}
-	}
+	h.observe(value, s.clock)
 }
 
 func (s *statusAnswers) err(node string, attempt error, now time.Time) error {
@@ -367,9 +392,9 @@ func (c *client) status(ctx context.Context, into any) error {
 func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 	var status struct {
 		Store struct {
-			DBAppliedIndex uint64 `json:"db_applied_index"`
+			DBAppliedIndex *uint64 `json:"db_applied_index"`
 			Raft           struct {
-				LastSnapshotIndex raftStat `json:"last_snapshot_index"`
+				LastSnapshotIndex *raftStat `json:"last_snapshot_index"`
 			} `json:"raft"`
 		} `json:"store"`
 		Node struct {
@@ -379,11 +404,14 @@ func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 	if err := c.status(ctx, &status); err != nil {
 		return nodeStatus{}, err
 	}
-	return nodeStatus{
-		applied:  status.Store.DBAppliedIndex,
-		snapshot: uint64(status.Store.Raft.LastSnapshotIndex),
-		started:  status.Node.StartTime,
-	}, nil
+	result := nodeStatus{started: status.Node.StartTime}
+	if applied := status.Store.DBAppliedIndex; applied != nil {
+		result.applied, result.hasApplied = *applied, true
+	}
+	if snapshot := status.Store.Raft.LastSnapshotIndex; snapshot != nil {
+		result.snapshot, result.hasSnapshot = uint64(*snapshot), true
+	}
+	return result, nil
 }
 
 // rqlite sends each Raft stat as a number when it parses as one and as a

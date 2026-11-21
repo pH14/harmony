@@ -46,6 +46,10 @@ func answer1(s *statusAnswers, node string, status nodeStatus) {
 	s.observe(node, s.tick(), status, time.Unix(100, 0))
 }
 
+func indexed(applied, snapshot uint64, started string) nodeStatus {
+	return nodeStatus{applied: applied, snapshot: snapshot, started: started, hasApplied: true, hasSnapshot: true}
+}
+
 func TestStatusAnswersNameTheLastAnswerAcrossAttempts(t *testing.T) {
 	answers, _ := recordingAnswers()
 	start := time.Unix(100, 0)
@@ -84,10 +88,10 @@ func TestStatusAnswersWithoutAnAnswerSaySo(t *testing.T) {
 
 func TestStatusAnswersReportAnOlderStateOncePerProcessAndProperty(t *testing.T) {
 	answers, got := recordingAnswers()
-	answer1(answers, "n1", nodeStatus{applied: 482, snapshot: 482, started: "a"})
-	answer1(answers, "n2", nodeStatus{applied: 300, snapshot: 333, started: "b"})
-	answer1(answers, "n1", nodeStatus{applied: 333, snapshot: 333, started: "a"})
-	answer1(answers, "n1", nodeStatus{applied: 333, snapshot: 333, started: "a"})
+	answer1(answers, "n1", indexed(482, 482, "a"))
+	answer1(answers, "n2", indexed(300, 333, "b"))
+	answer1(answers, "n1", indexed(333, 333, "a"))
+	answer1(answers, "n1", indexed(333, 333, "a"))
 	failed := failures(*got)
 	if len(failed) != 2 || failed[0].property != appliedNeverFalls || failed[1].property != snapshotNeverFalls {
 		t.Fatalf("failures %v", failed)
@@ -104,19 +108,71 @@ func TestStatusAnswersReportAnOlderStateOncePerProcessAndProperty(t *testing.T) 
 
 func TestStatusAnswersStartAgainAfterARestart(t *testing.T) {
 	answers, got := recordingAnswers()
-	answer1(answers, "n3", nodeStatus{applied: 900, snapshot: 800, started: "first"})
-	answer1(answers, "n3", nodeStatus{applied: 12, snapshot: 0, started: "second"})
-	answer1(answers, "n3", nodeStatus{applied: 950, snapshot: 800, started: "second"})
+	answer1(answers, "n3", indexed(900, 800, "first"))
+	answer1(answers, "n3", indexed(12, 0, "second"))
+	answer1(answers, "n3", indexed(950, 800, "second"))
 	if failed := failures(*got); len(failed) != 0 {
+		t.Fatalf("failures %v", failed)
+	}
+	answer1(answers, "n3", indexed(700, 700, "second"))
+	answer1(answers, "n3", indexed(700, 700, "second"))
+	answer1(answers, "n3", indexed(960, 960, "third"))
+	answer1(answers, "n3", indexed(10, 10, "third"))
+	failed := failures(*got)
+	want := []struct {
+		property string
+		started  string
+		highest  uint64
+	}{
+		{appliedNeverFalls, "second", 950},
+		{snapshotNeverFalls, "second", 800},
+		{appliedNeverFalls, "third", 960},
+		{snapshotNeverFalls, "third", 960},
+	}
+	if len(failed) != len(want) {
+		t.Fatalf("failures %v", failed)
+	}
+	for i, w := range want {
+		if failed[i].property != w.property || failed[i].details["start_time"] != w.started || failed[i].details["highest"] != w.highest {
+			t.Fatalf("failure %d = %v, want %+v", i, failed[i], w)
+		}
+	}
+}
+
+func TestStatusAnswersCompareWithTheHighestThatArrivedBeforeTheRequest(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n1", indexed(100, 100, "a"))
+	b := answers.tick()
+	c := answers.tick()
+	answers.observe("n1", c, indexed(120, 120, "a"), time.Unix(100, 0))
+	answers.observe("n1", b, indexed(90, 90, "a"), time.Unix(100, 0))
+	failed := failures(*got)
+	if len(failed) != 2 {
+		t.Fatalf("failures %v", failed)
+	}
+	for _, f := range failed {
+		if f.details["highest"] != uint64(100) || f.details["answer"] != uint64(90) {
+			t.Fatalf("details %v", f.details)
+		}
+	}
+}
+
+func TestStatusAnswersCompareOnlyTheIndexesAnAnswerHolds(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n2", indexed(482, 482, "a"))
+	answer1(answers, "n2", nodeStatus{started: "a"})
+	answer1(answers, "n2", nodeStatus{applied: 0, started: "a", hasApplied: true})
+	failed := failures(*got)
+	if len(failed) != 1 || failed[0].property != appliedNeverFalls || failed[0].details["answer"] != uint64(0) {
 		t.Fatalf("failures %v", failed)
 	}
 }
 
 func TestStatusAnswersAcceptARestoreFromANewerSnapshot(t *testing.T) {
 	answers, got := recordingAnswers()
-	answer1(answers, "n2", nodeStatus{applied: 41, snapshot: 30, started: "a"})
-	answer1(answers, "n2", nodeStatus{applied: 276, snapshot: 276, started: "a"})
-	answer1(answers, "n2", nodeStatus{applied: 280, snapshot: 276, started: "a"})
+	answer1(answers, "n2", indexed(41, 30, "a"))
+	answer1(answers, "n2", indexed(276, 276, "a"))
+	answer1(answers, "n2", indexed(280, 276, "a"))
 	if failed := failures(*got); len(failed) != 0 {
 		t.Fatalf("failures %v", failed)
 	}
@@ -126,12 +182,12 @@ func TestStatusAnswersCompareOnlyAnswersThatArrivedBeforeTheRequest(t *testing.T
 	answers, got := recordingAnswers()
 	early := answers.tick()
 	late := answers.tick()
-	answers.observe("n1", late, nodeStatus{applied: 105, started: "a"}, time.Unix(100, 0))
-	answers.observe("n1", early, nodeStatus{applied: 100, started: "a"}, time.Unix(100, 0))
+	answers.observe("n1", late, indexed(105, 0, "a"), time.Unix(100, 0))
+	answers.observe("n1", early, indexed(100, 0, "a"), time.Unix(100, 0))
 	if failed := failures(*got); len(failed) != 0 {
 		t.Fatalf("failures %v", failed)
 	}
-	answer1(answers, "n1", nodeStatus{applied: 101, started: "a"})
+	answer1(answers, "n1", indexed(101, 0, "a"))
 	if failed := failures(*got); len(failed) != 1 || failed[0].details["highest"] != uint64(105) {
 		t.Fatalf("failures %v", failed)
 	}
@@ -139,8 +195,8 @@ func TestStatusAnswersCompareOnlyAnswersThatArrivedBeforeTheRequest(t *testing.T
 
 func TestStatusAnswersWithoutAStartTimeCompareNothing(t *testing.T) {
 	answers, got := recordingAnswers()
-	answer1(answers, "n1", nodeStatus{applied: 500})
-	answer1(answers, "n1", nodeStatus{applied: 10})
+	answer1(answers, "n1", indexed(500, 500, ""))
+	answer1(answers, "n1", indexed(10, 10, ""))
 	if len(*got) != 0 {
 		t.Fatalf("assertions %v", *got)
 	}
@@ -155,9 +211,19 @@ func TestStatusDecodesTheIndexesAndTheStartTime(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status != (nodeStatus{applied: 482, snapshot: 333, started: "2026-11-21T19:30:01.5Z"}) {
+		if status != (indexed(482, 333, "2026-11-21T19:30:01.5Z")) {
 			t.Fatalf("snapshot %s: status %+v", snapshot, status)
 		}
+	}
+	server, _ := leaderServer(t, answer(http.StatusOK, `{"node":{"start_time":"2026-11-21T19:30:01.5Z"},"store":{"open":false}}`))
+	c := newClient(server.URL)
+	status, err := c.indexes(context.Background())
+	c.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != (nodeStatus{started: "2026-11-21T19:30:01.5Z"}) {
+		t.Fatalf("closed store: status %+v", status)
 	}
 }
 

@@ -760,13 +760,18 @@ the leader has compacted entries the follower lacks, so a restore moves both
 values forward. rqlited keeps the old applied index until the restored
 database has replaced the old one, so a restore reports no lower value on the
 way. Answers to concurrent requests can arrive out of order, so an answer is
-compared only with the highest values whose answers arrived before its request
-was sent. Each property fails at most once per node process and names the
-highest value and the lower answer. The drive and each check run in their own
-processes, each with its own highest values, so a property sees a regression
-only when one process reads the node before and after it. A node that installs
-a snapshot older than its own applied state, as in the install and reject loop
-of hashicorp/raft that a stale tail on the old leader can reach, fails both.
+compared only with the highest value among the answers that arrived before its
+request was sent. An answer that leaves an index out, as `/status` does while
+the store is not open, is not compared for that index. Each property fails at
+most once per node process and names the highest value and the lower answer.
+The drive and each check run in their own processes, each with its own highest
+values, so a property sees a regression only when one process reads the node
+before and after it. Each property fires when its own index falls. A node that
+installs a snapshot older than its own applied state fails the applied
+property, and also the snapshot property when the installed snapshot is older
+than one it held. That happens in the install and reject loop of
+hashicorp/raft, which a follower reaches when the leader sends it a snapshot
+older than one the follower took itself.
 
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
