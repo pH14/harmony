@@ -266,7 +266,7 @@ and platform evidence is not uniform:
 | Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
-| SMB/Consonance | `nes-backend-oracle` compares a native leg and a VM leg of `NesWorkload<SuperMarioBros>`; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, a musl build of the oracle, and a caller-supplied licensed SMB ROM. |
+| SMB/Consonance | `nes-backend-oracle` compares a native leg and a VM leg of `NesWorkload<SuperMarioBros>`. It passes in local runs on a Linux/KVM x86_64 host and a Linux/KVM aarch64 host, which print the same `NES_BACKEND_ORACLE_OK` line: 104 actions, 400 executions, and equal target-record and campaign-stream hashes. No repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, a musl build of the oracle, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins and the whole-game origin pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Twin Dragons/native | Unit tests are checked in, and `demos/twin-dragons/tests/campaign-oracle.mjs` compares a `nes-eval` campaign with the browser campaign; no CI lane runs it yet. | Host QuickNES core and the pinned silent-effects release ROM. |
@@ -320,8 +320,8 @@ equal except `backend` and `witness.snapshot_sha256`. On success it writes
 `NES_BACKEND_ORACLE_OK actions=N sha256=H executions=E stream_sha256=S`, where
 `H` and `S` hash the target records and the stream lines after their headers.
 ROMs are not redistributed by this package. On aarch64, the caller must supply
-a kernel, platform runtime, and NES OCI image built for that architecture; no
-current ARM result is claimed by this matrix.
+a kernel, platform runtime, and NES OCI image built for that architecture. The
+SMB/Consonance row is the only row of the matrix that claims an aarch64 result.
 
 `nes-core-oracle` writes the native QuickNES reference for the browser demo's
 WebAssembly core. It runs a game's setup tape followed by seeded chords from
