@@ -280,7 +280,12 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
         );
         shared.search.wall_seconds = request.budget.wall_seconds;
         shared.validate()?;
-        SearchStart::Checkpoint(checkpoint)
+        SearchStart::Checkpoint {
+            checkpoint,
+            previous: serde_json::from_value(original.record.payload["outcome"].clone())
+                .ok()
+                .map(Box::new),
+        }
     } else {
         SearchStart::Actions(super::investigate::prefix(
             &original,

@@ -731,6 +731,9 @@ evidence. Replay and branch selection use that verified manifest copy, even
 if a source outcome file changes later. Search resume restores its
 checkpoint and does not consume the report;
 an interrupted report write does not invalidate an earlier checkpoint.
+Resume passes the manifest's copy of the earlier report to the package, which
+carries the replay results of inherited findings from it instead of replaying
+them; without a readable copy it replays them.
 Faults `show`, `--timeline` and report-backed `--logs` display the manifest's
 saved outcome, so later edits to an outcome file cannot change the displayed
 recording. Command runs with a saved serial digest check it before displaying

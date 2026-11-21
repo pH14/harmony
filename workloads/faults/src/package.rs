@@ -196,6 +196,118 @@ pub fn replay_confirms_bug(
         && (!recorded_violations.is_empty() || replay.stop == recorded_stop)
 }
 
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        any(
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(target_os = "macos", target_arch = "aarch64")
+        ),
+        not(miri)
+    )
+))]
+fn carried_bug<'a>(
+    previous: Option<&'a Report>,
+    bug: &crate::report::BugReport,
+    violations: &[String],
+    sometimes: &[String],
+) -> Option<&'a BugSummary> {
+    previous?.bugs.iter().find(|carried| {
+        carried.execution == bug.execution
+            && carried.actions == bug.actions
+            && carried.stop == bug.observations.stop
+            && carried.violations == violations
+            && carried.sometimes == sometimes
+            && carried.replay.as_ref().is_some_and(|witness| {
+                carried.confirmed == replay_confirms_bug(carried.stop, violations, witness)
+            })
+    })
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        any(
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(target_os = "macos", target_arch = "aarch64")
+        ),
+        not(miri)
+    )
+))]
+fn bug_summaries(
+    written: &[crate::report::BugReport],
+    previous: Option<&Report>,
+    current: &Report,
+    uml: bool,
+    mut replay: impl FnMut(&[FaultAction]) -> Result<ReplaySummary, Box<dyn Error>>,
+) -> Vec<BugSummary> {
+    let previous = previous.filter(|previous| {
+        previous.package == current.package
+            && previous.mode == current.mode
+            && previous.identity == current.identity
+            && previous.image_sha256 == current.image_sha256
+            && previous.kernel_sha256 == current.kernel_sha256
+            && previous.ram_mib == current.ram_mib
+    });
+    written
+        .iter()
+        .map(|bug| {
+            let violations: Vec<String> = bug.observations.violations().into_iter().collect();
+            let sometimes: Vec<String> = bug.observations.sometimes().into_iter().collect();
+            if let Some(carried) = carried_bug(previous, bug, &violations, &sometimes) {
+                return carried.clone();
+            }
+            let witness = match replay(&bug.actions) {
+                Ok(summary) => Some(summary),
+                Err(error) => {
+                    eprintln!("bug {} did not replay: {error}", bug.bug);
+                    None
+                }
+            };
+            let confirmed = witness.as_ref().is_some_and(|witness| {
+                replay_confirms_bug(bug.observations.stop, &violations, witness)
+            });
+            if !confirmed {
+                eprintln!(
+                    "bug {} was not confirmed by replay and is reported unconfirmed",
+                    bug.bug
+                );
+            }
+            BugSummary {
+                execution: bug.execution,
+                actions: bug.actions.clone(),
+                stop: bug.observations.stop,
+                violations,
+                sometimes,
+                state_hash: witness
+                    .as_ref()
+                    .map(|witness| witness.state_hash.clone())
+                    .unwrap_or_default(),
+                state_hash_encoding: witness.as_ref().map_or_else(
+                    || {
+                        if uml {
+                            StateHashEncoding::Unavailable
+                        } else {
+                            StateHashEncoding::default()
+                        }
+                    },
+                    |witness| witness.state_hash_encoding,
+                ),
+                confirmed,
+                replay: witness,
+            }
+        })
+        .collect()
+}
+
 #[must_use]
 pub fn first_confirmed_bug(bugs: &[BugSummary]) -> Option<u64> {
     bugs.iter()
@@ -306,7 +418,10 @@ pub enum SearchStart {
     #[default]
     Genesis,
     Actions(Vec<FaultAction>),
-    Checkpoint(searcher::search::checkpoint::PinnedCheckpoint),
+    Checkpoint {
+        checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
+        previous: Option<Box<Report>>,
+    },
 }
 
 pub struct Artifacts {
@@ -426,8 +541,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
-        StateHashEncoding, first_confirmed_bug, replay_confirms_bug, replay_needs_settle,
+        Artifacts, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report, first_confirmed_bug,
+        replay_needs_settle,
     };
 
     use crate::{
@@ -601,7 +716,7 @@ mod live {
         };
         let origin = match start {
             super::SearchStart::Genesis => CampaignOrigin::Genesis,
-            super::SearchStart::Checkpoint(checkpoint) => CampaignOrigin::SearchCheckpoint {
+            super::SearchStart::Checkpoint { checkpoint, .. } => CampaignOrigin::SearchCheckpoint {
                 path: checkpoint.path.clone(),
                 expected_sha256: Some(checkpoint.sha256.clone()),
             },
@@ -760,49 +875,17 @@ mod live {
         report.undecided_checks = archive.undecided_checks;
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
-        for bug in &written {
-            let violations: Vec<String> = bug.observations.violations().into_iter().collect();
-            let witness =
-                match replay_once(artifacts, &config, &bug.actions, true, &mut |_, _| Ok(())) {
-                    Ok(summary) => Some(summary),
-                    Err(error) => {
-                        eprintln!("bug {} did not replay: {error}", bug.bug);
-                        None
-                    }
-                };
-            let confirmed = witness.as_ref().is_some_and(|witness| {
-                replay_confirms_bug(bug.observations.stop, &violations, witness)
-            });
-            if !confirmed {
-                eprintln!(
-                    "bug {} was not confirmed by replay and is reported unconfirmed",
-                    bug.bug
-                );
-            }
-            report.bugs.push(BugSummary {
-                execution: bug.execution,
-                actions: bug.actions.clone(),
-                stop: bug.observations.stop,
-                violations,
-                sometimes: bug.observations.sometimes().into_iter().collect(),
-                state_hash: witness
-                    .as_ref()
-                    .map(|witness| witness.state_hash.clone())
-                    .unwrap_or_default(),
-                state_hash_encoding: witness.as_ref().map_or_else(
-                    || {
-                        if config.uml().is_some() {
-                            StateHashEncoding::Unavailable
-                        } else {
-                            StateHashEncoding::default()
-                        }
-                    },
-                    |witness| witness.state_hash_encoding,
-                ),
-                confirmed,
-                replay: witness,
-            });
-        }
+        let previous = match start {
+            super::SearchStart::Checkpoint { previous, .. } => previous.as_deref(),
+            _ => None,
+        };
+        report.bugs = super::bug_summaries(
+            &written,
+            previous,
+            &report,
+            config.uml().is_some(),
+            |actions| replay_once(artifacts, &config, actions, true, &mut |_, _| Ok(())),
+        );
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
         if let Some(first) = report.bugs.iter().find(|bug| bug.confirmed) {
@@ -1667,6 +1750,111 @@ mod tests {
             first_confirmed_bug(&[bug_summary(9, true), bug_summary(4, true)]),
             Some(4)
         );
+    }
+
+    fn crash_report(bug: u64, execution: u64, kill: u16) -> crate::report::BugReport {
+        crate::report::BugReport {
+            bug,
+            execution,
+            root_seal: 0,
+            actions: vec![
+                FaultOperation::Kill(kill, std::num::NonZeroU16::new(50).unwrap()).into(),
+            ],
+            answers: Vec::new(),
+            standing: String::new(),
+            observations: FaultObservations {
+                stop: FaultStop::Crash,
+                ..FaultObservations::default()
+            },
+        }
+    }
+
+    fn search_report(identity: &str) -> Report {
+        let artifacts = Artifacts {
+            kernel: b"kernel".to_vec(),
+            initramfs: b"initramfs".to_vec(),
+        };
+        Report::new("search", &artifacts, identity.to_owned(), &options(), 1)
+    }
+
+    fn earlier_run(
+        replay: impl FnMut(&[FaultAction]) -> Result<ReplaySummary, Box<dyn Error>>,
+    ) -> Report {
+        let mut earlier = search_report("identity");
+        earlier.bugs = bug_summaries(&[crash_report(1, 4, 0)], None, &earlier, false, replay);
+        serde_json::from_value(serde_json::to_value(&earlier).unwrap()).unwrap()
+    }
+
+    fn resumed_run(previous: Option<&Report>, identity: &str) -> (Vec<BugSummary>, Vec<u16>) {
+        let mut replayed = Vec::new();
+        let bugs = bug_summaries(
+            &[crash_report(1, 4, 0), crash_report(2, 9, 1)],
+            previous,
+            &search_report(identity),
+            false,
+            |actions| {
+                let FaultOperation::Kill(node, _) = actions[0].operation else {
+                    panic!("unexpected action");
+                };
+                replayed.push(node);
+                Ok(replay_summary(true, FaultStop::Crash, &[]))
+            },
+        );
+        (bugs, replayed)
+    }
+
+    #[test]
+    fn a_resumed_search_carries_an_inherited_replay_and_replays_only_its_new_finding() {
+        let earlier = earlier_run(|_| {
+            let mut witness = replay_summary(true, FaultStop::Crash, &[]);
+            witness.state_hash = "earlier".to_owned();
+            Ok(witness)
+        });
+        assert!(earlier.bugs[0].confirmed);
+        let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
+        assert_eq!(replayed, vec![1], "only the new finding is replayed");
+        assert_eq!(bugs[0], earlier.bugs[0]);
+        assert_eq!(bugs[0].state_hash, "earlier");
+        assert!(bugs[1].confirmed);
+        assert_eq!(bugs[1].state_hash, "hash");
+    }
+
+    #[test]
+    fn an_inherited_finding_that_replayed_without_confirming_stays_unconfirmed() {
+        let earlier = earlier_run(|_| Ok(replay_summary(false, FaultStop::Deadline, &[])));
+        assert!(!earlier.bugs[0].confirmed);
+        assert!(earlier.bugs[0].replay.is_some());
+        let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
+        assert_eq!(replayed, vec![1]);
+        assert_eq!(bugs[0], earlier.bugs[0]);
+        assert!(!bugs[0].confirmed);
+    }
+
+    #[test]
+    fn an_inherited_finding_whose_replay_failed_is_replayed_again() {
+        let earlier = earlier_run(|_| Err("worker killed".into()));
+        assert!(!earlier.bugs[0].confirmed);
+        assert!(earlier.bugs[0].replay.is_none());
+        let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
+        assert_eq!(replayed, vec![0, 1]);
+        assert!(bugs[0].confirmed);
+    }
+
+    #[test]
+    fn an_inherited_replay_is_used_only_for_the_same_finding_and_runtime() {
+        let earlier = earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
+        assert_eq!(resumed_run(None, "identity").1, vec![0, 1]);
+        assert_eq!(resumed_run(Some(&earlier), "other").1, vec![0, 1]);
+        let mut moved = earlier.clone();
+        moved.bugs[0].execution = 5;
+        assert_eq!(resumed_run(Some(&moved), "identity").1, vec![0, 1]);
+        let mut edited = earlier.clone();
+        edited.bugs[0].actions[0] =
+            FaultOperation::Kill(2, std::num::NonZeroU16::new(50).unwrap()).into();
+        assert_eq!(resumed_run(Some(&edited), "identity").1, vec![0, 1]);
+        let mut inconsistent = earlier;
+        inconsistent.bugs[0].confirmed = false;
+        assert_eq!(resumed_run(Some(&inconsistent), "identity").1, vec![0, 1]);
     }
 
     #[test]
