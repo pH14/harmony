@@ -84,6 +84,17 @@ pub struct MetroidReading {
     pub missile_target: bool,
 }
 
+impl MetroidReading {
+    #[must_use]
+    pub fn of(state: MetroidMechanicalState) -> Self {
+        Self {
+            state,
+            missiles_armed: state.missiles_armed(),
+            missile_target: state.missile_target(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Arm,
@@ -118,6 +129,22 @@ impl FireMissiles {
             last_missiles: state.missiles,
             pressed: false,
         })
+    }
+
+    #[must_use]
+    pub const fn volley(count: u8) -> Self {
+        Self {
+            remaining: count,
+            phase: Phase::Arm,
+            phase_frames: 0,
+            last_missiles: 0,
+            pressed: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn frame_limit(self) -> u64 {
+        2 * TOGGLE_FRAME_LIMIT as u64 + (self.remaining as u64 + 1) * SHOT_FRAME_LIMIT as u64
     }
 
     fn enter(&mut self, phase: Phase) {

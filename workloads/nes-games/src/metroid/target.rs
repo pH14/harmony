@@ -155,6 +155,9 @@ const JOYPAD_START: u8 = 1 << 3;
 pub(crate) const JOYPAD_B: u8 = 1 << 1;
 pub(crate) const JOYPAD_SELECT: u8 = 1 << 2;
 
+pub const MISSILES_ARMED: u8 = 1;
+pub const MISSILE_DOOR: u8 = 1 << 1;
+
 pub type MetroidInput = crate::search::archive::Input<MetroidAction>;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -180,6 +183,7 @@ pub struct MetroidMechanicalState {
     pub mother_brain_defeated: bool,
     pub ending: bool,
     pub kraid_defeated: bool,
+    pub missile_flags: u8,
 }
 
 impl MetroidMechanicalState {
@@ -236,6 +240,18 @@ impl MetroidMechanicalState {
     #[must_use]
     pub fn in_play_or_item_pickup(self) -> bool {
         self.in_play() || self.mode == GAME_MODE_ITEM_PICKUP
+    }
+
+    #[must_use]
+    pub fn missiles_armed(self) -> bool {
+        self.missile_flags & MISSILES_ARMED != 0
+    }
+
+    #[must_use]
+    pub fn missile_target(self) -> bool {
+        self.boss_health > 0
+            || self.zebetite_hits_left > 0
+            || self.missile_flags & MISSILE_DOOR != 0
     }
 }
 
@@ -415,6 +431,8 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         mother_brain_defeated: mother_brain_defeated(wram, area)?,
         ending: read_byte(cartridge, ENDING)? != 0,
         kraid_defeated: boss_defeated(read_byte(cartridge, KRAID_STATUS)?, KRAID_DEFEATED_BIT),
+        missile_flags: (u8::from(missiles_armed(wram)) * MISSILES_ARMED)
+            | (u8::from(missile_door_in_room(wram)) * MISSILE_DOOR),
     })
 }
 
