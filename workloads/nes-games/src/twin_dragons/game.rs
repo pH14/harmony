@@ -510,6 +510,24 @@ mod tests {
     }
 
     #[test]
+    fn later_screens_rank_higher_and_the_level_three_corridor_counts_from_the_right() {
+        let progress = |level, x, y| {
+            let mut at = state(level, x, 3);
+            at.y = y;
+            key(at).unwrap().progress()
+        };
+        assert_eq!(progress(0, 300, 175), progress(0, 260, 175));
+        assert!(progress(0, 300, 175) > progress(0, 200, 175));
+        assert!(progress(1, 40, 175) > progress(0, 2200, 175));
+        assert!(progress(2, 1300, 175) > progress(2, 1000, 175));
+        assert!(progress(2, 1500, 47) > progress(2, 1500, 175));
+        assert!(progress(2, 32, 47) > progress(2, 1500, 47));
+        assert!(progress(2, 32, 47) > progress(2, 600, 47));
+        assert!(progress(2, 1500, 64) < progress(2, 1500, 63));
+        assert_eq!(progress(1, 1500, 47), progress(1, 1500, 175));
+    }
+
+    #[test]
     fn later_levels_order_above_further_positions() {
         let far = key(state(0, 2200, 3)).unwrap();
         let next = key(state(1, 40, 1)).unwrap();
