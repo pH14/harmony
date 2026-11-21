@@ -297,24 +297,28 @@ try {
     false,
     "The hidden automatic preview must not highlight a replay position on the map",
   );
-  const { x, y } = await page.evaluate(() => {
-    const level = Number(document.querySelector("#map").dataset.map);
-    const cell = [...window.tdTestRouteCells.values()]
-      .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
-      .sort((a, b) => b.ids.size - a.ids.size)[0];
+  const { intro, levelOne } = await page.evaluate(() => {
+    const busiest = (level) =>
+      [...window.tdTestRouteCells.values()]
+        .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
+        .sort((a, b) => b.ids.size - a.ids.size)[0]?.observation;
+    const cells = { intro: busiest(Number(document.querySelector("#map").dataset.map)), levelOne: busiest(0) };
     window.tdTestRouteCells = null;
-    return cell.observation;
+    return cells;
   });
+  const { x, y } = intro;
   const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
-  const clickIntroCell = async () => {
-    const room = Number(await introMap.getAttribute("data-map"));
-    const point = await showOnMap(page, room, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
+  const clickRouteCell = async (cell) => {
+    const point = await showOnMap(page, cell.level, Math.floor(cell.x / 32) * 32 + 16, Math.floor((cell.y - 8) / 32) * 32 + 24);
     await page.mouse.move(point.x, point.y);
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await page.mouse.click(point.x, point.y);
   };
-  selectFixtureCell = clickIntroCell;
+  const clickIntroCell = () => clickRouteCell(intro);
+  // The search may leave Level 1 before the intro cell is picked, and the fixtures open from Level 1.
+  assert.ok(levelOne, "The search must keep a Level 1 cell with several routes");
+  selectFixtureCell = () => clickRouteCell(levelOne);
   const emptyCell = async (move) => {
     const room = Number(await introMap.getAttribute("data-map"));
     const point = await showOnMap(page, room, 16, 8);
