@@ -185,8 +185,8 @@ cases are independent stage clears on `mm2-strategy` with a `stage`: the run
 starts at that stage's arrival from the power-on menus and wins when that Robot
 Master's weapon is awarded. The throughput panels run `mm2-strategy` as the
 whole game. A strategy game reads its base game's ROM entry, so `mm2-strategy`
-and `smb-strategy` use the `mm2` and `smb` entries. `mm2-whole-game.json` runs MM2 from power-on
-to the ending with the Robot Master order fixed. Metroid
+and `smb-strategy` use the `mm2` and `smb` entries. `mm2-whole-game.json` runs `mm2-strategy`
+with `whole_game` from power-on to the ending with the Robot Master order fixed. Metroid
 progress is reported even when its ending is not reached.
 
 Copy a manifest to change **search** mechanisms for an ablation. Keep case IDs,
@@ -391,8 +391,7 @@ Omitting it leaves the campaign without a work-budget cutoff.
 A fast independent-stage panel is not a substitute for preserving demonstrated
 whole-game reach. The 005 Mega Man panel starts each Robot Master stage separately;
 the earlier Wily 4 result chained searched victories and carried the resulting
-weapons. Replay of that retained chain verifies current runtime compatibility,
-not fresh-search recovery. The deep chained search regression remains an explicit
+weapons. The deep chained search regression remains an explicit
 qualification gap.
 
 Metroid reports now expose named equipment, area entry, and boss defeat separately,

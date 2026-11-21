@@ -6,10 +6,6 @@ use nes_workload::{
         progress::{NamedProgress, area_name},
         target::{ButtonChord, MetroidTarget, MetroidTerminalPolicy},
     },
-    mm2::{
-        action::Mm2Action,
-        target::{Mm2Stage, Mm2Target},
-    },
     search::archive::Input,
     target::{ExitKind, Target},
 };
@@ -24,39 +20,9 @@ fn replay(
     core_hash: &str,
     execution_sha256: &str,
     input: &Input<ButtonChord>,
-    stage: Option<Mm2Stage>,
 ) -> Result<Value, Box<dyn Error>> {
-    if game == "mm2" {
-        let stage = stage.ok_or("MM2 needs the expected stage name")?;
-        let mut target = Mm2Target::from_rom_bytes_after_with_identity(
-            rom,
-            core,
-            core_hash,
-            execution_sha256,
-            &input
-                .actions
-                .iter()
-                .copied()
-                .map(Mm2Action::from)
-                .collect::<Vec<_>>(),
-            stage,
-        )?;
-        let prefix_frames: u64 = input.actions.iter().map(|a| u64::from(a.hold_frames)).sum();
-        let genesis_frames: u64 = target
-            .genesis_prefix()
-            .iter()
-            .map(|a| u64::from(a.hold_frames))
-            .sum();
-        return Ok(json!({
-            "origin": "retained searched power-on tape, followed by ordinary stage setup",
-            "scope": "replay compatibility and stage reach; not a fresh search result",
-            "stage": stage.name(), "endpoint": target.mechanical_state(),
-            "setup_frames_after_tape": genesis_frames - prefix_frames,
-            "snapshot_sha256": format!("{:x}", Sha256::digest(postcard::to_allocvec(&target.snapshot().ok_or("snapshot failed")?)?))
-        }));
-    }
     if game != "metroid" {
-        return Err("game must be metroid or mm2".into());
+        return Err("game must be metroid".into());
     }
     let mut target = MetroidTarget::from_rom_bytes_headless_with_identity(
         rom,
@@ -112,8 +78,8 @@ fn replay(
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(4..=5).contains(&args.len()) {
-        return Err("usage: nes-progress GAME CORE ROM INPUT.json [MM2_STAGE]".into());
+    if args.len() != 4 {
+        return Err("usage: nes-progress GAME CORE ROM INPUT.json".into());
     }
     let core = Path::new(&args[1]);
     let rom = fs::read(&args[2])?;
@@ -121,25 +87,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input: Input<ButtonChord> = serde_json::from_slice(&bytes)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
     let execution_sha256 = machine::quicknes::prepared_execution_sha256(core, &core_hash)?;
-    let stage = args.get(4).map(|s| Mm2Stage::parse(s)).transpose()?;
-    let first = replay(
-        &args[0],
-        core,
-        &rom,
-        &core_hash,
-        &execution_sha256,
-        &input,
-        stage,
-    )?;
-    let second = replay(
-        &args[0],
-        core,
-        &rom,
-        &core_hash,
-        &execution_sha256,
-        &input,
-        stage,
-    )?;
+    let first = replay(&args[0], core, &rom, &core_hash, &execution_sha256, &input)?;
+    let second = replay(&args[0], core, &rom, &core_hash, &execution_sha256, &input)?;
     if first != second {
         return Err("replay differs between independent machines".into());
     }

@@ -182,7 +182,7 @@ class EvaluationTests(unittest.TestCase):
         assets = {'smb': {'path': str(rom), 'sha256': eval.digest(rom)}, 'core': {'path': str(core), 'sha256': eval.digest(core)}}
         self.assertEqual(eval.resolve_assets(job, assets)['rom'], str(rom.resolve()))
         self.assertEqual(eval.rom_asset('mm2-strategy'), 'mm2')
-        self.assertEqual(eval.rom_asset('mm2'), 'mm2')
+        self.assertEqual(eval.rom_asset('smb'), 'smb')
 
     def test_tail_preserves_partial_records(self):
         path = self.root / 'progress.jsonl'
@@ -435,7 +435,7 @@ class EvaluationTests(unittest.TestCase):
         item['origin'] = 'power-on stage genesis'
         item['identity'] = {'backend': 'native', 'policies': {'key': 'fixed-v1'}}
         item['search_request'].update({
-            'game': 'mm2', 'seed': 7, 'executions': 123,
+            'game': 'mm2-strategy', 'seed': 7, 'executions': 123,
             'frames': 789, 'wall_seconds': 42, 'workers': 2, 'memory_mib': 64,
             'selector': 'selector-v1', 'mixture': 'mixture-v1',
             'verification': 'witness'})
@@ -445,14 +445,14 @@ class EvaluationTests(unittest.TestCase):
             'stop_reason': 'victory'})
         item['last_progress'] = {'resident_memory_bytes': 2 * 1048576}
         row = eval.roster_row(item)
-        self.assertEqual(row['game'], 'mm2')
+        self.assertEqual(row['game'], 'mm2-strategy')
         self.assertEqual(row['budgets']['frames'], 789)
         self.assertEqual(row['mechanism']['selector'], 'selector-v1')
         self.assertEqual(row['outcome'], 'victory within declared frame budget')
         self.assertEqual(row['replay']['confirmation'], 'bounded witness replay ×2 confirmed')
         self.assertEqual(row['resources']['last_logical_memory_bytes'], 2 * 1048576)
         report = eval.report_html([item], 'Roster')
-        for value in ('mm2', 'power-on stage genesis', 'selector-v1', 'bounded witness replay ×2 confirmed'):
+        for value in ('mm2-strategy', 'power-on stage genesis', 'selector-v1', 'bounded witness replay ×2 confirmed'):
             self.assertIn(value, report)
 
     def test_changed_affinity_keeps_quality_comparable_but_flags_timing(self):

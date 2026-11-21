@@ -4,9 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
-    mm2::{
-        action::{SWITCH_FRAME_LIMIT, SWITCH_ODDS, SWITCH_PLANNED_FRAMES, WeaponSwitch},
-        target::weapon_menu_row,
+    mm2::switch::{
+        SWITCH_FRAME_LIMIT, SWITCH_ODDS, SWITCH_PLANNED_FRAMES, WeaponSwitch, weapon_menu_row,
     },
     search::{
         assertion::{Assertion, Declarations, Number},
@@ -55,10 +54,10 @@ const ENEMY_DAMAGE_CAP: u8 = 24;
 const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
 const MENU_BANK: u8 = 0x0d;
-const GAMEPLAY_BANK: u8 = 0x0e;
-const MENU_ROWS: [u8; 2] = [8, 7];
-const MENU_PAGE_ROWS: u8 = 8;
-const MENU_CLOSED: u8 = 0xff;
+pub(crate) const GAMEPLAY_BANK: u8 = 0x0e;
+pub(crate) const MENU_ROWS: [u8; 2] = [8, 7];
+pub(crate) const MENU_PAGE_ROWS: u8 = 8;
+pub(crate) const MENU_CLOSED: u8 = 0xff;
 const MENU_UNKNOWN: u8 = 0xfe;
 const MENU_MODE_STAGE_SELECT: u8 = 0x90;
 const WEAPONS: usize = 11;
@@ -74,7 +73,7 @@ const WILY_MACHINE: u8 = 12;
 const PLAYER_STATE_DYING: u8 = 0x00;
 const PLAYER_STATE_FALLEN: u8 = 0x01;
 const PLAYER_STATE_HIT: u8 = 0x02;
-const PLAYER_STATE_STANDING: u8 = 0x03;
+pub(crate) const PLAYER_STATE_STANDING: u8 = 0x03;
 const PLAYER_STATE_AIRBORNE: u8 = 0x06;
 const PLAYER_STATE_LADDER: u8 = 0x09;
 const PLAYER_STATE_LADDER_TOP: u8 = 0x0a;
@@ -92,7 +91,7 @@ const MAX_WEAPON_ENERGY: i64 = 255 * WEAPON_ENERGY_BYTES as i64;
 
 pub const JOYPAD_START: u8 = 1 << 3;
 const JOYPAD_UP: u8 = 1 << 4;
-const JOYPAD_DOWN: u8 = 1 << 5;
+pub(crate) const JOYPAD_DOWN: u8 = 1 << 5;
 const JOYPAD_LEFT: u8 = 1 << 6;
 const JOYPAD_RIGHT: u8 = 1 << 7;
 
@@ -1200,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn the_setup_tape_is_the_hand_genesis_walk_of_2254_frames() {
+    fn the_setup_tape_is_the_genesis_walk_of_2254_frames() {
         let frames: u32 = MegaMan2::WHOLE_GAME
             .setup()
             .iter()
@@ -1255,27 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_targets_are_the_hand_switch_choices() {
-        let mut rand = crate::search::rand::RomuDuoJrRand::with_seed(12);
-        let mut wram = [0_u8; machine::nes::WRAM_SIZE];
-        for _ in 0..20_000 {
-            for address in [WEAPONS_OBTAINED, ITEMS_OBTAINED, SELECTED_WEAPON] {
-                wram[address] = u8::try_from(rand.next_u64() >> 56).unwrap();
-            }
-            wram[SELECTED_WEAPON] %= LAST_WEAPON + 2;
-            for energy in &mut wram[WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES] {
-                *energy = u8::try_from(rand.next_u64() >> 62).unwrap();
-            }
-            let state = MegaMan2::WHOLE_GAME.decode(None, None, &wram);
-            assert_eq!(
-                state.switch_targets().collect::<Vec<_>>(),
-                crate::mm2::target::switch_choices(&wram).unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn each_switch_label_plays_the_hand_switch_to_its_weapon_row() {
+    fn each_switch_label_plays_the_switch_to_its_weapon_row() {
         for weapon in 0..=LAST_WEAPON {
             let label = switch_label(weapon);
             assert_eq!(
@@ -1325,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_answer_costs_the_hand_switch_plan() {
+    fn a_switch_answer_costs_the_switch_plan() {
         assert_eq!(
             MegaMan2::answer_frames(WEAPON_SITE, 1),
             SWITCH_PLANNED_FRAMES

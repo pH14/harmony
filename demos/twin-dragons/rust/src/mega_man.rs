@@ -4,27 +4,25 @@ use std::error::Error;
 
 use nes_games::{
     arcade::{ArcadeGame, trail::Traced},
-    mm2::{
-        campaign::{Mm2Game, admission_is_viable},
-        target::{Mm2Snapshot, Mm2Target},
-    },
+    mm2::game::{self as game, Mm2State},
     nes_backend::pack_quicknes_state,
+    workload::{NesSnapshot, NesTarget, NesWorkload},
 };
 use wasm_bindgen::prelude::*;
 
 use crate::campaign::{BrowserGame, JsMachine, js_error};
 
-pub type MegaMan = Mm2Game<Traced<JsMachine>>;
+pub type MegaMan = NesWorkload<game::MegaMan2, Traced<JsMachine>>;
 
 impl BrowserGame for MegaMan {
     fn root_snapshot(
-        target: &mut Mm2Target<Traced<JsMachine>>,
+        target: &mut NesTarget<game::MegaMan2, Traced<JsMachine>>,
         _core: u32,
         raw: &[u8],
         frames: u64,
-    ) -> Result<Mm2Snapshot, Box<dyn Error>> {
+    ) -> Result<NesSnapshot<Mm2State>, Box<dyn Error>> {
         let snapshot = target.snapshot_of_state(&pack_quicknes_state(raw)?, frames)?;
-        if !snapshot.state().playable() || !admission_is_viable(target, &snapshot)? {
+        if !snapshot.observation.state.playable() {
             return Err("Mega Man 2 cannot play on from this state".into());
         }
         Ok(snapshot)
