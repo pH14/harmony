@@ -19,13 +19,16 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_staged_plan_v5_kraid_stage_done_on_kraid_defeat_bit_routes_through_walkable_room_edges_energy_64_before_brinstar_routes_current_route_cell_stage_objective_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_staged_plan_v9_latching_stages_done_behind_a_done_later_fact_kraid_stage_done_on_kraid_defeat_bit_ridley_stage_done_on_ridley_defeat_bit_routes_through_walkable_room_edges_energy_64_before_brinstar_routes_past_kraid_through_norfair_to_ridley_defeat_back_through_norfair_to_tourian_full_missiles_zebetites_mother_brain_and_escape_to_the_ending_current_route_cell_stage_objective_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_door_transition_keeps_cell_boss_slot_in_use_boss_reading_kept_while_absent_in_the_same_cell_high_mark_per_area_damage_rounded_up_missile_capacity_energy_tanks";
 pub const PREFERENCE_IDENTIFIER: &str = "items_tanks_missiles_health_then_items_tanks_balance_missiles_health_energy_first_at_zero_balance";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
 const BOSS_DAMAGE_BUCKET: u16 = 4;
 const KRAID_DEFEATED: u8 = 1;
+const RIDLEY_DEFEATED: u8 = 2;
+const MOTHER_BRAIN_DEFEATED: u8 = 4;
+const ENDING_REACHED: u8 = 8;
 
 pub type MetroidArchive =
     Archive<MetroidAction, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
@@ -209,10 +212,14 @@ impl MetroidArchiveKey {
             map_y: self.map_y,
             health: self.health,
             equipment: self.equipment,
+            missiles: self.missiles,
             missile_capacity: self.missile_capacity,
             energy_tanks: self.energy_tanks,
-            bosses: u8::try_from(self.bosses.count_ones()).unwrap_or(u8::MAX),
+            bosses: u8::try_from((self.bosses & (KRAID_DEFEATED | RIDLEY_DEFEATED)).count_ones())
+                .unwrap_or(u8::MAX),
             kraid_defeated: self.bosses & KRAID_DEFEATED != 0,
+            mother_brain_defeated: self.bosses & MOTHER_BRAIN_DEFEATED != 0,
+            ending: self.bosses & ENDING_REACHED != 0,
             ..MetroidMechanicalState::default()
         }
     }
@@ -277,8 +284,19 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         missile_capacity: state.missile_capacity,
         energy_tanks: state.energy_tanks,
         equipment: state.equipment,
-        bosses: u8::from(state.kraid_defeated)
-            | (u8::from(state.bosses > u8::from(state.kraid_defeated)) << 1),
+        bosses: (if state.kraid_defeated {
+            KRAID_DEFEATED
+        } else {
+            0
+        }) | (if state.bosses > u8::from(state.kraid_defeated) {
+            RIDLEY_DEFEATED
+        } else {
+            0
+        }) | (if state.mother_brain_defeated {
+            MOTHER_BRAIN_DEFEATED
+        } else {
+            0
+        }) | (if state.ending { ENDING_REACHED } else { 0 }),
         stage: 0,
         objective: 0,
     }
@@ -435,11 +453,29 @@ mod tests {
             kraid_defeated: true,
             ..MetroidMechanicalState::default()
         };
-        for state in [ridley_only, kraid_only, both] {
+        let ended = MetroidMechanicalState {
+            mother_brain_defeated: true,
+            ending: true,
+            missiles: 42,
+            ..both
+        };
+        for state in [ridley_only, kraid_only, both, ended] {
             let rebuilt = archive_key(state).state();
             assert_eq!(
-                (rebuilt.bosses, rebuilt.kraid_defeated),
-                (state.bosses, state.kraid_defeated)
+                (
+                    rebuilt.bosses,
+                    rebuilt.kraid_defeated,
+                    rebuilt.mother_brain_defeated,
+                    rebuilt.ending,
+                    rebuilt.missiles
+                ),
+                (
+                    state.bosses,
+                    state.kraid_defeated,
+                    state.mother_brain_defeated,
+                    state.ending,
+                    state.missiles
+                )
             );
         }
     }
