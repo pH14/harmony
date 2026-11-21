@@ -448,13 +448,21 @@ pages.
 extent allocation and store report it reads the free memory again, outside the
 index lock. Memory the index does not count (guests, worker processes, the
 coordinator, and the kernel) is the usage minus the cache and store bytes, so
-the budget that keeps the reserve free is the counted bytes plus the free
-memory, less the reserve, and never above the planned one. The index sets its
-budget to that value at each check and evicts entries or asks the largest store
-to shrink to fit it. A worker that briefly needs more memory, for example to
-decompress a long chain for an import, lowers the budget until that memory is
-free again. `CacheStats::lowest_budget` reports the lowest budget of the
-search.
+the room that keeps the reserve free is the counted bytes plus the free
+memory, less the reserve. The budget is that room up to the planned budget. It
+rises above the planned budget only when the room also holds one transient per
+worker, and then it is the room less those transients. A check sees an export's
+buffers, because a worker allocates its extent after exporting, but not an
+import's decompressed pages, which can appear on every worker before the next
+check. A budget above the plan therefore leaves the reserve and every worker's
+transient free, and a budget at or below the plan leaves what the plan leaves.
+`LocalIndex::measured` takes the planned budget, the worker count and the
+transient. The index sets its budget at each check and evicts entries or asks
+the largest store to shrink to fit it. A worker that briefly needs more memory,
+for example to decompress a long chain for an import, lowers the budget until
+that memory is free again. `CacheStats::lowest_budget` and
+`CacheStats::highest_budget` report the lowest and highest budget of the
+search, and `CacheStats::budget` the planned one.
 
 `WorkerSession` runs a `Session` in a child process, because Hypervisor.framework
 allows one VM per process. `WorkerLauncher` starts the child with one end of a

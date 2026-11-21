@@ -52,11 +52,14 @@ fn fit(headroom: u64, cores: usize, needs: MemoryNeeds) -> Result<MemoryPlan, St
 }
 
 #[must_use]
-pub fn measured_budget(planned: usize, counted: usize, headroom: u64) -> usize {
+pub fn measured_budget(planned: usize, counted: usize, headroom: u64, held: u64) -> usize {
     let room = (counted as u64)
         .saturating_add(headroom)
         .saturating_sub(RESERVE_BYTES);
-    planned.min(usize::try_from(room).unwrap_or(usize::MAX))
+    let bytes = |value: u64| usize::try_from(value).unwrap_or(usize::MAX);
+    planned
+        .min(bytes(room))
+        .max(bytes(room.saturating_sub(held)))
 }
 
 #[cfg(target_os = "linux")]
@@ -192,19 +195,109 @@ mod tests {
         assert!(error.contains("a worker's transient 2048 MiB"), "{error}");
     }
 
+    fn capped_at_the_plan(planned: usize, counted: usize, headroom: u64) -> usize {
+        let room = (counted as u64 + headroom).saturating_sub(RESERVE_BYTES);
+        planned.min(room as usize)
+    }
+
     #[test]
-    fn measured_memory_sets_the_budget_up_to_the_plan() {
+    fn measured_memory_lowers_the_budget_below_the_plan() {
         let planned = (6 * GIB) as usize;
-        assert_eq!(measured_budget(planned, 0, 20 * GIB), planned);
+        let held = GIB;
         assert_eq!(
-            measured_budget(planned, (4 * GIB) as usize, 2 * GIB) as u64,
+            measured_budget(planned, (4 * GIB) as usize, 2 * GIB, held) as u64,
             5 * GIB
         );
         assert_eq!(
-            measured_budget(planned, (4 * GIB) as usize, 3 * GIB),
+            measured_budget(planned, (4 * GIB) as usize, 3 * GIB, held),
             planned
         );
-        assert_eq!(measured_budget(planned, 0, GIB / 2), 0);
+        assert_eq!(measured_budget(planned, 0, GIB / 2, held), 0);
+    }
+
+    #[test]
+    fn measured_memory_raises_the_budget_above_the_plan_with_every_transient_held() {
+        let planned = (6 * GIB) as usize;
+        assert_eq!(measured_budget(planned, 0, 20 * GIB, GIB) as u64, 18 * GIB);
+        assert_eq!(
+            measured_budget(planned, (4 * GIB) as usize, 4 * GIB, 3 * GIB),
+            planned
+        );
+        assert_eq!(
+            measured_budget(planned, (4 * GIB) as usize, 6 * GIB, 3 * GIB) as u64,
+            6 * GIB
+        );
+        assert_eq!(
+            measured_budget(planned, (4 * GIB) as usize, 7 * GIB, 3 * GIB) as u64,
+            7 * GIB
+        );
+    }
+
+    #[test]
+    fn a_budget_above_the_plan_leaves_the_reserve_and_one_transient_per_worker_free() {
+        let planned = (GIB + GIB / 2) as usize;
+        for workers in 1..=4u64 {
+            let held = workers * GIB;
+            for counted in (0..12).map(|step| (step * GIB / 2) as usize) {
+                for headroom in (0..24).map(|step| step * GIB / 2) {
+                    let budget = measured_budget(planned, counted, headroom, held);
+                    if budget > planned {
+                        let free = counted as u64 + headroom - budget as u64;
+                        assert!(
+                            free >= RESERVE_BYTES + held,
+                            "{workers} {counted} {headroom}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_multi_worker_budget_is_never_below_the_budget_capped_at_the_plan() {
+        for planned in [0, GIB, 3 * GIB, 7 * GIB].map(|bytes| bytes as usize) {
+            for workers in 1..=6u64 {
+                for counted in (0..10).map(|step| (step * GIB / 2) as usize) {
+                    for headroom in (0..20).map(|step| step * GIB / 2) {
+                        assert!(
+                            measured_budget(planned, counted, headroom, workers * GIB)
+                                >= capped_at_the_plan(planned, counted, headroom)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_cache_keeps_the_scope_under_its_limit_when_imports_follow_the_check() {
+        let limit = 10 * GIB;
+        let guest = GIB;
+        let workers = 3;
+        let needs = MemoryNeeds {
+            transient: guest,
+            ..needs(GIB / 2, guest + GIB / 4, guest)
+        };
+        let plan = fit(limit, workers, needs).expect("plan");
+        let planned_use = needs.coordinator + plan.workers as u64 * needs.worker;
+        let held = plan.workers as u64 * needs.transient;
+        let mut above = 0;
+        for uncounted in (0..24).map(|step| step * GIB / 4) {
+            let budget = measured_budget(plan.budget, 0, limit - uncounted, held) as u64;
+            let imports = if budget > plan.budget as u64 {
+                above += 1;
+                held
+            } else {
+                needs.transient
+            };
+            if budget > plan.budget as u64 || uncounted <= planned_use {
+                assert!(
+                    uncounted + budget + imports + RESERVE_BYTES <= limit,
+                    "{uncounted}"
+                );
+            }
+        }
+        assert!(above > 0);
     }
 
     fn cgroup_headroom(max: u64, current: u64, stat: &str) -> u64 {

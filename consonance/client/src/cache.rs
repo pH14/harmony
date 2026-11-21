@@ -138,6 +138,7 @@ pub struct CacheDivergence {
 pub struct CacheStats {
     pub budget: usize,
     pub lowest_budget: usize,
+    pub highest_budget: usize,
     pub charged: usize,
     pub stored: usize,
     pub segments: usize,
@@ -159,6 +160,7 @@ impl CacheStats {
         vec![
             ("budget_bytes", self.budget as u64),
             ("lowest_budget_bytes", self.lowest_budget as u64),
+            ("highest_budget_bytes", self.highest_budget as u64),
             ("charged_bytes", self.charged as u64),
             ("store_bytes", self.stored as u64),
             ("segments", self.segments as u64),
@@ -387,14 +389,16 @@ impl State {
         Ok(())
     }
 
-    fn measure(&mut self, headroom: Option<u64>) {
+    fn measure(&mut self, headroom: Option<u64>, held: u64) {
         if let Some(headroom) = headroom {
             self.budget = measured_budget(
                 self.planned,
                 self.segments.charged().saturating_add(self.stored),
                 headroom,
+                held,
             );
             self.stats.lowest_budget = self.stats.lowest_budget.min(self.budget);
+            self.stats.highest_budget = self.stats.highest_budget.max(self.budget);
         }
     }
 
@@ -422,6 +426,7 @@ pub struct LocalIndex {
     state: Arc<Mutex<State>>,
     lock_work: Arc<lock_work::LockWork>,
     headroom: Option<fn() -> Option<u64>>,
+    held: u64,
 }
 
 impl LocalIndex {
@@ -431,13 +436,19 @@ impl LocalIndex {
     }
 
     #[must_use]
-    pub fn measured(budget: usize) -> Self {
-        Self::new(budget).with_headroom(headroom_bytes)
+    pub fn measured(budget: usize, workers: usize, transient: u64) -> Self {
+        Self::new(budget).with_headroom(headroom_bytes, workers, transient)
     }
 
     #[must_use]
-    pub fn with_headroom(mut self, headroom: fn() -> Option<u64>) -> Self {
+    pub fn with_headroom(
+        mut self,
+        headroom: fn() -> Option<u64>,
+        workers: usize,
+        transient: u64,
+    ) -> Self {
         self.headroom = Some(headroom);
+        self.held = (workers as u64).saturating_mul(transient);
         self
     }
 
@@ -454,6 +465,7 @@ impl LocalIndex {
         Self {
             lock_work: Arc::default(),
             headroom: None,
+            held: 0,
             state: Arc::new(Mutex::new(State {
                 owner: Arc::new(()),
                 planned: budget,
@@ -470,6 +482,7 @@ impl LocalIndex {
                 floor: 0,
                 stats: CacheStats {
                     lowest_budget: budget,
+                    highest_budget: budget,
                     ..CacheStats::default()
                 },
             })),
@@ -540,7 +553,7 @@ impl CacheIndex for LocalIndex {
     fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
         let headroom = self.headroom();
         let mut state = self.state(lock_work::Site::Extent);
-        state.measure(headroom);
+        state.measure(headroom, self.held);
         let needed =
             segments::rounded(len.max(1)).ok_or(CacheError::Malformed("extent size overflow"))?;
         if let Err(error) = state.make_room(needed) {
@@ -716,7 +729,7 @@ impl CacheIndex for LocalIndex {
         let mut state = self.state(lock_work::Site::ReportStore);
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
         state.set_store(holder, Some(bytes));
-        state.measure(headroom);
+        state.measure(headroom, self.held);
         while state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
                 break;
@@ -1508,7 +1521,8 @@ mod tests {
             Some(HEADROOM.load(Ordering::Relaxed))
         }
         let page = PAGE as u64;
-        let index = LocalIndex::with_segment_bytes(4 * PAGE, PAGE).with_headroom(headroom);
+        let index =
+            LocalIndex::with_segment_bytes(4 * PAGE, PAGE).with_headroom(headroom, 1, 1 << 40);
         let space = ns("a");
         HEADROOM.store(RESERVE_BYTES + 8 * page, Ordering::Relaxed);
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
@@ -1535,6 +1549,49 @@ mod tests {
         HEADROOM.store(0, Ordering::Relaxed);
         assert!(index.report_store(1, page));
         assert_eq!(index.stats().charged, 0);
+        assert_eq!(index.stats().highest_budget, 4 * PAGE);
+        index.forget_store(1);
+    }
+
+    #[test]
+    fn free_memory_beyond_every_transient_raises_the_budget_above_the_plan() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static HEADROOM: AtomicU64 = AtomicU64::new(0);
+        fn headroom() -> Option<u64> {
+            Some(HEADROOM.load(Ordering::Relaxed))
+        }
+        let page = PAGE as u64;
+        let index =
+            LocalIndex::with_segment_bytes(2 * PAGE, PAGE).with_headroom(headroom, 2, 4 * page);
+        let space = ns("a");
+        let free = |total: u64| {
+            let charged = index.stats().charged as u64;
+            HEADROOM.store(RESERVE_BYTES + total - charged, Ordering::Relaxed);
+        };
+        let mut leases = Vec::new();
+        for step in 0..6u8 {
+            free(14 * page);
+            leases.push(put(&index, space, &[step], None, &[(u64::from(step), 1)], &[]).unwrap());
+        }
+        let stats = index.stats();
+        assert_eq!(stats.evictions, 0);
+        assert_eq!(stats.budget, 2 * PAGE);
+        assert_eq!(stats.charged, 6 * PAGE);
+        assert_eq!(stats.highest_budget, 6 * PAGE);
+        free(14 * page);
+        assert!(matches!(
+            put(&index, space, b"x", None, &[(9, 1)], &[]),
+            Err(CacheError::Refused { .. })
+        ));
+        for lease in leases {
+            index.release(lease);
+        }
+        free(9 * page);
+        assert!(!index.report_store(1, 0));
+        let stats = index.stats();
+        assert_eq!(stats.charged, 2 * PAGE);
+        assert_eq!(stats.evictions, 4);
+        assert_eq!(stats.lowest_budget, 2 * PAGE);
         index.forget_store(1);
     }
 
