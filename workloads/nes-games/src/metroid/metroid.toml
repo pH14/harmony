@@ -131,15 +131,15 @@ goal = "action_end and cell == 162211"
 latch = true
 
 [[stage]]
-name = "energy_before_tourian"
-objective = "health / 10"
-goal = "action_end and health / 10 >= 96"
-latch = true
-
-[[stage]]
 name = "missiles_before_tourian"
 objective = "missiles"
 goal = "action_end and missiles >= missile_capacity"
+latch = true
+
+[[stage]]
+name = "energy_before_tourian"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 100 * tanks + 90"
 latch = true
 
 [[stage]]

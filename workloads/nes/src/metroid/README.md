@@ -145,7 +145,10 @@ Each stage climbs one integer:
   `$9F` in Brinstar and `$97` elsewhere. In the Ridley bank, room pointers 0
   and 1 point to the same data, so rooms are read through the pointer table
   rather than the disassembly's room labels. The Ridley stage is done on
-  Ridley's defeat bit at `$687C`.
+  Ridley's defeat bit at `$687C`. Back in Brinstar before the Tourian
+  elevator, the strategy refills missiles to capacity first and then energy to
+  full for the tanks held (`100 * tanks + 90`), in that order because farming
+  missiles costs energy and an energy stage stays done after the loss.
 - The boss stage climbs boss damage. It is done when Kraid is defeated, read
   from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
   0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would
