@@ -122,10 +122,11 @@ time in nanoseconds and the error. A check that does not write the file reports
 nothing. A path that is not a regular file, or an earlier file the supervisor
 cannot remove before the check, is logged and the check reports nothing, so a
 workload that leaves something else there can neither stop the supervisor nor
-make one check report another's nodes. The retry runs for at least one check
-timeout from the check's own start, so a check that starts just before the 30
-seconds pass accepts an answer up to one check timeout, plus the check's start
-time, after them. The
+make one check report another's nodes. The retry window starts when the
+check begins its pinned reads, after its own setup, and lasts the longer of one
+check timeout and the time left to 30 seconds by the quiet time passed at
+spawn. An answer can therefore count up to one check timeout plus the check's
+setup time after the 30 seconds. The
 harness kit writes it only for an adapter that reports applied
 indexes, today rqlite's, retrying each pinned read until the bound has passed
 and leaving out a node whose applied index still rises
