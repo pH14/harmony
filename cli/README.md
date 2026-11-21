@@ -220,6 +220,16 @@ recorded-input execution, replay, branching, rooted search and continuation.
 NES controller recordings use `--actions FILE`; console logs and virtual-time
 rewinds are not available for these recordings.
 
+The NES package is version `nes-v2`. It runs SMB as the Super Mario Bros.
+strategy workload, the one `nes-eval smb-strategy` runs, from a fixed setup
+tape. That workload has no probe admission, no routes and no shrink window, so
+a search keeps every live execution its draws produce. The CLI does not offer
+`shrink` or `explain` for NES, so the missing shrink window removes no command.
+Each NES run records its package version in its payload, and
+replay, branch and continued search refuse a run recorded by another package
+version, including every run recorded before `nes-v2`, with a message that
+names both versions.
+
 ## Search and investigation
 
 ```text

@@ -523,7 +523,7 @@ mod tests {
             fixture::{
                 LEFT, Landing, Ledge, LedgeKey, RIGHT, Spot, Stairs, Stepper, Switchback, WARP,
             },
-            target::{NesTarget, read_wram},
+            target::{NativeMemory, NesTarget, read_wram},
         },
     };
 
@@ -905,7 +905,9 @@ mod tests {
     impl Lockstep {
         fn new(hook: ShadowHook<AssertionKey>) -> Self {
             let lowered = Arc::new(Lowered::new(Stairs, Stairs::STRATEGY).unwrap());
-            let target = NesTarget::from_machine(lowered, Stepper::default()).unwrap();
+            let target =
+                NesTarget::from_machine(lowered, Stepper::default(), Some(NativeMemory::of()))
+                    .unwrap();
             let mut machine = Stepper::default();
             let at = machine.snapshot().unwrap();
             hook.start(&read_wram(&machine).unwrap());
@@ -1021,7 +1023,12 @@ mod tests {
     }
 
     fn film_of<G: Game<State = Landing>>(lowered: &Arc<Lowered<G>>, tape: &[ButtonChord]) -> Kept {
-        let mut film = NesTarget::from_machine(Arc::clone(lowered), Stepper::default()).unwrap();
+        let mut film = NesTarget::from_machine(
+            Arc::clone(lowered),
+            Stepper::default(),
+            Some(NativeMemory::of()),
+        )
+        .unwrap();
         let tail = u32::from(tape.is_empty());
         let (metadata, filmed) = film
             .render_observed(tape, tail, 0, &mut Vec::new(), &mut Vec::new())
@@ -1052,8 +1059,12 @@ mod tests {
         fn new(game: G, strategy: &str) -> (Arc<Shadow<G, AssertionKey>>, Self) {
             let shadow = Shadow::<G, AssertionKey>::with_strategy(game.clone(), strategy).unwrap();
             let lowered = Arc::new(Lowered::new(game.clone(), strategy).unwrap());
-            let mut live =
-                NesTarget::from_machine(Arc::clone(&lowered), Stepper::default()).unwrap();
+            let mut live = NesTarget::from_machine(
+                Arc::clone(&lowered),
+                Stepper::default(),
+                Some(NativeMemory::of()),
+            )
+            .unwrap();
             live.record_frames(true);
             let mut hand = Stepper::default();
             let at = hand.snapshot().unwrap();

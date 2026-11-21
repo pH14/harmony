@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{Game, Moves, Never, Step};
 use crate::{
     chord::ChordVocabulary,
-    nes_backend::{NesBackend, NesMemory},
+    nes_backend::{NesBackend, NesMemory, SnapshotState},
     search::assertion::{Assertion, Declarations, Number},
 };
 
@@ -49,9 +49,7 @@ impl Stepper {
     }
 
     fn wram(&self) -> [u8; WRAM_SIZE] {
-        let mut wram = [0; WRAM_SIZE];
-        wram[..2].copy_from_slice(&self.ram);
-        wram
+        work_ram_of(self.ram)
     }
 
     fn save_ram(&self) -> [u8; SAVE_RAM_BYTES] {
@@ -62,7 +60,7 @@ impl Stepper {
     }
 
     fn frame(&mut self, buttons: u8) {
-        self.step(buttons);
+        self.ram = stepped(self.ram, buttons);
         self.ram[0] = self.ram[0].wrapping_add(self.drift);
         self.frames.push(self.wram());
         if let Some(captured) = self.save_ram().get(self.save_ram_range.clone()) {
@@ -75,16 +73,24 @@ impl Stepper {
             audio.extend([0, 0]);
         }
     }
+}
 
-    fn step(&mut self, buttons: u8) {
-        if buttons & WARP != 0 {
-            self.ram = [0, self.ram[1].wrapping_add(1)];
-        } else if buttons & RIGHT != 0 {
-            self.ram[0] = self.ram[0].saturating_add(1);
-        } else if buttons & LEFT != 0 {
-            self.ram[0] = self.ram[0].saturating_sub(1);
-        }
+fn stepped(ram: [u8; 2], buttons: u8) -> [u8; 2] {
+    if buttons & WARP != 0 {
+        [0, ram[1].wrapping_add(1)]
+    } else if buttons & RIGHT != 0 {
+        [ram[0].saturating_add(1), ram[1]]
+    } else if buttons & LEFT != 0 {
+        [ram[0].saturating_sub(1), ram[1]]
+    } else {
+        ram
     }
+}
+
+fn work_ram_of(ram: [u8; 2]) -> [u8; WRAM_SIZE] {
+    let mut wram = [0; WRAM_SIZE];
+    wram[..2].copy_from_slice(&ram);
+    wram
 }
 
 impl Machine for Stepper {
@@ -259,6 +265,173 @@ impl crate::nes_backend::FilmMachine for Stepper {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GuestState {
+    pub ram: [u8; 2],
+    pub sidecar: u8,
+}
+
+impl SnapshotState for GuestState {
+    type WorkRam = Box<[u8]>;
+
+    fn memory_charge(&self) -> usize {
+        size_of::<Self>()
+    }
+
+    fn checkpoint_image_charge(
+        &self,
+        _budget: &mut searcher::search::checkpoint::image::ImageBudget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    fn logical_identity(&self) -> Result<Self, MachineError> {
+        Ok(Self {
+            sidecar: 0,
+            ..self.clone()
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct Guest {
+    ram: [u8; 2],
+    held: BTreeMap<u64, [u8; 2]>,
+    next: u64,
+    staged: VecDeque<ButtonChord>,
+    frames: Vec<[u8; WRAM_SIZE]>,
+    unreadable: bool,
+    exports: u8,
+    pub runs: usize,
+}
+
+impl Guest {
+    fn held(&self, snap: SnapId) -> Result<[u8; 2], MachineError> {
+        self.held
+            .get(&snap.0)
+            .copied()
+            .ok_or(MachineError::UnknownSnapshot)
+    }
+}
+
+impl Machine for Guest {
+    type Portable = GuestState;
+
+    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+        self.next += 1;
+        self.held.insert(self.next, self.ram);
+        Ok(SnapId(self.next))
+    }
+
+    fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        self.held
+            .remove(&snap.0)
+            .map(|_| ())
+            .ok_or(MachineError::UnknownSnapshot)
+    }
+
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        self.ram = self.held(snap)?;
+        self.staged = actions_of(env)?.into();
+        self.staged.push_back(ButtonChord::new(0, 1));
+        self.unreadable = true;
+        Ok(())
+    }
+
+    fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        self.ram = self.held(snap)?;
+        self.staged.clear();
+        self.unreadable = true;
+        Ok(())
+    }
+
+    fn run(
+        &mut self,
+        until: StopConditions,
+        resolve: Option<&Answer>,
+    ) -> Result<StopReason, MachineError> {
+        if until != StopConditions::default() || resolve.is_some() {
+            return Err(MachineError::Backend(
+                "only default stop conditions are supported".to_owned(),
+            ));
+        }
+        self.frames.clear();
+        self.unreadable = true;
+        self.runs += 1;
+        let chord = self
+            .staged
+            .pop_front()
+            .ok_or_else(|| MachineError::Backend("no payload is staged".to_owned()))?;
+        for _ in 0..chord.bounded_hold_frames() {
+            self.ram = stepped(self.ram, chord.buttons);
+            self.frames.push(work_ram_of(self.ram));
+        }
+        self.unreadable = false;
+        Ok(StopReason::SnapshotPoint { vtime: Moment(0) })
+    }
+
+    fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+        if self.unreadable {
+            return Err(MachineError::Backend(
+                "no cached observation at the current stop".to_owned(),
+            ));
+        }
+        let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
+        let end = start
+            .checked_add(usize::try_from(len).map_err(|_| MachineError::ReadOutOfBounds)?)
+            .ok_or(MachineError::ReadOutOfBounds)?;
+        work_ram_of(self.ram)
+            .get(start..end)
+            .map(<[u8]>::to_vec)
+            .ok_or(MachineError::ReadOutOfBounds)
+    }
+
+    fn export(
+        &mut self,
+        snap: SnapId,
+        _base: Option<&GuestState>,
+    ) -> Result<GuestState, MachineError> {
+        let ram = self.held(snap)?;
+        self.exports = self.exports.wrapping_add(1);
+        Ok(GuestState {
+            ram,
+            sidecar: self.exports,
+        })
+    }
+
+    fn import(&mut self, portable: &GuestState) -> Result<SnapId, MachineError> {
+        self.next += 1;
+        self.held.insert(self.next, portable.ram);
+        Ok(SnapId(self.next))
+    }
+
+    fn portable_memory_charge(portable: &GuestState) -> usize {
+        portable.memory_charge()
+    }
+
+    fn now(&self) -> Moment {
+        Moment(0)
+    }
+
+    fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+        &self.frames
+    }
+}
+
+impl NesBackend<GuestState> for Guest {
+    fn export_nes(
+        &mut self,
+        snapshot: SnapId,
+        base: Option<&GuestState>,
+    ) -> Result<GuestState, MachineError> {
+        self.export(snapshot, base)
+    }
+
+    fn import_nes(&mut self, portable: &GuestState) -> Result<SnapId, MachineError> {
+        self.import(portable)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Spot {
     pub x: u8,
@@ -321,6 +494,53 @@ goal = "false"
             name: "far",
             condition: state.x >= 3,
         });
+    }
+
+    fn moves(&self, _: &Spot) -> Moves<Never> {
+        Moves::none()
+    }
+
+    fn play(&self, mv: Never, _: &Spot) -> Option<Step<Never>> {
+        match mv {}
+    }
+
+    fn move_frames(&self, mv: Never) -> u64 {
+        match mv {}
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Preset {
+    pub setup: Vec<ButtonChord>,
+    pub pokes: Vec<(usize, u8)>,
+}
+
+impl Game for Preset {
+    type State = Spot;
+    type Move = Never;
+
+    const NAME: &'static str = "preset";
+    const STRATEGY: &'static str = Ledge::STRATEGY;
+    const CHORDS: ChordVocabulary = Ledge::CHORDS;
+
+    fn setup(&self) -> Vec<ButtonChord> {
+        self.setup.clone()
+    }
+
+    fn setup_pokes(&self) -> Vec<(usize, u8)> {
+        self.pokes.clone()
+    }
+
+    fn genesis(&self, _: &Spot) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn decode(&self, parent: Option<&Spot>, previous: Option<&Spot>, ram: &[u8]) -> Spot {
+        Ledge.decode(parent, previous, ram)
+    }
+
+    fn declare(&self, state: &Spot, out: &mut impl Declarations) {
+        Ledge.declare(state, out);
     }
 
     fn moves(&self, _: &Spot) -> Moves<Never> {

@@ -11,14 +11,6 @@ use machine::nes::WRAM_SIZE;
 #[cfg(unix)]
 use machine::quicknes::QuickNesMachine;
 
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-use machine::consonance::{ConsonanceMachine, ConsonancePortable, identity as consonance_identity};
-
 use crate::{
     chord::{
         CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary,
@@ -63,7 +55,6 @@ pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v5";
-pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v4";
 
 pub const DURATION_IDENTIFIER: &str = "stratified_with_wait_for_control_v1";
 
@@ -267,36 +258,6 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
             SmbTarget::loopback_for_tests(&target_rom).map_err(|error| error.to_string())
         });
         game
-    }
-}
-
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    pub fn new_consonance(
-        rom: &[u8],
-        kernel: &[u8],
-        initramfs: &[u8],
-    ) -> Result<Self, machine::MachineError> {
-        let target_kernel = kernel.to_vec();
-        let target_initramfs = initramfs.to_vec();
-        Ok(Self::with_targets(
-            rom,
-            format!(
-                "{};result_digest=semantic-postcard-1.1.3-sha256-hex-v1",
-                consonance_identity(kernel, initramfs)?,
-            ),
-            CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
-            Box::new(move || {
-                let machine = ConsonanceMachine::new(&target_kernel, &target_initramfs)
-                    .map_err(|error| error.to_string())?;
-                SmbTarget::from_machine(machine).map_err(|error| error.to_string())
-            }),
-        ))
     }
 }
 
