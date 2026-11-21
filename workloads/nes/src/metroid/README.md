@@ -294,6 +294,46 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+## Shared target
+
+`nes-eval` game `metroid-strategy` runs `MetroidStrategyGame`, the `Metroid`
+game on the shared `NesWorkload` target with no hand campaign, under
+`metroid.toml` or a request's strategy file, with records when asked. The ROM
+image gains cartridge RAM, as in the hand target, because the game declares a
+memory window there. Its setup tape is the hand target's power-on walk followed
+by the 261 idle frames the hand target waits on this ROM until play starts, so
+both start from the same genesis. Its chords are the hand target's with a
+Select tap, with the odds and hold of Zelda's Start tap: one draw in 12 adds
+Select to the chord before it for 2 to 7 frames and the next chord that is not
+a tap drops it. A tap drawn right after a tap keeps Select held, so only the
+first of them is a press. Each press arms or disarms missiles, and B then fires
+whichever is armed. It has no volley. A `root_input` tape must end alive before the
+ending in play or the item pickup pause, so a milestone tape the search
+produced roots unedited. `nes-film --game metroid-strategy` films its
+witness and milestone tapes, with `--root-input` for a rooted run. Its live view reads the same `View` as the hand campaign,
+and its trail motion carries no facing, which the decoded state does not hold.
+
+## Archive memory
+
+History compaction starts once the archive's history estimate passes a quarter
+of `memory_limit`, and that estimate counts each entry, cell and slot at the
+size of its key type, so the key type is a decision input. In the hand campaign
+the route key `MetroidArchiveKey` is 26 bytes and the strategy key
+`AssertionKey` 32; an archive entry (`entry_bytes` over `MetroidAction`,
+`MetroidMilestones` and `MetroidSnapshot`) is 112 bytes under the route key and
+120 under the strategy key. A test in `nes-games/src/metroid/keying.rs` holds
+these numbers. The two arms compact at different executions, through the entry
+size and through the cell and slot maps, so an outcome that decides the Metroid
+port is scored on the strategy-keyed arm.
+
+Resident snapshots are charged by `snapshot_memory_charge`: the struct's size
+plus its emulator state bytes. `MetroidSnapshot` is 80 bytes. The QuickNES
+state it holds is 21,182 bytes, packed with LZ4 to a mean of 8,936 bytes over
+the 64 snapshots of one replayed tape (H seed 742890759 to Kraid's defeat), a
+charge of about 9,016 bytes per snapshot. The shared target's `NesSnapshot<S>`
+is larger: it also holds the strategy's `Accumulator` and an observation with
+the decoded state inline, and its charge adds the accumulator's heap bytes.
+
 ## Named milestone evaluation
 
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,

@@ -3444,13 +3444,22 @@ fn resolve_origin<G: Workload>(
 }
 
 pub const PREFERENCE_PORTFOLIO_PREFIX: &str = "preference_portfolio_v1:";
+pub const PREFERENCE_PORTFOLIO_TIES_PREFIX: &str = "preference_portfolio_v2:";
 
 #[must_use]
 pub fn preference_portfolio_identifier(shape: KeyShape) -> String {
+    if shape.ties_above == 0 {
+        return format!(
+            "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
+            shape.preferences,
+            shape.capacity.max(1)
+        );
+    }
     format!(
-        "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
+        "{PREFERENCE_PORTFOLIO_TIES_PREFIX}{},{},{}",
         shape.preferences,
-        shape.capacity.max(1)
+        shape.capacity.max(1),
+        shape.ties_above
     )
 }
 

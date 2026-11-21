@@ -1,0 +1,91 @@
+goal = "ending"
+reject = ["dead"]
+capacity = 1
+spread = ["area", "map_x", "map_y", "boss_damage", "zebetite_hits_left"]
+identity = ["x / 16", "y / 16", "posture", "door"]
+prefer = [
+    ["min(items, 15): more", "min(tanks, 63): more", "missiles: more", "min(health, 8191): more"],
+    ["min(items, 15): more", "min(tanks, 63): more", "balance: more", "above"],
+]
+prefer_scope = "0"
+
+[[stage]]
+name = "maru_mari"
+objective = "max(last(if action_end then index(cell, to_maru_mari) else none, stage), 0)"
+goal = "(equipment / 16) % 2 == 1"
+
+[[stage]]
+name = "energy_before_missiles"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 64"
+latch = true
+
+[[stage]]
+name = "missiles"
+objective = "max(last(if action_end then index(cell, to_missiles) else none, stage), 0)"
+goal = "missile_capacity > 0"
+
+[[stage]]
+name = "energy_before_bombs"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 64"
+latch = true
+
+[[stage]]
+name = "bombs"
+objective = "max(last(if action_end then index(cell, to_bombs) else none, stage), 0)"
+goal = "equipment % 2 == 1"
+
+[[stage]]
+name = "energy_before_kraid_door"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 64"
+latch = true
+
+[[stage]]
+name = "kraid_door"
+objective = "max(last(if action_end then index(cell, to_kraid_door) else none, stage), 0)"
+goal = "action_end and objective + 1 >= len(to_kraid_door)"
+latch = true
+
+[[stage]]
+name = "energy_before_kraid"
+objective = "health / 10"
+goal = "action_end and health / 10 >= 80"
+latch = true
+
+[[stage]]
+name = "kraid"
+objective = "boss_damage"
+goal = "kraid_defeated"
+
+[[stage]]
+name = "after_kraid"
+goal = "false"
+
+[define]
+cell = "area * 10000 + map_x * 100 + map_y"
+boss_damage = "if boss_health == 0 then 0 else min((highest(max(boss_health_ceiling, boss_health), area) - boss_health + 3) / 4, 255)"
+
+[table]
+to_maru_mari = [160314, 160214]
+to_missiles = [
+    160214, 160314, 160414, 160514, 160614, 160714, 160814, 160914, 161014, 161114,
+    161113, 161112, 161111, 161110, 161109, 161108, 161107, 161207, 161307, 161308,
+    161309, 161310, 161311, 161411, 161511, 161611, 161711, 161811,
+]
+to_bombs = [
+    161811, 161711, 161611, 161511, 161411, 161311, 161310, 161309, 161308, 161307,
+    161407, 161507, 161607, 161707, 161807, 161907, 162007, 162107, 162207, 162307,
+    162407, 162507, 162607, 162707, 162807, 162907, 163007, 163006, 163005, 162905,
+    162805, 162705, 162605, 162505,
+]
+to_kraid_door = [
+    162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
+    162707, 162607, 162507, 162407, 162307, 162207, 162107, 162007, 161907, 161807,
+    161707, 161607, 161507, 161407, 161307, 161207, 161107, 161108, 161109, 161110,
+    161111, 161112, 161113, 161114, 161014, 160914, 160814, 160714, 160614, 160615,
+    160616, 160617, 160618, 160718, 160719, 180719, 180720, 180721, 180722, 180723,
+    180724, 180725, 180726, 180826, 180926, 180927, 181027, 181127, 181128, 181028,
+    180928, 180929,
+]

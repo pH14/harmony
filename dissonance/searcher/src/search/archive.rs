@@ -171,6 +171,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 pub struct KeyShape {
     pub capacity: usize,
     pub preferences: usize,
+    pub ties_above: u8,
 }
 
 impl KeyShape {
@@ -179,7 +180,36 @@ impl KeyShape {
         Self {
             capacity: K::capacity(),
             preferences: K::preferences(),
+            ties_above: 0,
         }
+    }
+
+    #[must_use]
+    pub fn preference_cmp<K: ArchiveKey>(self, left: K, preference: usize, right: K) -> Ordering {
+        preference_order(self.ties_above, left, preference, right)
+    }
+}
+
+fn rank_preference(preference: usize) -> u32 {
+    u32::try_from(preference).unwrap_or(u32::MAX)
+}
+
+fn preference_order<K: ArchiveKey>(
+    ties_above: u8,
+    left: K,
+    preference: usize,
+    right: K,
+) -> Ordering {
+    let order = left.preference_cmp(preference, right);
+    let breaks_ties = u32::try_from(preference)
+        .ok()
+        .and_then(|shift| 1_u8.checked_shl(shift))
+        .is_some_and(|mark| ties_above & mark != 0);
+    match preference.checked_sub(1) {
+        Some(above) if order == Ordering::Equal && breaks_ties => {
+            preference_order(ties_above, left, above, right)
+        }
+        _ => order,
     }
 }
 
@@ -693,6 +723,11 @@ pub fn saved_state_entries<A: Clone + Ord, M>(
     Ok(entries)
 }
 
+#[must_use]
+pub const fn entry_bytes<A: Ord, K, M, S>() -> usize {
+    size_of::<ArchiveEntry<A, K, M, S>>()
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(bound(
     serialize = "A: Serialize, K: Serialize, M: Serialize",
@@ -838,14 +873,19 @@ struct HolderRank<K> {
     cost: ShrinkCost,
     entry: u64,
     index: usize,
-    preference: usize,
+    preference: u32,
+    ties_above: u8,
 }
 
 impl<K: ArchiveKey> Ord for HolderRank<K> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.key
-            .preference_cmp(self.preference, other.key)
-            .then_with(|| (other.cost, other.entry).cmp(&(self.cost, self.entry)))
+        preference_order(
+            self.ties_above,
+            self.key,
+            usize::try_from(self.preference).unwrap_or(usize::MAX),
+            other.key,
+        )
+        .then_with(|| (other.cost, other.entry).cmp(&(self.cost, self.entry)))
     }
 }
 
@@ -2456,7 +2496,10 @@ where
         if let Some(members) = tier.places.get_mut(&place) {
             members.ids.remove(&id);
             for (preference, ranked) in members.ranked.iter_mut().enumerate() {
-                ranked.remove(&HolderRank { preference, ..rank });
+                ranked.remove(&HolderRank {
+                    preference: rank_preference(preference),
+                    ..rank
+                });
             }
             if members.ids.is_empty() {
                 tier.places.remove(&place);
@@ -2481,7 +2524,10 @@ where
             .ranked
             .resize_with(self.shape.preferences, BTreeSet::new);
         for (preference, ranked) in members.ranked.iter_mut().enumerate() {
-            ranked.insert(HolderRank { preference, ..rank });
+            ranked.insert(HolderRank {
+                preference: rank_preference(preference),
+                ..rank
+            });
         }
     }
 
@@ -2494,9 +2540,8 @@ where
     }
 
     fn holder_order(&self, preference: usize, left: usize, right: usize) -> Ordering {
-        self.entries[left]
-            .key
-            .preference_cmp(preference, self.entries[right].key)
+        self.shape
+            .preference_cmp(self.entries[left].key, preference, self.entries[right].key)
             .then_with(|| {
                 (self.holder_cost(right), self.entries[right].id)
                     .cmp(&(self.holder_cost(left), self.entries[left].id))
@@ -2523,7 +2568,8 @@ where
             cost: self.holder_cost(index),
             entry: self.entries[index].id,
             index,
-            preference,
+            preference: rank_preference(preference),
+            ties_above: self.shape.ties_above,
         }
     }
 
@@ -2792,8 +2838,8 @@ where
             order.sort_by(|left, right| {
                 let (left_key, left_cost, left_id) = members[*left];
                 let (right_key, right_cost, right_id) = members[*right];
-                left_key
-                    .preference_cmp(preference, right_key)
+                shape
+                    .preference_cmp(left_key, preference, right_key)
                     .reverse()
                     .then_with(|| left_cost.cmp(&right_cost))
                     .then_with(|| left_id.cmp(&right_id))
@@ -3077,7 +3123,8 @@ where
                     *count = count.saturating_add(1);
                 }
                 let strictly_preferred = displaced.iter().any(|replaced| {
-                    key.preference_cmp(*preference, self.entries[*replaced].key)
+                    self.shape
+                        .preference_cmp(key, *preference, self.entries[*replaced].key)
                         == Ordering::Greater
                 });
                 if strictly_preferred && *preference < 8 {
@@ -3088,14 +3135,18 @@ where
         let improved_preference = !slot.is_empty()
             && won_preferences.iter().any(|preference| {
                 slot.iter().all(|held| {
-                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
+                    self.shape
+                        .preference_cmp(key, *preference, self.entries[*held].key)
+                        == Ordering::Greater
                 })
             });
         let queue_tier = won_preferences
             .iter()
             .filter(|preference| {
                 slot.iter().any(|held| {
-                    key.preference_cmp(**preference, self.entries[*held].key) == Ordering::Greater
+                    self.shape
+                        .preference_cmp(key, **preference, self.entries[*held].key)
+                        == Ordering::Greater
                 })
             })
             .min()
@@ -3111,9 +3162,10 @@ where
             }
             if let Some(parent) = parent_id {
                 let entry = &self.entries[parent];
-                let gains = (0..self.shape.preferences.min(8))
+                let shape = self.shape;
+                let gains = (0..shape.preferences.min(8))
                     .filter(|preference| {
-                        key.preference_cmp(*preference, entry.key) == Ordering::Greater
+                        shape.preference_cmp(key, *preference, entry.key) == Ordering::Greater
                     })
                     .fold(0_u8, |mask, preference| mask | (1 << preference));
                 bank.record(
@@ -3547,7 +3599,8 @@ where
                             ranked.len() == members.ids.len()
                                 && ranked.iter().all(|rank| {
                                     members.ids.weight(&rank.index).is_some()
-                                        && rank.preference == preference
+                                        && rank.preference == rank_preference(preference)
+                                        && rank.ties_above == self.shape.ties_above
                                         && rank.key == self.entries[rank.index].key
                                         && rank.cost == self.holder_cost(rank.index)
                                         && rank.entry == self.entries[rank.index].id
@@ -3614,10 +3667,11 @@ where
             .filter(|other| self.entries.get(**other).is_some())
             .filter(|other| {
                 let other = **other;
-                match self.entries[other]
-                    .key
-                    .preference_cmp(preference, self.entries[id].key)
-                {
+                match self.shape.preference_cmp(
+                    self.entries[other].key,
+                    preference,
+                    self.entries[id].key,
+                ) {
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {
@@ -3800,7 +3854,7 @@ where
         self.slots.get(&slot).is_none_or(|holders| {
             holders.iter().all(|held| {
                 self.entries.get(*held).is_none_or(|holder| {
-                    key.preference_cmp(preference, holder.key) == Ordering::Greater
+                    self.shape.preference_cmp(key, preference, holder.key) == Ordering::Greater
                 })
             })
         })
@@ -4487,9 +4541,8 @@ where
             if outcome < preferences {
                 let mut ranked = ids.clone();
                 ranked.sort_by(|left, right| {
-                    self.entries[*right]
-                        .key
-                        .preference_cmp(outcome, self.entries[*left].key)
+                    self.shape
+                        .preference_cmp(self.entries[*right].key, outcome, self.entries[*left].key)
                         .then_with(|| self.holder_cost(*left).cmp(&self.holder_cost(*right)))
                         .then_with(|| self.entries[*left].id.cmp(&self.entries[*right].id))
                 });
@@ -4512,10 +4565,11 @@ where
             .filter(|other| self.entries.get(**other).is_some())
             .filter(|other| {
                 let other = **other;
-                match self.entries[other]
-                    .key
-                    .preference_cmp(preference, self.entries[id].key)
-                {
+                match self.shape.preference_cmp(
+                    self.entries[other].key,
+                    preference,
+                    self.entries[id].key,
+                ) {
                     Ordering::Greater => true,
                     Ordering::Less => false,
                     Ordering::Equal => {

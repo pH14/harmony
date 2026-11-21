@@ -311,11 +311,12 @@ pub struct MetroidProgressWatermark {
 }
 
 pub type MetroidArchiveProgressPoint = ProgressPoint<MetroidMilestones, MetroidProgressWatermark>;
-pub type MetroidArchiveEntryReport =
-    ArchiveEntryReport<MetroidAction, MetroidArchiveKey, MetroidMilestones>;
+pub type MetroidArchiveEntryReport<K = MetroidArchiveKey> =
+    ArchiveEntryReport<MetroidAction, K, MetroidMilestones>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct MetroidArchiveReport {
+#[serde(bound(deserialize = "K: ArchiveKey", serialize = "K: ArchiveKey"))]
+pub struct MetroidArchiveReport<K = MetroidArchiveKey> {
     pub seed: u64,
     pub executions: u64,
     pub milestones: MetroidMilestones,
@@ -324,7 +325,7 @@ pub struct MetroidArchiveReport {
     pub first_inputs: MetroidMilestoneInputs,
     pub champion_input: MetroidInput,
     #[serde(with = "entries_by_suffix")]
-    pub entries: Vec<MetroidArchiveEntryReport>,
+    pub entries: Vec<MetroidArchiveEntryReport<K>>,
     pub progress_curve: Vec<MetroidArchiveProgressPoint>,
     pub retained: u64,
     pub rejected: u64,
@@ -1094,6 +1095,113 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_strategy_balance_line_orders_every_reachable_stock_as_the_balance_preference() {
+        use crate::{
+            metroid::{
+                game::{Metroid, balance, balance_max},
+                target::MAX_ENERGY_TANKS,
+            },
+            search::assertion::{Accumulator, AssertionKey},
+            workload::{Game, Lowered},
+        };
+        let lowered = Lowered::new(Metroid, Metroid::STRATEGY).unwrap();
+        let stocked = |missiles, missile_capacity, health, energy_tanks| MetroidMechanicalState {
+            area: 0x10,
+            map_x: 3,
+            map_y: 14,
+            mode: 3,
+            missiles,
+            missile_capacity,
+            health,
+            energy_tanks,
+            ..MetroidMechanicalState::default()
+        };
+        let mut states = Vec::new();
+        for missile_capacity in 1..=u8::MAX {
+            for missiles in 0..=missile_capacity {
+                states.push(stocked(missiles, missile_capacity, 999, 0));
+            }
+        }
+        for energy_tanks in 0..=MAX_ENERGY_TANKS {
+            let full = 5 * (MAX_ENERGY_TANKS + 1 - energy_tanks);
+            let cap = u16::try_from(health_cap(energy_tanks)).unwrap();
+            for health in 1..=cap {
+                states.push(stocked(full, full, health, energy_tanks));
+                if health % 97 == 0 {
+                    states.push(stocked(0, 0, health, energy_tanks));
+                    states.push(stocked(0, full, health, energy_tanks));
+                }
+            }
+            for health in [1, 2, cap / 2, cap - 1, cap] {
+                for missiles in [u8::MAX, u8::MAX - 1, 128] {
+                    states.push(stocked(missiles, u8::MAX, health, energy_tanks));
+                }
+                states.push(stocked(0, 0, health, energy_tanks));
+            }
+        }
+        let keyed: Vec<(MetroidArchiveKey, AssertionKey)> = states
+            .iter()
+            .map(|state| {
+                let (record, _) = lowered.record(state);
+                let key = lowered
+                    .compiled
+                    .observe(&record, &mut Accumulator::default())
+                    .key
+                    .unwrap();
+                (archive_key(*state), key)
+            })
+            .collect();
+        let mut sorted = keyed.clone();
+        sorted.sort_by(|a, b| a.0.balance_cmp(b.0));
+        let shape = lowered.compiled.shape();
+        let mut tied_tiers = 0_usize;
+        for pair in sorted.windows(2) {
+            let ((hand_a, strategy_a), (hand_b, strategy_b)) = (pair[0], pair[1]);
+            assert_eq!(
+                shape.preference_cmp(strategy_a, 1, strategy_b),
+                hand_a.balance_cmp(hand_b),
+                "{hand_a:?} {hand_b:?}"
+            );
+            if (hand_a.items, hand_a.tanks) == (hand_b.items, hand_b.tanks) {
+                tied_tiers += 1;
+            }
+        }
+        assert!(tied_tiers > 60_000);
+        let ratio = |state: &MetroidMechanicalState| {
+            if state.missile_capacity == 0 {
+                return (0_u64, 1_u64);
+            }
+            let missiles = (u64::from(state.missiles), u64::from(state.missile_capacity));
+            let energy = (
+                u64::from(state.health),
+                u64::from(health_cap(state.energy_tanks)),
+            );
+            if missiles.0 * energy.1 <= energy.0 * missiles.1 {
+                missiles
+            } else {
+                energy
+            }
+        };
+        let exact_cmp = |a: &MetroidMechanicalState, b: &MetroidMechanicalState| {
+            let (x, y) = (ratio(a), ratio(b));
+            (x.0 * y.1).cmp(&(y.0 * x.1))
+        };
+        let mut exact = states.clone();
+        exact.sort_by(exact_cmp);
+        for pair in exact.windows(2) {
+            assert_eq!(
+                balance(pair[0]).cmp(&balance(pair[1])),
+                exact_cmp(&pair[0], &pair[1]),
+                "{:?} {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(balance(stocked(5, 5, 999, 0)), balance_max());
+        assert_eq!(balance(stocked(0, 0, 999, 0)), 0);
     }
 
     #[test]

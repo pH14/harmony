@@ -127,7 +127,7 @@ Famidash, Twin Dragons, Punch-Out!!, Donkey Kong, Ice Climber and Pac-Man are
 written this way. The other games have their own `target`, `archive` and
 `campaign` modules. A game implements `Game`:
 
-- `decode` turns work RAM into the game's `State`, given two earlier states:
+- `decode` turns a frame into the game's `State`, given two earlier states:
   the parent, the kept state the current action started from (none at the
   genesis), and the previous frame's state. Lineage, a value carried from one
   kept state to the next, belongs in `decode` and reads the parent, so every
@@ -154,11 +154,19 @@ written this way. The other games have their own `target`, `archive` and
   start does not resume here; Famidash names its side, level and goal.
   `rooted_genesis` checks the endpoint of a root (below), because each game
   states what a valid rooted start is. Super Mario Bros. requires live play,
-  Mega Man 2 play after a stage arrival outside a drive, and Ice Climbers a
-  live climbing state with every life; the other games accept any root that
-  passes the workload's own conditions.
+  Mega Man 2 play after a stage arrival outside a drive, Ice Climbers a
+  live climbing state with every life, and Metroid a live state before the
+  ending in play (game mode 3) or the item pickup pause (game mode 9), the
+  two modes a retained search state is in; the other games accept any root
+  that passes the workload's own conditions.
 - `CHORDS` is the controller vocabulary. `STRATEGY` is the TOML strategy,
   compiled against the catalog the declarations form.
+- `MEMORY_WINDOWS` names the save RAM a game reads beside work RAM, as CPU
+  address and length pairs inside `0x6000..0x8000`, and is empty by default.
+  A frame is work RAM followed by each window's bytes in declared order, so a
+  game with no windows decodes work RAM alone. The target captures the save
+  RAM span the windows cover on every frame it runs, and the records header
+  lists the windows.
 - `moves` declares a forced move on a state, a transition the game scripts
   rather than a search decision, or an `Offer`: a choice site the searcher
   answers, its default label, what each label plays (`Play::Move`, a game
@@ -174,7 +182,7 @@ written this way. The other games have their own `target`, `archive` and
   run once per machine, `genesis` checks where they arrive, and Famidash's
   level poke is not controller input.
 
-`Lowered` builds the catalog from the declarations of a decoded all-zero RAM,
+`Lowered` builds the catalog from the declarations of a decoded all-zero frame,
 compiles the strategy, and turns a state into a `NesObservation`: its
 `AssertionKey`, the `reject` line that holds, whether the goal holds, and the
 bitmask of the `sometimes` declarations that hold. The strategy must name a
@@ -202,7 +210,7 @@ header was written for the unrooted genesis. An action stops at the first frame 
 strategy rejects or that meets the goal, so the endpoint is the stopping frame.
 The target replays the hold cut to that frame only when a snapshot or the next
 action needs the machine there, and checks that the replay reaches the same
-work RAM, so a terminal stop runs its chord once. The target reports an
+frame, so a terminal stop runs its chord once. The target reports an
 interior observation when the compiled key changes, at a stopping frame and at
 the end of each action. Each is an `ActionObservation`: the `NesObservation`,
 the action's cost in frames on the last one, and the records of the frames it
@@ -456,6 +464,54 @@ restores before its key is observed keeps the key. `Shadow::report` returns the
 searcher's `ShadowReport`. The hook records a hand lineage at every candidate,
 where the archive records it at admitted entries only, so a hand key whose
 lineage holds more than the parent key can disagree there.
+
+`Shadow::state_hook` gives a target whose game state comes from more than work
+RAM a `StateHook`, which takes decoded states in place of RAM: the genesis
+state (`start_state`), every frame's state of an action (`advance_states`), and
+the restored state (`restored_state`), with `saved` and `observe` as above. It
+has no forced moves.
+
+### Metroid
+
+Metroid implements `Game` in `metroid/game.rs`, and its `decode` reads work RAM
+followed by one memory window, the cartridge RAM from energy tanks at `0x6877`
+through the enemy type table at `0x6b52` that holds equipment, missile
+capacity, boss status and the mini-boss slots. It is the range the hand target
+captures on every frame (`CARTRIDGE_FRAME_RANGE`), so both decode each frame
+from the same bytes. It still runs in its own `target` and `campaign`.
+`metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
+`metroid/plan.rs` with the same goals and latches (an energy stage's goal reads
+`action_end`, because the plan latches from the parent key at the action's
+end), the place (area, map cell,
+boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
+and the two hand preferences. A route stage's objective is the last route index
+a kept state stood on within that stage,
+`last(if action_end then index(cell, route) else none, stage)`, and 0 when the
+stage is entered off the route, as the hand plan locates from action endpoints
+and carries a route objective only from a parent in the same stage. The
+kraid_door stage ends at the last cell of its route on a kept state,
+`action_end and objective + 1 >= len(to_kraid_door)`. The equivalence test
+observes interior frames between kept states. Boss damage is the drop from
+`highest` boss health since the area last changed, rounded up to fours.
+`balance` is the rank of the smaller of missiles over capacity and health over
+the energy cap among every such ratio, so the second preference line is
+(items, tanks, balance) and ends in `"above"`, which breaks its ties by missiles
+then health as the hand balance preference does. The first line reads health
+below 8192, since health of 8000 and above is the BCD-underflow terminal.
+Tests in `metroid/game.rs` check that the strategy's stage and objective equal
+`plan::locate` along random paths with restores, and a test in
+`metroid/archive.rs` checks the second line against the hand balance order.
+`StrategyKeying` keys the campaign by a strategy without aggregates, by default
+`metroid/position.toml`, the position strategy. From power-on with a budget of 4M
+executions it failed against the route key: it reached bombs on 3 of 5 seeds,
+at a median of 3.31M executions against the route key's highest 0.47M, and
+Kraid's door on none. It spreads its draws evenly over the screens it has
+found. Between missiles and bombs it gave the newest screen 1.4% of its jobs,
+where the route key gave 31%.
+`MetroidTarget::set_shadow` takes a `StateHook` and passes it every frame's
+followed state of an action, through the first dead frame, since the target
+stops reading frames there; the route campaign observes the route key after
+every action, replayed ones included, and a dead state with `None`.
 
 ## Arcade live-feed observations
 

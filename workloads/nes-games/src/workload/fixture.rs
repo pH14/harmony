@@ -7,7 +7,7 @@ use std::{
 
 use machine::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ButtonChord, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, SAVE_RAM_BASE, WRAM_SIZE, actions_of},
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,9 @@ use crate::{
 pub const RIGHT: u8 = 1;
 pub const LEFT: u8 = 2;
 pub const WARP: u8 = 4;
+pub const CELLAR_X: usize = 0x13;
+pub const CELLAR_ROOM: usize = 0x10;
+const SAVE_RAM_BYTES: usize = 0x20;
 
 #[derive(Default)]
 pub struct Stepper {
@@ -29,6 +32,8 @@ pub struct Stepper {
     next: u64,
     staged: Vec<ButtonChord>,
     frames: Vec<[u8; WRAM_SIZE]>,
+    save_ram_range: Range<usize>,
+    save_ram_frames: Vec<u8>,
     video: Option<VecDeque<[u8; 2]>>,
     audio: Option<Vec<i16>>,
     pub runs: usize,
@@ -49,10 +54,20 @@ impl Stepper {
         wram
     }
 
+    fn save_ram(&self) -> [u8; SAVE_RAM_BYTES] {
+        let mut save_ram = [0; SAVE_RAM_BYTES];
+        save_ram[CELLAR_X] = self.ram[0];
+        save_ram[CELLAR_ROOM] = self.ram[1];
+        save_ram
+    }
+
     fn frame(&mut self, buttons: u8) {
         self.step(buttons);
         self.ram[0] = self.ram[0].wrapping_add(self.drift);
         self.frames.push(self.wram());
+        if let Some(captured) = self.save_ram().get(self.save_ram_range.clone()) {
+            self.save_ram_frames.extend_from_slice(captured);
+        }
         if let Some(video) = &mut self.video {
             video.push_back(self.ram);
         }
@@ -106,6 +121,7 @@ impl Machine for Stepper {
         _resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
         self.frames.clear();
+        self.save_ram_frames.clear();
         self.runs += 1;
         if until.deadline.is_some() {
             let Some(chord) = self.staged.first().copied() else {
@@ -129,9 +145,14 @@ impl Machine for Stepper {
     }
 
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
-        let start = usize::try_from(addr).map_err(|_| MachineError::UnknownSnapshot)?;
+        let (memory, base) = if addr >= SAVE_RAM_BASE {
+            (self.save_ram().to_vec(), SAVE_RAM_BASE)
+        } else {
+            (self.wram().to_vec(), 0)
+        };
+        let start = usize::try_from(addr - base).map_err(|_| MachineError::UnknownSnapshot)?;
         let end = start.saturating_add(usize::try_from(len).unwrap_or(usize::MAX));
-        self.wram()
+        memory
             .get(start..end)
             .map(<[u8]>::to_vec)
             .ok_or(MachineError::UnknownSnapshot)
@@ -194,14 +215,17 @@ impl NesMemory for Stepper {
         Ok(())
     }
 
-    fn capture_save_ram_per_frame(&mut self, _range: Range<usize>) {}
+    fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {
+        self.save_ram_range = range;
+        self.save_ram_frames.clear();
+    }
 
     fn save_ram_frames(&self) -> &[u8] {
-        &[]
+        &self.save_ram_frames
     }
 
     fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
-        Ok(Vec::new())
+        Ok(self.save_ram().to_vec())
     }
 
     fn write_save_ram(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), MachineError> {
@@ -297,6 +321,53 @@ goal = "false"
             name: "far",
             condition: state.x >= 3,
         });
+    }
+
+    fn moves(&self, _: &Spot) -> Moves<Never> {
+        Moves::none()
+    }
+
+    fn play(&self, mv: Never, _: &Spot) -> Option<Step<Never>> {
+        match mv {}
+    }
+
+    fn move_frames(&self, mv: Never) -> u64 {
+        match mv {}
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Cellar;
+
+impl Game for Cellar {
+    type State = Spot;
+    type Move = Never;
+
+    const NAME: &'static str = "cellar";
+    const STRATEGY: &'static str = Ledge::STRATEGY;
+    const CHORDS: ChordVocabulary = Ledge::CHORDS;
+    const MEMORY_WINDOWS: &'static [(u64, u32)] = &[
+        (SAVE_RAM_BASE + CELLAR_X as u64, 1),
+        (SAVE_RAM_BASE + CELLAR_ROOM as u64, 1),
+    ];
+
+    fn setup(&self) -> Vec<ButtonChord> {
+        Vec::new()
+    }
+
+    fn genesis(&self, _: &Spot) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn decode(&self, _: Option<&Spot>, _: Option<&Spot>, frame: &[u8]) -> Spot {
+        Spot {
+            x: frame[WRAM_SIZE],
+            room: frame[WRAM_SIZE + 1],
+        }
+    }
+
+    fn declare(&self, state: &Spot, out: &mut impl Declarations) {
+        Ledge.declare(state, out);
     }
 
     fn moves(&self, _: &Spot) -> Moves<Never> {
