@@ -19,10 +19,37 @@ import (
 	"harmony.local/harness/kit/runner"
 )
 
+type assertion struct {
+	cond     bool
+	property string
+	details  map[string]any
+}
+
+func recordingAnswers() (*statusAnswers, *[]assertion) {
+	var got []assertion
+	return newStatusAnswers(func(cond bool, property string, details map[string]any) {
+		got = append(got, assertion{cond, property, details})
+	}), &got
+}
+
+func failures(got []assertion) []assertion {
+	var failed []assertion
+	for _, a := range got {
+		if !a.cond {
+			failed = append(failed, a)
+		}
+	}
+	return failed
+}
+
+func answer1(s *statusAnswers, node string, status nodeStatus) {
+	s.observe(node, s.tick(), status, time.Unix(100, 0))
+}
+
 func TestStatusAnswersNameTheLastAnswerAcrossAttempts(t *testing.T) {
-	answers := &statusAnswers{last: map[string]statusAnswer{}}
+	answers, _ := recordingAnswers()
 	start := time.Unix(100, 0)
-	answers.observe("n3", 1121, start)
+	answers.observe("n3", answers.tick(), nodeStatus{applied: 1121}, start)
 	err := answers.err("n3", errors.New("fence write to n2: context deadline exceeded"), start.Add(2500*time.Millisecond))
 	want := "n3 last answered /status at index 1121, 2.50s before this error; last attempt: fence write to n2: context deadline exceeded"
 	if err.Error() != want {
@@ -31,10 +58,10 @@ func TestStatusAnswersNameTheLastAnswerAcrossAttempts(t *testing.T) {
 }
 
 func TestStatusAnswersKeepTheLatestAnswer(t *testing.T) {
-	answers := &statusAnswers{last: map[string]statusAnswer{}}
+	answers, _ := recordingAnswers()
 	start := time.Unix(100, 0)
-	answers.observe("n1", 5337, start)
-	answers.observe("n1", 5522, start.Add(5*time.Second))
+	answers.observe("n1", answers.tick(), nodeStatus{applied: 5337}, start)
+	answers.observe("n1", answers.tick(), nodeStatus{applied: 5522}, start.Add(5*time.Second))
 	err := answers.err("n1", context.DeadlineExceeded, start.Add(6*time.Second))
 	want := "n1 last answered /status at index 5522, 1.00s before this error; last attempt: context deadline exceeded"
 	if err.Error() != want {
@@ -46,12 +73,91 @@ func TestStatusAnswersKeepTheLatestAnswer(t *testing.T) {
 }
 
 func TestStatusAnswersWithoutAnAnswerSaySo(t *testing.T) {
-	answers := &statusAnswers{last: map[string]statusAnswer{}}
-	answers.observe("n2", 40, time.Unix(100, 0))
+	answers, _ := recordingAnswers()
+	answers.observe("n2", answers.tick(), nodeStatus{applied: 40}, time.Unix(100, 0))
 	err := answers.err("n1", errors.New("waiting for fence 5535: connection refused"), time.Unix(105, 0))
 	want := "n1 has no /status answer on record; last attempt: waiting for fence 5535: connection refused"
 	if err.Error() != want {
 		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestStatusAnswersReportAnOlderStateOncePerProcessAndProperty(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n1", nodeStatus{applied: 482, snapshot: 482, started: "a"})
+	answer1(answers, "n2", nodeStatus{applied: 300, snapshot: 333, started: "b"})
+	answer1(answers, "n1", nodeStatus{applied: 333, snapshot: 333, started: "a"})
+	answer1(answers, "n1", nodeStatus{applied: 333, snapshot: 333, started: "a"})
+	failed := failures(*got)
+	if len(failed) != 2 || failed[0].property != appliedNeverFalls || failed[1].property != snapshotNeverFalls {
+		t.Fatalf("failures %v", failed)
+	}
+	for _, f := range failed {
+		if f.details["node"] != "n1" || f.details["highest"] != uint64(482) || f.details["answer"] != uint64(333) || f.details["start_time"] != "a" {
+			t.Fatalf("details %v", f.details)
+		}
+	}
+	if passed := len(*got) - len(failed); passed != 2 {
+		t.Fatalf("%d passing assertions in %v, want one per property", passed, *got)
+	}
+}
+
+func TestStatusAnswersStartAgainAfterARestart(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n3", nodeStatus{applied: 900, snapshot: 800, started: "first"})
+	answer1(answers, "n3", nodeStatus{applied: 12, snapshot: 0, started: "second"})
+	answer1(answers, "n3", nodeStatus{applied: 950, snapshot: 800, started: "second"})
+	if failed := failures(*got); len(failed) != 0 {
+		t.Fatalf("failures %v", failed)
+	}
+}
+
+func TestStatusAnswersAcceptARestoreFromANewerSnapshot(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n2", nodeStatus{applied: 41, snapshot: 30, started: "a"})
+	answer1(answers, "n2", nodeStatus{applied: 276, snapshot: 276, started: "a"})
+	answer1(answers, "n2", nodeStatus{applied: 280, snapshot: 276, started: "a"})
+	if failed := failures(*got); len(failed) != 0 {
+		t.Fatalf("failures %v", failed)
+	}
+}
+
+func TestStatusAnswersCompareOnlyAnswersThatArrivedBeforeTheRequest(t *testing.T) {
+	answers, got := recordingAnswers()
+	early := answers.tick()
+	late := answers.tick()
+	answers.observe("n1", late, nodeStatus{applied: 105, started: "a"}, time.Unix(100, 0))
+	answers.observe("n1", early, nodeStatus{applied: 100, started: "a"}, time.Unix(100, 0))
+	if failed := failures(*got); len(failed) != 0 {
+		t.Fatalf("failures %v", failed)
+	}
+	answer1(answers, "n1", nodeStatus{applied: 101, started: "a"})
+	if failed := failures(*got); len(failed) != 1 || failed[0].details["highest"] != uint64(105) {
+		t.Fatalf("failures %v", failed)
+	}
+}
+
+func TestStatusAnswersWithoutAStartTimeCompareNothing(t *testing.T) {
+	answers, got := recordingAnswers()
+	answer1(answers, "n1", nodeStatus{applied: 500})
+	answer1(answers, "n1", nodeStatus{applied: 10})
+	if len(*got) != 0 {
+		t.Fatalf("assertions %v", *got)
+	}
+}
+
+func TestStatusDecodesTheIndexesAndTheStartTime(t *testing.T) {
+	for _, snapshot := range []string{`333`, `"333"`} {
+		server, _ := leaderServer(t, answer(http.StatusOK, `{"node":{"start_time":"2026-11-21T19:30:01.5Z","uptime":"5s"},"store":{"db_applied_index":482,"raft":{"last_snapshot_index":`+snapshot+`,"state":"Follower"}}}`))
+		c := newClient(server.URL)
+		status, err := c.indexes(context.Background())
+		c.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status != (nodeStatus{applied: 482, snapshot: 333, started: "2026-11-21T19:30:01.5Z"}) {
+			t.Fatalf("snapshot %s: status %+v", snapshot, status)
+		}
 	}
 }
 

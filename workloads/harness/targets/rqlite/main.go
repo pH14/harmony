@@ -169,12 +169,9 @@ func pinnedClient(ctx context.Context, node string) (*client, error) {
 	}
 	c := newClient(nodes[at])
 	for {
-		applied, err := c.appliedIndex(ctx)
-		if err == nil {
-			answers.observe(node, applied, time.Now())
-			if applied >= fence {
-				return c, nil
-			}
+		status, err := answers.poll(ctx, c, node)
+		if err == nil && status.applied >= fence {
+			return c, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -210,15 +207,38 @@ func (adapter) Applied(ctx context.Context, node string) (uint64, error) {
 	}
 	c := newClient(nodes[at])
 	defer c.Close()
-	return c.appliedIndex(ctx)
+	status, err := answers.poll(ctx, c, node)
+	return status.applied, err
+}
+
+const (
+	appliedNeverFalls  = "rqlite: a node's applied index never decreases while its process runs"
+	snapshotNeverFalls = "rqlite: a node's snapshot index never decreases while its process runs"
+)
+
+func declareStatusProperties() {
+	sdk.Declare(sdk.KindAlways, appliedNeverFalls)
+	sdk.Declare(sdk.KindAlways, snapshotNeverFalls)
 }
 
 // The check retries a pinned read in new attempts, and a failed /status
 // attempt returns no index, so the last index a /status answer returned is kept
 // across attempts and named in each failed attempt's error.
+//
+// The answers also keep each node's highest applied and snapshot index per
+// process, which /status names by its start time. Within one process a correct
+// node applies entries in order and installs a snapshot only to move forward,
+// so a lower answer means the node went back to an older state. Answers to concurrent
+// requests can arrive out of order, so an answer is compared only with highs
+// whose answer arrived before its request was sent.
 type statusAnswers struct {
-	mu   sync.Mutex
-	last map[string]statusAnswer
+	mu     sync.Mutex
+	clock  uint64
+	last   map[string]statusAnswer
+	high   map[lifetime]*highs
+	assert func(bool, string, map[string]any)
+	held   map[string]bool
+	failed map[failure]bool
 }
 
 type statusAnswer struct {
@@ -226,12 +246,92 @@ type statusAnswer struct {
 	at      time.Time
 }
 
-var answers = &statusAnswers{last: map[string]statusAnswer{}}
+type nodeStatus struct {
+	applied  uint64
+	snapshot uint64
+	started  string
+}
 
-func (s *statusAnswers) observe(node string, applied uint64, now time.Time) {
+type lifetime struct {
+	node    string
+	started string
+}
+
+type high struct {
+	value    uint64
+	received uint64
+}
+
+type highs struct {
+	applied  high
+	snapshot high
+}
+
+type failure struct {
+	lifetime
+	property string
+}
+
+func newStatusAnswers(assert func(bool, string, map[string]any)) *statusAnswers {
+	return &statusAnswers{
+		last:   map[string]statusAnswer{},
+		high:   map[lifetime]*highs{},
+		assert: assert,
+		held:   map[string]bool{},
+		failed: map[failure]bool{},
+	}
+}
+
+var answers = newStatusAnswers(sdk.Always)
+
+func (s *statusAnswers) poll(ctx context.Context, c *client, node string) (nodeStatus, error) {
+	sent := s.tick()
+	status, err := c.indexes(ctx)
+	if err == nil {
+		s.observe(node, sent, status, time.Now())
+	}
+	return status, err
+}
+
+func (s *statusAnswers) tick() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.last[node] = statusAnswer{applied: applied, at: now}
+	s.clock++
+	return s.clock
+}
+
+func (s *statusAnswers) observe(node string, sent uint64, status nodeStatus, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clock++
+	s.last[node] = statusAnswer{applied: status.applied, at: now}
+	if status.started == "" {
+		return
+	}
+	key := lifetime{node: node, started: status.started}
+	h := s.high[key]
+	if h == nil {
+		h = &highs{}
+		s.high[key] = h
+	}
+	s.check(key, appliedNeverFalls, &h.applied, status.applied, sent)
+	s.check(key, snapshotNeverFalls, &h.snapshot, status.snapshot, sent)
+}
+
+func (s *statusAnswers) check(key lifetime, property string, h *high, value, sent uint64) {
+	if sent > h.received && value < h.value {
+		f := failure{lifetime: key, property: property}
+		if !s.failed[f] {
+			s.failed[f] = true
+			s.assert(false, property, map[string]any{"node": key.node, "start_time": key.started, "highest": h.value, "answer": value})
+		}
+	} else if !s.held[property] {
+		s.held[property] = true
+		s.assert(true, property, nil)
+	}
+	if value > h.value {
+		*h = high{value: value, received: s.clock}
+	}
 }
 
 func (s *statusAnswers) err(node string, attempt error, now time.Time) error {
@@ -264,16 +364,44 @@ func (c *client) status(ctx context.Context, into any) error {
 	return nil
 }
 
-func (c *client) appliedIndex(ctx context.Context) (uint64, error) {
+func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 	var status struct {
 		Store struct {
 			DBAppliedIndex uint64 `json:"db_applied_index"`
+			Raft           struct {
+				LastSnapshotIndex raftStat `json:"last_snapshot_index"`
+			} `json:"raft"`
 		} `json:"store"`
+		Node struct {
+			StartTime string `json:"start_time"`
+		} `json:"node"`
 	}
 	if err := c.status(ctx, &status); err != nil {
-		return 0, err
+		return nodeStatus{}, err
 	}
-	return status.Store.DBAppliedIndex, nil
+	return nodeStatus{
+		applied:  status.Store.DBAppliedIndex,
+		snapshot: uint64(status.Store.Raft.LastSnapshotIndex),
+		started:  status.Node.StartTime,
+	}, nil
+}
+
+// rqlite sends each Raft stat as a number when it parses as one and as a
+// string otherwise.
+type raftStat uint64
+
+func (r *raftStat) UnmarshalJSON(data []byte) error {
+	text := strings.Trim(string(data), `"`)
+	if text == "null" {
+		*r = 0
+		return nil
+	}
+	value, err := strconv.ParseUint(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("raft stat %s: %w", data, err)
+	}
+	*r = raftStat(value)
+	return nil
 }
 
 func (c *client) appendValue(ctx context.Context, value string) (any, error) {
@@ -784,12 +912,14 @@ func main() {
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
 		writes = newWriteFacts()
+		declareStatusProperties()
 		runner.Main(adapter{})
 	case "forward":
 		if factsOn() {
 			fmt.Fprintf(os.Stderr, "%s needs the register mode\n", factsEnv)
 			os.Exit(2)
 		}
+		declareStatusProperties()
 		runner.Main(adapter{forward: true})
 	default:
 		fmt.Fprintf(os.Stderr, "unknown %s %q\n", modeEnv, mode)
