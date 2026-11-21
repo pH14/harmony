@@ -13,7 +13,7 @@ use nes_games::workload::{
     Game, Lowered, NesSnapshot, Never, RECORDS_FILE, REPLAY_RECORDS_FILE,
     SNAPSHOT_CHECKPOINT_FORMAT,
 };
-use nes_games::{mm2::MegaMan2, smb::game::SuperMarioBros};
+use nes_games::{metroid::game::Metroid, mm2::MegaMan2, smb::game::SuperMarioBros};
 use nes_workload::{
     donkey_kong::DonkeyKong,
     famidash::{Famidash, LuckyDraw},
@@ -246,6 +246,7 @@ fn main() -> Result<()> {
         "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
         "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
         "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,
+        "metroid-strategy" => rekey(Metroid, run, strategy.as_deref())?,
         other => return Err(format!("{other} does not declare assertions").into()),
     };
     println!("{}", serde_json::to_string_pretty(&report)?);

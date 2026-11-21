@@ -231,12 +231,13 @@ impl<H: ArchiveKey + Debug> ShadowTable<H> {
                 .or_default()
                 .push((*hand, *key));
         }
-        let preferences = compiled.shape().preferences.max(H::preferences());
+        let shape = compiled.shape();
+        let preferences = shape.preferences.max(H::preferences());
         for held in by_cell.values_mut() {
             for preference in 0..preferences {
                 let faults = adjacent_disagreements(
                     held,
-                    |a, b| a.1.preference_cmp(preference, b.1),
+                    |a, b| shape.preference_cmp(a.1, preference, b.1),
                     |a, b| a.0.preference_cmp(preference, b.0),
                 );
                 disagreements.preference += faults.len();

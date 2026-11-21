@@ -156,7 +156,8 @@ fn a_tier_spread_and_preference_pack_in_order() {
         compiled.shape(),
         KeyShape {
             capacity: 1,
-            preferences: 1
+            preferences: 1,
+            ties_above: 0
         }
     );
     let key = |state: Walk| compiled.key(&record(state)).unwrap();
@@ -486,6 +487,167 @@ fn highest_folds_over_the_lineage_and_resets_since_a_signal_changes() {
 }
 
 #[test]
+fn last_holds_the_latest_value_that_is_not_none_and_resets_since_a_signal_changes() {
+    let compiled = Compiled::parse(
+        r#"
+        spread = [
+            "last(lives)",
+            "last(if 'in transition' then none else 'position.x')",
+            "last(if 'in transition' then none else 'position.x', 'position.room')",
+        ]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let mut views = Vec::new();
+    for (room, lives, x, transition) in [
+        (0, 3, 10, false),
+        (0, 5, 20, true),
+        (0, 1, 30, true),
+        (1, 2, 40, true),
+        (1, 4, 50, false),
+    ] {
+        let state = Walk {
+            room,
+            lives,
+            x,
+            transition,
+            ..Walk::default()
+        };
+        let observed = compiled.observe(&record(state), &mut accumulator);
+        views.push(compiled.view(observed.key.unwrap()).place);
+    }
+    assert_eq!(
+        views,
+        [
+            vec![3, 10, 10],
+            vec![5, 10, 10],
+            vec![1, 10, 10],
+            vec![2, 10, NONE],
+            vec![4, 50, 50],
+        ]
+    );
+}
+
+#[test]
+fn a_last_route_objective_follows_the_route_back_and_is_carried_off_it() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "route"
+        objective = "last(index('position.room', route))"
+        goal = "'items.key'"
+        [[stage]]
+        name = "after"
+        goal = "false"
+        [table]
+        route = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let objectives: Vec<_> = [15, 0, 4]
+        .into_iter()
+        .map(|room| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            let view = compiled.view(observed.key.unwrap());
+            assert_eq!(view.stage.as_deref(), Some("route"));
+            view.progress
+        })
+        .collect();
+    assert_eq!(objectives, [vec![14], vec![14], vec![3]]);
+}
+
+#[test]
+fn a_stage_scoped_route_objective_is_carried_only_from_a_parent_in_the_same_stage() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "to_key"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "'items.key'"
+        [[stage]]
+        name = "after_key"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "false"
+        [table]
+        route = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let views: Vec<_> = [(3, 0), (0, 0), (0, 0b100), (5, 0b100), (0, 0b100)]
+        .into_iter()
+        .map(|(room, items)| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    items,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            let view = compiled.view(observed.key.unwrap());
+            (view.stage.unwrap(), view.progress)
+        })
+        .collect();
+    assert_eq!(
+        views,
+        [
+            ("to_key".to_owned(), vec![2]),
+            ("to_key".to_owned(), vec![2]),
+            ("after_key".to_owned(), vec![0]),
+            ("after_key".to_owned(), vec![4]),
+            ("after_key".to_owned(), vec![4]),
+        ]
+    );
+}
+
+#[test]
+fn a_route_stage_ends_at_the_last_cell_of_its_table_by_len() {
+    let compiled = Compiled::parse(
+        r#"
+        [[stage]]
+        name = "route"
+        objective = "max(last(index('position.room', route), stage), 0)"
+        goal = "objective + 1 >= len(route)"
+        latch = true
+        [[stage]]
+        name = "after"
+        goal = "false"
+        [table]
+        route = [1, 2, 3]
+        "#,
+        &catalog(),
+    )
+    .unwrap();
+    let mut accumulator = Accumulator::default();
+    let stages: Vec<_> = [2, 0, 3, 0]
+        .into_iter()
+        .map(|room| {
+            let observed = compiled.observe(
+                &record(Walk {
+                    room,
+                    ..Walk::default()
+                }),
+                &mut accumulator,
+            );
+            compiled.view(observed.key.unwrap()).stage.unwrap()
+        })
+        .collect();
+    assert_eq!(stages, ["route", "route", "after", "after"]);
+}
+
+#[test]
 fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives() {
     let width = |text: &str| {
         let compiled = Compiled::parse(text, &catalog()).unwrap();
@@ -505,6 +667,7 @@ fn the_accumulator_holds_values_only_for_declared_aggregates_and_held_objectives
         width("spread = [\"highest('items.key')\", \"highest(time, 'position.room')\"]"),
         4
     );
+    assert_eq!(width("spread = \"last(time, 'position.room')\""), 2);
     assert_eq!(
         width(
             "[[stage]]\nobjective = \"'position.x'\"\ngoal = \"highest(objective >= 5)\"\n[[stage]]\ngoal = \"items\""
@@ -557,6 +720,80 @@ fn an_aggregate_reads_the_held_objective_of_the_parent_stage() {
         })
         .collect();
     assert_eq!(stages, [Some("reach".to_owned()), Some("after".to_owned())]);
+}
+
+#[test]
+fn a_preference_list_ending_in_above_breaks_its_ties_by_the_list_above() {
+    let order = |text: &str, preference, left: (u8, u16), right: (u8, u16)| {
+        let compiled = Compiled::parse(text, &catalog()).unwrap();
+        let key = |(lives, time)| {
+            compiled
+                .key(&record(Walk {
+                    lives,
+                    time,
+                    ..Walk::default()
+                }))
+                .unwrap()
+        };
+        compiled
+            .shape()
+            .preference_cmp(key(left), preference, key(right))
+    };
+    let above = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\", \"above\"]]";
+    let plain = "spread = \"position\"\nprefer = [[\"time: more\"], [\"lives: more\"]]";
+    assert_eq!(order(above, 1, (3, 9), (3, 5)), Ordering::Greater);
+    assert_eq!(order(above, 1, (4, 1), (3, 9)), Ordering::Greater);
+    assert_eq!(order(above, 1, (3, 9), (3, 9)), Ordering::Equal);
+    assert_eq!(order(above, 0, (3, 9), (3, 5)), Ordering::Greater);
+    assert_eq!(order(plain, 1, (3, 9), (3, 5)), Ordering::Equal);
+    let marks = |text: &str| {
+        Compiled::parse(text, &catalog())
+            .unwrap()
+            .shape()
+            .ties_above
+    };
+    assert_eq!((marks(above), marks(plain)), (0b10, 0));
+    let full =
+        "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\"]]";
+    let full_above = "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"above\"]]";
+    assert_eq!((marks(full), marks(full_above)), (0, 0b10));
+    let key = |text: &str, time| {
+        Compiled::parse(text, &catalog())
+            .unwrap()
+            .key(&record(Walk {
+                time,
+                ..Walk::default()
+            }))
+            .unwrap()
+            .prefer[1]
+    };
+    assert_eq!(key(full, u16::MAX), key(full_above, u16::MAX));
+    assert!(key(full, u16::MAX) >= 1 << 31);
+    for (text, message) in [
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\", \"above\"]]",
+            "no list above",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"time: more\"], [\"above\", \"lives: more\"]]",
+            "needs `: more` or `: less`",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"lives: more\"]]",
+            "has 42949672960 values and its key field holds 4294967296",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"time: less\", \"lives: more\", \"above\"]]",
+            "has 42949672960 values and its key field holds 4294967296",
+        ),
+        (
+            "spread = \"position\"\nprefer = [[\"lives: more\"], [\"time: more\", \"above\"]]\n[[stage]]\ngoal = \"items >= 1\"\nprefer = [[\"lives: more\"], [\"time: more\"]]\n[[stage]]\ngoal = \"false\"",
+            "keeps the shared `above` marks",
+        ),
+    ] {
+        let error = Compiled::parse(text, &catalog()).unwrap_err().to_string();
+        assert!(error.contains(message), "{text}: {error}");
+    }
 }
 
 #[test]
@@ -653,7 +890,18 @@ fn strategies_reject_unknown_names_lines_and_overflows() {
         (r#"prefer = [["time: most"]]"#, "is not `more`"),
         (r#"spread = "in(time, nothing)""#, "no table"),
         (r#"spread = "highest(highest(lives))""#, "another aggregate"),
+        (r#"spread = "last(highest(lives))""#, "another aggregate"),
+        (r#"spread = "last(lives, last(time))""#, "another aggregate"),
         (r#"spread = "count(lives)""#, "not a strategy function"),
+        (
+            r#"spread = "last(lives, stage)""#,
+            "only in a stage's objective",
+        ),
+        (
+            "[[stage]]\ngoal = \"last(lives, stage) > 0\"",
+            "only in a stage's objective",
+        ),
+        (r#"spread = "len(lives)""#, "no table is named"),
         ("[[stage]]\ngoal = \"items\"\ncarry = true", "unknown field"),
         ("tier = \"lives\"\n[[stage]]\ngoal = \"items\"", "not both"),
         (
@@ -754,6 +1002,10 @@ fn a_preference_scope_reads_only_whole_values_of_the_cell() {
             "highest(...)",
         ),
         (
+            "spread = \"lives\"\nprefer_scope = \"last(lives)\"",
+            "last(...)",
+        ),
+        (
             "spread = \"place\"\nprefer_scope = \"inner\"\n[define]\nplace = \"inner + lives\"\ninner = \"time / 10\"",
             "inner",
         ),
@@ -790,6 +1042,10 @@ fn malformed_strategies_return_errors_rather_than_panicking() {
     for (text, message) in [
         (
             format!("spread = \"highest(lives, e40)\"\n[define]\n{deep}"),
+            "stack values",
+        ),
+        (
+            format!("spread = \"last(e40)\"\n[define]\n{deep}"),
             "stack values",
         ),
         (
@@ -1096,6 +1352,7 @@ fn walk_header(genesis: Record) -> RecordsHeader {
         choice_policy: Some("choices_v1:fixed:49152:0,profile_first".to_owned()),
         strategy: "spread = \"position\"".to_owned(),
         catalog: catalog(),
+        memory_windows: vec![(0x6877, 7)],
         genesis,
         root_sha256: None,
         accumulator_before_genesis: Accumulator::default(),
@@ -1169,7 +1426,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
     let (genesis, _, _) = walk_recording();
     let header = walk_header(genesis);
     let earlier = postcard::to_allocvec(&(
-        "assertion-records-v5",
+        "assertion-records-v7",
         &header.stream,
         &header.policy,
         &header.strategy,
@@ -1183,7 +1440,7 @@ fn a_records_header_of_an_earlier_format_is_refused_by_its_format() {
         .to_string();
     assert_eq!(
         error,
-        format!("records format assertion-records-v5 is not {RECORDS_FORMAT}")
+        format!("records format assertion-records-v7 is not {RECORDS_FORMAT}")
     );
 }
 
@@ -1382,7 +1639,8 @@ fn every_archive_preference_comparison_is_at_a_listed_site() {
             function = rest.split(['(', '<']).next().unwrap_or(rest);
             continue;
         }
-        if line.contains("preference_cmp(") {
+        let compares = line.contains("preference_cmp(") || line.contains("preference_order(");
+        if compares && !matches!(function, "preference_cmp" | "preference_order") {
             sites.push(function);
         }
     }

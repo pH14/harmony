@@ -17,12 +17,13 @@ use crate::{
     metroid::{
         action::MetroidAction,
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport,
-            MetroidMilestoneInputs, MetroidMilestoneTimes, MetroidMilestones,
-            MetroidProgressWatermark, PREFERENCE_IDENTIFIER, REPLACEMENT_IDENTIFIER, archive_key,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones,
-            progress_watermark,
+            DURATION_IDENTIFIER, MetroidArchiveKey, MetroidArchiveReport, MetroidMilestoneInputs,
+            MetroidMilestoneTimes, MetroidMilestones, MetroidProgressWatermark,
+            REPLACEMENT_IDENTIFIER, merge_milestones, merge_progress_watermark, milestone_key,
+            milestones, progress_watermark,
         },
+        game::Metroid,
+        keying::{MetroidKeying, RouteKeying},
         progress::{FirstSeen, NamedProgress},
         target::{
             GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
@@ -31,7 +32,7 @@ use crate::{
     },
     nes_backend::{NesBackend, NesMemory},
     search::{
-        archive::RetentionPolicy,
+        archive::{KeyShape, RetentionPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignTypes, Evaluation,
@@ -42,7 +43,7 @@ use crate::{
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
-    workload::publish_milestone_inputs,
+    workload::{StateHook, publish_milestone_inputs},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
@@ -62,7 +63,7 @@ type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
 
 pub type MetroidMachines<M> = Box<dyn Fn() -> Result<M, MachineError> + Send + Sync>;
 
-pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
+pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying = RouteKeying> {
     rom_sha256: String,
     machines: MetroidMachines<M>,
     prefix: Vec<MetroidAction>,
@@ -71,6 +72,8 @@ pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
     milestone_input_dir: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
     depth: GenesisDepth,
+    keying: K,
+    shadow: Option<StateHook<Metroid, MetroidArchiveKey>>,
 }
 
 #[cfg(unix)]
@@ -141,7 +144,15 @@ impl MetroidGame<QuickNesMachine> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M, RouteKeying> {
+    #[must_use]
+    pub fn with_shadow(mut self, shadow: StateHook<Metroid, MetroidArchiveKey>) -> Self {
+        self.shadow = Some(shadow);
+        self
+    }
+}
+
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> MetroidGame<M, K> {
     #[must_use]
     pub fn with_machines(
         rom: &[u8],
@@ -150,7 +161,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
         prefix: Vec<MetroidAction>,
         depth: GenesisDepth,
         machines: MetroidMachines<M>,
-    ) -> Self {
+    ) -> Self
+    where
+        K: Default,
+    {
         let prefix_digest = Sha256::digest(postcard::to_allocvec(&prefix).unwrap_or_default());
         let genesis = match depth {
             GenesisDepth::NewGame => "metroid-new-game-v1",
@@ -172,7 +186,30 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidGame<M> {
             milestone_input_dir: None,
             terminal_policy: MetroidTerminalPolicy::default(),
             depth,
+            keying: K::default(),
+            shadow: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_keying<J: MetroidKeying>(self, keying: J) -> MetroidGame<M, J> {
+        MetroidGame {
+            rom_sha256: self.rom_sha256,
+            machines: self.machines,
+            prefix: self.prefix,
+            identity: self.identity,
+            champion_input_path: self.champion_input_path,
+            milestone_input_dir: self.milestone_input_dir,
+            terminal_policy: self.terminal_policy,
+            depth: self.depth,
+            keying,
+            shadow: None,
+        }
+    }
+
+    #[must_use]
+    pub fn keying(&self) -> &K {
+        &self.keying
     }
 
     #[must_use]
@@ -328,12 +365,13 @@ impl MapCoverage {
     }
 }
 
-pub type MetroidCampaignOrigin<M> = CampaignOrigin<MetroidGame<M>>;
+pub type MetroidCampaignOrigin<M, K = RouteKeying> = CampaignOrigin<MetroidGame<M, K>>;
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
-pub type MetroidCampaignModeReport = CampaignModeReport<MetroidAction, MetroidArchiveReport>;
-pub type MetroidCampaignActionResult<M> = CampaignActionResult<MetroidGame<M>>;
-pub type MetroidCampaignJobResult<M> = CampaignJobResult<MetroidGame<M>>;
+pub type MetroidCampaignModeReport<K = crate::metroid::archive::MetroidArchiveKey> =
+    CampaignModeReport<MetroidAction, MetroidArchiveReport<K>>;
+pub type MetroidCampaignActionResult<M, K = RouteKeying> = CampaignActionResult<MetroidGame<M, K>>;
+pub type MetroidCampaignJobResult<M, K = RouteKeying> = CampaignJobResult<MetroidGame<M, K>>;
 
 fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
@@ -360,8 +398,8 @@ fn merge_action_milestones<M: NesBackend<Vec<u8>> + NesMemory>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
-    game: &MetroidGame<M>,
+fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying>(
+    game: &MetroidGame<M, K>,
     run: &MetroidCampaignRun,
     target: &mut MetroidTarget<M>,
     genesis: (u8, u8),
@@ -369,7 +407,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
     suffix: &[MetroidAction],
     retention: RetentionPolicy,
     stop: searcher::search::rollout::RolloutStop,
-) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
+) -> Result<MetroidCampaignJobResult<M, K>, Box<dyn Error>> {
     if retention != RetentionPolicy::Unprobed {
         return Err("Metroid campaigns admit every live candidate".into());
     }
@@ -424,8 +462,9 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state())
-                    .with_boss_health_seen(target.boss_health_seen()),
+                key: game
+                    .keying
+                    .key(target.mechanical_state(), target.boss_health_seen()),
                 viable: true,
                 snapshot,
             })
@@ -433,6 +472,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>> + NesMemory>(
             None
         };
         let cost = game.shrink_cost(action, target, &observations);
+        target.shadow_current();
         actions.push(CampaignActionResult {
             action: *action,
             observations,
@@ -482,21 +522,21 @@ fn action_champion_key(observations: &[MetroidObservations]) -> Option<MetroidCh
         })
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> CampaignTypes for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> CampaignTypes for MetroidGame<M, K> {
     type JobObservation = ();
     type Target = MetroidTarget<M>;
     type Action = MetroidAction;
-    type Key = MetroidArchiveKey;
+    type Key = K::Key;
     type Milestones = MetroidMilestones;
     type Progress = MetroidProgressWatermark;
     type Snapshot = MetroidSnapshot;
     type Observations = MetroidObservations;
     type Evidence = MetroidCampaignEvidence;
-    type ArchiveReport = MetroidArchiveReport;
+    type ArchiveReport = MetroidArchiveReport<K::Key>;
     type Run = MetroidCampaignRun;
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> Reporting for MetroidGame<M, K> {
     fn write_evidence_checkpoint(
         evidence: &MetroidCampaignEvidence,
         out: &mut dyn std::io::Write,
@@ -653,7 +693,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
 
     fn result_sha256(
         &self,
-        result: &MetroidCampaignJobResult<M>,
+        result: &MetroidCampaignJobResult<M, K>,
     ) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
     }
@@ -669,7 +709,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
         &self,
         evidence: &MetroidCampaignEvidence,
         state: ArchiveReportState<Self>,
-    ) -> MetroidArchiveReport {
+    ) -> MetroidArchiveReport<K::Key> {
         MetroidArchiveReport {
             seed: state.seed,
             executions: state.executions,
@@ -690,15 +730,15 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> InputPolicy for MetroidGame<M, K> {
     fn policies(&self, _run: &MetroidCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (PREFERENCE_POLICY_FIELD, PREFERENCE_IDENTIFIER),
+            (KEY_POLICY_FIELD, self.keying.key_policy()),
+            (PREFERENCE_POLICY_FIELD, self.keying.preference_policy()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (CHORD_DRAW_FIELD, CHANGE_ONE_CONTROL_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
@@ -739,7 +779,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> InputPolicy for MetroidGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> TargetExecution for MetroidGame<M, K> {
     fn planned_cost_fn(&self) -> fn(&MetroidAction) -> u64 {
         MetroidAction::planned_frames
     }
@@ -751,7 +791,13 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
     fn new_target(&self) -> Result<MetroidTarget<M>, String> {
         let machine = (self.machines)().map_err(|error| error.to_string())?;
         MetroidTarget::from_machine(machine, &self.prefix, self.depth)
-            .map(|target| target.with_terminal_policy(self.terminal_policy))
+            .map(|target| {
+                let mut target = target.with_terminal_policy(self.terminal_policy);
+                if let Some(shadow) = &self.shadow {
+                    target.set_shadow(shadow.clone());
+                }
+                target
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -779,6 +825,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
     ) -> Result<(), Box<dyn Error>> {
         let (genesis_items, genesis_tanks) = target.genesis_holdings();
         target.apply(action);
+        target.shadow_current();
         merge_action_milestones(aggregate, target, genesis_items, genesis_tanks);
         Ok(())
     }
@@ -799,10 +846,11 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
         suffix: &[Self::Action],
         retention: RetentionPolicy,
         stop: searcher::search::rollout::RolloutStop,
-    ) -> Result<MetroidCampaignJobResult<M>, Box<dyn Error>> {
+    ) -> Result<MetroidCampaignJobResult<M, K>, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
+            target.shadow_current();
             if self.execution_disposition(target).is_terminal() {
                 break;
             }
@@ -820,7 +868,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> TargetExecution for MetroidGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory, K: MetroidKeying> Evaluation for MetroidGame<M, K> {
     fn execution_disposition(&self, target: &MetroidTarget<M>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
@@ -839,15 +887,22 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
         Ok(target.exit_kind() == ExitKind::Ok && target.is_victory())
     }
 
-    fn current_key(&self, target: &MetroidTarget<M>) -> Result<MetroidArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()).with_boss_health_seen(target.boss_health_seen()))
+    fn key_shape(&self) -> KeyShape {
+        self.keying.shape()
+    }
+
+    fn current_key(&self, target: &MetroidTarget<M>) -> Result<K::Key, Box<dyn Error>> {
+        target.shadow_current();
+        Ok(self
+            .keying
+            .key(target.mechanical_state(), target.boss_health_seen()))
     }
 
     fn complete_candidate_key(
         &self,
-        key: MetroidArchiveKey,
+        key: K::Key,
         _snapshot: &MetroidSnapshot,
-    ) -> Result<MetroidArchiveKey, Box<dyn Error>> {
+    ) -> Result<K::Key, Box<dyn Error>> {
         Ok(key)
     }
 
@@ -866,7 +921,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
     fn merge_origin_evidence(
         &self,
         evidence: &mut MetroidCampaignEvidence,
-        source: &MetroidArchiveReport,
+        source: &MetroidArchiveReport<K::Key>,
     ) {
         evidence.watermark = evidence.watermark.max(source.progress_watermark);
     }
@@ -914,7 +969,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut MetroidCampaignEvidence,
-        action: &MetroidCampaignActionResult<M>,
+        action: &MetroidCampaignActionResult<M, K>,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>
@@ -1014,12 +1069,15 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Evaluation for MetroidGame<M> {
 
     fn source_entries<'a>(
         &self,
-        source: &'a MetroidArchiveReport,
-    ) -> &'a [crate::metroid::archive::MetroidArchiveEntryReport] {
+        source: &'a MetroidArchiveReport<K::Key>,
+    ) -> &'a [crate::metroid::archive::MetroidArchiveEntryReport<K::Key>] {
         &source.entries
     }
 
-    fn resume_input(&self, source: &MetroidArchiveReport) -> Result<MetroidInput, Box<dyn Error>> {
+    fn resume_input(
+        &self,
+        source: &MetroidArchiveReport<K::Key>,
+    ) -> Result<MetroidInput, Box<dyn Error>> {
         source
             .entries
             .iter()

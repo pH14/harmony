@@ -16,7 +16,7 @@ use super::{
 };
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v8";
+pub const RECORDS_FORMAT: &str = "assertion-records-v9";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {
@@ -32,6 +32,7 @@ pub struct RecordsHeader {
     pub choice_policy: Option<String>,
     pub strategy: String,
     pub catalog: Catalog,
+    pub memory_windows: Vec<(u64, u32)>,
     pub genesis: Record,
     pub root_sha256: Option<String>,
     pub accumulator_before_genesis: Accumulator,

@@ -17,7 +17,11 @@ use nes_workload::{
     joust::{Joust, JoustGame},
     live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
+        MetroidStrategyGame,
+        archive::MetroidArchiveKey,
         campaign::{MetroidCampaignRun, MetroidGame},
+        game::Metroid,
+        keying::StrategyKeying,
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
     mm2::{
@@ -192,7 +196,7 @@ fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Sta
     })
 }
 
-const SHADOW_GAMES: &[&str] = &["smb", "mm2"];
+const SHADOW_GAMES: &[&str] = &["smb", "metroid", "mm2"];
 const ROOT_GAMES: &[&str] = &["smb", "mm2", "metroid"];
 const STRATEGY_GAMES: &[&str] = &[
     "joust",
@@ -206,6 +210,7 @@ const STRATEGY_GAMES: &[&str] = &[
     "twin-dragons",
     "smb-strategy",
     "mm2-strategy",
+    "metroid-strategy",
 ];
 
 fn root_input_taken(game: &str, root_input: bool) -> Result<()> {
@@ -259,6 +264,7 @@ fn main() -> Result<()> {
             | "joust"
             | "famidash-lucky-draw"
             | "smb-strategy"
+            | "metroid-strategy"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
@@ -275,6 +281,17 @@ fn main() -> Result<()> {
             }
             game if STRATEGY_GAMES.contains(&game) => {}
             "smb" if request.shadow && !request.records => {}
+            "metroid" if request.shadow && request.strategy.is_some() => {
+                return Err(
+                    "a Metroid shadow keys the hand campaign, which takes no strategy".into(),
+                );
+            }
+            "metroid" if request.records => {
+                return Err(
+                    "Metroid keys a strategy inside its own campaign and keeps no records".into(),
+                );
+            }
+            "metroid" => {}
             _ if request.strategy.is_some() || request.records => {
                 return Err(
                     "only games declared through assertions take a strategy or records".into(),
@@ -411,22 +428,50 @@ fn main() -> Result<()> {
                 "mega-man-2",
                 <Mm2Game>::memory_view,
             ),
-            "metroid" => evaluate_watching(
-                metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
-                    .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR))
-                    .with_terminal_policy(match request.metroid_terminal.as_deref() {
-                        Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
-                        None => MetroidTerminalPolicy::default(),
-                    }),
-                MetroidCampaignRun,
-                &rom,
-                &request,
-                &execution_sha256,
-                &out,
-                started,
-                "metroid",
-                <MetroidGame>::memory_view,
-            ),
+            "metroid" => {
+                let game =
+                    metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
+                        .with_milestone_input_dir(out.join(MILESTONE_INPUTS_DIR))
+                        .with_terminal_policy(match request.metroid_terminal.as_deref() {
+                            Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
+                            None => MetroidTerminalPolicy::default(),
+                        });
+                match request.strategy.as_deref() {
+                    Some(path) => evaluate_watching(
+                        game.with_keying(StrategyKeying::new(&fs::read_to_string(path)?)?),
+                        MetroidCampaignRun,
+                        &rom,
+                        &request,
+                        &execution_sha256,
+                        &out,
+                        started,
+                        "metroid",
+                        <MetroidGame>::memory_view,
+                    ),
+                    None => {
+                        let shadow = request
+                            .shadow
+                            .then(|| Shadow::<Metroid, MetroidArchiveKey>::new(Metroid))
+                            .transpose()?;
+                        let game = match &shadow {
+                            Some(shadow) => game.with_shadow(shadow.state_hook()),
+                            None => game,
+                        };
+                        evaluate_watching(
+                            game,
+                            MetroidCampaignRun,
+                            &rom,
+                            &request,
+                            &execution_sha256,
+                            &out,
+                            started,
+                            "metroid",
+                            <MetroidGame>::memory_view,
+                        )?;
+                        nes_workload::workload::write_shadow(shadow.as_ref(), &out)
+                    }
+                }
+            }
             "stb" => {
                 let ai = match request.ai.as_deref().unwrap_or("hard") {
                     "easy" => StbAi::Easy,
@@ -565,6 +610,21 @@ fn main() -> Result<()> {
                 started,
                 "super-mario-bros",
                 <SmbStrategyGame>::memory_view,
+            ),
+            "metroid-strategy" => evaluate_watching(
+                nes_workload::workload::configured(
+                    MetroidStrategyGame::new(Metroid, &rom, p, h, &execution_sha256)?,
+                    &request,
+                    &out,
+                )?,
+                nes_games::workload::NesRun,
+                &rom,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+                "metroid",
+                <MetroidStrategyGame>::memory_view,
             ),
             "joust" => evaluate_watching(
                 nes_workload::workload::configured(

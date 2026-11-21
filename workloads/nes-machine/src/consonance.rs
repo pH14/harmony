@@ -669,8 +669,9 @@ fn read_cached(
             .ok_or(MachineError::ReadOutOfBounds)?;
         return Ok(work_ram[start..finish].to_vec());
     }
-    if addr >= 0x6000 && end <= 0x6000 + BILLBOARD_SAVE_RAM_LEN as u64 {
-        let start = usize::try_from(addr - 0x6000).map_err(|_| MachineError::ReadOutOfBounds)?;
+    if addr >= nes::SAVE_RAM_BASE && end <= nes::SAVE_RAM_BASE + BILLBOARD_SAVE_RAM_LEN as u64 {
+        let start = usize::try_from(addr - nes::SAVE_RAM_BASE)
+            .map_err(|_| MachineError::ReadOutOfBounds)?;
         let finish = start
             .checked_add(length)
             .filter(|finish| *finish <= save_ram.len())

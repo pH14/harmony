@@ -29,7 +29,7 @@ use std::{
 
 use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ButtonChord, STATE_MAGIC, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, SAVE_RAM_BASE, SAVE_RAM_SIZE, STATE_MAGIC, WRAM_SIZE, actions_of},
 };
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
@@ -115,8 +115,6 @@ const QUICKNES_PPU_UNUSED2_LEN: usize = 3;
 const RETRO_MEMORY_SAVE_RAM: u32 = 0;
 const RETRO_MEMORY_SYSTEM_RAM: u32 = 2;
 const MAX_SAVE_RAM_SIZE: usize = 64 * 1024;
-const SAVE_RAM_BASE: u64 = 0x6000;
-const SAVE_RAM_SIZE: u64 = 0x2000;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ID_JOYPAD_MASK: u32 = 256;
 const RETRO_ENVIRONMENT_GET_CAN_DUPE: u32 = 3;
