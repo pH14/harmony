@@ -748,7 +748,8 @@ outcome is `compared` when a check that started after that has exited
 successfully. The phase also ends when the workload is not ready 3,000 ticks
 (the 30-second recovery limit) after the restarts and heal end, when no such
 check has finished 6,000 ticks after they end, or at a new violation, a terminal
-stop, a hang or a cancellation. The target then restores the snapshot and its
+stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
+cancellation. The target then restores the snapshot and its
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
 those of the run without the phase. The snapshots taken during the phase stay in
@@ -1299,7 +1300,19 @@ no bits for a node mask it does not read. A strategy may give stages, latched
 stages and aggregates. Every stage reads the shared `spread` and `identity`
 lines, given at the top level or under `[every_stage]`, because the duration
 context reads its lanes from them, so `FaultKeys::new` refuses a `[[stage]]`
-that gives its own `spread` or `identity`. It also refuses a reject line.
+that gives its own `spread` or `identity`.
+
+A reject line, at the top level or in a stage, marks states the search does
+not keep. An action endpoint that matches one while the strategy's `goal` line
+does not hold is a doomed terminal unless the run's objective counts a bug
+there. `Compiled::observe` gives it no key and leaves the accumulator as the
+action found it, so it advances no stage and counts no stage fall. The job
+stops at it, it is never an archive entry, the settle phase skips it, and the
+campaign report counts it in `doomed_endpoints` rather than in the archive
+report's `deaths`. The evidence takes nothing of it into the milestones, the
+progress watermark or the champion input. Its assertions still count in the
+archive report's `assertions` coverage, and a property it violates is still a
+finding.
 
 Each `FaultTarget` carries the strategy's accumulator, the searcher's
 `Accumulator`. The target folds its observation into a fresh accumulator with

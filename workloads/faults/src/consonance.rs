@@ -877,6 +877,11 @@ impl FaultTarget {
     }
 
     #[must_use]
+    pub fn rejected(&self) -> bool {
+        self.observed.rejected.is_some() && !self.observed.goal
+    }
+
+    #[must_use]
     pub fn accumulator(&self) -> &Accumulator {
         &self.accumulator
     }
@@ -4988,20 +4993,26 @@ mod tests {
         (0, (2 << 24) | process_proto::registers::TICKS, bytes)
     }
 
-    fn scripted_runs_live(ticks: &[u64]) -> Live {
+    fn scripted_batches_live(batches: Vec<Vec<consonance_client::session::SdkEvent>>) -> Live {
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
             scripted: Some(ScriptedRuns {
-                batches: ticks
-                    .iter()
-                    .map(|&ticks| vec![ticks_event(ticks)])
-                    .collect(),
+                batches,
                 ..ScriptedRuns::default()
             }),
             run_hashes: Some(vec![[17; 32]; 64]),
             ..fixture_session()
         });
         live
+    }
+
+    fn scripted_runs_live(ticks: &[u64]) -> Live {
+        scripted_batches_live(
+            ticks
+                .iter()
+                .map(|&ticks| vec![ticks_event(ticks)])
+                .collect(),
+        )
     }
 
     fn keyed_target(strategy: &str) -> (FaultTarget, Arc<FaultKeys>) {
@@ -5165,6 +5176,116 @@ mod tests {
                 .get("stage_falls")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_rejected_endpoint_is_a_doomed_terminal_whose_coverage_and_findings_still_count() {
+        use searcher::search::rollout::ExecutionDisposition;
+        let request = crate::key::KeyRequest {
+            strategy: Some(
+                "reject = \"ticks >= 4\"\n[[stage]]\nname = \"closed\"\ngoal = \"r5 > 0\"\n[[stage]]\nname = \"open\"\ngoal = \"false\"\n"
+                    .to_owned(),
+            ),
+            facts: BTreeMap::from([("r5".to_owned(), vec!["opened".to_owned()])]),
+        };
+        let keys = Arc::new(FaultKeys::requested(&request, 3).unwrap());
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let json = |body: &str| -> consonance_client::session::SdkEvent {
+            (0, 0, body.as_bytes().to_vec())
+        };
+        let run = |endpoint: consonance_client::session::SdkEvent| {
+            let mut target = unbooted_target().with_keys(Arc::clone(&keys));
+            LIVE.with(|slot| {
+                *slot.borrow_mut() =
+                    Some(scripted_batches_live(vec![vec![ticks_event(5), endpoint]]));
+            });
+            let origin = target.snapshot().unwrap().unwrap();
+            assert_eq!(origin.accumulator.stage(), Some(0));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &origin,
+                &[],
+                &[],
+                crate::archive::FaultMilestones::default(),
+                &[action, action],
+                searcher::search::rollout::RolloutStop::new(true),
+                None,
+            )
+            .unwrap();
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(result.actions.len(), 1);
+            let endpoint = &result.actions[0];
+            assert!(endpoint.candidate.is_none());
+            assert_eq!(endpoint.observations[0].stage_fall, None);
+            assert!(target.rejected());
+            assert_eq!(target.observed().key, None);
+            assert_eq!(*target.accumulator(), origin.accumulator);
+            (endpoint.outcome, merged_report(&keys, &result.actions))
+        };
+        let (doomed, report) = run(json(
+            r#"{"antithesis_assert":{"id":"opened","assert_type":"sometimes","must_hit":true,"hit":true,"condition":true}}"#,
+        ));
+        assert!(doomed.doomed && !doomed.objective_reached);
+        assert_eq!(doomed.disposition, ExecutionDisposition::Terminal);
+        assert!(report.assertions.0["opened"].passed);
+        assert!(report.bugs.is_empty());
+        assert_eq!(
+            report.milestones,
+            crate::archive::FaultMilestones::default()
+        );
+        assert_eq!(
+            report.progress_watermark,
+            crate::archive::FaultProgressWatermark::default()
+        );
+        assert_eq!(report.stage_falls.len(), 2);
+        assert!(report.stage_falls.iter().all(|falls| falls.records == 0));
+        let (finding, report) = run(json(
+            r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
+        ));
+        assert!(finding.objective_reached && !finding.doomed);
+        assert_eq!(finding.disposition, ExecutionDisposition::Runnable);
+        assert_eq!(report.bugs.len(), 1);
+        assert!(report.bugs[0].observations.violations().contains("kept"));
+    }
+
+    #[test]
+    fn the_settle_phase_stops_at_and_skips_an_endpoint_the_strategy_rejects() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let directory = tempfile::tempdir().unwrap();
+        for (ticks, doomed, outcome) in [
+            (&[1, 5][..], false, "rejected"),
+            (&[5][..], true, "skipped: the execution ended terminal"),
+        ] {
+            let (mut target, _) = keyed_target("reject = \"ticks >= 4\"\n");
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(ticks)));
+            let origin = target.snapshot().unwrap().unwrap();
+            let policy = crate::campaign::settle::SettlePolicy {
+                record: directory.path().join(format!("{doomed}.jsonl")),
+                heal: None,
+            };
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &origin,
+                &[],
+                &[],
+                crate::archive::FaultMilestones::default(),
+                &[action],
+                searcher::search::rollout::RolloutStop::new(false),
+                Some(&policy),
+            )
+            .unwrap();
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(result.actions.len(), 1);
+            assert_eq!(result.actions[0].outcome.doomed, doomed);
+            assert_eq!(result.actions[0].candidate.is_none(), doomed);
+            assert_eq!(target.rejected(), doomed);
+            let record: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&policy.record).unwrap()).unwrap();
+            assert_eq!(record["outcome"], outcome);
+            assert_eq!(record["settle_actions"], u64::from(!doomed));
+        }
     }
 
     #[test]

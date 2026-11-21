@@ -163,6 +163,8 @@ fn stages_latches_and_aggregates_compile_and_stages_keep_the_shared_context_line
         "tier = \"min(highest(ticks), 15)\"\n",
         "[[stage]]\ngoal = \"sometimes.count > 2\"\nlatch = true\n[[stage]]\ngoal = \"false\"\n",
         "[every_stage]\nspread = [\"alive\"]\n[[stage]]\ngoal = \"min(highest(hooks.finished), 8) > 2\"\n[[stage]]\ngoal = \"false\"\n",
+        "reject = \"always.violated > 0\"\n",
+        "[[stage]]\ngoal = \"false\"\nreject = \"always.violated > 0\"\n",
     ] {
         assert!(FaultKeys::new(strategy, 3).is_ok(), "{strategy}");
     }
@@ -188,11 +190,6 @@ fn stages_latches_and_aggregates_compile_and_stages_keep_the_shared_context_line
         (
             "[[stage]]\ngoal = \"false\"\nidentity = [\"alive\"]\n",
             "stage `false` gives its own",
-        ),
-        ("reject = \"always.violated > 0\"\n", "no reject line"),
-        (
-            "[[stage]]\ngoal = \"false\"\nreject = \"always.violated > 0\"\n",
-            "no reject line",
         ),
     ] {
         let error = FaultKeys::new(strategy, 3).unwrap_err().to_string();

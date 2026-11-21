@@ -429,12 +429,19 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
 }
 
 fn outcome(run: &FaultCampaignRun, target: &FaultTarget) -> Outcome {
+    let objective_reached =
+        !target.failed() && target.found_bug() && run.reproduced_by(target.observation());
+    let disposition = disposition(target);
+    let doomed =
+        disposition == ExecutionDisposition::Runnable && target.rejected() && !objective_reached;
     Outcome {
-        doomed: false,
-        objective_reached: !target.failed()
-            && target.found_bug()
-            && run.reproduced_by(target.observation()),
-        disposition: disposition(target),
+        doomed,
+        objective_reached,
+        disposition: if doomed {
+            ExecutionDisposition::Terminal
+        } else {
+            disposition
+        },
     }
 }
 
@@ -567,10 +574,12 @@ impl JobSteps {
             ExecutionDisposition,
         ) -> Option<CampaignCandidate<FaultWorkload>>,
     ) -> Outcome {
-        merge_action_milestones(&mut self.aggregate, target);
         let raw = outcome(run, target);
+        if !raw.doomed {
+            merge_action_milestones(&mut self.aggregate, target);
+        }
         let outcome = Outcome {
-            doomed: false,
+            doomed: raw.doomed,
             objective_reached: raw.objective_reached && !self.objective_seen,
             disposition: raw.disposition,
         };
@@ -720,7 +729,10 @@ pub(crate) fn execute_job(
         let suffix_actions = steps.results.len();
         let skip = if steps.objective_seen {
             Some(settle::Skip::Finding)
-        } else if !matches!(disposition(target), ExecutionDisposition::Runnable) {
+        } else if !matches!(
+            outcome(run, target).disposition,
+            ExecutionDisposition::Runnable
+        ) {
             Some(settle::Skip::Terminal)
         } else if stop.cancelled() {
             Some(settle::Skip::Cancelled)
@@ -1415,8 +1427,16 @@ impl Evaluation for FaultWorkload {
         run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
+        Ok(self.rollout_outcome(run, target)?.objective_reached)
+    }
+
+    fn rollout_outcome(
+        &self,
+        run: &FaultCampaignRun,
+        target: &FaultTarget,
+    ) -> Result<Outcome, Box<dyn Error>> {
         require_completed_attempt(target, "bootstrap or rollout evaluation")?;
-        Ok(outcome(run, target).objective_reached)
+        Ok(outcome(run, target))
     }
 
     fn key_shape(&self) -> KeyShape {
@@ -1513,8 +1533,10 @@ impl Evaluation for FaultWorkload {
                 },
             }));
         }
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
+        if !action.outcome.doomed {
+            merge_progress_watermark(&mut evidence.watermark, &action.observations);
+            merge_milestones(&mut evidence.aggregate, action.milestones);
+        }
         if let FaultOperation::EventPark { edges, .. } = action.action.operation
             && !action.observations.is_empty()
         {
@@ -1555,8 +1577,8 @@ impl Evaluation for FaultWorkload {
             );
         }
         let bug = evidence.recordable_bug(&action.observations);
-        let champion = (milestone_key(action.milestones)
-            > milestone_key(evidence.champion_milestones))
+        let champion = (!action.outcome.doomed
+            && milestone_key(action.milestones) > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
         let failed = action.outcome.disposition.is_failed()
             && evidence.failures.len() < MAX_RECORDED_FAILURES;

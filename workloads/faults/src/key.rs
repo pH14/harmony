@@ -383,11 +383,6 @@ impl FaultKeys {
             )
             .into());
         }
-        if parsed.lines()?.reject.is_some()
-            || parsed.stage.iter().any(|stage| stage.reject.is_some())
-        {
-            return Err("the faults workload reads no reject line".into());
-        }
         let (compiled, catalog) = compile(&parsed, nodes, &facts)
             .map_err(|error| node_limit(&parsed, nodes, &facts, error))?;
         Ok(Self {
