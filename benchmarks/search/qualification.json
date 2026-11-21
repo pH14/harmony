@@ -26,7 +26,7 @@
     },
     {
       "id": "mm2-metal",
-      "game": "mm2",
+      "game": "mm2-strategy",
       "stage": 6,
       "origin": "power-on menus selecting Metal stage; independent stage",
       "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf"

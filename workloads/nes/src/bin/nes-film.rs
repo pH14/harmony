@@ -55,6 +55,7 @@ struct Args {
     ai: Option<String>,
     level: u8,
     goal: Option<u8>,
+    stage: Option<u8>,
     input: PathBuf,
     evidence: PathBuf,
     out: PathBuf,
@@ -76,6 +77,7 @@ impl Args {
         let mut ai = None;
         let mut level = 0;
         let mut goal = None;
+        let mut stage = None;
         let mut input = None;
         let mut evidence = None;
         let mut out = None;
@@ -105,6 +107,7 @@ impl Args {
                 "--ai" => ai = Some(text()?),
                 "--level" => level = text()?.parse()?,
                 "--goal" => goal = Some(text()?.parse()?),
+                "--stage" => stage = Some(text()?.parse()?),
                 "--input" => input = Some(PathBuf::from(&value)),
                 "--evidence" => evidence = Some(PathBuf::from(&value)),
                 "--out" => out = Some(PathBuf::from(&value)),
@@ -126,6 +129,7 @@ impl Args {
             ai,
             level,
             goal,
+            stage,
             input: input.ok_or("missing --input")?,
             evidence: evidence.ok_or("missing --evidence")?,
             out: out.ok_or("missing --out")?,
@@ -141,6 +145,9 @@ impl Args {
         }
         if !matches!(args.recorded_backend.as_str(), "native" | "consonance") {
             return Err("the recording backend is native or consonance".into());
+        }
+        if args.stage.is_some() && args.game != "mm2-strategy" {
+            return Err("only the strategy Mega Man 2 takes a stage".into());
         }
         if args.milestone.is_some() && args.recorded_backend != "native" {
             return Err("a milestone tape is checked against a native run's result".into());
@@ -365,6 +372,9 @@ fn main() -> Result<()> {
         }
         identity["strategy_sha256"] = json!(sha256(&fs::read(path)?));
     }
+    if let Some(stage) = args.stage {
+        identity["stage"] = json!(stage);
+    }
     identity["root_input_sha256"] = json!(null);
     if let Some(path) = &args.root_input {
         if matches!(args.game.as_str(), "stb" | "castlevania") {
@@ -555,15 +565,23 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Mega Man 2 takes no ai option".into());
             }
+            let game = match args.stage {
+                Some(stage) => MegaMan2::at_stage(stage)?,
+                None => MegaMan2::WHOLE_GAME,
+            };
             rooted(
                 || {
-                    Mm2Workload::new(
-                    MegaMan2,
-                    &rom,
-                    &args.core,
-                    &args.core_sha256,
-                    &execution_sha256,
-                )
+                    let workload = Mm2Workload::new(
+                        game,
+                        &rom,
+                        &args.core,
+                        &args.core_sha256,
+                        &execution_sha256,
+                    )?;
+                    match game.stage() {
+                        Some(_) => workload.with_strategy(&game.strategy()),
+                        None => Ok(workload),
+                    }
                 },
                 &args,
                 identity,

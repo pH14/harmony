@@ -1590,20 +1590,20 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
         };
         let mut state = game::Mm2State {
             driving: Some(transition),
-            ..MegaMan2.decode(None, None, departure)
+            ..MegaMan2::WHOLE_GAME.decode(None, None, departure)
         };
         let parent = state;
         let mut mv = Mm2Move::Drive(Drive::begin(transition));
-        let bound = MegaMan2.move_frames(mv);
+        let bound = MegaMan2::WHOLE_GAME.move_frames(mv);
         let mut frames = 0_u64;
         let mut steps = Vec::new();
-        while let Some(step) = MegaMan2.play(mv, &state) {
+        while let Some(step) = MegaMan2::WHOLE_GAME.play(mv, &state) {
             frames += u64::try_from(self.run_action(&step.chord)?.len()).ok()?;
             if let Some(CaptureSink(sink)) = &mut self.sink {
                 sink(&mut self.machine).ok()?;
             }
             let wram = self.machine.read_wram().ok()?;
-            state = MegaMan2.decode(Some(&parent), Some(&state), &wram);
+            state = MegaMan2::WHOLE_GAME.decode(Some(&parent), Some(&state), &wram);
             steps.push(wram);
             if frames > bound {
                 return None;
