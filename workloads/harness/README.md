@@ -643,12 +643,14 @@ row id at level `linearizable`. Each operation goes to a random node without
 leadership. It sends `POST /leader?wait&redirect` to a node drawn at site
 `rqlite.stepdown.via` and follows one redirect. The body is `{"id": "nI"}` for
 a target drawn at `rqlite.stepdown.target` among the three nodes, or empty for
-no target, which lets Raft pick the most caught-up follower. Raft gives a
-transfer one election timeout, 1 second in rqlited, and the answer is then
-`leadership transfer timeout`. On that answer the client sends the same request
-again, up to a number of times drawn at `rqlite.stepdown.retries` (0 to 2),
-each after a wait drawn at `rqlite.stepdown.wait` (0 to 1 second in steps of
-100 ms). The retry is ours. Each request, with its one redirect, has 10
+no target, which lets Raft pick the most caught-up follower. Raft answers
+`leadership transfer timeout` when the transfer does not finish within one
+election timeout, 1 second in rqlited. When the target accepts `TimeoutNow`
+within that second, Raft waits one more election timeout for it to take over,
+so the answer can then take about 2 seconds. On a timed-out answer the client
+sends the same request again, up to a number of times drawn at
+`rqlite.stepdown.retries` (0 to 2), each after a wait drawn at
+`rqlite.stepdown.wait` (0 to 1 second in steps of 100 ms). The retry is ours. Each request, with its one redirect, has 10
 seconds, so the hook runs for at most about 32 seconds. It appends each answer
 to `/tmp/rqlite/stepdown.log` and exits 0 whatever the answers, or 1 when it
 cannot open or write the log. The bundle's `heal` line makes the supervisor
@@ -656,7 +658,8 @@ count the hook as a cut, so it is a fault in force until the heal hook runs
 after its window closes. The supervisor also holds that heal until every
 running cut hook exits, so a stepdown still waiting on an answer when the last
 cut window closes keeps an overlapping partition, isolation or delay in force
-until it exits. Build the image with
+until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
+first. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
 
 A read pinned to node `nI` in every bundle first runs
