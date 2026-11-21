@@ -311,6 +311,14 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+`metroid-strategy-probe` replays a chord tape from power-on on the shared
+target under `metroid.toml` or `--strategy`, and prints the stage, objective
+and resources at every action where the stage changes and at the last one
+(`--every` prints every action, `--wram START:LEN` the frame bytes there, work
+RAM first and then the cartridge window). It ends with the frame's sha256 and
+the `rooted_genesis` verdict, so it shows whether a tape roots a
+`metroid-strategy` run and which stages the root earns on the way.
+
 ## Shared target
 
 `nes-eval` game `metroid-strategy` runs `MetroidStrategyGame`, the `Metroid`
