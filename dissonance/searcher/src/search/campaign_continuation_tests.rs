@@ -1218,6 +1218,68 @@ fn saved_states_from_another_executable_or_genesis_are_rebuilt_from_their_inputs
 }
 
 #[test]
+fn checkpoint_archive_entries_match_the_saved_state_records() {
+    let directory = checkpoint_directory("archive-entries");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut Vec::new(),
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: None,
+                on_marks: false,
+                on_top_progress: false,
+                on_stall: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    let checkpoint = directory.join("000000000008-final.ckpt");
+    let before = std::fs::read(&checkpoint).unwrap();
+    let entries = checkpoint_archive_entries::<TestWorkload>(&checkpoint).unwrap();
+    assert_eq!(std::fs::read(&checkpoint).unwrap(), before);
+    let saved = SavedStates::open(&TestWorkload, &checkpoint).unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(entry, _)| (entry.id, entry.created_execution, &entry.input.actions))
+            .collect::<Vec<_>>(),
+        saved
+            .entries
+            .iter()
+            .map(|entry| (entry.id, entry.created_execution, &entry.input.actions))
+            .collect::<Vec<_>>()
+    );
+    let by_id = entries
+        .iter()
+        .map(|(entry, _)| (entry.id, &entry.input.actions))
+        .collect::<BTreeMap<_, _>>();
+    let children = entries
+        .iter()
+        .filter_map(|(entry, _)| Some((entry, by_id.get(&entry.parent_id?)?)))
+        .collect::<Vec<_>>();
+    assert!(!children.is_empty());
+    for (child, parent) in children {
+        assert!(child.input.actions.len() > parent.len());
+        assert!(child.input.actions.starts_with(parent));
+    }
+    assert!(entries.iter().any(|(_, active)| *active));
+    std::fs::write(&checkpoint, &before[..before.len() - 1]).unwrap();
+    assert!(checkpoint_archive_entries::<TestWorkload>(&checkpoint).is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn unavailable_loaded_executable_fails_before_campaign_output() {
     let directory = checkpoint_directory("unavailable-executable");
     let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);

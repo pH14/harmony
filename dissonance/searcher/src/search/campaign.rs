@@ -917,6 +917,17 @@ impl<G: Workload> SavedStates<G> {
     }
 }
 
+#[allow(clippy::type_complexity)]
+pub fn checkpoint_archive_entries<G: Workload>(
+    path: &Path,
+) -> Result<Vec<(ArchiveEntryReport<G::Action, G::Key, G::Milestones>, bool)>, Box<dyn Error>> {
+    let mut reader = CheckpointReader::open(path)?;
+    let _: Vec<SavedStateRecord<G::Action, G::Milestones>> = reader.next()?;
+    let _: CoreCheckpoint<G> = reader.next()?;
+    let archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
+    Ok(archive.entry_reports()?)
+}
+
 pub trait ArchiveFormatName {
     const FORMAT: &'static str;
 }

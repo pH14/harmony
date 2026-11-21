@@ -465,6 +465,17 @@ the gap between selection and resume. Both NES and faults resume compare the
 selected checkpoint with the manifest already verified at command start; a
 replacement manifest cannot authorize a later checkpoint swap.
 
+`show RUN --entries --json` prints every archive entry kept in a faults search
+checkpoint as one JSON object per line: `id`, `parent_id`, `created_execution`,
+`depth` (the action count), `active` (false once the entry is retired from
+selection), the cell `key`, `milestones`, the `selector` counts, `shrink_total`,
+`cost_total` and the full `actions` path from the root. `actions` has the shape
+of a faults settle line's `actions` field.
+RUN is a run directory, whose latest journaled checkpoint is read with the same
+checks as resume, or a `.ckpt` file inside a run's `checkpoints` directory. The
+command reads the checkpoint only; it never opens the snapshot store or writes
+into the run. Only faults searches support it; other workloads refuse it.
+
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
 Existing results are never overwritten. `list` and `show` support `--json`.

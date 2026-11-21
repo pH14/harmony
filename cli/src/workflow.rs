@@ -30,6 +30,59 @@ pub fn saved(mut request: Request) -> Result<u8> {
     request.config = manifest.config;
     crate::adapters::dispatch(request)
 }
+pub fn archive_entries(run: &str) -> Result<u8> {
+    let given = std::path::Path::new(run);
+    let (root, checkpoint) = if given.is_file() {
+        let root = given
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or("a checkpoint path must sit in its run's checkpoints directory")?;
+        (root.to_path_buf(), Some(given.to_path_buf()))
+    } else {
+        (locate(run)?, None)
+    };
+    let manifest = Manifest::read(&root)?;
+    let checkpoint = match checkpoint {
+        Some(checkpoint) => checkpoint,
+        None => {
+            crate::runs::checkpoint_record_verified(&root, &manifest)?
+                .0
+                .path
+        }
+    };
+    match crate::adapters::select(&manifest.config.workload)?.name() {
+        "faults" => print_archive_entries::<faults_workload::campaign::FaultWorkload>(&checkpoint),
+        name => Err(format!("workload {name} has no archive entry listing").into()),
+    }
+}
+fn print_archive_entries<G: searcher::search::campaign::Workload>(
+    checkpoint: &std::path::Path,
+) -> Result<u8> {
+    use std::io::Write;
+    let entries = searcher::search::campaign::checkpoint_archive_entries::<G>(checkpoint)?;
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    for (entry, active) in entries {
+        serde_json::to_writer(
+            &mut out,
+            &serde_json::json!({
+                "id": entry.id,
+                "parent_id": entry.parent_id,
+                "created_execution": entry.created_execution,
+                "depth": entry.input.actions.len(),
+                "active": active,
+                "key": entry.key,
+                "milestones": entry.milestones,
+                "selector": entry.selector,
+                "shrink_total": entry.shrink_total,
+                "cost_total": entry.cost_total,
+                "actions": entry.input.actions,
+            }),
+        )?;
+        out.write_all(b"\n")?;
+    }
+    out.flush()?;
+    Ok(0)
+}
 pub fn list(json: bool) -> Result<u8> {
     let root = std::path::Path::new(".harmony/runs");
     let mut runs = Vec::new();
