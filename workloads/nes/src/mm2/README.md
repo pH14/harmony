@@ -114,8 +114,14 @@ three items, and each plays the hand target's `WeaponSwitch` menu path one
 frame per step. A state offers exactly the hand's switch choices, and only
 where the menu can open; with no choice the state offers no move, where the
 hand target idles 12 frames. A switch answer costs the hand switch's 40
-planned frames. nes-eval runs this workload as `mm2-strategy`, whole game from
-power-on, and the hand workload stays `mm2`. A strategy run writes the first
+planned frames. nes-eval runs this workload as `mm2-strategy`, either the whole
+game from power-on (`whole_game`) or one Robot Master stage (`stage`), and the
+hand workload stays `mm2`. `MegaMan2::at_stage` plays the hand stage start's
+menu path and arrival wait, so its setup and WRAM at arrival equal the hand
+genesis, under the identity `mm2-stage-N-v1`. A stage start's strategy replaces
+the `ending` goal with that Robot Master's defeat, which holds once the weapon
+award sets its bit, so the win ends there instead of after the walk to the next
+stage. `MegaMan2::WHOLE_GAME` keeps the Crash start and the whole-game identity. A strategy run writes the first
 input that satisfied each `sometimes` declaration to
 `campaign/milestone-inputs/<name>.json`, with no stocked tapes, and
 verification replays each one.

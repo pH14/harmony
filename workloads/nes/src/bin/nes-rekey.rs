@@ -245,7 +245,7 @@ fn main() -> Result<()> {
         "ice-climbers" => rekey(IceClimbers, run, strategy.as_deref())?,
         "pac-man" => rekey(PacMan, run, strategy.as_deref())?,
         "smb-strategy" => rekey(SuperMarioBros, run, strategy.as_deref())?,
-        "mm2-strategy" => rekey(MegaMan2, run, strategy.as_deref())?,
+        "mm2-strategy" => rekey(MegaMan2::WHOLE_GAME, run, strategy.as_deref())?,
         "metroid-strategy" => rekey(Metroid, run, strategy.as_deref())?,
         other => return Err(format!("{other} does not declare assertions").into()),
     };

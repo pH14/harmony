@@ -489,7 +489,7 @@ fn the_harness_draws_what_the_hand_search_and_target_draw() {
         for energy in &mut wram[0x9c..0xa8] {
             *energy = u8::try_from(states.next_u64() >> 62).unwrap();
         }
-        let targets: Vec<u8> = MegaMan2
+        let targets: Vec<u8> = MegaMan2::WHOLE_GAME
             .decode(None, None, &wram)
             .switch_targets()
             .collect();
@@ -638,7 +638,7 @@ fn declared() -> Declared {
         workload::Game,
     };
     let mut sites = MegaMan2::CHORDS.sites();
-    sites.extend(MegaMan2.move_sites());
+    sites.extend(MegaMan2::WHOLE_GAME.move_sites());
     let weapon_rate = ChoiceSite::declared_contrary(&sites)
         .into_iter()
         .find(|(site, _)| *site == CHORD_SITES + WEAPON_SITE)
@@ -665,7 +665,7 @@ fn strategy_ask(
     use crate::{chord::ask, mm2::game::MegaMan2, workload::Game};
     let mut records = Vec::new();
     let asked = ask(previous.as_ref());
-    let resolved = match MegaMan2.moves(state).offer {
+    let resolved = match MegaMan2::WHOLE_GAME.moves(state).offer {
         Some(offer) => offer.resolve(
             &MegaMan2::CHORDS,
             chooser,
@@ -681,7 +681,7 @@ fn strategy_ask(
 
 fn offered_targets(state: &super::game::Mm2State) -> (Vec<u16>, Vec<u8>) {
     use crate::{mm2::game::MegaMan2, workload::Game};
-    let labels = MegaMan2
+    let labels = MegaMan2::WHOLE_GAME
         .moves(state)
         .offer
         .map_or_else(Vec::new, |offer| offer.labels());

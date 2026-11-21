@@ -105,7 +105,7 @@ const WILY_STAGE_START_WAIT_FRAMES: u16 = 8_000;
 const BOOT_PRESSES: usize = 3;
 const PRESS_FRAMES: u8 = 4;
 const CURSOR_SETTLE_FRAMES: u8 = 30;
-const GENESIS_WAIT_FRAMES: u32 = 670;
+const STAGE_ARRIVAL_WAIT_FRAMES: [u32; 8] = [669, 666, 670, 665, 668, 668, 669, 670];
 const AWARD_SETTLE_FRAMES: u32 = 900;
 const DRIVE_FRAMES: u64 = 1_800 + 900 + 16 * 338 + 68 + 4 + 8_000;
 
@@ -791,10 +791,46 @@ pub fn power_on_walk() -> Vec<ButtonChord> {
     tape
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MegaMan2;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MegaMan2 {
+    stage: Option<u8>,
+}
 
 impl MegaMan2 {
+    pub const WHOLE_GAME: Self = Self { stage: None };
+
+    pub fn at_stage(stage: u8) -> Result<Self, String> {
+        if stage < ROBOT_MASTERS {
+            Ok(Self { stage: Some(stage) })
+        } else {
+            Err(format!(
+                "Mega Man 2 stage {stage} is not a Robot Master stage; the stages are 0 to {}",
+                ROBOT_MASTERS - 1
+            ))
+        }
+    }
+
+    #[must_use]
+    pub fn stage(self) -> Option<u8> {
+        self.stage
+    }
+
+    fn start_stage(self) -> u8 {
+        self.stage.unwrap_or(CRASH)
+    }
+
+    #[must_use]
+    pub fn strategy(self) -> String {
+        match self.stage {
+            None => Self::STRATEGY.to_owned(),
+            Some(stage) => Self::STRATEGY.replacen(
+                "goal = \"ending\"",
+                &format!("goal = \"{}\"", DEFEATED[usize::from(stage)]),
+                1,
+            ),
+        }
+    }
+
     pub fn drive(self, mv: Drive, state: &Mm2State) -> Option<Step<Drive>> {
         match mv {
             Drive::Award { stage, chunks } => {
@@ -930,21 +966,23 @@ impl Game for MegaMan2 {
 
     fn setup(&self) -> Vec<ButtonChord> {
         let mut tape = power_on_walk();
-        for direction in select_path(CRASH) {
+        let stage = self.start_stage();
+        for direction in select_path(stage) {
             tape.push(ButtonChord::new(*direction, PRESS_FRAMES));
             tape.push(ButtonChord::new(0, CURSOR_SETTLE_FRAMES));
         }
         tape.push(ButtonChord::new(JOYPAD_START, PRESS_FRAMES));
-        tape.extend(idle(GENESIS_WAIT_FRAMES));
+        tape.extend(idle(STAGE_ARRIVAL_WAIT_FRAMES[usize::from(stage)]));
         tape
     }
 
     fn genesis(&self, state: &Mm2State) -> Result<(), String> {
-        if state.arrived_at(CRASH) && state.weapons_obtained == 0 && !state.dead {
+        let stage = self.start_stage();
+        if state.arrived_at(stage) && state.weapons_obtained == 0 && !state.dead {
             Ok(())
         } else {
             Err(format!(
-                "Mega Man 2 setup did not reach Crash Man's first playable frame: {state:?}"
+                "Mega Man 2 setup did not reach the first playable frame of stage {stage}: {state:?}"
             ))
         }
     }
@@ -960,7 +998,10 @@ impl Game for MegaMan2 {
     }
 
     fn genesis_id(&self) -> String {
-        format!("{}-whole-game-crash-v1", Self::NAME)
+        match self.stage {
+            None => format!("{}-whole-game-crash-v1", Self::NAME),
+            Some(stage) => format!("{}-stage-{stage}-v1", Self::NAME),
+        }
     }
 
     fn decode(&self, _: Option<&Mm2State>, previous: Option<&Mm2State>, ram: &[u8]) -> Mm2State {
@@ -1116,7 +1157,7 @@ mod tests {
     fn drive_frames(mut mv: Drive, state: &Mm2State) -> (u64, u8) {
         let mut frames = 0;
         let mut longest = 0;
-        while let Some(step) = MegaMan2.drive(mv, state) {
+        while let Some(step) = MegaMan2::WHOLE_GAME.drive(mv, state) {
             frames += u64::from(step.chord.hold_frames);
             longest = longest.max(step.chord.hold_frames);
             match step.rest {
@@ -1129,7 +1170,7 @@ mod tests {
 
     #[test]
     fn the_strategy_lowers_against_the_decoder() {
-        Lowered::new(MegaMan2, MegaMan2::STRATEGY).unwrap();
+        Lowered::new(MegaMan2::WHOLE_GAME, MegaMan2::STRATEGY).unwrap();
     }
 
     #[test]
@@ -1139,7 +1180,7 @@ mod tests {
             arrived: true,
             ..Mm2State::default()
         };
-        assert!(MegaMan2.rooted_genesis(&arrived).is_ok());
+        assert!(MegaMan2::WHOLE_GAME.rooted_genesis(&arrived).is_ok());
         for state in [
             Mm2State {
                 arrived: false,
@@ -1154,18 +1195,40 @@ mod tests {
                 ..arrived
             },
         ] {
-            assert!(MegaMan2.rooted_genesis(&state).is_err());
+            assert!(MegaMan2::WHOLE_GAME.rooted_genesis(&state).is_err());
         }
     }
 
     #[test]
     fn the_setup_tape_is_the_hand_genesis_walk_of_2254_frames() {
-        let frames: u32 = MegaMan2
+        let frames: u32 = MegaMan2::WHOLE_GAME
             .setup()
             .iter()
             .map(|chord| u32::from(chord.hold_frames))
             .sum();
         assert_eq!(frames, 2_254);
+    }
+
+    #[test]
+    fn the_crash_stage_start_plays_the_whole_game_setup_under_its_own_identity() {
+        let crash = MegaMan2::at_stage(CRASH).unwrap();
+        assert_eq!(crash.setup(), MegaMan2::WHOLE_GAME.setup());
+        assert_eq!(MegaMan2::WHOLE_GAME.genesis_id(), "mm2-whole-game-crash-v1");
+        assert_eq!(crash.genesis_id(), "mm2-stage-7-v1");
+    }
+
+    #[test]
+    fn each_stage_start_wins_at_its_robot_master() {
+        for stage in 0..ROBOT_MASTERS {
+            let game = MegaMan2::at_stage(stage).unwrap();
+            let strategy = game.strategy();
+            let goal = format!("goal = \"{}\"", DEFEATED[usize::from(stage)]);
+            assert!(strategy.starts_with(&goal), "{strategy}");
+            Lowered::new(game, &strategy).unwrap();
+            assert_eq!(game.stage(), Some(stage));
+        }
+        assert!(MegaMan2::at_stage(ROBOT_MASTERS).is_err());
+        assert_eq!(MegaMan2::WHOLE_GAME.strategy(), MegaMan2::STRATEGY);
     }
 
     #[test]
@@ -1187,7 +1250,7 @@ mod tests {
 
     #[test]
     fn a_fresh_decode_of_blank_memory_drives_nothing() {
-        let state = MegaMan2.decode(None, None, &[0; machine::nes::WRAM_SIZE]);
+        let state = MegaMan2::WHOLE_GAME.decode(None, None, &[0; machine::nes::WRAM_SIZE]);
         assert!(state.driving.is_none());
     }
 
@@ -1203,7 +1266,7 @@ mod tests {
             for energy in &mut wram[WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES] {
                 *energy = u8::try_from(rand.next_u64() >> 62).unwrap();
             }
-            let state = MegaMan2.decode(None, None, &wram);
+            let state = MegaMan2::WHOLE_GAME.decode(None, None, &wram);
             assert_eq!(
                 state.switch_targets().collect::<Vec<_>>(),
                 crate::mm2::target::switch_choices(&wram).unwrap()
@@ -1226,7 +1289,10 @@ mod tests {
             );
         }
         assert_eq!(SWITCHES[0], (CHORD_LABEL, Play::Chord));
-        assert_eq!(MegaMan2.move_sites()[0].labels.len(), SWITCHES.len());
+        assert_eq!(
+            MegaMan2::WHOLE_GAME.move_sites()[0].labels.len(),
+            SWITCHES.len()
+        );
     }
 
     #[test]
@@ -1239,16 +1305,16 @@ mod tests {
             weapon: 0,
             ..Mm2State::default()
         };
-        assert_eq!(MegaMan2.moves(&playing).offer, None);
+        assert_eq!(MegaMan2::WHOLE_GAME.moves(&playing).offer, None);
         let armed = Mm2State {
             weapons_obtained: 1,
             weapon_energies: [28; WEAPONS],
             ..playing
         };
-        let offer = MegaMan2.moves(&armed).offer.expect("an offer");
+        let offer = MegaMan2::WHOLE_GAME.moves(&armed).offer.expect("an offer");
         assert_eq!(offer.labels(), [CHORD_LABEL, switch_label(1)]);
         assert_eq!(
-            MegaMan2
+            MegaMan2::WHOLE_GAME
                 .moves(&Mm2State {
                     menu: MENU_UNKNOWN,
                     ..armed
