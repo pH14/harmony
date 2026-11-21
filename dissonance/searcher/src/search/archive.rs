@@ -4355,37 +4355,58 @@ where
             .collect()
     }
 
+    fn entry_report(&self, id: usize, input: Input<A>) -> ArchiveEntryReport<A, K, M> {
+        let entry = &self.entries[id];
+        ArchiveEntryReport {
+            id: entry.id,
+            parent_id: entry.parent_id,
+            created_execution: entry.created_execution,
+            input,
+            key: entry.key,
+            milestones: entry.milestones,
+            snapshot_identity_sha256: None,
+            selector: self.selected.get(id).zip(self.productive.get(id)).map(
+                |(&selected, &productive)| EntrySelectorCounters {
+                    selected,
+                    productive,
+                },
+            ),
+            shrink_total: self.shrink_total.get(id).copied(),
+            cost_total: self.cost_total.get(id).copied(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn entry_reports(
+        &self,
+    ) -> Result<Vec<(ArchiveEntryReport<A, K, M>, bool)>, &'static str> {
+        (0..self.entries.len())
+            .map(|id| {
+                let active = *self
+                    .active
+                    .get(id)
+                    .ok_or("an archive entry has no active flag")?;
+                Ok((self.entry_report(id, self.entry_input(id)?), active))
+            })
+            .collect()
+    }
+
     #[allow(clippy::type_complexity)]
     pub fn take_entry_reports_and_snapshots(
         &mut self,
     ) -> (Vec<ArchiveEntryReport<A, K, M>>, Vec<(u64, S)>) {
-        let inputs = (0..self.entries.len())
+        let reports = (0..self.entries.len())
             .map(|id| {
-                self.materialize_input(id)
-                    .unwrap_or_else(|_| Input::default())
+                let input = self
+                    .materialize_input(id)
+                    .unwrap_or_else(|_| Input::default());
+                self.entry_report(id, input)
             })
-            .collect::<Vec<_>>();
+            .collect();
         let entries = std::mem::take(&mut self.entries);
-        let mut reports = Vec::with_capacity(entries.len());
         let mut snapshots = Vec::with_capacity(entries.len());
-        for (id, (entry, input)) in entries.into_iter().zip(inputs).enumerate() {
+        for entry in entries {
             let snapshot_id = entry.id;
-            let report = ArchiveEntryReport {
-                id: entry.id,
-                parent_id: entry.parent_id,
-                created_execution: entry.created_execution,
-                input,
-                key: entry.key,
-                milestones: entry.milestones,
-                snapshot_identity_sha256: None,
-                selector: Some(EntrySelectorCounters {
-                    selected: self.selected[id],
-                    productive: self.productive[id],
-                }),
-                shrink_total: self.shrink_total.get(id).copied(),
-                cost_total: self.cost_total.get(id).copied(),
-            };
-            reports.push(report);
             if let Some(snapshot) = entry.snapshot {
                 if let Some(retention) = &mut self.snapshot_retention {
                     retention.release(&snapshot, &mut self.shared_snapshot_memory);
@@ -9140,6 +9161,32 @@ mod tests {
         assert_eq!(archive.lineage(parent), Some(&vec![1]));
         assert_eq!(archive.lineage(same), Some(&vec![1, 2]));
         assert_eq!(archive.lineage(different), Some(&vec![1, 3]));
+    }
+
+    #[test]
+    fn entry_reports_omit_selector_counts_missing_from_a_short_archive() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new();
+        let root = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1, 2],
+                    key: FlatKey([1, 1, 0, 0]),
+                    milestones: (),
+                    cost: 2,
+                },
+                (),
+            )
+            .expect("insert")
+            .expect("retain");
+        let full = archive.entry_reports().expect("reports");
+        assert!(full[root].0.selector.is_some());
+        assert_eq!(full[root].0.input.actions, vec![1, 2]);
+        archive.selected.clear();
+        let short = archive.entry_reports().expect("reports");
+        assert!(short.iter().all(|(report, _)| report.selector.is_none()));
+        assert_eq!(short[root].0.input.actions, vec![1, 2]);
     }
 
     #[test]

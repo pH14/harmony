@@ -154,6 +154,13 @@ enum Command {
         timeline: bool,
         #[arg(long, requires = "logs")]
         contains: Option<String>,
+        #[arg(
+            long,
+            requires = "json",
+            conflicts_with_all = ["logs", "timeline", "finding"],
+            help = "Print every archive entry of the search checkpoint as one JSON line"
+        )]
+        entries: bool,
         #[arg(long)]
         json: bool,
     },
@@ -354,10 +361,14 @@ fn execute(command: Command) -> Result<u8> {
             logs,
             timeline,
             contains,
+            entries,
             json,
         } => {
             if point.specified() && !logs && !timeline {
                 return Err("point selectors require --logs or --timeline".into());
+            }
+            if entries {
+                return workflow::archive_entries(&selection.run);
             }
             return workflow::saved(Request {
                 operation: if logs {
@@ -547,6 +558,7 @@ mod tests {
                 "--host-history",
                 "harness-check -family register @/tmp/harness/journal",
             ],
+            vec!["harmony", "show", "baseline", "--entries", "--json"],
             vec!["harmony", "list"],
             vec!["harmony", "check"],
         ] {
@@ -563,6 +575,16 @@ mod tests {
             vec!["harmony", "branch", "baseline", "--do", "verbose"],
             vec!["harmony", "branch", "baseline", "--before", "10steps"],
             vec!["harmony", "show", "baseline", "--logs", "--timeline"],
+            vec!["harmony", "show", "baseline", "--entries"],
+            vec![
+                "harmony",
+                "show",
+                "baseline",
+                "--entries",
+                "--json",
+                "--finding",
+                "1",
+            ],
             vec![
                 "harmony",
                 "search",
