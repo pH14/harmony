@@ -66,16 +66,30 @@ rollout. Touching the goal of the third level is the goal. Earlier goals are
 the `cleared_1` and `cleared_2` named progress marks, and `cleared_3`,
 `victory` and `death` complete the marks.
 
-The progress tier is the levels cleared, so the newest level outweighs the
-levels behind it. During gameplay the place is the levels cleared and world x
-and y in 32-pixel cells, the identity is the 16-pixel cell, each cell keeps one
-state, and higher health is preferred. The title screen gets no key. The level
-transition takes about 300 frames from touching the goal to the next level's
-first gameplay frame. Its states are archived in the next level's tier, one
-place per 32 frames of the transition timer `$CE`: four places while the goal
-is touched, one per stage of the level-load screen, and one for the frames
-before the new level is loaded. A job can then cross the transition in short
-steps.
+The progress tier is the levels cleared, then the screen along the level's
+route, so the newest level outweighs the levels behind it and a later screen
+outweighs the screens behind it. In levels 1 and 2 the route runs right, and
+the screen is world x over 256. Level 3's route runs right along the bottom of
+the level to x of about 1,520, climbs to a corridor at the top (y below 64) at
+the right end, and runs left along the corridor to the goal at x 32. Its
+corridor screens count from the right, as screens 6 to 11, above the bottom's
+screens 0 to 5. This route shape is game knowledge taken from winning runs
+(ours): the bottom of level 3 never goes higher than y 64, and in recorded
+searches every corridor state was entered at the right end. Ranking the
+corridor by x alone ranks the return walk no higher than the right end, and
+lower once it passes x 1,280; measured from power-on, that tier gave no
+speedup, while the route-shaped tier cut the executions to victory about
+fourfold.
+
+During gameplay the place is the levels cleared and world x and y in 32-pixel
+cells, the identity is the 16-pixel cell, each cell keeps one state, and higher
+health is preferred. The title screen gets no key. The level transition takes
+about 300 frames from touching the goal to the next level's first gameplay
+frame. Its states are archived in the next level's tier at screen 0, since the
+decoder reads no position outside gameplay, one place per 32 frames of the
+transition timer `$CE`: four places while the goal is touched, one per stage of
+the level-load screen, and one for the frames before the new level is loaded.
+A job can then cross the transition in short steps.
 
 ## Running
 
