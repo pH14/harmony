@@ -1228,6 +1228,55 @@ mod tests {
     }
 
     #[test]
+    fn a_run_of_this_package_from_another_executable_is_refused() {
+        for operation in [
+            Operation::Replay,
+            Operation::Branch,
+            Operation::Search,
+            Operation::Resume,
+        ] {
+            let source = tempfile::tempdir().unwrap();
+            let children = tempfile::tempdir().unwrap();
+            let destination = children.path().join("child");
+            let mut config = Config::default();
+            config.workload.package = "nes".into();
+            config.runner.kind = "quicknes".into();
+            let mut manifest = Manifest::new(config, "search").unwrap();
+            manifest.store(source.path(), "input", b"rom").unwrap();
+            manifest.status = "complete".into();
+            manifest.binary_identity = "recorded-by-another-executable".into();
+            manifest.payload = serde_json::json!({
+                "package": nes_workload::package::PACKAGE,
+                "input":{"actions":[]},"finding":false,
+                "witness":{"victory":false,"snapshot_sha256":"recorded"},
+                "repeats":[{"victory":false,"snapshot_sha256":"recorded"}]
+            });
+            manifest.save(source.path()).unwrap();
+            let saved = crate::runs::Saved::read(source.path().to_str().unwrap()).unwrap();
+            let request = Request {
+                operation,
+                selection: Some(crate::selection::Selection {
+                    run: source.path().display().to_string(),
+                    finding: None,
+                }),
+                destination: crate::runs::Destination {
+                    out: Some(destination.clone()),
+                    name: None,
+                },
+                ..Default::default()
+            };
+            let error = saved_resolved::<crate::native::Native>(request, saved)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                "this run requires the exact Harmony executable that recorded it"
+            );
+            assert!(!destination.exists());
+        }
+    }
+
+    #[test]
     fn replay_refuses_a_finding_without_saved_victory() {
         let source = tempfile::tempdir().unwrap();
         let children = tempfile::tempdir().unwrap();

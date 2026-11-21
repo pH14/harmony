@@ -6,6 +6,7 @@ use std::{
 };
 
 use machine::nes::ButtonChord;
+use nes_workload::package::SEARCH_RESULT_FORMAT;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -437,6 +438,18 @@ fn close_sequence(open: Option<&OpenSequence>, leg: &str) -> Outcome {
     }
 }
 
+fn derived_outcome(observation: &Value) -> Value {
+    if observation["goal"] == true {
+        json!("goal")
+    } else if !observation["rejected"].is_null() {
+        json!("rejected")
+    } else if observation["overran"] == true {
+        json!("overran")
+    } else {
+        Value::Null
+    }
+}
+
 fn check_leg(lines: &[String], leg: &str) -> Result<u64, Box<dyn Error>> {
     let genesis = match lines
         .get(1)
@@ -511,8 +524,48 @@ fn check_leg(lines: &[String], leg: &str) -> Result<u64, Box<dyn Error>> {
                     )
                     .into());
                 }
-                previous = record["reapplied"]["observation"].clone();
-                current.stopped = !record["reapplied"]["outcome"].is_null();
+                let ran = &record["reapplied"];
+                let outcome = derived_outcome(&ran["observation"]);
+                if ran["outcome"] != outcome {
+                    return Err(format!(
+                        "the {leg} leg's outcome at {at} is {}, but its observation's is {outcome}",
+                        ran["outcome"]
+                    )
+                    .into());
+                }
+                let hold = u64::from(expected.hold_frames);
+                let advanced = ran["observation"]["frame_count"]
+                    .as_u64()
+                    .zip(previous["frame_count"].as_u64())
+                    .and_then(|(after, before)| after.checked_sub(before));
+                let whole = if outcome.is_null() {
+                    advanced == Some(hold)
+                } else {
+                    advanced.is_some_and(|frames| (1..=hold).contains(&frames))
+                };
+                if !whole {
+                    return Err(format!(
+                        "the {leg} leg's chord at {at} advanced {} of its {hold} planned frames with outcome {outcome}",
+                        advanced.map_or_else(|| "no".to_string(), |frames| frames.to_string())
+                    )
+                    .into());
+                }
+                match ran["actions"].as_array().and_then(|actions| actions.last()) {
+                    None => {
+                        return Err(
+                            format!("the {leg} leg's chord at {at} records no actions").into()
+                        );
+                    }
+                    Some(last) if last["observation"] != ran["observation"] => {
+                        return Err(format!(
+                            "the {leg} leg's last action observation at {at} differs from its observation"
+                        )
+                        .into());
+                    }
+                    Some(_) => {}
+                }
+                previous = ran["observation"].clone();
+                current.stopped = !outcome.is_null();
                 current.actions += 1;
                 actions += 1;
             }
@@ -600,6 +653,14 @@ fn campaign_result(dir: &Path, leg: &str) -> Result<Value, Box<dyn Error>> {
     let object = result
         .as_object_mut()
         .ok_or_else(|| format!("the {leg} result.json is not an object"))?;
+    let format = object.get("format").and_then(Value::as_str);
+    if format != Some(SEARCH_RESULT_FORMAT) {
+        return Err(format!(
+            "the {leg} result.json has format {}; this oracle compares {SEARCH_RESULT_FORMAT}",
+            format.unwrap_or("none")
+        )
+        .into());
+    }
     object
         .remove("backend")
         .ok_or_else(|| format!("the {leg} result.json has no backend"))?;
@@ -659,6 +720,18 @@ fn compare_campaigns(native_dir: &Path, vm_dir: &Path) -> Result<(u64, String), 
     let executions = end["executions_completed"]
         .as_u64()
         .ok_or("the campaign end record has no executions_completed")?;
+    let mut jobs = 0_u64;
+    for line in &native[1..native.len() - 1] {
+        if parse(line, "a native stream line")?["event"] == "job" {
+            jobs += 1;
+        }
+    }
+    if jobs != executions {
+        return Err(format!(
+            "the campaign streams hold {jobs} job records between the header and the end record, but the end record counts {executions} executions"
+        )
+        .into());
+    }
     let witness = |dir: &Path| {
         let path = dir.join("witness-input.json");
         fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))
@@ -720,10 +793,16 @@ mod tests {
     }
 
     fn ran(frame: u64, outcome: Option<&str>) -> Value {
+        let earlier = observation(frame.saturating_sub(1));
+        let mut observation = observation(frame);
+        observation["goal"] = json!(outcome == Some("goal"));
         json!({
             "exit_kind": "Ok",
-            "actions": [{"cost": frame}],
-            "observation": observation(frame),
+            "actions": [
+                {"observation": earlier, "cost": 1},
+                {"observation": observation, "cost": frame},
+            ],
+            "observation": observation,
             "outcome": outcome,
         })
     }
@@ -839,7 +918,7 @@ mod tests {
                 fs::write(
                     campaign.join("result.json"),
                     serde_json::to_vec(&json!({
-                        "format": "result-format",
+                        "format": SEARCH_RESULT_FORMAT,
                         "backend": leg,
                         "solved": false,
                         "witness": {"victory": false, "snapshot_sha256": format!("{leg}-snapshot")},
@@ -1283,6 +1362,189 @@ mod tests {
         assert_eq!(
             legs.refusal(),
             "the vm result.json has no witness snapshot_sha256"
+        );
+    }
+
+    #[test]
+    fn agreeing_legs_whose_chord_played_no_frames_fail() {
+        let legs = Legs::new();
+        legs.edit_both(|records| {
+            let at = position(records, 1, 2);
+            let before = records[at]["restored"].clone();
+            for run in ["applied", "reapplied"] {
+                records[at][run]["observation"] = before.clone();
+                records[at][run]["actions"] = json!([]);
+            }
+        });
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's chord at sequence 1 action 2 advanced 0 of its 16 planned frames with outcome null"
+        );
+        let legs = Legs::new();
+        legs.edit_both(|records| {
+            let at = position(records, 6, 3);
+            for run in ["applied", "reapplied"] {
+                records[at][run]["actions"] = json!([]);
+            }
+        });
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's chord at sequence 6 action 3 records no actions"
+        );
+    }
+
+    #[test]
+    fn the_target_observes_its_last_emitted_action_so_agreeing_legs_ending_elsewhere_fail() {
+        let legs = Legs::new();
+        legs.edit_both(|records| {
+            let at = position(records, 4, 6);
+            let restored = records[at]["restored"].clone();
+            for run in ["applied", "reapplied"] {
+                records[at][run]["actions"] = json!([{"observation": restored, "cost": 0}]);
+            }
+        });
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's last action observation at sequence 4 action 6 differs from its observation"
+        );
+    }
+
+    fn observe(records: &mut [Value], at: usize, edit: impl Fn(&mut Value)) {
+        for run in ["applied", "reapplied"] {
+            edit(&mut records[at][run]["observation"]);
+            let actions = records[at][run]["actions"].as_array_mut().unwrap();
+            edit(&mut actions.last_mut().unwrap()["observation"]);
+        }
+    }
+
+    fn advance(records: &mut [Value], at: usize, frames: u64) {
+        let before = records[at]["restored"]["frame_count"].as_u64().unwrap();
+        observe(records, at, |observation| {
+            observation["frame_count"] = json!(before + frames);
+        });
+    }
+
+    #[test]
+    fn a_chord_without_an_outcome_must_advance_its_whole_planned_hold() {
+        for (frames, refusal) in [
+            (
+                119,
+                "the native leg's chord at sequence 2 action 4 advanced 119 of its 120 planned frames with outcome null",
+            ),
+            (
+                121,
+                "the native leg's chord at sequence 2 action 4 advanced 121 of its 120 planned frames with outcome null",
+            ),
+        ] {
+            let legs = Legs::new();
+            legs.edit_both(|records| {
+                let at = position(records, 2, 4);
+                advance(records, at, frames);
+            });
+            assert_eq!(legs.refusal(), refusal);
+        }
+    }
+
+    fn reject_at_frame(records: &mut Vec<Value>, frames: u64) {
+        let at = position(records, 6, 4);
+        advance(records, at, frames);
+        observe(records, at, |observation| {
+            observation["rejected"] = json!(1);
+        });
+        for run in ["applied", "reapplied"] {
+            records[at][run]["outcome"] = json!("rejected");
+        }
+        let removed = CHORDS - 5;
+        records.drain(at + 1..at + 1 + usize::from(removed));
+        let end = records.len() - 1;
+        records[end]["actions"] =
+            json!(records[end]["actions"].as_u64().unwrap() - u64::from(removed));
+    }
+
+    #[test]
+    fn a_rejection_seen_mid_hold_ends_the_chord_on_that_frame_but_never_past_its_hold() {
+        let legs = Legs::new();
+        legs.edit_both(|records| reject_at_frame(records, 79));
+        legs.compare().unwrap();
+        let legs = Legs::new();
+        legs.edit_both(|records| reject_at_frame(records, 120));
+        legs.compare().unwrap();
+        let legs = Legs::new();
+        legs.edit_both(|records| reject_at_frame(records, 121));
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's chord at sequence 6 action 4 advanced 121 of its 120 planned frames with outcome \"rejected\""
+        );
+        let legs = Legs::new();
+        legs.edit_both(|records| reject_at_frame(records, 0));
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's chord at sequence 6 action 4 advanced 0 of its 120 planned frames with outcome \"rejected\""
+        );
+    }
+
+    #[test]
+    fn agreeing_legs_cannot_end_a_sequence_on_an_outcome_their_observation_lacks() {
+        let legs = Legs::new();
+        legs.edit_both(|records| {
+            let at = position(records, 5, 3);
+            for run in ["applied", "reapplied"] {
+                records[at][run]["outcome"] = json!("goal");
+            }
+            let removed = CHORDS - 4;
+            records.drain(at + 1..at + 1 + usize::from(removed));
+            let end = records.len() - 1;
+            records[end]["actions"] =
+                json!(records[end]["actions"].as_u64().unwrap() - u64::from(removed));
+        });
+        assert_eq!(
+            legs.refusal(),
+            "the native leg's outcome at sequence 5 action 3 is \"goal\", but its observation's is null"
+        );
+    }
+
+    #[test]
+    fn the_end_record_must_count_the_job_lines_between_the_header_and_itself() {
+        let legs = Legs::new();
+        for leg in LEGS {
+            legs.edit_stream(leg, |stream| {
+                stream.remove(1);
+            });
+        }
+        assert_eq!(
+            legs.refusal(),
+            format!(
+                "the campaign streams hold {} job records between the header and the end record, but the end record counts {JOBS} executions",
+                JOBS - 1
+            )
+        );
+    }
+
+    #[test]
+    fn results_must_be_in_the_search_result_format() {
+        let legs = Legs::new();
+        for leg in LEGS {
+            legs.edit_result(leg, |result| {
+                result["format"] = json!("harmony-search-result-v1");
+            });
+        }
+        assert_eq!(
+            legs.refusal(),
+            format!(
+                "the native result.json has format harmony-search-result-v1; this oracle compares {SEARCH_RESULT_FORMAT}"
+            )
+        );
+        let legs = Legs::new();
+        for leg in LEGS {
+            legs.edit_result(leg, |result| {
+                result.as_object_mut().unwrap().remove("format");
+            });
+        }
+        assert_eq!(
+            legs.refusal(),
+            format!(
+                "the native result.json has format none; this oracle compares {SEARCH_RESULT_FORMAT}"
+            )
         );
     }
 }

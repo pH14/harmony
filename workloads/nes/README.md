@@ -310,12 +310,18 @@ sequence, action and first differing field; on a boundary that one leg has and
 the other lacks; on a leg without its end record; on a chord that is not the
 plan's, or a sequence that ends before its 16th chord without a terminal
 outcome; and, within each leg, on an exit other than `Ok`, a reapplied chord
-that differs from its first run, or a restore that does not return to the
-observation before the chord. Its unit tests run these checks on hand-made
-record files, so they need no ROM or KVM. For the campaigns it requires equal stream lines
-after the header, stream headers equal except `emulator_backend` and
-`executable_identity`, a byte-equal `witness-input.json`, and `result.json`
-equal except `backend` and `witness.snapshot_sha256`. On success it writes
+that differs from its first run, a restore that does not return to the
+observation before the chord, a chord that records no actions or whose last
+action observation is not its observation, or an outcome that does not follow
+from its observation's `goal`, `rejected` and `overran` fields. A chord
+without an outcome must advance the frame count by exactly its planned hold. A goal or rejection seen on a frame ends the chord on that frame,
+so a chord with an outcome must advance at least one frame and at most its
+planned hold. Its unit tests run these checks on hand-made record files, so
+they need no ROM or KVM. For the campaigns it requires equal stream lines after the header, stream headers equal except
+`emulator_backend` and `executable_identity`, as many `job` lines between the
+header and the end record as the end record's `executions_completed`, a
+byte-equal `witness-input.json`, and `result.json` in `harmony-search-result-v2`
+and equal except `backend` and `witness.snapshot_sha256`. On success it writes
 `OUT/compare.json` and prints
 `NES_BACKEND_ORACLE_OK actions=N sha256=H executions=E stream_sha256=S`, where
 `H` and `S` hash the target records and the stream lines after their headers.
