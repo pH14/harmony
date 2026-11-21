@@ -484,7 +484,6 @@ fn saved_resolved<R: crate::native::Runner>(
                 return Err("repeat must be positive".into());
             }
             original.verify(&path)?;
-            require_package(&original)?;
             if request.operation == Operation::Replay {
                 let expected = &original.payload["witness"];
                 let victory = expected["victory"]
@@ -647,7 +646,6 @@ fn continue_resolved_search<R: crate::native::Runner>(
     let parent = saved.path;
     let original = saved.manifest;
     original.verify(&parent)?;
-    require_package(&original)?;
     if selection
         .finding
         .is_some_and(|n| n != 1 || original.payload["finding"] != true)
@@ -773,17 +771,6 @@ fn collect_search(
         "finding": replayed,
     });
     Ok(0)
-}
-fn require_package(original: &Manifest) -> Result<()> {
-    let recorded = original.payload["package"].as_str().unwrap_or("nes-v1");
-    if recorded != nes_workload::package::PACKAGE {
-        return Err(format!(
-            "this NES run was recorded by package {recorded} and this build runs package {}; record a new search",
-            nes_workload::package::PACKAGE
-        )
-        .into());
-    }
-    Ok(())
 }
 fn record_witness(
     m: &mut Manifest,
@@ -1178,53 +1165,44 @@ mod tests {
     }
 
     #[test]
-    fn a_run_recorded_by_another_package_is_refused_for_replay_branch_search_and_resume() {
-        for operation in [
-            Operation::Replay,
-            Operation::Branch,
-            Operation::Search,
-            Operation::Resume,
-        ] {
-            let source = tempfile::tempdir().unwrap();
-            let children = tempfile::tempdir().unwrap();
-            let destination = children.path().join("child");
-            let mut config = Config::default();
-            config.workload.package = "nes".into();
-            config.runner.kind = "quicknes".into();
-            let mut manifest = Manifest::new(config, "search").unwrap();
-            manifest.store(source.path(), "input", b"rom").unwrap();
-            manifest.status = "complete".into();
-            manifest.payload = serde_json::json!({
-                "input":{"actions":[]},"finding":false,
-                "witness":{"victory":false,"snapshot_sha256":"recorded"},
-                "repeats":[{"victory":false,"snapshot_sha256":"recorded"}]
-            });
-            manifest.save(source.path()).unwrap();
-            let saved = crate::runs::Saved::read(source.path().to_str().unwrap()).unwrap();
-            let request = Request {
-                operation,
-                selection: Some(crate::selection::Selection {
-                    run: source.path().display().to_string(),
-                    finding: None,
-                }),
-                destination: crate::runs::Destination {
-                    out: Some(destination.clone()),
-                    name: None,
-                },
-                ..Default::default()
-            };
-            let error = saved_resolved::<crate::native::Native>(request, saved)
-                .unwrap_err()
-                .to_string();
-            assert_eq!(
-                error,
-                format!(
-                    "this NES run was recorded by package nes-v1 and this build runs package {}; record a new search",
-                    nes_workload::package::PACKAGE
-                )
-            );
-            assert!(!destination.exists());
-        }
+    fn resume_of_an_unfinished_fresh_search_is_stopped_only_by_its_missing_checkpoint() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("child");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        let origin = br#"{"actions":[]}"#;
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest
+            .store(source.path(), "search-origin-input.json", origin)
+            .unwrap();
+        manifest.store(source.path(), "core", b"core").unwrap();
+        manifest.save(source.path()).unwrap();
+        let saved = crate::runs::Saved::read(source.path().to_str().unwrap()).unwrap();
+        assert_eq!(saved.manifest.status, "running");
+        assert!(saved.manifest.payload.is_null());
+        let request = Request {
+            operation: Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = saved_resolved::<crate::native::Native>(request, saved)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "this recording has no whole-search checkpoint yet (written periodically and when a search completes)"
+        );
+        assert!(!destination.exists());
     }
 
     #[test]
