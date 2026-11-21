@@ -132,8 +132,9 @@ or above the fence, one whose applied index rose, or one that does not answer
 both reads is not reported, so a restart that replays a long log is not a
 violation. The first read comes at least 30 seconds after faults end and the
 second 10 seconds later. A check that starts less than one `--check-timeout`
-before those 30 seconds still retries for one `--check-timeout`, so a node
-that first answers within that retry counts as answering. The 30 seconds are ours and follow the Antithesis practice of checking recovery once faults stop. The
+before those 30 seconds still retries for one `--check-timeout` from its own
+start, so a node that first answers within that retry counts as answering. On
+rqlite such a node has applied the check's fence write, made after faults end. The 30 seconds are ours and follow the Antithesis practice of checking recovery once faults stop. The
 ready probe passes when any member answers, so this is the property that names
 a member still stuck after the rest of the cluster recovered. An adapter
 without `Progresser`, or a check without those variables, as in a native run,

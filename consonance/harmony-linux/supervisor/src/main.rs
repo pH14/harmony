@@ -232,6 +232,7 @@ mod runtime {
         run: u64,
         start_generation: u64,
         fault_free: Option<u64>,
+        nodes_cleared: bool,
     }
 
     struct RecoveryProbe {
@@ -870,7 +871,7 @@ mod runtime {
         let quiet = runtime
             .recovery_watch
             .quiet_nanos(supervisor.moment().unwrap_or(0), in_force);
-        remove_check_nodes(tick);
+        let nodes_cleared = remove_check_nodes(tick);
         let mut check = spawn_check(
             spec,
             argv,
@@ -883,6 +884,7 @@ mod runtime {
             supervisor.note_fault_free_check_started();
             check.fault_free = Some(supervisor.counters().fault_free_checks_started);
         }
+        check.nodes_cleared = nodes_cleared;
         runtime.check = Some(check);
         log(tick, &format!("check {run} started"));
         Ok(())
@@ -916,7 +918,9 @@ mod runtime {
             });
             if let Some(ordinal) = check.fault_free {
                 supervisor.note_fault_free_check_passed(ordinal);
-                if check.start_generation == supervisor.disturbance_generation() {
+                if check.nodes_cleared
+                    && check.start_generation == supervisor.disturbance_generation()
+                {
                     let quiet = runtime.recovery_watch.quiet_nanos(
                         supervisor.moment().unwrap_or(0),
                         faults_in_force(supervisor, &runtime.hook_faults),
@@ -1773,17 +1777,23 @@ mod runtime {
             run,
             start_generation,
             fault_free: None,
+            nodes_cleared: false,
         })
     }
 
-    fn remove_check_nodes(tick: u64) {
-        if let Err(error) = std::fs::remove_file(harmony_supervisor::CHECK_NODES_PATH)
-            && error.kind() != ErrorKind::NotFound
-        {
-            log(
-                tick,
-                &format!("{}: {error}", harmony_supervisor::CHECK_NODES_PATH),
-            );
+    fn remove_check_nodes(tick: u64) -> bool {
+        match std::fs::remove_file(harmony_supervisor::CHECK_NODES_PATH) {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                log(
+                    tick,
+                    &format!(
+                        "{}: {error}; this check reports no node",
+                        harmony_supervisor::CHECK_NODES_PATH
+                    ),
+                );
+                false
+            }
+            _ => true,
         }
     }
 

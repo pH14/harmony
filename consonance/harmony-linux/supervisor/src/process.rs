@@ -413,16 +413,29 @@ pub fn node_recovery_record(violation: Option<(&str, u64, &str)>) -> String {
     ) + "\n"
 }
 
+#[cfg(unix)]
 pub fn read_check_nodes(path: &std::path::Path) -> Result<String, String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => return Err(format!("{}: not a regular file", path.display())),
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{}: not a regular file", path.display()));
     }
-    std::fs::read(path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .map_err(|error| format!("{}: {error}", path.display()))
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[must_use]
@@ -595,6 +608,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn check_nodes_are_read_only_from_a_regular_file() {
         let root = std::env::temp_dir().join(format!("hs-check-nodes-{}", std::process::id()));
@@ -606,6 +620,9 @@ mod tests {
             read_check_nodes(&path),
             Ok("n2\tstuck \u{fffd}\n".to_owned())
         );
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_check_nodes(&link).is_err());
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
         assert!(

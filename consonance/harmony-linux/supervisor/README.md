@@ -119,10 +119,13 @@ supervisor removes the file before each check. When a check that started with
 ran, and at least 30 seconds have passed since faults ended, the supervisor
 reports each listed node as a violation whose details give the node, the quiet
 time in nanoseconds and the error. A check that does not write the file reports
-nothing, and a path that is not a regular file is logged and reports nothing,
-so a workload that leaves something else there cannot stop the supervisor. The
-retry runs for at least one check timeout, so a check that starts just before
-the 30 seconds pass accepts an answer up to one check timeout after them. The
+nothing. A path that is not a regular file, or an earlier file the supervisor
+cannot remove before the check, is logged and the check reports nothing, so a
+workload that leaves something else there can neither stop the supervisor nor
+make one check report another's nodes. The retry runs for at least one check
+timeout from the check's own start, so a check that starts just before the 30
+seconds pass accepts an answer up to one check timeout, plus the check's start
+time, after them. The
 harness kit writes it only for an adapter that reports applied
 indexes, today rqlite's, retrying each pinned read until the bound has passed
 and leaving out a node whose applied index still rises

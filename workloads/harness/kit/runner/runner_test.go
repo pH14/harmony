@@ -592,6 +592,52 @@ func TestANodeBehindTheFenceThatAppliesNothingIsUnrecovered(t *testing.T) {
 	}
 }
 
+type pacedProgress struct {
+	mu     sync.Mutex
+	calls  map[string]int
+	second chan struct{}
+}
+
+func (p *pacedProgress) Fence(context.Context) (uint64, error) { return 20, nil }
+
+func (p *pacedProgress) Applied(ctx context.Context, node string) (uint64, error) {
+	p.mu.Lock()
+	p.calls[node]++
+	call := p.calls[node]
+	p.mu.Unlock()
+	switch {
+	case node == "n2" && call == 2:
+		close(p.second)
+		return 7, nil
+	case node == "n3" && call == 1:
+		select {
+		case <-p.second:
+			return 7, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	case node == "n3":
+		return 9, nil
+	}
+	return 7, nil
+}
+
+func TestASlowAppliedReadDoesNotDelayAnotherNodesSecondRead(t *testing.T) {
+	saved := progressInterval
+	progressInterval = 50 * time.Millisecond
+	t.Cleanup(func() { progressInterval = saved })
+	progresser := &pacedProgress{calls: map[string]int{}, second: make(chan struct{})}
+	start := time.Now()
+	result := stalled(context.Background(), progresser, map[string]string{"n2": "late", "n3": "late"}, 2*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("took %s", elapsed)
+	}
+	want := "applied index 7, then applied index 7 50ms later, below progress fence 20; last pinned read: late"
+	if len(result) != 1 || result["n2"] != want {
+		t.Fatalf("result %v", result)
+	}
+}
+
 func TestANodeWithoutTwoAppliedIndexesIsNotReported(t *testing.T) {
 	unanswered := errors.New("status timeout")
 	for name, errs := range map[string][]error{
