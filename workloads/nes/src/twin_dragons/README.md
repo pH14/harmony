@@ -74,11 +74,12 @@ the level to x of about 1,520, climbs to a corridor at the top (y below 64) at
 the right end, and runs left along the corridor to the goal at x 32. Its
 corridor screens count from the right, as screens 6 to 11, above the bottom's
 screens 0 to 5. This route shape is game knowledge taken from winning runs
-(ours): the bottom of level 3 never reaches y 64, and in recorded searches
-every corridor state was entered at the right end. Ranking the corridor by x
-alone puts the whole return walk below the right end; measured from power-on,
-that tier gave no speedup, while the route-shaped tier cut the executions to
-victory about fourfold.
+(ours): the bottom of level 3 never goes higher than y 64, and in recorded
+searches every corridor state was entered at the right end. Ranking the
+corridor by x alone ranks the return walk no higher than the right end, and
+lower once it passes x 1,280; measured from power-on, that tier gave no
+speedup, while the route-shaped tier cut the executions to victory about
+fourfold.
 
 During gameplay the place is the levels cleared and world x and y in 32-pixel
 cells, the identity is the 16-pixel cell, each cell keeps one state, and higher

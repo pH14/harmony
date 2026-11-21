@@ -524,7 +524,10 @@ mod tests {
         assert!(progress(2, 32, 47) > progress(2, 1500, 47));
         assert!(progress(2, 32, 47) > progress(2, 600, 47));
         assert!(progress(2, 1500, 64) < progress(2, 1500, 63));
+        assert_eq!(progress(2, 1403, 47), progress(2, 1504, 47));
+        assert!(progress(2, 1250, 47) > progress(2, 1403, 47));
         assert_eq!(progress(1, 1500, 47), progress(1, 1500, 175));
+        assert_eq!(progress(0, 1312, 62), progress(0, 1312, 175));
     }
 
     #[test]
