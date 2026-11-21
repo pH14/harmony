@@ -5,7 +5,7 @@ use std::{env, error::Error, fs, path::PathBuf, sync::Arc};
 use machine::{nes::ButtonChord, quicknes::QuickNesMachine};
 use nes_games::{
     metroid::game::Metroid,
-    workload::{Game, Lowered, NesTarget},
+    workload::{Game, Lowered, NativeMemory, NesTarget},
 };
 use nes_workload::{
     search::archive::Input,
@@ -48,7 +48,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         QuickNesMachine::from_rom_bytes_with_identity(&rom, &core, &core_sha256, &execution)?;
     let lowered = Arc::new(Lowered::new(Metroid, &strategy)?);
     let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(&root_path)?)?;
-    let mut target = NesTarget::from_power_on(Arc::clone(&lowered), machine, &[])?;
+    let mut target =
+        NesTarget::from_power_on(Arc::clone(&lowered), machine, &[], Some(NativeMemory::of()))?;
     println!(
         "# root {} actions {}",
         root_path.display(),
