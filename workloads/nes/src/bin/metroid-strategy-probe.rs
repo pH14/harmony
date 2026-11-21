@@ -49,13 +49,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let lowered = Arc::new(Lowered::new(Metroid, &strategy)?);
     let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(&root_path)?)?;
     let mut target = NesTarget::from_power_on(Arc::clone(&lowered), machine, &[])?;
-    println!("# root {} actions {}", root_path.display(), root.actions.len());
-    println!("action frames stage objective area map_x map_y health missiles capacity tanks bosses mb ending zeb_left zeb_dead");
+    println!(
+        "# root {} actions {}",
+        root_path.display(),
+        root.actions.len()
+    );
+    println!(
+        "action frames stage objective area map_x map_y health missiles capacity tanks bosses mb ending zeb_left zeb_dead"
+    );
     let mut last_stage = None;
     for (index, action) in root.actions.iter().enumerate() {
         target.apply(action);
         if target.exit_kind() != ExitKind::Ok {
-            return Err(format!("action {index} ended the target: {:?}", target.exit_kind()).into());
+            return Err(
+                format!("action {index} ended the target: {:?}", target.exit_kind()).into(),
+            );
         }
         let observation = target.observation();
         let view = observation.key.map(|key| lowered.compiled.view(key));
@@ -67,7 +75,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "{index} {} {} {:?} {} {} {} {} {} {} {} {} {} {} {} {}",
                 observation.frame_count,
                 stage.as_deref().unwrap_or("none"),
-                view.as_ref().map(|view| view.progress.clone()).unwrap_or_default(),
+                view.as_ref()
+                    .map(|view| view.progress.clone())
+                    .unwrap_or_default(),
                 state.area,
                 state.map_x,
                 state.map_y,
