@@ -195,8 +195,10 @@ start at zero there, so frames and scored rows from a rooted run count from
 the root. The emulator identity appends `:root-sha256=` and the digest of the
 root's chords to `genesis=`, so a checkpoint or stream from a rooted run and
 one from power-on, or from another root, refuse each other. The records header
-of a rooted run holds the root's digest and that accumulator, so `nes-rekey`
-re-keys the run from the root. An action stops at the first frame the
+of a rooted run holds the root's digest and the accumulator folded over the
+root's frames before its last one, so `nes-rekey` re-keys the run from the root.
+`with_root` refuses a workload whose records are already open, because their
+header was written for the unrooted genesis. An action stops at the first frame the
 strategy rejects or that meets the goal, so the endpoint is the stopping frame.
 The target replays the hold cut to that frame only when a snapshot or the next
 action needs the machine there, and checks that the replay reaches the same

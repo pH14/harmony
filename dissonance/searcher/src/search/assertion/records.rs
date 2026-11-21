@@ -34,7 +34,7 @@ pub struct RecordsHeader {
     pub catalog: Catalog,
     pub genesis: Record,
     pub root_sha256: Option<String>,
-    pub genesis_accumulator: Accumulator,
+    pub accumulator_before_genesis: Accumulator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,7 +298,7 @@ impl<A> Recording<A> {
             || later.header.choice_policy != self.header.choice_policy
             || later.header.catalog != self.header.catalog
             || later.header.root_sha256 != self.header.root_sha256
-            || later.header.genesis_accumulator != self.header.genesis_accumulator
+            || later.header.accumulator_before_genesis != self.header.accumulator_before_genesis
         {
             return Err("a continued recording has another policy, catalog or root".into());
         }

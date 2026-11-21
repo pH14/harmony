@@ -775,8 +775,11 @@ from `Evaluation::key_shape` rather than from `ArchiveKey::capacity` and
 stream with `RecordsWriter`. The header holds the stream's identity (campaign
 seed and workload identity), the policy identifier, the choice policy
 identifier, the strategy text, the catalog, the genesis record, the root's
-digest for a run rooted at a tape, and the recorded strategy's accumulator at
-that root, which is the default accumulator for an unrooted run. The format is
+digest for a run rooted at a tape, and the recorded strategy's accumulator
+from before the genesis record, so observing the genesis record from it gives
+the genesis key and accumulator the live search had. For a rooted run it is the
+accumulator folded over the root's frames up to its last one, and for an
+unrooted run it is the default accumulator. The format is
 `assertion-records-v8`. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
@@ -816,7 +819,8 @@ step from the move's departure accumulator
 ([#1062](https://github.com/pH14/harmony/issues/1062)), and, for a run rooted at
 a tape, only when the new strategy is the recorded one or has no latched stage
 and no `highest` aggregate, because the header holds only the recorded
-strategy's accumulator at the root, which `Rekeying::rooted` carries;
+strategy's accumulator before the genesis record, which `Rekeying::rooted`
+carries;
 `Rekeying::run` refuses any other strategy for a rooted run.
 
 **Checks.** `Compiled::checker` reads observed states one at a time, each with

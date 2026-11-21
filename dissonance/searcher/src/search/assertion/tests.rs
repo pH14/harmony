@@ -1098,7 +1098,7 @@ fn walk_header(genesis: Record) -> RecordsHeader {
         catalog: catalog(),
         genesis,
         root_sha256: None,
-        genesis_accumulator: Accumulator::default(),
+        accumulator_before_genesis: Accumulator::default(),
     }
 }
 

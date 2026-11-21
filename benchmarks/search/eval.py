@@ -669,6 +669,7 @@ def film_command(binary, request, campaign, out, max_frames, tail_frames):
                '--input', str(campaign / 'witness-input.json'), '--evidence', str(campaign / 'result.json'),
                '--out', str(out), '--max-frames', str(max_frames), '--tail-frames', str(tail_frames)]
     if request.get('ai') is not None: command += ['--ai', str(request['ai'])]
+    if request.get('root_input'): command += ['--root-input', str(request['root_input'])]
     return command
 
 

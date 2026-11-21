@@ -111,23 +111,16 @@ impl Rekeying<'_> {
         &self,
         genesis: &Record,
     ) -> Result<(Accumulator, Accumulator, Observed), Box<dyn Error>> {
-        let Some(root) = self.rooted else {
-            let mut recorded = Accumulator::default();
-            let _ = self.recorded.observe(genesis, &mut recorded);
-            let mut keyed = Accumulator::default();
-            let observed = self.strategy.observe(genesis, &mut keyed);
-            return Ok((recorded, keyed, observed));
-        };
-        if self.strategy.policy_identifier() == self.recorded.policy_identifier() {
-            let observed = self.strategy.observe(genesis, &mut root.clone());
-            return Ok((root.clone(), root.clone(), observed));
-        }
-        if !self.strategy.is_pure() {
+        let same = self.strategy.policy_identifier() == self.recorded.policy_identifier();
+        if self.rooted.is_some() && !same && !self.strategy.is_pure() {
             return Err("the recording is rooted at a tape, and a strategy other than the recorded one re-keys it only when it has no latched stage and no `highest` aggregate: its accumulator at the root cannot be rebuilt without the root's frames, which the records do not hold".into());
         }
-        let mut keyed = Accumulator::default();
+        let start = self.rooted.cloned().unwrap_or_default();
+        let mut recorded = start.clone();
+        let _ = self.recorded.observe(genesis, &mut recorded);
+        let mut keyed = if same { start } else { Accumulator::default() };
         let observed = self.strategy.observe(genesis, &mut keyed);
-        Ok((root.clone(), keyed, observed))
+        Ok((recorded, keyed, observed))
     }
 
     pub fn run<A>(

@@ -292,6 +292,10 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(command[command.index('--evidence')+1], 'run/campaign/result.json')
         self.assertNotIn('--level', command)
         self.assertNotIn('--whole-game', command)
+        self.assertNotIn('--root-input', command)
+        rooted = eval.film_command(Path('nes-film'), {**request, 'root_input': '/roots/smb.json'},
+                                   Path('run/campaign'), Path('run/film'), 4096, 180)
+        self.assertEqual(rooted[rooted.index('--root-input')+1], '/roots/smb.json')
 
     def test_a_run_with_no_renderable_input_reports_media_unavailable(self):
         matrix = self.root/'matrix'
