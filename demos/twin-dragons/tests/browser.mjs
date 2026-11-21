@@ -19,7 +19,7 @@ const browser = await chromium.launch({
     ? { channel: process.env.CHROME_CHANNEL }
     : {}),
 });
-let selectFixtureCell;
+let selectFixtureCell, introRoom = 0;
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } }),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
@@ -166,8 +166,8 @@ async function selectFixture(tape, id) {
     window.tdTestLastFixture = state;
     window.tdTestFixtureRequest = null;
   }, state);
-  if (await page.locator("#map").getAttribute("data-map") !== "0")
-    await page.locator('#level-strip button[data-level="0"]').click();
+  if (await page.locator("#map").getAttribute("data-map") !== String(introRoom))
+    await page.locator(`#level-strip button[data-level="${introRoom}"]`).click();
   if (await page.evaluate(() => window.tdTestFixture !== null))
     await selectFixtureCell();
   await page.waitForFunction(() => window.tdTestFixtureRequest !== null);
@@ -297,7 +297,7 @@ try {
     false,
     "The hidden automatic preview must not highlight a replay position on the map",
   );
-  const { x, y } = await page.evaluate(() => {
+  const { x, y, level: pickedRoom } = await page.evaluate(() => {
     const level = Number(document.querySelector("#map").dataset.map);
     const cell = [...window.tdTestRouteCells.values()]
       .filter((entry) => entry.ids.size > 1 && entry.observation.level === level)
@@ -307,9 +307,9 @@ try {
   });
   const introMap = page.locator('.map-row .area-map').first();
   await introMap.scrollIntoViewIfNeeded();
+  introRoom = pickedRoom;
   const clickIntroCell = async () => {
-    const room = Number(await introMap.getAttribute("data-map"));
-    const point = await showOnMap(page, room, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
+    const point = await showOnMap(page, introRoom, Math.floor(x / 32) * 32 + 16, Math.floor((y - 8) / 32) * 32 + 24);
     await page.mouse.move(point.x, point.y);
     assert.equal(await introMap.evaluate((c) => getComputedStyle(c).cursor), "pointer");
     await page.mouse.click(point.x, point.y);
