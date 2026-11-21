@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -388,6 +389,293 @@ func TestNodeThatSkipsValuesIsNamed(t *testing.T) {
 		if violation.Details["node"] != "n2" {
 			t.Fatalf("violation %+v", violation)
 		}
+	}
+}
+
+type laggingNode struct {
+	replicatedLog
+	node     string
+	failures int
+	attempts int
+}
+
+func (l *laggingNode) Connect(context.Context, int) (Client, error) { return l, nil }
+
+func (l *laggingNode) Invoke(ctx context.Context, op family.Op) (any, error) {
+	if op.Node == l.node {
+		l.mu.Lock()
+		l.attempts++
+		failing := l.failures != 0
+		if l.failures > 0 {
+			l.failures--
+		}
+		l.mu.Unlock()
+		if failing {
+			return nil, errors.New("index not applied")
+		}
+	}
+	return l.replicatedLog.Invoke(ctx, op)
+}
+
+func recoveryConfig(t *testing.T, recovery time.Duration) (Config, string) {
+	config := testConfig(t)
+	config.CheckTimeout = 50 * time.Millisecond
+	path := filepath.Join(t.TempDir(), "nodes")
+	t.Setenv(faultsInForceEnv, "0")
+	t.Setenv(quietEnv, "0")
+	t.Setenv(recoveryEnv, strconv.FormatInt(int64(recovery), 10))
+	t.Setenv(checkNodesEnv, path)
+	return config, path
+}
+
+func TestPinnedReadsRetryWhileANodeCatchesUp(t *testing.T) {
+	config, path := recoveryConfig(t, 5*time.Second)
+	adapter := &progressingNode{laggingNode: laggingNode{node: "n2", failures: 2}, fence: 20, applied: []uint64{20}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Nodes["n2"] != history.OK || len(result.Unrecovered) != 0 || adapter.attempts != 3 {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+	if text, err := os.ReadFile(path); err != nil || len(text) != 0 {
+		t.Fatalf("nodes file %q: %v", text, err)
+	}
+	if failed := failing(t); len(failed) != 0 {
+		t.Fatalf("failing %v", failed)
+	}
+}
+
+func TestANodeThatNeverAnswersIsListedAfterTheRecoveryBound(t *testing.T) {
+	config, path := recoveryConfig(t, 1200*time.Millisecond)
+	t.Setenv(quietEnv, strconv.FormatInt(int64(200*time.Millisecond), 10))
+	adapter := &progressingNode{laggingNode: laggingNode{node: "n2", failures: -1}, fenceErr: errors.New("not leader"), applied: []uint64{7}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < time.Second {
+		t.Fatalf("gave up after %s", elapsed)
+	}
+	want := "progress fence: not leader; last pinned read: index not applied"
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want || result.Nodes["n1"] != history.OK || result.Nodes["n3"] != history.OK {
+		t.Fatalf("result %s", result)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil || string(text) != "n2\t"+want+"\n" {
+		t.Fatalf("nodes file %q: %v", text, err)
+	}
+	if adapter.attempts < 2 {
+		t.Fatalf("attempts %d", adapter.attempts)
+	}
+}
+
+func TestPinnedReadsAreNotRetriedWhileAFaultIsInForce(t *testing.T) {
+	config, path := recoveryConfig(t, 5*time.Second)
+	t.Setenv(faultsInForceEnv, "1")
+	adapter := &progressingNode{laggingNode: laggingNode{node: "n2", failures: -1}, fence: 20, applied: []uint64{7}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.attempts != 1 || result.Unrecovered != nil || result.Nodes["n2"] != history.Info {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nodes file written: %v", err)
+	}
+}
+
+func TestPinnedReadsAreNotRetriedWithoutARecoveryBound(t *testing.T) {
+	config := testConfig(t)
+	adapter := &progressingNode{laggingNode: laggingNode{node: "n2", failures: -1}, fence: 20, applied: []uint64{7}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.attempts != 1 || result.Unrecovered != nil {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+}
+
+func TestAnAdapterWithoutProgressReadsEachNodeOnceAndReportsNothing(t *testing.T) {
+	config, path := recoveryConfig(t, 5*time.Second)
+	adapter := &laggingNode{node: "n2", failures: -1}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.attempts != 1 || result.Unrecovered != nil || result.Nodes["n2"] != history.Info {
+		t.Fatalf("attempts %d; result %s", adapter.attempts, result)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nodes file written: %v", err)
+	}
+}
+
+type progressingNode struct {
+	laggingNode
+	fence        uint64
+	fenceErr     error
+	applied      []uint64
+	appliedErrs  []error
+	appliedCalls int
+	appliedAt    []time.Time
+}
+
+func (p *progressingNode) Fence(context.Context) (uint64, error) { return p.fence, p.fenceErr }
+
+func (p *progressingNode) Applied(_ context.Context, node string) (uint64, error) {
+	if node != p.node {
+		return p.fence, nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	call := p.appliedCalls
+	p.appliedCalls++
+	p.appliedAt = append(p.appliedAt, time.Now())
+	if call < len(p.appliedErrs) && p.appliedErrs[call] != nil {
+		return 0, p.appliedErrs[call]
+	}
+	return p.applied[min(call, len(p.applied)-1)], nil
+}
+
+func checkProgress(t *testing.T, adapter *progressingNode) (CheckResult, string) {
+	t.Helper()
+	config, path := recoveryConfig(t, 300*time.Millisecond)
+	saved := progressInterval
+	progressInterval = 50 * time.Millisecond
+	t.Cleanup(func() { progressInterval = saved })
+	adapter.node, adapter.failures = "n2", -1
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result, string(text)
+}
+
+func TestANodeBehindTheFenceThatAppliesNothingIsUnrecovered(t *testing.T) {
+	adapter := &progressingNode{fence: 20, applied: []uint64{7, 7}}
+	result, text := checkProgress(t, adapter)
+	want := "applied index 7, then applied index 7 50ms later, below progress fence 20; last pinned read: index not applied"
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want {
+		t.Fatalf("result %s", result)
+	}
+	if text != "n2\t"+want+"\n" {
+		t.Fatalf("nodes file %q", text)
+	}
+	if len(adapter.appliedAt) != 2 || adapter.appliedAt[1].Sub(adapter.appliedAt[0]) < progressInterval {
+		t.Fatalf("applied reads at %v", adapter.appliedAt)
+	}
+}
+
+type pacedProgress struct {
+	mu     sync.Mutex
+	calls  map[string]int
+	second chan struct{}
+}
+
+func (p *pacedProgress) Fence(context.Context) (uint64, error) { return 20, nil }
+
+func (p *pacedProgress) Applied(ctx context.Context, node string) (uint64, error) {
+	p.mu.Lock()
+	p.calls[node]++
+	call := p.calls[node]
+	p.mu.Unlock()
+	switch {
+	case node == "n2" && call == 2:
+		close(p.second)
+		return 7, nil
+	case node == "n3" && call == 1:
+		select {
+		case <-p.second:
+			return 7, nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	case node == "n3":
+		return 9, nil
+	}
+	return 7, nil
+}
+
+func TestASlowAppliedReadDoesNotDelayAnotherNodesSecondRead(t *testing.T) {
+	saved := progressInterval
+	progressInterval = 50 * time.Millisecond
+	t.Cleanup(func() { progressInterval = saved })
+	progresser := &pacedProgress{calls: map[string]int{}, second: make(chan struct{})}
+	start := time.Now()
+	result := stalled(context.Background(), progresser, map[string]string{"n2": "late", "n3": "late"}, 2*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("took %s", elapsed)
+	}
+	want := "applied index 7, then applied index 7 50ms later, below progress fence 20; last pinned read: late"
+	if len(result) != 1 || result["n2"] != want {
+		t.Fatalf("result %v", result)
+	}
+}
+
+func TestANodeWithoutTwoAppliedIndexesIsNotReported(t *testing.T) {
+	unanswered := errors.New("status timeout")
+	for name, errs := range map[string][]error{
+		"first read fails":  {unanswered},
+		"second read fails": {nil, unanswered},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &progressingNode{fence: 20, applied: []uint64{7, 7}, appliedErrs: errs}
+			result, text := checkProgress(t, adapter)
+			if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != len(errs) {
+				t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+			}
+		})
+	}
+}
+
+func TestANodeBehindTheFenceThatAppliesMoreIsRecovering(t *testing.T) {
+	adapter := &progressingNode{fence: 20, applied: []uint64{7, 9}}
+	result, text := checkProgress(t, adapter)
+	if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != 2 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+	}
+}
+
+func TestANodeAtTheFenceIsReadOnce(t *testing.T) {
+	adapter := &progressingNode{fence: 20, applied: []uint64{20}}
+	result, text := checkProgress(t, adapter)
+	if len(result.Unrecovered) != 0 || text != "" || adapter.appliedCalls != 1 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
+	}
+}
+
+func TestAFailedProgressFenceReportsEachUnansweredNode(t *testing.T) {
+	adapter := &progressingNode{fenceErr: errors.New("not leader"), applied: []uint64{7}}
+	result, text := checkProgress(t, adapter)
+	want := "progress fence: not leader; last pinned read: index not applied"
+	if len(result.Unrecovered) != 1 || result.Unrecovered["n2"] != want || text != "n2\t"+want+"\n" || adapter.appliedCalls != 0 {
+		t.Fatalf("applied calls %d; nodes file %q; result %s", adapter.appliedCalls, text, result)
 	}
 }
 

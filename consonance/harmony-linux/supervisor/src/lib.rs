@@ -22,6 +22,7 @@ pub use supervise::{Action, Counters, ProcessSupervisor, RemountCheck, Superviso
 pub const TICK_NANOS: u64 = 10_000_000;
 pub const READY_TICKS: u32 = 6_000;
 pub const ANTITHESIS_OUTPUT_DIR: &str = "/run/antithesis";
+pub const CHECK_NODES_PATH: &str = "/tmp/harmony-check-nodes";
 
 #[cfg(target_os = "linux")]
 pub mod debug;

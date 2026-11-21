@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"harmony.local/harness/kit/family"
@@ -143,28 +144,86 @@ func pinnedClient(ctx context.Context, node string) (*client, error) {
 	if at < 0 {
 		return nil, fmt.Errorf("unknown node %q", node)
 	}
-	leader := newClient(nodes[sdk.Below("rqlite.fence", uint64(len(nodes)))])
-	defer leader.Close()
-	resp, status, err := leader.post(ctx, "/db/execute?raft_index", [][]any{{fenceSQL}})
+	fence, err := writeFence(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("fence: %w", err)
-	}
-	if status != http.StatusOK || resp.Error != "" || resp.RaftIndex == 0 {
-		return nil, fmt.Errorf("fence: status %d: %s", status, resp.text)
+		return nil, answers.err(node, err, time.Now())
 	}
 	c := newClient(nodes[at])
 	for {
 		applied, err := c.appliedIndex(ctx)
-		if err == nil && applied >= resp.RaftIndex {
-			return c, nil
+		if err == nil {
+			answers.observe(node, applied, time.Now())
+			if applied >= fence {
+				return c, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
 			c.Close()
-			return nil, fmt.Errorf("%s applied %d of fence %d: %w", node, applied, resp.RaftIndex, errors.Join(ctx.Err(), err))
+			return nil, answers.err(node, fmt.Errorf("waiting for fence %d: %w", fence, errors.Join(ctx.Err(), err)), time.Now())
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// The fence's raft index is the leader's commit index once the write returns,
+// so a node whose applied index is below it has entries still to apply.
+func writeFence(ctx context.Context) (uint64, error) {
+	via := sdk.Below("rqlite.fence", uint64(len(nodes)))
+	leader := newClient(nodes[via])
+	defer leader.Close()
+	resp, status, err := leader.post(ctx, "/db/execute?raft_index", [][]any{{fenceSQL}})
+	if err != nil {
+		return 0, fmt.Errorf("fence write to %s: %w", nodeNames[via], err)
+	}
+	if status != http.StatusOK || resp.Error != "" || resp.RaftIndex == 0 {
+		return 0, fmt.Errorf("fence write to %s: status %d: %s", nodeNames[via], status, resp.text)
+	}
+	return resp.RaftIndex, nil
+}
+
+func (adapter) Fence(ctx context.Context) (uint64, error) { return writeFence(ctx) }
+
+func (adapter) Applied(ctx context.Context, node string) (uint64, error) {
+	at := slices.Index(nodeNames, node)
+	if at < 0 {
+		return 0, fmt.Errorf("unknown node %q", node)
+	}
+	c := newClient(nodes[at])
+	defer c.Close()
+	return c.appliedIndex(ctx)
+}
+
+// The check retries a pinned read in new attempts, and a failed /status
+// attempt returns no index, so the last index a /status answer returned is kept
+// across attempts and named in each failed attempt's error.
+type statusAnswers struct {
+	mu   sync.Mutex
+	last map[string]statusAnswer
+}
+
+type statusAnswer struct {
+	applied uint64
+	at      time.Time
+}
+
+var answers = &statusAnswers{last: map[string]statusAnswer{}}
+
+func (s *statusAnswers) observe(node string, applied uint64, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last[node] = statusAnswer{applied: applied, at: now}
+}
+
+func (s *statusAnswers) err(node string, attempt error, now time.Time) error {
+	s.mu.Lock()
+	answer, ok := s.last[node]
+	s.mu.Unlock()
+	state := node + " has no /status answer on record"
+	if ok {
+		state = fmt.Sprintf("%s last answered /status at index %d, %.2fs before this error", node, answer.applied, now.Sub(answer.at).Seconds())
+	}
+	return fmt.Errorf("%s; last attempt: %w", state, attempt)
 }
 
 func (c *client) appliedIndex(ctx context.Context) (uint64, error) {

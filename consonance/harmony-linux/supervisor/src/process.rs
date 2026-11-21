@@ -393,6 +393,76 @@ pub fn recovery_record(violation: Option<(u64, u64)>) -> String {
     ) + "\n"
 }
 
+pub const NODE_RECOVERY_ASSERTION: &str = "every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries";
+
+#[must_use]
+pub fn node_recovery_record(violation: Option<(&str, u64, &str)>) -> String {
+    let (hit, details) = match violation {
+        Some((node, quiet_nanos, reason)) => (
+            true,
+            format!(
+                r#"{{"node":{},"quiet_nanos":{quiet_nanos},"reason":{}}}"#,
+                json_string(node),
+                json_string(reason)
+            ),
+        ),
+        None => (false, "{}".to_owned()),
+    };
+    format!(
+        r#"{{"antithesis_assert":{{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"{NODE_RECOVERY_ASSERTION}","message":"{NODE_RECOVERY_ASSERTION}","hit":{hit},"must_hit":false,"condition":false,"location":{{"file":"harmony-supervisor","function":"node recovery","class":"","begin_line":0,"begin_column":0}},"details":{details}}}}}"#
+    ) + "\n"
+}
+
+#[cfg(unix)]
+pub fn read_check_nodes(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{}: not a regular file", path.display()));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[must_use]
+pub fn unanswered_nodes(text: &str) -> Vec<(&str, &str)> {
+    text.lines()
+        .filter_map(|line| {
+            let (node, reason) = line.split_once('\t').unwrap_or((line, ""));
+            (!node.is_empty()).then_some((node, reason))
+        })
+        .collect()
+}
+
+fn json_string(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => quoted.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 #[cfg(unix)]
 pub fn open_record_sink(path: &std::path::Path) -> io::Result<std::fs::File> {
     std::fs::OpenOptions::new().append(true).open(path)
@@ -509,6 +579,58 @@ mod tests {
         assert!(violated.contains(r#""condition":false"#));
         assert!(violated.contains(r#""details":{"node":1,"exit":"signal 11"}"#));
         assert!(violated.contains(NODE_EXIT_ASSERTION));
+    }
+
+    #[test]
+    fn a_node_recovery_record_names_the_node_and_escapes_the_reason() {
+        let declared = node_recovery_record(None);
+        assert!(declared.ends_with("}\n"));
+        assert!(declared.contains(r#""hit":false"#));
+        assert!(declared.contains(NODE_RECOVERY_ASSERTION));
+        let violated = node_recovery_record(Some((
+            "n2",
+            31_000_000_000,
+            "Post \"n2:4001\": deadline\\exceeded\u{1}",
+        )));
+        assert_eq!(violated.matches('\n').count(), 1);
+        assert!(violated.contains(r#""hit":true"#));
+        assert!(violated.contains(
+            r#""details":{"node":"n2","quiet_nanos":31000000000,"reason":"Post \"n2:4001\": deadline\\exceeded\u0001"}"#
+        ));
+    }
+
+    #[test]
+    fn unanswered_nodes_are_one_per_line_with_an_optional_reason() {
+        assert_eq!(unanswered_nodes(""), Vec::<(&str, &str)>::new());
+        assert_eq!(
+            unanswered_nodes("n2\tcontext deadline exceeded\nn3\n\n"),
+            vec![("n2", "context deadline exceeded"), ("n3", "")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_nodes_are_read_only_from_a_regular_file() {
+        let root = std::env::temp_dir().join(format!("hs-check-nodes-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("nodes");
+        assert_eq!(read_check_nodes(&path), Ok(String::new()));
+        std::fs::write(&path, b"n2\tstuck \xff\n").unwrap();
+        assert_eq!(
+            read_check_nodes(&path),
+            Ok("n2\tstuck \u{fffd}\n".to_owned())
+        );
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_check_nodes(&link).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            read_check_nodes(&path)
+                .unwrap_err()
+                .ends_with("not a regular file")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     fn spec(argv: &[&str]) -> ExecutionSpec {

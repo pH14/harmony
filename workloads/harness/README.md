@@ -102,6 +102,71 @@ state without a fence. A check that starts before a cut still compares. A
 violation needs every round to disagree, so only a cut that starts before the
 first round's reads can cause one.
 
+A pinned read that fails is retried when the adapter also implements
+`Progresser` (below) and the supervisor reports no fault in force at the
+check's start and passes the recovery bound. The check then
+repeats each node's pinned read, each attempt bounded by `--check-timeout` and
+500 ms of guest time apart, until it succeeds or until
+`HARMONY_RECOVERY_NS - HARMONY_QUIET_NS` (at least one `--check-timeout`) has
+passed. Every attempt goes into the check journal, and a failed attempt
+constrains nothing. The check writes each node it reports, with the reason, to
+the file `HARMONY_CHECK_NODES` names, and lists them under `unrecovered` in its
+JSON line. The supervisor reports those nodes under
+`every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`
+(see `consonance/harmony-linux/supervisor/README.md`).
+
+```go
+type Progresser interface {
+	Fence(ctx context.Context) (uint64, error)
+	Applied(ctx context.Context, node string) (uint64, error)
+}
+```
+
+`Progresser` separates a node that is still replaying its log from one that
+has stopped. For the nodes that never answered, the check then writes a
+progress fence through the cluster and reads each such node's applied index,
+waits 10 seconds of guest time from that node's read and reads its applied
+index again. It reports a node when the fence write fails, or when both reads
+answer, the first below the fence's index and the second no higher. A node at
+or above the fence, one whose applied index rose, or one that does not answer
+both reads is not reported, so a restart that replays a long log is not a
+violation. The first read comes at least 30 seconds after faults end and the
+second 10 seconds later. The retry window starts when the check begins its
+pinned reads, after its own setup, and lasts the longer of one
+`--check-timeout` and `HARMONY_RECOVERY_NS - HARMONY_QUIET_NS`, so a node that
+first answers up to one `--check-timeout` plus the setup time after the 30
+seconds counts as answering. On rqlite such a node has applied the check's
+fence write, made after faults end. The 30 seconds are ours and follow the Antithesis practice of checking recovery once faults stop. The
+ready probe passes when any member answers, so this is the property that names
+a member still stuck after the rest of the cluster recovered. An adapter
+without `Progresser`, or a check without those variables, as in a native run,
+gives each node one attempt and reports no node. A node that never answers
+pinned reads is not enough evidence on its own: on rqlite, restarted nodes
+replaying a long log answered no pinned read for more than 30 seconds after
+faults ended and then caught up. Only rqlite implements `Progresser`; consul,
+dgraph, etcd, nats, nats-kv, nomad, openbao, tarantool and xline implement
+`Pinner` alone, so the property does not cover them.
+
+What an answer shows depends on the target's pinned read:
+
+| Targets | A node that answers has |
+|---|---|
+| consul, dgraph, etcd, nats, nats-kv, nomad, rqlite, tarantool, xline | applied a fence written after the read started, so it holds every write acknowledged before it |
+| openbao | answered a read sent to it, which a standby forwards to the active node; it says nothing about the node's own copy |
+
+On openbao a pinned read shows that the node serves requests, not that it has
+caught up.
+
+rqlite implements `Progresser`. Its progress fence is the same write to the
+`ready` table that a pinned read makes, sent to a random node, and the fence's
+raft index stands for the leader's commit index. The applied index is
+`store.db_applied_index` from the node's `/status`. The last pinned read's
+error in a reason gives the last index any of the node's `/status` answers
+returned, in this or an earlier attempt, and how long before the error that
+answer came, then the last attempt's own error, which may be the fence write's.
+A failed `/status` attempt returns no index, so the last attempt alone does not
+show how far the node got.
+
 ## Randomness
 
 Every random value the driver uses comes from `sdk.Random()`: the operation,
@@ -259,7 +324,8 @@ when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
 them. The check then loads every journal and runs the family checker. It
 prints one JSON line with the read outcome, each node's read outcome under
-`nodes`, the violations and, for the register family, `replicas`: the rounds
+`nodes`, the reported nodes and their reasons under `unrecovered` when pinned
+reads are retried, the violations and, for the register family, `replicas`: the rounds
 run, whether the last round agreed, each node's outcome in that round, or
 `skipped` with the reason when the adapter pins reads to fewer than two nodes.
 It writes one failing `Always` per violation, at most three per kind and node,
