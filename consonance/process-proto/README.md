@@ -10,11 +10,18 @@ start, end)` windows.
 The `events` module owns the fixed control and report frames exchanged between
 the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 kill rarity width, the park edge-count range, the optional
-park target (a nonempty range of module offsets), the park's counting law
-(each edge's share of its site's visits, or one per edge from the arm), exact
-command acknowledgements, runtime hello,
-kill provenance, event-park armed and held status, and bucketed edge-coverage status
-without naming a workload policy.
+park target (a nonempty range of module offsets), exact command
+acknowledgements, runtime hello (protocol version 6), kill provenance,
+event-park armed and held status with the park page generation the runtime has
+adopted, and bucketed edge-coverage status without naming a workload policy.
+It also fixes the park page layout: five `u64` words (generation, edge count,
+hold in nanoseconds, target start and end) in a 4,096-byte page.
+
+A park window's at-resume flag (flag bit 2 beside the target flag) marks a
+park that the supervisor delivers through the park page when it resumes a
+paused node, and never over the event channel. A park delivered that way
+counts one per edge from its arming; a park armed by command keeps each edge's
+share of its site's visits.
 
 The `registers` module owns the reserved lifecycle-register IDs published by
 the platform supervisor and decoded by workload policy. Keeping these IDs with

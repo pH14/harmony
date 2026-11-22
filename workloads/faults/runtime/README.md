@@ -43,10 +43,11 @@ the loops inside that operation. The count is kept in units of 2^-20, so a
 visit to a site past its millionth visit counts 2^-20. A park command's fourth
 and fifth words give an optional target: a half-open range of module offsets,
 with `(0, 0)` for none. With a target, only edges whose site falls in the range
-count toward `k`, and an empty range makes the command invalid. A park
-command of kind 5 takes the same words but counts from its arming: each counted
-edge counts one whatever its site's visit count, so the `k`-th counted edge
-after the arm is held. Kind 2 keeps the visit share. Before the hold it writes one JSON line through `fuzz_json_data`:
+count toward `k`, and an empty range makes the command invalid. A park armed
+by the command keeps the visit share. A park adopted from the park page,
+described below, counts from its arming instead: each counted edge counts one
+whatever its site's visit count, so the `k`-th counted edge after the resume is
+held. Before the hold the runtime writes one JSON line through `fuzz_json_data`:
 `{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site
@@ -83,6 +84,48 @@ lands while another hold or watch is in progress is not watched. A forked
 child ends any watch it inherits. A shared mapping names state that other
 processes can change, so a read of changed bytes right after release marks a
 stop placed between reading and using that state.
+
+## Park page
+
+When the supervisor's bundle carries `park-page`, each node process inherits a
+one-page shared memory file in `HARMONY_EVENT_PAGE_FD` beside the two event
+descriptors. The runtime maps it read-only before it sends the hello, closes
+the descriptor, and takes the page's current generation as already seen, so it
+never adopts a record written for an earlier process of the node. If the
+variable is set but the mapping fails, the runtime does not start and sends no
+hello. Without the variable the runtime takes the path described above, with
+no page.
+
+The page holds five `u64` words: generation, edge count `k`, hold in
+nanoseconds, and the target start and end. The supervisor writes a record
+while the node is stopped for a parked pause (ours) and sends `SIGCONT` after
+it. It makes the generation odd, writes the fields, and stores the next even
+generation with release ordering. The runtime reads the page at the start of
+every callback and of every control command, under the callback lock. It loads
+the generation with acquire ordering, skips it if it is odd or already seen,
+reads the fields, and loads the generation again; a changed generation is
+skipped too. A skipped read does not count the callback's edge against the
+park and retries at the next callback. An accepted record arms a park that
+counts from its arming, as above. A record outside the command's ranges is
+marked seen and arms nothing.
+
+The claim that the first visit after the resume counts rests on that order. The
+record is complete before `SIGCONT`, every task of the node has been stopped
+for the whole pause, so no callback runs while the record is being written,
+and each task's first callback after the resume reads the new generation
+before it counts its edge. A visit before the pause saw the old generation and
+was not counted.
+
+The park status reply's fourth word is the generation the runtime has adopted,
+so the supervisor can tell a reply sent before the resume from one sent after
+it. A forked child drops the page in a `pthread_atfork` child handler: it
+never adopts a later record and keeps whatever park state it inherited, as it
+does for a park armed by command. `tests/page_test.c` runs a forked node with a
+real `SIGSTOP` and `SIGCONT` and checks that a record published during the stop
+fires at the first visit after the resume, that a disarm command stops it, and
+that a forked child neither adopts a later record nor reports one.
+
+## Kill rarity and coverage
 
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that

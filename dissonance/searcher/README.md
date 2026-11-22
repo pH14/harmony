@@ -400,7 +400,11 @@ a replay still names. A workload that embeds a duration choice in its actions
 overrides `expand_duration_recorded_or_live` and draws through
 `DrawTables::draw` itself. That one method serves the live and replay paths,
 so a recorded run reaches the workload with the table version the stream
-named.
+named. An expansion returns one action per draw (ours). The searcher cuts the
+returned suffix to the job's suffix limit, so a workload that needs two
+effects kept together draws them as one action, as the faults workload does
+with a parked pause
+([faults README](../../workloads/faults/README.md#actions)).
 `draw_table_parameters` sizes the table; its default reserve is 2 MiB and must
 fit the campaign's memory budget.
 

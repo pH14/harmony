@@ -228,7 +228,7 @@ The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `disk`, `reconcile`, `recovery`, and `supervise` are portable library
+`bundle`, `disk`, `page`, `reconcile`, `recovery`, and `supervise` are portable library
 modules. Linux block-device wiring lives in the Linux-only `blockdev` module,
 and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
@@ -238,7 +238,8 @@ cargo test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml
 cargo clippy --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --all-targets -- -D warnings
 ```
 
-Miri covers the portable parsing, reconciliation, and write-log replay modules.
+Miri covers the portable parsing, reconciliation, write-log replay and park
+page protocol modules; the park page's `memfd` mapping test runs natively.
 The device-mapper and block-device ioctls in `blockdev` need a guest kernel and
 run only in guest executions. Process integration
 tests run natively: Miri cannot execute the credential, spawn, and wait syscalls.
@@ -247,6 +248,36 @@ probes alongside running nodes; the OCI fixture checks guest credentials. Linux
 event-channel socket regressions run natively because the pinned Miri interpreter
 does not support their nonblocking ioctl. Descriptor duplication and ownership
 remain covered under Miri.
+
+## Parked pause
+
+A parked pause (ours) is a pause followed by a park on the same node that
+counts from the resume. The host sends it as two standing windows: the pause,
+and an event-park window with the at-resume flag that is open when the pause
+closes. An at-resume park is never armed over the event channel, at its
+window's start or at a node restart. When a pause closes while an at-resume
+park window is open on that node, including one that opens at the same step,
+the supervisor emits `ContParked`: it writes the park record to the node's
+park page and then sends `SIGCONT`. At the park window's end it disarms the
+park over the channel only if it wrote that record; a restart drops it.
+
+The page exists only when the bundle has a `park-page` line, which takes no
+words and appears at most once. With it, every node start creates a one-page
+`memfd` (`page::PageMapping`), passes it in `HARMONY_EVENT_PAGE_FD`, and keeps
+the mapping for the life of that process. A node without the line runs the
+event protocol alone, with no page. An at-resume park that reaches a node
+without a page fails the run. The write order (odd generation, fields, then the
+next even generation with release ordering) and the matching read live in
+`page::ParkPage` over plain atomics, so Miri runs a concurrent writer and
+reader over ordinary memory; the mapping is a thin Linux wrapper. The runtime
+side, and why the first visit after the resume counts, are in
+`workloads/faults/runtime/README.md`.
+
+After the write the supervisor treats the park as in effect, as it does after a
+command arm. The park status reply carries the page generation the runtime has
+adopted, and the supervisor ignores a reply that shows the park neither armed
+nor holding until that generation reaches the one it wrote, so a status reply
+sent before the resume cannot end the park.
 
 ## Node disks
 
