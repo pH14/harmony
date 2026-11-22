@@ -514,7 +514,10 @@ rows.
 
 For the searcher's stall report, `Reporting::state_record` and
 `Reporting::observation_record` give a snapshot's or an action's record
-through `FaultKeys::record`.
+through `FaultKeys::record`, and `Reporting::choice_records` rebuilds the host
+row of an action that asks `fault.node` from the stored action, as the
+record file does. Guest rows stay in the target: a guest site's index is the
+order of its first ask inside one action, so it names no declared site.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a

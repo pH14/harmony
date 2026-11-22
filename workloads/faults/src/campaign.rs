@@ -22,7 +22,7 @@ use searcher::{
             TargetExecution, ThreadPlacement, WorkloadPolicies, default_window,
             postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
-        choice::{ChoicePlan, ChoiceSite},
+        choice::{ChoicePlan, ChoiceRecord, ChoiceSite},
         cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
@@ -830,6 +830,20 @@ impl Reporting for FaultWorkload {
         observation: &FaultObservations,
     ) -> Option<searcher::search::assertion::Record> {
         Some(self.keys.record(observation))
+    }
+
+    fn choice_records(
+        &self,
+        run: &FaultCampaignRun,
+        action: &FaultAction,
+        _observations: &[FaultObservations],
+    ) -> Vec<ChoiceRecord> {
+        nodes::asks(&run.vocabulary, action)
+            .then(|| nodes::row(&run.vocabulary, 0, 0, &action.operation))
+            .flatten()
+            .map(|row| ChoiceRecord::new(nodes::NODE_SITE_ID, row.offered, row.default, row.taken))
+            .into_iter()
+            .collect()
     }
 
     fn stream_format(&self) -> &'static str {
@@ -3082,5 +3096,26 @@ mod tests {
             game.state_record(&off, &snapshot),
             Some(game.keys().record(&observation))
         );
+    }
+
+    #[test]
+    fn the_stall_report_rebuilds_the_node_site_an_action_asked() {
+        let game = game();
+        let off = run(3, vec![1]);
+        let on = FaultCampaignRun::any_bug(off.vocabulary.clone().with_untried_first_nodes(true));
+        let ticks = std::num::NonZeroU16::MIN;
+        let pause = FaultAction::from(FaultOperation::Pause(2, ticks));
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        assert!(game.choice_records(&off, &pause, &[]).is_empty());
+        assert!(game.choice_records(&on, &wait, &[]).is_empty());
+        let records = game.choice_records(&on, &pause, &[]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].site, nodes::NODE_SITE_ID);
+        assert_eq!(
+            records[0].offered,
+            pause.operation.target_offer(&on.vocabulary)
+        );
+        assert_eq!(records[0].resolved, 2);
+        assert!(records[0].offered.contains(&records[0].resolved));
     }
 }
