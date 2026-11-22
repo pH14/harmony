@@ -252,9 +252,9 @@ fresh boot, which then rewrites the entry. Writes are atomic renames, and the
 directory keeps the four newest entries. The cache is used only on Linux x86
 and travels neither in the worker protocol nor in any identity.
 
-`SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
+`SparseSnapshot` is the explicit archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
-Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
+Its serde fields are `assurance_identity`, `base`, `image_identity`, `pages`, and `sidecar`; the
 sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized. The embedded sidecar
@@ -281,8 +281,7 @@ Completed service exchanges contribute records in addition to normalized
 transport events; this count is not a guest-exit or diagnostic-log count.
 
 Embedded complete portable snapshots use format version 11; sparse sidecars use
-version 15. Older embedded versions are rejected. The outer sparse archive layout
-remains version 2.
+version 15. Older embedded versions are rejected.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.
