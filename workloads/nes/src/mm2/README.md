@@ -117,7 +117,10 @@ the milestones whose witnesses replay:
 
 With the screen last, 3 seeds at window 4 and 4 at window 16 never left Crash
 Man's stage; with the room last, none stayed in it at window 16 and one at
-window 4 ran out of budget in Crash Man's boss room.
+window 4 ran out of budget in Crash Man's boss room. The room costs the best
+seeds: with the screen last, 3 seeds at window 4 and 4 at window 16 reached
+Heat Man's stage (16 milestones); with the room last, none did at window 4 and
+one did at window 16.
 
 The place is the stage, room, boss and enemy damage in steps of two, the
 32-pixel position bucket,
