@@ -1850,7 +1850,8 @@ impl Compiled {
         )
     }
 
-    pub(super) fn stage_goals(&self, record: &Record, parent: &Accumulator) -> Vec<bool> {
+    #[must_use]
+    pub fn stage_goals(&self, record: &Record, parent: &Accumulator) -> Vec<bool> {
         let Progress::Stages { stages, .. } = &self.progress else {
             return Vec::new();
         };

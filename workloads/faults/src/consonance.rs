@@ -1249,12 +1249,7 @@ impl FaultTarget {
             crate::job_observation::stage(crate::job_observation::RestoreStage::Observation);
             let mut actual = live.observe(FaultStop::Deadline)?;
             if !snapshot.history.is_empty() {
-                actual
-                    .parks
-                    .retain(|park| park.moment > receipt.previous_moment());
-                actual
-                    .park_reads
-                    .retain(|read| read.moment > receipt.previous_moment());
+                actual.keep_parks_after(receipt.previous_moment());
             }
             if actual != snapshot.observation {
                 return Err(
@@ -1431,12 +1426,7 @@ impl FaultTarget {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
             self.action_choices = std::mem::take(&mut live.choices);
-            observation
-                .parks
-                .retain(|park| park.moment > self.history.receipt().moment());
-            observation
-                .park_reads
-                .retain(|read| read.moment > self.history.receipt().moment());
+            observation.keep_parks_after(self.history.receipt().moment());
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
@@ -1480,8 +1470,7 @@ impl FaultTarget {
                         .saturating_add(u64::from(error.starts_with(WATCHDOG_CUTOFF)));
                     self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
                     let mut observation = self.observation.clone();
-                    observation.parks.clear();
-                    observation.park_reads.clear();
+                    observation.clear_parks();
                     observation.watchdog_cutoff = error.starts_with(WATCHDOG_CUTOFF);
                     observation.infrastructure_failure = self.infrastructure_failure;
                     self.action_observations.push(observation);
@@ -2318,12 +2307,7 @@ impl Live {
             return Err("execution endpoint assurance differs from parent history".to_owned());
         }
         self.cursor.begin_action(parent.moment());
-        observation
-            .parks
-            .retain(|park| park.moment > parent.moment());
-        observation
-            .park_reads
-            .retain(|read| read.moment > parent.moment());
+        observation.keep_parks_after(parent.moment());
         let (endpoint, event_history) = match (parent.endpoint(), proof) {
             (
                 FaultEndpointCertificate::KvmWholeState(_),
@@ -2775,6 +2759,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .park_reads
                 .capacity()
                 .saturating_mul(size_of::<crate::target::ParkRead>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .parked_pauses
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkedPause>()),
         )
 }
 
@@ -5294,6 +5285,56 @@ mod tests {
                 .get("stage_falls")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_parked_pause_runs_as_a_plain_pause_on_a_node_not_ready_at_its_parent() {
+        let ticks = std::num::NonZeroU16::new(4).unwrap();
+        let parked = FaultAction::from(FaultOperation::PauseParked {
+            node: 0,
+            edges: 1,
+            hold_us: 1,
+            ticks,
+            target: None,
+        });
+        let wait: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let readying = || {
+            let mut ready = vec![0];
+            ready.extend_from_slice(&1_u64.to_le_bytes());
+            vec![
+                ticks_event(1),
+                (0, (2 << 24) | process_proto::registers::EVENT_READY, ready),
+            ]
+        };
+        let (mut target, _) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(vec![readying()])));
+        let root = target.snapshot().unwrap().unwrap();
+        let readied = target.apply_and_snapshot(wait).unwrap().unwrap();
+        assert_eq!(root.observation.event_ready, 0);
+        assert_eq!(readied.observation.event_ready, 1);
+        let certificates = readied.history.certificates();
+        let unparked = FaultAction::from(FaultOperation::Pause(0, ticks));
+        for (replay, expected) in [(&[][..], unparked), (&[wait][..], parked)] {
+            let mut batches: Vec<_> = replay.iter().map(|_| readying()).collect();
+            batches.push(vec![ticks_event(2)]);
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(batches)));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &root,
+                replay,
+                &certificates[certificates.len() - replay.len()..],
+                crate::archive::FaultMilestones::default(),
+                &[parked],
+                searcher::search::rollout::RolloutStop::new(false),
+                None,
+            )
+            .unwrap();
+            let executed: Vec<_> = result.actions.iter().map(|action| action.action).collect();
+            assert_eq!(executed, [expected]);
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
@@ -8765,7 +8806,7 @@ mod tests {
                     edges: 13,
                     hold: Span(7_000_000),
                     target: ParkTarget::new(8, 16),
-                    from_arm: false,
+                    at_resume: false,
                 },
                 moment(6),
                 moment(10),

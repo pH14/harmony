@@ -285,7 +285,7 @@ The Intel SDM permits a later access to use the old read-only entry and raise
 a spurious page fault (Vol. 3A 4.10.4.3, "Optional Invalidation"). Linux
 handles that fault as one with nothing to fix but counts it in the vm event
 counters, the memory cgroup events and the task's minor-fault count. Replays
-of one rqlite path on an Arrow Lake P-core ended in two whole-VM states that
+of one fault-search path on an Arrow Lake P-core ended in two whole-VM states that
 differed only in those counters
 ([#984](https://github.com/pH14/harmony/issues/984)).
 `patches/x86/0020-x86-harmony-flush-access-flag-upgrades.patch` invalidates

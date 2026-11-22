@@ -38,6 +38,7 @@ pub struct Bundle {
     pub workload: Option<Vec<String>>,
     pub check: Option<Vec<String>>,
     pub heal: Option<u32>,
+    pub park_page: bool,
 }
 
 impl Bundle {
@@ -83,6 +84,10 @@ pub enum BundleError {
     DuplicateHeal { line: usize },
     #[error("line {line}: heal names undeclared hook {id}")]
     HealHook { line: usize, id: u32 },
+    #[error("line {line}: park-page takes no words")]
+    ParkPageWords { line: usize },
+    #[error("line {line}: a second park-page")]
+    DuplicateParkPage { line: usize },
     #[error("line {line}: unterminated quote")]
     UnterminatedQuote { line: usize },
     #[error("line {line}: a command word contains NUL")]
@@ -234,6 +239,15 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                     return Err(BundleError::DuplicateHeal { line });
                 }
                 heal = Some((line, id));
+            }
+            "park-page" => {
+                if words.next().is_some() {
+                    return Err(BundleError::ParkPageWords { line });
+                }
+                if bundle.park_page {
+                    return Err(BundleError::DuplicateParkPage { line });
+                }
+                bundle.park_page = true;
             }
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
@@ -466,6 +480,20 @@ ready /usr/bin/servicectl endpoint health
             parse_bundle("node a /a\nhook 4 /heal\nheal 4 5\n"),
             Err(BundleError::Incomplete { line: 3, .. })
         ));
+    }
+
+    #[test]
+    fn a_park_page_line_takes_no_words_and_is_declared_once() {
+        assert!(parse_bundle("node a /a\npark-page\n").unwrap().park_page);
+        assert!(!parse_bundle("node a /a\n").unwrap().park_page);
+        assert_eq!(
+            parse_bundle("node a /a\npark-page now\n"),
+            Err(BundleError::ParkPageWords { line: 2 })
+        );
+        assert_eq!(
+            parse_bundle("park-page\nnode a /a\npark-page\n"),
+            Err(BundleError::DuplicateParkPage { line: 3 })
+        );
     }
 
     #[test]

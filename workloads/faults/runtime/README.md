@@ -43,10 +43,11 @@ the loops inside that operation. The count is kept in units of 2^-20, so a
 visit to a site past its millionth visit counts 2^-20. A park command's fourth
 and fifth words give an optional target: a half-open range of module offsets,
 with `(0, 0)` for none. With a target, only edges whose site falls in the range
-count toward `k`, and an empty range makes the command invalid. A park
-command of kind 5 takes the same words but counts from its arming: each counted
-edge counts one whatever its site's visit count, so the `k`-th counted edge
-after the arm is held. Kind 2 keeps the visit share. Before the hold it writes one JSON line through `fuzz_json_data`:
+count toward `k`, and an empty range makes the command invalid. A park armed
+by the command keeps the visit share. A park adopted from the park page,
+described below, counts from its arming instead: each counted edge counts one
+whatever its site's visit count, so the `k`-th counted edge after the resume is
+held. Before the hold the runtime writes one JSON line through `fuzz_json_data`:
 `{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site
@@ -83,6 +84,94 @@ lands while another hold or watch is in progress is not watched. A forked
 child ends any watch it inherits. A shared mapping names state that other
 processes can change, so a read of changed bytes right after release marks a
 stop placed between reading and using that state.
+
+## Park page
+
+When the supervisor's bundle carries `park-page`, each node process inherits a
+one-page shared memory file in `HARMONY_EVENT_PAGE_FD` beside the two event
+descriptors. The runtime maps it read-only before it sends the hello and keeps
+the descriptor open, so an image the node `exec`s inherits the descriptor with
+the event descriptors and maps the page again. A runtime starts with
+generation 0 as seen: each node process gets a new page, so the record on the
+page is always the node's current parked pause (ours), and a runtime that
+starts after a record was written, in a late first callback or after an
+`exec`, adopts it at its first callback. If the variable is set but the mapping
+fails, the runtime does not start and sends no hello. Without the variable the
+runtime takes the path described above, with no page.
+
+The page holds six `u64` words: generation, edge count `k`, hold in
+nanoseconds, the target start and end, and the pid of the node process the
+supervisor spawned. The supervisor writes the pid once, right after the spawn
+and before any record. It writes a record while the node is stopped for a
+parked pause (ours) and sends `SIGCONT` after it. It makes the generation odd,
+writes the fields, and stores the next even generation with release ordering.
+The runtime reads the page at the start of
+every callback and of every control command, under the callback lock. It loads
+the generation with acquire ordering, stops if it is already seen, and skips it
+if it is odd. Otherwise it reads the fields and loads the generation again; a
+changed generation is skipped too. A callback that skips a read spends no park
+at all, neither the new record's nor one armed before it, and the read retries
+at the next callback. An accepted record with zero edges clears a park adopted
+from the page. Any other accepted record arms a park that counts from its
+arming, as above; a record outside the command's ranges is marked seen and
+arms nothing.
+
+Only the spawned process arms a record: a runtime whose `getpid()` differs
+from the page's pid word marks each record seen and arms nothing. So a node
+whose instrumented process is not the spawned pid never adopts a record. A
+wrapper that forks the server instead of `exec`ing it is such a node: its
+parked pauses run as plain pauses, and the supervisor reports each one as
+`unadopted` (see the supervisor README). A server in its own pid namespace
+usually is too, but the check compares bare numbers, so a server whose pid
+inside its namespace equals the spawned pid adopts and fires the record. rqlite's node chain keeps the pid: `node.sh` `exec`s `harness-net`,
+which `exec`s `ip netns exec`, which `exec`s `rqlited`, and none of the node's
+namespaces is a pid namespace. The pid word also covers a
+process that forked before its runtime started, which has no fork handler to
+drop the page.
+
+A park adopted from the page ends only through the page. A disarm command
+leaves it armed, because a disarm the supervisor sent before a pause can be
+read after the resume that published the next record. A clearing record leaves
+a park armed by command alone, and an arm command replaces a park adopted from
+the page with its own.
+
+The claim that the first visit after the resume counts rests on that order and
+on the supervisor's stop check. A process-directed `SIGSTOP` marks one thread,
+and the node's other threads can run user code until the group stop has taken
+effect. So the supervisor writes a record only after `waitid` reports the node
+process stopped, which the kernel reports once every thread of the process has
+stopped, and it sends `SIGCONT` after the record is complete. No callback runs
+while the record is being written, and each thread's first callback after the
+resume reads the new generation before it counts its edge. A visit before the
+pause saw the old generation and was not counted. A node that has not stopped
+within the supervisor's wait, or has exited, gets no record: the supervisor
+sends `SIGCONT` alone, the pause runs as a plain pause, and the supervisor
+reports it as `not_stopped` or `not_running`.
+
+The park status reply's fourth word is the generation the runtime has seen, so
+the supervisor can tell a reply sent before the resume or before a clear from
+one sent after it. Its fifth word is the last generation that armed a park in
+this process, and flag 4 is set once that park has fired. A clearing record
+leaves both unchanged, so the supervisor can still read whether the park it
+published fired after the clear has ended it.
+
+A forked child drops the page in a `pthread_atfork` child handler, together
+with any park it inherited from the page, and marks its copy of the descriptor
+close-on-exec. It never fires its parent's parked pause and never adopts a
+later record, and an image it `exec`s finds no page and runs without the event
+runtime. It keeps a park armed by command, as before. `tests/page_test.c` runs
+each case on its own node with a real `SIGSTOP` and `SIGCONT`: a record written
+before the runtime starts is adopted at its first callback; a clearing record
+disarms the park; a disarm queued while the node is stopped leaves the record
+published before the resume armed; a forked child of a node with an adopted
+park neither fires it nor adopts a later record; a process the node forked
+before its first callback acknowledges a record and never arms it; an image
+the node `exec`s maps the page and fires the record written before the `exec`;
+and an image that a forked child `exec`s fires nothing. `tests/event_test.c`
+checks that a record whose pid word names another process is marked seen and
+leaves the reply's fifth word and fired flag unchanged.
+
+## Kill rarity and coverage
 
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that

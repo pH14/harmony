@@ -30,10 +30,7 @@ pub(crate) fn site(vocabulary: &FaultVocabulary) -> ChoiceSite {
 }
 
 pub(crate) fn asks(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
-    vocabulary.untried_first_nodes()
-        && fresh(action)
-        && !(vocabulary.resume_park().is_some()
-            && matches!(action.operation, FaultOperation::Pause(..)))
+    vocabulary.untried_first_nodes() && fresh(action)
 }
 
 fn fresh(action: &FaultAction) -> bool {
@@ -352,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stamped_action_and_a_pause_under_resume_park_keep_their_node() {
+    fn a_stamped_action_keeps_its_node_and_a_parked_pause_moves_with_its_park() {
         let vocabulary = vocabulary(true);
         let stamped = action(FaultOperation::Kill(2, TICKS))
             .with_guest(crate::guest::GuestChoices::from_plan(&plan(None), 0, None));
@@ -363,14 +360,37 @@ mod tests {
             .with_instrumented_events(true)
             .with_resume_park(Some(vec![7]))
             .unwrap();
-        let pause = action(FaultOperation::Pause(2, TICKS));
-        assert!(!asks(&parked, &pause));
-        assert!(asks(&parked, &action(FaultOperation::Kill(2, TICKS))));
-        let resolved = resolve(&parked, &[pause], Some(&permuted(Some(0), 4)), Some(0), 6);
-        assert_eq!(resolved.suffix, [pause]);
-        assert_eq!(resolved.untried, None);
-        assert_eq!(resolved.rows, [row(&parked, 7, 0, &pause.operation)]);
-        assert!(resolved.rows[0].is_some());
+        let pause = action(FaultOperation::PauseParked {
+            node: 2,
+            edges: 1,
+            hold_us: 10_000,
+            ticks: TICKS,
+            target: fault_policy::ParkTarget::new(7, 8),
+        });
+        assert!(asks(&parked, &pause));
+        assert!(asks(&parked, &action(FaultOperation::Pause(2, TICKS))));
+        let walked = (0..3)
+            .map(|ordinal| {
+                let resolved = resolve(
+                    &parked,
+                    &[pause],
+                    Some(&permuted(Some(ordinal), 4)),
+                    Some(ordinal),
+                    6,
+                );
+                let [answered] = resolved.suffix[..] else {
+                    panic!("one action in, one action out");
+                };
+                assert_eq!(
+                    answered.operation.with_target_node(2),
+                    pause.operation,
+                    "the park keeps its fields when the node moves"
+                );
+                assert_eq!(resolved.rows, [row(&parked, 7, 0, &answered.operation)]);
+                answered.operation.target_node().unwrap()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(walked.len(), 3);
     }
 
     #[test]

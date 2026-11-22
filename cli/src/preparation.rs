@@ -42,17 +42,11 @@ pub fn execute(mut request: Request) -> Result<u8> {
                     || request.actions.is_some()
                     || !config.nodes.is_empty();
                 let launch = if supervised {
-                    if let Some(bundle) = config.bundle()? {
-                        oci_support::LaunchRequest::default()
-                            .with_bundle("/etc/harmony/cli.bundle")
-                            .with_external_inputs(vec![oci_support::ExternalInput::new(
-                                "/etc/harmony/cli.bundle",
-                                bundle.into_bytes(),
-                            )])
-                    } else {
-                        oci_support::LaunchRequest::default()
-                            .with_bundle(faults_workload::prepare::SUPERVISOR_BUNDLE)
-                    }
+                    faults_workload::prepare::supervisor_launch(
+                        &image,
+                        config.bundle()?.as_deref(),
+                        config.resume_park.is_some(),
+                    )?
                 } else {
                     oci_support::LaunchRequest::new(config.command.clone())
                 };

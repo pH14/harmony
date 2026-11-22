@@ -342,6 +342,10 @@ impl<G: Game, M: NesBackend<P>, P: SnapshotState> NesTarget<G, M, P> {
         &self.current_frame
     }
 
+    pub fn read_save_ram(&self, offset: usize, length: u32) -> Result<Vec<u8>, MachineError> {
+        self.machine.read(SAVE_RAM_BASE + offset as u64, length)
+    }
+
     pub fn record_frames(&mut self, recording: bool) {
         self.recording = recording;
     }

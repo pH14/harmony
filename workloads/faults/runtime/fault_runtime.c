@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -21,7 +22,6 @@
 
 #if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
 #define HARMONY_FAULT_WATCH_SUPPORTED 1
-#include <sys/mman.h>
 #include <ucontext.h>
 #else
 #define HARMONY_FAULT_WATCH_SUPPORTED 0
@@ -54,9 +54,7 @@ void fuzz_json_data(const char *data, size_t size);
 #define HARMONY_FAULT_WATCH_MAPS_LIMIT ((size_t)1 << 16)
 #define HARMONY_FAULT_WATCH_UNKNOWN_WIDTH 16
 
-#if HARMONY_FAULT_WATCH_SUPPORTED
-static void harmony_fault_watch_after_fork(void);
-#endif
+static void harmony_fault_after_fork(void);
 
 struct harmony_fault_module {
     uint64_t start;
@@ -84,6 +82,12 @@ struct harmony_fault_event_state {
     uint64_t park_target_end;
     uint64_t park_fires;
     uint64_t park_inflight;
+    uint32_t park_paged;
+    const uint64_t *page;
+    int page_fd;
+    uint64_t page_seen;
+    uint64_t page_armed;
+    uint32_t page_armed_fired;
     uint32_t initialized;
     uint64_t coverage_crossings;
     uint64_t coverage_digest;
@@ -98,7 +102,8 @@ struct harmony_fault_event_state {
 static struct harmony_fault_event_state harmony_fault_events = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .control_fd = -1,
-    .report_fd = -1
+    .report_fd = -1,
+    .page_fd = -1
 };
 static pthread_once_t harmony_fault_event_once = PTHREAD_ONCE_INIT;
 static _Thread_local volatile sig_atomic_t harmony_fault_held;
@@ -452,6 +457,89 @@ static void harmony_fault_event_note_crossing(uint64_t site, uint8_t bucket)
     harmony_fault_unlock();
 }
 
+static void harmony_fault_page_park_clear(void)
+{
+    if (harmony_fault_events.park_paged == 0)
+        return;
+    harmony_fault_events.park_armed = 0;
+    harmony_fault_events.park_hold_nanos = 0;
+    harmony_fault_events.park_paged = 0;
+}
+
+static int harmony_fault_page_adopt(void)
+{
+    const uint64_t *page = harmony_fault_events.page;
+    uint64_t generation;
+    uint64_t edges;
+    uint64_t hold_nanos;
+    uint64_t target_start;
+    uint64_t target_end;
+    uint64_t node_pid;
+
+    if (page == NULL)
+        return 0;
+    generation = __atomic_load_n(&page[HARMONY_FAULT_PAGE_GENERATION],
+                                 __ATOMIC_ACQUIRE);
+    if (generation == harmony_fault_events.page_seen)
+        return 0;
+    if ((generation & 1u) != 0)
+        return -1;
+    edges = __atomic_load_n(&page[HARMONY_FAULT_PAGE_EDGES], __ATOMIC_RELAXED);
+    hold_nanos =
+        __atomic_load_n(&page[HARMONY_FAULT_PAGE_HOLD_NANOS], __ATOMIC_RELAXED);
+    target_start =
+        __atomic_load_n(&page[HARMONY_FAULT_PAGE_TARGET_START], __ATOMIC_RELAXED);
+    target_end =
+        __atomic_load_n(&page[HARMONY_FAULT_PAGE_TARGET_END], __ATOMIC_RELAXED);
+    node_pid = __atomic_load_n(&page[HARMONY_FAULT_PAGE_NODE_PID], __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&page[HARMONY_FAULT_PAGE_GENERATION], __ATOMIC_RELAXED) !=
+        generation)
+        return -1;
+    harmony_fault_events.page_seen = generation;
+    if (node_pid != (uint64_t)getpid())
+        return 0;
+    if (edges == 0) {
+        harmony_fault_page_park_clear();
+        return 0;
+    }
+    if (edges > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT || hold_nanos == 0 ||
+        (target_end == 0 ? target_start != 0 : target_start >= target_end))
+        return 0;
+    harmony_fault_events.park_edges = edges;
+    harmony_fault_events.park_weight_left = edges << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
+    harmony_fault_events.park_hold_nanos = hold_nanos;
+    harmony_fault_events.park_from_arm = 1;
+    harmony_fault_events.park_target_start = target_start;
+    harmony_fault_events.park_target_end = target_end;
+    harmony_fault_events.park_paged = 1;
+    harmony_fault_events.park_armed = 1;
+    harmony_fault_events.page_armed = generation;
+    harmony_fault_events.page_armed_fired = 0;
+    return 0;
+}
+
+static int harmony_fault_page_map(const uint64_t **page, int *page_fd)
+{
+    int fd;
+    void *mapped;
+
+    *page = NULL;
+    *page_fd = -1;
+    if (getenv("HARMONY_EVENT_PAGE_FD") == NULL)
+        return 0;
+    fd = harmony_fault_parse_fd("HARMONY_EVENT_PAGE_FD");
+    if (fd < 0)
+        return -1;
+    mapped = mmap(NULL, (size_t)HARMONY_FAULT_PAGE_BYTES, PROT_READ, MAP_SHARED,
+                  fd, 0);
+    if (mapped == MAP_FAILED)
+        return -1;
+    *page = mapped;
+    *page_fd = fd;
+    return 0;
+}
+
 static void *harmony_fault_event_control(void *arg)
 {
     int fd = *(const int *)arg;
@@ -479,6 +567,7 @@ static void *harmony_fault_event_control(void *arg)
         if (harmony_fault_lock() != 0)
             break;
         harmony_fault_crossings_resolve();
+        (void)harmony_fault_page_adopt();
         if (kind == HARMONY_FAULT_EVENT_CMD_KILL) {
             if (first >= HARMONY_FAULT_EVENT_RARITY_LIMIT ||
                 (second != 0 && second != 1)) {
@@ -489,23 +578,24 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events.kill_rarity = (uint8_t)first;
                 harmony_fault_events.kill_armed = 1;
             }
-        } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK ||
-                   kind == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM) {
+        } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
             if (second != 0 &&
                 (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT ||
                  (target_end == 0 ? target_start != 0
                                   : target_start >= target_end))) {
                 valid = 0;
             } else if (second == 0) {
-                harmony_fault_events.park_armed = 0;
-                harmony_fault_events.park_hold_nanos = 0;
+                if (harmony_fault_events.park_paged == 0) {
+                    harmony_fault_events.park_armed = 0;
+                    harmony_fault_events.park_hold_nanos = 0;
+                }
             } else {
                 harmony_fault_events.park_edges = first;
                 harmony_fault_events.park_weight_left =
                     first << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
                 harmony_fault_events.park_hold_nanos = second;
-                harmony_fault_events.park_from_arm =
-                    kind == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM;
+                harmony_fault_events.park_from_arm = 0;
+                harmony_fault_events.park_paged = 0;
                 harmony_fault_events.park_target_start = target_start;
                 harmony_fault_events.park_target_end = target_end;
                 harmony_fault_events.park_armed = 1;
@@ -520,7 +610,12 @@ static void *harmony_fault_event_control(void *arg)
                          : 0) |
                         (harmony_fault_events.park_inflight != 0
                              ? HARMONY_FAULT_EVENT_PARK_STATUS_HELD
+                             : 0) |
+                        (harmony_fault_events.page_armed_fired != 0
+                             ? HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED
                              : 0));
+            put_u64(response + 24, harmony_fault_events.page_seen);
+            put_u64(response + 32, harmony_fault_events.page_armed);
         } else if (kind == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS) {
             memset(response, 0, sizeof(response));
             put_u64(response, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
@@ -552,26 +647,32 @@ static void harmony_fault_event_start(void)
 {
     int control_fd = harmony_fault_parse_fd("HARMONY_EVENT_KILL_FD");
     int report_fd = harmony_fault_parse_fd("HARMONY_EVENT_REPORT_FD");
+    const uint64_t *page;
+    int page_fd;
     pthread_t thread;
 
     if (control_fd < 0 || report_fd < 0)
+        return;
+    if (harmony_fault_page_map(&page, &page_fd) != 0)
         return;
     if (harmony_fault_lock() != 0)
         return;
     harmony_fault_events.control_fd = control_fd;
     harmony_fault_events.report_fd = report_fd;
+    harmony_fault_events.page = page;
+    harmony_fault_events.page_fd = page_fd;
+    harmony_fault_events.page_seen = 0;
     if (pthread_create(&thread, NULL, harmony_fault_event_control,
                        &harmony_fault_events.control_fd) != 0) {
         harmony_fault_events.control_fd = -1;
         harmony_fault_events.report_fd = -1;
+        harmony_fault_events.page = NULL;
         harmony_fault_unlock();
         return;
     }
     (void)pthread_detach(thread);
     harmony_fault_unlock();
-#if HARMONY_FAULT_WATCH_SUPPORTED
-    (void)pthread_atfork(NULL, NULL, harmony_fault_watch_after_fork);
-#endif
+    (void)pthread_atfork(NULL, NULL, harmony_fault_after_fork);
 
     {
         unsigned char hello[HARMONY_FAULT_EVENT_REPORT_SIZE];
@@ -675,11 +776,6 @@ static void harmony_fault_watch_stop(void)
     if (__atomic_exchange_n(&harmony_fault_watch.installed, 0, __ATOMIC_ACQ_REL) != 0)
         (void)sigaction(SIGSEGV, &harmony_fault_watch.previous, NULL);
     __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
-}
-
-static void harmony_fault_watch_after_fork(void)
-{
-    harmony_fault_watch_stop();
 }
 
 static int harmony_fault_watch_owned(void)
@@ -993,6 +1089,18 @@ static void harmony_fault_watch_edge(void)
 }
 #endif
 
+static void harmony_fault_after_fork(void)
+{
+    if (harmony_fault_events.page != NULL) {
+        harmony_fault_events.page = NULL;
+        (void)fcntl(harmony_fault_events.page_fd, F_SETFD, FD_CLOEXEC);
+        harmony_fault_page_park_clear();
+    }
+#if HARMONY_FAULT_WATCH_SUPPORTED
+    harmony_fault_watch_stop();
+#endif
+}
+
 static void harmony_fault_event_sleep(uint64_t hold_nanos)
 {
     const uint64_t nanos_per_second = UINT64_C(1000000000);
@@ -1014,6 +1122,7 @@ void harmony_fault_runtime_event(uint64_t site)
     uint64_t park_edges = 0;
     uint32_t kill_claimed = 0;
     uint32_t park_claimed = 0;
+    int page_settled;
     uint8_t crossed;
 
     if (harmony_fault_held != 0)
@@ -1027,6 +1136,7 @@ void harmony_fault_runtime_event(uint64_t site)
         harmony_fault_unlock();
         return;
     }
+    page_settled = harmony_fault_page_adopt() == 0;
     if (harmony_fault_events.coverage_callbacks != UINT64_MAX)
         harmony_fault_events.coverage_callbacks++;
     before = harmony_fault_event_site_before(site, &crossed);
@@ -1038,13 +1148,15 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_rarity = harmony_fault_events.kill_rarity;
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
-    } else if (harmony_fault_events.park_armed != 0 &&
+    } else if (page_settled && harmony_fault_events.park_armed != 0 &&
                harmony_fault_park_counts(site) &&
                harmony_fault_park_spend(before)) {
         harmony_fault_events.park_armed = 0;
         park_edges = harmony_fault_events.park_edges;
         if (harmony_fault_events.park_fires != UINT64_MAX)
             harmony_fault_events.park_fires++;
+        if (harmony_fault_events.park_paged != 0)
+            harmony_fault_events.page_armed_fired = 1;
         park_claimed = 1;
         harmony_fault_events.park_inflight++;
         park_hold_nanos = harmony_fault_events.park_hold_nanos;
