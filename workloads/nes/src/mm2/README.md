@@ -100,9 +100,10 @@ and Wood Man's stages it rises by one at each room transition and falls only
 when Mega Man steps back across the camera's midpoint or drops down a vertical
 section. After a boss kill it resets to 0, by which time the Robot Master
 clears have risen. Heat Man's stage and the Wily castle were not checked. The
-player's screen byte at `$440` does not keep route order: in Crash Man's tower
-it reads 8 to 12 in states off the route while the route is still in room 7,
-so with the screen last those states outranked every state on the route.
+player's screen byte at `$440` does not keep route order in Crash Man's tower:
+in searches with the screen last that never left the stage, the leading states
+read screen 8 to 12 while the camera stayed in room 7, and no state got past
+room 7.
 
 Whole-game runs from power-on compared the two last tier items over 12 seeds
 per arm, with a frame budget of 16,777,216 that every run reached. The count is
@@ -117,10 +118,10 @@ the milestones whose witnesses replay:
 
 With the screen last, 3 seeds at window 4 and 4 at window 16 never left Crash
 Man's stage; with the room last, none stayed in it at window 16 and one at
-window 4 ran out of budget in Crash Man's boss room. The room costs the best
-seeds: with the screen last, 3 seeds at window 4 and 4 at window 16 reached
-Heat Man's stage (16 milestones); with the room last, none did at window 4 and
-one did at window 16.
+window 4 ran out of budget in Crash Man's boss room. Fewer runs reached Heat
+Man's stage (16 milestones) with the room last: none of 12 at window 4 and one
+at window 16, against 3 and 4 with the screen last. The seeds differ between
+arms, so these are counts of runs, not of the same seeds.
 
 The place is the stage, room, boss and enemy damage in steps of two, the
 32-pixel position bucket,
