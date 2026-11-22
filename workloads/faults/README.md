@@ -1187,7 +1187,8 @@ Search also writes
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
 ([`report`](src/report.rs)). `job-host.jsonl` holds host measurements, which
 differ between runs of the same search: one line per job row of `stream.jsonl`,
-joined to it on `sequence` and `reservation`. `wall_ns` is the job's host wall
+joined to it on `sequence` and `reservation`, until a failed write to the file,
+which is reported on stderr and ends its lines. `wall_ns` is the job's host wall
 time on its worker, from parent restore through the result digest.
 `parent_actions` is the parent's depth in actions. `parent_replay_actions` is the archive path replayed from a retained keyframe
 snapshot to the parent (0 when the parent's own snapshot was retained).
