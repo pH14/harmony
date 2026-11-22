@@ -1281,6 +1281,39 @@ impl<G: Game, M: NesBackend<P>, P: SnapshotState> Reporting for NesWorkload<G, M
         }
     }
 
+    fn catalog_signals(&self, _run: &NesRun) -> Vec<String> {
+        self.lowered
+            .catalog
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect()
+    }
+
+    fn state_record(&self, _run: &NesRun, snapshot: &NesSnapshot<G::State, P>) -> Option<Record> {
+        Some(self.lowered.record(&snapshot.observation.state).0)
+    }
+
+    fn observation_record(
+        &self,
+        _run: &NesRun,
+        observation: &ActionObservation<G::State>,
+    ) -> Option<Record> {
+        Some(self.lowered.record(&observation.observation.state).0)
+    }
+
+    fn choice_records(
+        &self,
+        _run: &NesRun,
+        _action: &ButtonChord,
+        observations: &[ActionObservation<G::State>],
+    ) -> Vec<ChoiceRecord> {
+        observations
+            .iter()
+            .flat_map(|observation| observation.choices.iter().cloned())
+            .collect()
+    }
+
     fn direct_records(&self, path: Option<&Path>) -> Result<Option<RecordsSize>, Box<dyn Error>> {
         let Some(records) = &self.records else {
             return Ok(None);
