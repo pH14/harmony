@@ -572,7 +572,9 @@ the entry's stable id and the site, which holds nothing until a job names
 another site. The map is outside the archive's memory charge: live search
 takes a count when it reserves the job, after the duplicate skips before it,
 and replay takes it when it rebuilds the reservation, before those skips, so
-a charge that grew with the map would evict differently on replay. The default
+a charge that grew with the map would evict differently on replay. The map
+holds at most one count per archive entry and other named site, and history
+compaction drops the counts of the entries it drops. The default
 names site 0 for every suffix, which keeps one count per entry; a workload
 names another site only when it knows, before the job runs, that the
 suffix's first choice is asked there. `Chooser::untried_taken` returns the
