@@ -35,7 +35,7 @@ use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
 };
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
-use crate::search::choice::ChoicePlan;
+use crate::search::choice::{ChoicePlan, ChoiceSite};
 use crate::search::cost::ShrinkCost;
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
@@ -197,6 +197,66 @@ struct StallWatch<P> {
     since_execution: u64,
     jobs: u64,
     draws: BTreeMap<String, u64>,
+    signals: Vec<String>,
+    sites: Vec<ChoiceSite>,
+    changes: BTreeMap<String, SignalChanges>,
+    asks: BTreeMap<u16, SiteAsks>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+struct SignalChanges {
+    compared: u64,
+    unchanged: u64,
+    changed: Vec<u64>,
+}
+
+impl SignalChanges {
+    fn new(signals: usize) -> Self {
+        Self {
+            changed: vec![0; signals],
+            ..Self::default()
+        }
+    }
+
+    fn count(&mut self, before: &[i64], after: &[i64]) {
+        self.compared = self.compared.saturating_add(1);
+        let mut moved = false;
+        for ((before, after), changed) in before.iter().zip(after).zip(&mut self.changed) {
+            if before != after {
+                moved = true;
+                *changed = changed.saturating_add(1);
+            }
+        }
+        if !moved {
+            self.unchanged = self.unchanged.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Default)]
+struct SiteAsks {
+    asks: u64,
+    offered: BTreeMap<u16, u64>,
+    resolved: BTreeMap<u16, u64>,
+    states: BTreeSet<u64>,
+}
+
+#[derive(Serialize)]
+struct StalledStateRecord {
+    #[serde(flatten)]
+    state: StalledState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signals: Option<Option<Vec<i64>>>,
+}
+
+#[derive(Serialize)]
+struct StalledSiteRecord {
+    site: u16,
+    name: String,
+    asks: u64,
+    top_states_at_site: usize,
+    offered: BTreeMap<String, u64>,
+    resolved: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -208,7 +268,10 @@ struct StallRecord<'a> {
     since_execution: u64,
     jobs: u64,
     draws_by_action: &'a BTreeMap<String, u64>,
-    states: Vec<StalledState>,
+    signal_changes_by_action: &'a BTreeMap<String, SignalChanges>,
+    signals: &'a [String],
+    states: Vec<StalledStateRecord>,
+    choice_sites: Vec<StalledSiteRecord>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -400,6 +463,10 @@ where
                 since_execution: core.sequence,
                 jobs: 0,
                 draws: BTreeMap::new(),
+                signals: workload.catalog_signals(&config.run),
+                sites: workload.choice_sites(&config.run),
+                changes: BTreeMap::new(),
+                asks: BTreeMap::new(),
             });
         let checkpoints = options
             .checkpoints
@@ -1087,6 +1154,8 @@ where
             watch.since_execution = self.core.sequence;
             watch.jobs = 0;
             watch.draws.clear();
+            watch.changes.clear();
+            watch.asks.clear();
             watch.reported = false;
         }
         let stalled = leading.losing_weight && !watch.reported;
@@ -1098,21 +1167,53 @@ where
         let Some(watch) = self.stall.as_mut() else {
             return;
         };
-        let parent_progress = self
-            .core
-            .archive
-            .index_of_id(parent_id)
-            .map(|index| self.core.archive.entries[index].key.progress());
-        if parent_progress.is_none() || parent_progress != watch.tier.map(|(progress, _)| progress)
-        {
+        let archive = &self.core.archive;
+        let Some(parent_index) = archive.index_of_id(parent_id) else {
+            return;
+        };
+        let parent = &archive.entries[parent_index];
+        if Some(parent.key.progress()) != watch.tier.map(|(progress, _)| progress) {
             return;
         }
+        let workload = self.workload;
+        let run = &self.config.run;
+        let signals = watch.signals.len();
         watch.jobs = watch.jobs.saturating_add(1);
-        for action in &result.actions {
-            let count = watch
-                .draws
-                .entry(format!("{:?}", action.action))
-                .or_default();
+        let mut before = parent
+            .snapshot
+            .as_deref()
+            .filter(|_| signals > 0)
+            .and_then(|snapshot| workload.state_record(run, snapshot));
+        for (index, action) in result.actions.iter().enumerate() {
+            let kind = format!("{:?}", action.action);
+            if signals > 0 {
+                let after = action
+                    .observations
+                    .last()
+                    .and_then(|observation| workload.observation_record(run, observation));
+                if let (Some(before), Some(after)) = (&before, &after) {
+                    watch
+                        .changes
+                        .entry(kind.clone())
+                        .or_insert_with(|| SignalChanges::new(signals))
+                        .count(before.values(), after.values());
+                }
+                before = after;
+            }
+            for record in workload.choice_records(run, &action.action, &action.observations) {
+                let asks = watch.asks.entry(record.site).or_default();
+                asks.asks = asks.asks.saturating_add(1);
+                for label in &record.offered {
+                    let count = asks.offered.entry(*label).or_default();
+                    *count = count.saturating_add(1);
+                }
+                let count = asks.resolved.entry(record.resolved).or_default();
+                *count = count.saturating_add(1);
+                if index == 0 {
+                    asks.states.insert(parent_id);
+                }
+            }
+            let count = watch.draws.entry(kind).or_default();
             *count = count.saturating_add(1);
         }
     }
@@ -1124,6 +1225,50 @@ where
         let Some((progress, yields)) = watch.tier else {
             return Ok(());
         };
+        let archive = &self.core.archive;
+        let states: Vec<StalledStateRecord> = archive
+            .leading_tier_states(STALL_REPORT_STATES)
+            .into_iter()
+            .map(|state| {
+                let signals = (!watch.signals.is_empty()).then(|| {
+                    archive
+                        .index_of_id(state.id)
+                        .and_then(|index| archive.entries[index].snapshot.as_deref())
+                        .and_then(|snapshot| self.workload.state_record(&self.config.run, snapshot))
+                        .map(|record| record.values().to_vec())
+                });
+                StalledStateRecord { state, signals }
+            })
+            .collect();
+        let top: BTreeSet<u64> = states.iter().map(|state| state.state.id).collect();
+        let choice_sites = watch
+            .asks
+            .iter()
+            .map(|(site, asks)| {
+                let declared = watch.sites.get(usize::from(*site));
+                let label = |label: u16| {
+                    declared
+                        .and_then(|declared| declared.labels.get(usize::from(label)))
+                        .cloned()
+                        .unwrap_or_else(|| label.to_string())
+                };
+                let named = |counts: &BTreeMap<u16, u64>| {
+                    counts
+                        .iter()
+                        .map(|(option, count)| (label(*option), *count))
+                        .collect()
+                };
+                StalledSiteRecord {
+                    site: *site,
+                    name: declared
+                        .map_or_else(|| site.to_string(), |declared| declared.name.clone()),
+                    asks: asks.asks,
+                    top_states_at_site: asks.states.intersection(&top).count(),
+                    offered: named(&asks.offered),
+                    resolved: named(&asks.resolved),
+                }
+            })
+            .collect();
         let record = StallRecord {
             executions: self.core.sequence,
             checkpoint: format!("{:012}-stall.ckpt", self.core.sequence),
@@ -1132,7 +1277,10 @@ where
             since_execution: watch.since_execution,
             jobs: watch.jobs,
             draws_by_action: &watch.draws,
-            states: self.core.archive.leading_tier_states(STALL_REPORT_STATES),
+            signal_changes_by_action: &watch.changes,
+            signals: &watch.signals,
+            states,
+            choice_sites,
         };
         let mut line = serde_json::to_vec(&record)?;
         line.push(b'\n');
@@ -1844,5 +1992,26 @@ where
                 },
             )));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SignalChanges;
+
+    #[test]
+    fn signal_changes_count_each_signal_so_a_clock_does_not_hide_a_held_resource() {
+        let mut changes = SignalChanges::new(3);
+        changes.count(&[0, 4, 1], &[1, 4, 1]);
+        changes.count(&[1, 4, 1], &[2, 5, 1]);
+        changes.count(&[2, 5, 1], &[2, 5, 1]);
+        assert_eq!(
+            changes,
+            SignalChanges {
+                compared: 3,
+                unchanged: 1,
+                changed: vec![2, 1, 0],
+            }
+        );
     }
 }

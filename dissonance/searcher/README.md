@@ -1519,6 +1519,45 @@ yields again, so one stall writes one report. It reads the archive and changes
 nothing in selection, and a run with the report records the same stream as one
 without it.
 
+The report has three more parts (ours), each read through a `Reporting`
+method that a workload without a catalog or choice sites leaves empty:
+
+- `signals` names the catalog's signals (`Reporting::catalog_signals`), and
+  each reported state carries its record's values in that order
+  (`Reporting::state_record`, read from the state's snapshot), or null when
+  the snapshot has been evicted. The coordinator asks the workload because an
+  archive entry holds its key and milestones and no catalog record. A stall
+  for want of a held resource shows as top states whose resource signal is
+  short of what the next step needs.
+- `signal_changes_by_action` gives, per action as `draws_by_action` names it,
+  the actions `compared`, the actions after which no signal changed
+  (`unchanged`), and a `changed` array aligned with `signals` that counts the
+  actions after which each signal differed. An action compares its endpoint
+  record (`Reporting::observation_record` of its last observation) with its
+  departure: the previous action's endpoint, or for a job's first action the
+  parent entry's snapshot record, and an action whose departure or endpoint
+  has no record is not compared. A signal that changes and changes back
+  inside one action counts as unchanged. The coordinator asks the workload
+  for observation records for the same reason as for state records. The
+  `changed` array lets a reader discount a signal that moves on its own, such
+  as a frame count, which would leave `unchanged` at zero.
+- `choice_sites` lists, per choice site that a job drawn from the leading tier
+  asked, the site's index and name, its `asks`, the times each option was
+  `offered` and the times each was `resolved` (the label played), keyed by the
+  site's declared label names or by the label index where the site names
+  none. The coordinator reads them from `Reporting::choice_records`, because
+  the choices a job resolved reach it only inside the workload's
+  observations. A state stands at a site when a job drawn from it asked the
+  site in its first action, and `top_states_at_site` counts the reported
+  states that stand there. A site that no leading-tier job has asked does not
+  appear. The search does not know which site the stalled step needs, so a
+  reader finds the needed option's share of `resolved`.
+
+The counts reset with the watch. Their memory is one `compared`, `unchanged`
+and `changed` row per action in `draws_by_action`, and per asked site one
+count per label and the ids of the tier states that stand at it. Each counted
+job costs one record per action on the coordinator, and only with `on_stall`.
+
 Scheduling stays on the coordinator. At a due admission boundary it joins the
 preceding publication, captures the header/body and freezes owned workload
 snapshots, then hands the image and exclusive store writer to one thread.
