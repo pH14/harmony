@@ -409,13 +409,23 @@ more, the supervisor compacts its log:
    waits for the drain mark as a cut does, and swaps a linear table onto the
    data disk under the log device. The old `dm-log-writes` target logs the
    writes waiting for a flush and its end mark.
-2. It reads the log and applies to the replay base every entry up to the last
-   flush and the FUA writes and marks after it. It keeps the writes still
-   waiting for a flush and their data in its own memory, drops the end mark,
-   and keeps the extents of the applied plain writes after the format mark for
-   corruption draws.
-3. It zeroes and discards the log, loads a new `dm-log-writes` table and
-   resumes the disk.
+2. It copies the log into its own memory in 1 MiB reads up to the end mark,
+   discarding each range of the log RAM disk once copied, loads a new
+   `dm-log-writes` table and resumes the disk. The disk is suspended only for
+   these steps.
+3. A thread of its own folds the copy: it applies to the replay base every
+   entry up to the last flush and the FUA writes and marks after it, keeps the
+   writes still waiting for a flush and their data, drops the end mark, and
+   keeps the extents of the applied plain writes after the format mark for
+   corruption draws. The poll loop goes on meanwhile, and other disks fold in
+   their own threads. The supervisor logs the compaction at the first poll
+   after the fold ends. A cut on that disk waits for the fold, and the disk is
+   not compacted again until the fold ends.
+
+Waiting for a drain mark and reading a log walk the entry headers through 1
+MiB reads. The drain check reads the drain mark directly, then walks the
+headers only once the mark is in the last allocated sector, so every read of
+the walk comes after the kernel logged the entries before the mark.
 
 A later cut or compaction puts the kept writes after the new log's FUA writes
 and marks that come before its first flush or first other write, where the
@@ -431,8 +441,10 @@ size for the replay base, the log, the writes since the last flush, and 16
 bytes of supervisor memory for each plain write applied by a compaction since
 the format mark or the last cut. The kernel holds the writes since the last
 flush; after a compaction the supervisor holds those that were waiting. While a
-compaction runs, each waiting write it keeps is held twice: once in the log or
-the supervisor's previous copy, and once in the new copy.
+fold runs, the supervisor holds the copied log in place of the log RAM disk,
+and the new log fills beside it; each waiting write the fold keeps is held
+twice: once in the copied log or the supervisor's previous copy, and once in
+the new copy.
 
 The log holds what was logged since the last cut or compaction. The supervisor
 bounds one part of it: once it starts polling, it compacts a disk with no error
@@ -441,8 +453,9 @@ log. The rest depends on the workload, and the supervisor does not bound it:
 everything logged before polling starts (the setup command and node startup),
 what the kernel queues for the log between the last poll below 64 MiB and the
 teardown (a flush queues every write held for it), the writes still waiting for
-a flush that the teardown logs, and everything logged while a stall window is
-open. Raise the guest RAM (`ram_mib`) to match.
+a flush that the teardown logs, everything logged while a stall window is open,
+and everything logged while the disk's previous fold runs. Raise the guest RAM
+(`ram_mib`) to match.
 A guest that runs out of memory ends the execution: the supervisor reads the
 `oom_kill` counter in `/proc/vmstat` whenever a node exits and once a second,
 and reports the first kernel OOM kill as an infrastructure error. The guest

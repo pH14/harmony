@@ -109,6 +109,41 @@ pub trait Sectors {
     fn write_at(&mut self, sector: u64, buffer: &[u8]) -> io::Result<()>;
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Memory(pub Vec<u8>);
+
+impl Sectors for Memory {
+    fn read_at(&mut self, sector: u64, buffer: &mut [u8]) -> io::Result<()> {
+        buffer.copy_from_slice(self.range(sector, buffer.len())?);
+        Ok(())
+    }
+
+    fn write_at(&mut self, sector: u64, buffer: &[u8]) -> io::Result<()> {
+        let at = self.start(sector)?;
+        self.0
+            .get_mut(at..at.saturating_add(buffer.len()))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
+            .copy_from_slice(buffer);
+        Ok(())
+    }
+}
+
+impl Memory {
+    fn start(&self, sector: u64) -> io::Result<usize> {
+        usize::try_from(sector)
+            .ok()
+            .and_then(|sector| sector.checked_mul(SECTOR_BYTES))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
+    }
+
+    fn range(&self, sector: u64, bytes: usize) -> io::Result<&[u8]> {
+        let at = self.start(sector)?;
+        self.0
+            .get(at..at.saturating_add(bytes))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LogEntry {
     pub sector: u64,
@@ -196,25 +231,37 @@ fn super_block(log: &mut impl Sectors) -> Result<(u64, u64), LogError> {
     ))
 }
 
+fn drain_end(log: &mut impl Sectors, last_sector: u64) -> Result<Option<(u64, u64)>, LogError> {
+    let scale = match super_block(log) {
+        Ok((_, scale)) => scale,
+        Err(LogError::NoLog) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let end = last_sector.checked_add(1).map_or(0, |end| end / scale);
+    if end < 2 {
+        return Ok(None);
+    }
+    let mut header = [0_u8; SECTOR_BYTES];
+    log.read_at((end - 1) * scale, &mut header)?;
+    Ok(names(&header, DRAIN_MARK.as_bytes()).then_some((end, scale)))
+}
+
+pub fn drain_marked(log: &mut impl Sectors, last_sector: u64) -> Result<bool, LogError> {
+    Ok(drain_end(log, last_sector)?.is_some())
+}
+
 pub fn drain_logged(
     log: &mut impl Sectors,
     logged_entries: u64,
     last_sector: u64,
 ) -> Result<bool, LogError> {
-    let scale = match super_block(log) {
-        Ok((_, scale)) => scale,
-        Err(LogError::NoLog) => return Ok(false),
-        Err(error) => return Err(error),
+    if logged_entries == 0 {
+        return Ok(false);
+    }
+    let Some((end, scale)) = drain_end(log, last_sector)? else {
+        return Ok(false);
     };
-    let end = last_sector.checked_add(1).map_or(0, |end| end / scale);
     let mut header = [0_u8; SECTOR_BYTES];
-    if end < 2 || logged_entries == 0 {
-        return Ok(false);
-    }
-    log.read_at((end - 1) * scale, &mut header)?;
-    if !names(&header, DRAIN_MARK.as_bytes()) {
-        return Ok(false);
-    }
     let mut at = 1_u64;
     for _ in 1..logged_entries {
         log.read_at(at * scale, &mut header)?;
@@ -833,33 +880,9 @@ mod tests {
         assert!(emergency_read_only(other, "/tmp/tarantool/n2"));
     }
 
-    #[derive(Clone)]
-    struct Memory(Vec<u8>);
-
     impl Memory {
         fn sectors(count: u64) -> Self {
             Self(vec![0; count as usize * SECTOR_BYTES])
-        }
-    }
-
-    impl Sectors for Memory {
-        fn read_at(&mut self, sector: u64, buffer: &mut [u8]) -> io::Result<()> {
-            let at = sector as usize * SECTOR_BYTES;
-            let bytes = self
-                .0
-                .get(at..at + buffer.len())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
-            buffer.copy_from_slice(bytes);
-            Ok(())
-        }
-
-        fn write_at(&mut self, sector: u64, buffer: &[u8]) -> io::Result<()> {
-            let at = sector as usize * SECTOR_BYTES;
-            self.0
-                .get_mut(at..at + buffer.len())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
-                .copy_from_slice(buffer);
-            Ok(())
         }
     }
 
@@ -1060,11 +1083,12 @@ mod tests {
         for index in 0..=ops.len() {
             for _ in points.iter().filter(|&&point| point == index) {
                 disk.recorder.finish();
-                let logged = read_log(&mut disk.recorder.log, 256).unwrap();
-                disk.folded
-                    .fold(&logged, &mut disk.recorder.log, &mut disk.base, 64)
-                    .unwrap();
+                let mut image = disk.recorder.log.clone();
                 disk.recorder.clear_log();
+                let logged = read_log(&mut image, 256).unwrap();
+                disk.folded
+                    .fold(&logged, &mut image, &mut disk.base, 64)
+                    .unwrap();
             }
             if let Some(op) = ops.get(index) {
                 disk.recorder.apply(op);
@@ -1452,6 +1476,7 @@ mod tests {
         recorder.entry(4, 1, FUA, &mark_header(DRAIN_MARK));
         recorder.super_block();
         let (entries, last) = status(&recorder);
+        assert!(drain_marked(&mut recorder.log, last).unwrap());
         assert!(
             !drain_logged(&mut recorder.log, entries, last).unwrap(),
             "a write whose data ends in the mark's bytes"
