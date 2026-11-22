@@ -824,20 +824,28 @@ with outcome `not ready within the settle limit` when the workload never became
 ready and `no check without a fault in force finished` when no such check
 passed, or at a new violation, a terminal stop, an endpoint the strategy rejects
 (ours; outcome `rejected`), a hang or a cancellation. A workload that stays not
-ready violates one of the supervisor's two recovery properties,
+ready can violate either of the supervisor's two recovery properties,
 `workload becomes ready within 30 seconds after faults end` and its per-node
 form (ours),
 `every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`.
-Both count their 30 seconds from the end of the last fault in force, which for
-a cut is the heal hook's exit rather than the end of the heal action, and the
-per-node property fails only when a check that started after that end exits.
-The harness kit's check first retries its pinned reads to the 30 seconds and
-then reads a stalled node's applied index twice, 10 seconds apart. The limit
-must therefore outlast 30 seconds by the heal's run time plus one check. In
-replays of nine rqlite settles that stayed not ready, the ready property failed
-3,050 to 3,300 ticks after the heal action ended and the per-node property
-3,150 to 4,000. The 6,000-tick limit leaves 20 seconds past the latest of
-these, so such a settle ends at the violation. The target then restores the
+Both count from the end of the last fault in force, which for a cut is the
+heal hook's successful exit rather than the end of the heal action; a heal
+that fails leaves the cut in force, and then neither property can fail. The
+ready property fails 30 seconds after the later of that end and the moment the
+workload was first seen not ready. The per-node property fails only when a
+check without a fault in force exits successfully after 30 quiet seconds, with
+no disturbance since it started, and names a node. The harness kit's check
+retries each pinned read until the later of its timeout and the end of the 30
+seconds, then takes a progress fence and reads each unanswered node's applied
+index twice, 10 seconds apart; when the fence fails it names every unanswered
+node without those reads. The limit must therefore outlast 30 seconds by the
+heal's run time plus one check. In replays of nine rqlite settles that stayed
+not ready, the ready property failed 3,050 to 3,300 ticks after the heal action
+ended and the per-node property 3,150 to 4,000. The 6,000-tick limit leaves 20
+seconds past the latest of these. A settle whose heal runs longer than that
+margin, or whose workload first loses readiness late in the settle, can still
+reach the limit first and end `not ready within the settle limit` with no
+report. The target then restores the
 snapshot, which the chain held through the phase, so the restore runs no action again unless the session was
 replaced or the phase restored a prefix older than the endpoint. A restore that
 finds no held link rebuilds the endpoint as any other restore does, so the hold
