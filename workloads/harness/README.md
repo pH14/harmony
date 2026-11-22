@@ -745,7 +745,9 @@ register process's drawn node to `/tmp/rqlite/connections` when the process
 connects. A process connects when it starts and again only after an operation
 outlives its deadline, so the last line for each process names the node it
 sends to. A failed append goes to the drive's standard error and the
-connection goes ahead, so the drive draws as it does without the record. A
+connection goes ahead, so the drive draws as it does without the record. The
+drive then removes the file and appends nothing more in that run, because the
+file could name a node a process has since left. A
 write sent to a follower cannot reach a leader cut off from it:
 with `redirect`, the follower asks the leader for its address before it
 answers. A missing file means no process has connected yet. When the hook

@@ -299,8 +299,9 @@ const (
 )
 
 type connectionLog struct {
-	mu   sync.Mutex
-	path string
+	mu     sync.Mutex
+	path   string
+	failed bool
 }
 
 var connections *connectionLog
@@ -312,10 +313,27 @@ func newConnectionLog() *connectionLog {
 	return &connectionLog{path: clientConnections}
 }
 
+// After a failed append the file can name a node a process has left, so the
+// record is removed and stays off for the rest of the run.
 func (l *connectionLog) record(process, at int) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if l.failed {
+		return nil
+	}
+	err := appendConnection(l.path, process, at)
+	if err == nil {
+		return nil
+	}
+	l.failed = true
+	if removeErr := os.Remove(l.path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		err = errors.Join(err, removeErr)
+	}
+	return err
+}
+
+func appendConnection(path string, process, at int) error {
+	out, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}

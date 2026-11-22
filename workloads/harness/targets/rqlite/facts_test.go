@@ -755,6 +755,27 @@ func TestAFailedConnectionRecordStillConnects(t *testing.T) {
 	c.Close()
 }
 
+func TestAFailedAppendRemovesTheRecordAndEndsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := &connectionLog{path: path}
+	if err := log.record(0, 1); err == nil {
+		t.Fatal("no error for an append that failed")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("record still present after a failed append: %v", err)
+	}
+	if err := log.record(0, 2); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readConnections(path)
+	if err != nil || len(current) != 0 {
+		t.Fatalf("connections %v, error %v after the record ended", current, err)
+	}
+}
+
 func drawTrace(t *testing.T, facts bool) string {
 	t.Helper()
 	bases := make([]string, len(nodeNames))
@@ -793,15 +814,22 @@ func drawTrace(t *testing.T, facts bool) string {
 	return strings.Join(append(trace, fields[1], fields[2], strconv.FormatUint(sdk.Random(), 10)), " ")
 }
 
-func TestTheFactsAddNoDraw(t *testing.T) {
-	if mode := os.Getenv("RQLITE_DRAW_MODE"); mode != "" {
-		fmt.Println("trace", drawTrace(t, mode == "facts"))
-		return
+const drawModeEnv = "RQLITE_DRAW_MODE"
+
+func TestDrawTraceChild(t *testing.T) {
+	mode := os.Getenv(drawModeEnv)
+	if mode == "" {
+		t.Skip("run by TestTheFactsAddNoDraw")
 	}
+	fmt.Println("trace", drawTrace(t, mode == "facts"))
+}
+
+func TestTheFactsAddNoDraw(t *testing.T) {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, drawModeEnv+"=") })
 	traces := map[string]string{}
 	for _, mode := range []string{"plain", "facts"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestTheFactsAddNoDraw$")
-		cmd.Env = append(os.Environ(), "RQLITE_DRAW_MODE="+mode, "HARNESS_SEED=7", "ANTITHESIS_OUTPUT_DIR="+t.TempDir())
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDrawTraceChild$")
+		cmd.Env = append(slices.Clone(env), drawModeEnv+"="+mode, "HARNESS_SEED=7", "ANTITHESIS_OUTPUT_DIR="+t.TempDir())
 		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("%s: %v\n%s", mode, err, out)
