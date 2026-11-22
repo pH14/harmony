@@ -1227,8 +1227,9 @@ Each fact declares one `sometimes_all` after the 18 values, in name order: a
 count `r5`, the number of its terms that hold, and one flag per term,
 `r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
 Sometimes record that the target's guest processes write; the kit SDK uses
-the message as the id. A term holds while the latest hit record with that id
-has a true condition, so a guest clears a fact by writing the same Sometimes
+the message as the id. Only a Sometimes record holds a term, so an Always or
+Reachable record with the same id does not. A term holds while the latest hit
+record with that id has a true condition, so a guest clears a fact by writing the same Sometimes
 with a false condition. The binary SDK reports a Sometimes point only when it
 passes, so a fact term must be written as a JSON record. A strategy reads a
 term by its dotted name, quoted when the id is not a plain word, for example
@@ -1304,15 +1305,17 @@ that gives its own `spread` or `identity`.
 
 A reject line, at the top level or in a stage, marks states the search does
 not keep. An action endpoint that matches one while the strategy's `goal` line
-does not hold is a doomed terminal unless the run's objective counts a bug
-there. `Compiled::observe` gives it no key and leaves the accumulator as the
+does not hold is a doomed terminal, whether the guest was still running or had
+stopped, unless the run's objective counts a bug there. `Compiled::observe`
+gives it no key and leaves the accumulator as the
 action found it, so it advances no stage and counts no stage fall. The job
 stops at it, it is never an archive entry, the settle phase skips it, and the
 campaign report counts it in `doomed_endpoints` rather than in the archive
 report's `deaths`. The evidence takes nothing of it into the milestones, the
 progress watermark or the champion input. Its assertions still count in the
 archive report's `assertions` coverage, and a property it violates is still a
-finding.
+finding. A rejected endpoint where the objective counts a bug is that finding,
+and the evidence merges it as it merges any finding.
 
 Each `FaultTarget` carries the strategy's accumulator, the searcher's
 `Accumulator`. The target folds its observation into a fresh accumulator with
@@ -1322,13 +1325,17 @@ action goes through that one fold: a new action, a replayed parent action, a
 rebuilt prefix action and a settle action. A `FaultSnapshot` saves the
 accumulator and the endpoint's `Observed` key, and a restore takes both from
 the snapshot, so a job's parent, a detached settle run and the action applied
-after it continue from the fold the snapshot saved. The snapshot codec
+after it continue from the fold the snapshot saved. A rebuilt prefix that stops
+before its certified endpoint ends the requested action with stop
+`Unexpected`; that action has no endpoint, so the target folds nothing, and
+the state has no key and counts no stage fall. The snapshot codec
 `fault-history-dag-v3` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
 
-A staged strategy's archive report lists `stage_falls`: every stage with the
+A staged strategy's archive report and `campaign-summary.json` list
+`stage_falls`: every stage with the
 number of action endpoints whose stage is below the stage of the state the
 action departed from, counted under the stage they fall to. The games make the
 same count with `Checker::stage_falls` when they re-key their records, and
@@ -1339,7 +1346,7 @@ accumulator's stage with the endpoint's and records a fall in that action's
 campaign evidence counts the falls of every action it merges, kept or not. A
 fall inside an action is not seen, and
 an action of a detached settle run counts only when the job applies it again.
-A tier strategy's report has no `stage_falls`.
+A tier strategy's report and summary have no `stage_falls`.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
 duration context the shipped strategy gives 64 sampled states for each of 1,

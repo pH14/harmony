@@ -232,10 +232,19 @@ fn request(strategy: Option<&str>, facts: &[(&str, &[&str])]) -> KeyRequest {
 const R5: (&str, &[&str]) = ("r5", &["transfer_timeout", "second_transfer"]);
 
 fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
+    assertion_record(observations, AssertionKind::Sometimes, id, holds);
+}
+
+fn assertion_record(
+    observations: &mut FaultObservations,
+    kind: AssertionKind,
+    id: &str,
+    holds: bool,
+) {
     observations.assertions.record(
         id.to_owned(),
         AssertionOutcome {
-            kind: AssertionKind::Sometimes,
+            kind,
             message: id.to_owned(),
             location: String::new(),
             passed: holds,
@@ -339,6 +348,26 @@ fn malformed_facts_are_refused() {
     }
     let unknown = serde_json::from_str::<KeyRequest>(r#"{"fact": 1}"#).unwrap_err();
     assert!(unknown.to_string().contains("unknown field"), "{unknown}");
+}
+
+#[test]
+fn a_fact_term_holds_only_for_a_sometimes_record() {
+    let keys = FaultKeys::requested(&request(None, &[R5]), 3).unwrap();
+    let term = |observations: &FaultObservations| {
+        keys.record(observations).values()[keys.catalog().slot("r5.transfer_timeout").unwrap()]
+    };
+    for kind in [
+        AssertionKind::Always,
+        AssertionKind::AlwaysOrUnreachable,
+        AssertionKind::Reachable,
+    ] {
+        let mut observations = FaultObservations::default();
+        assertion_record(&mut observations, kind, "transfer_timeout", true);
+        assert_eq!(term(&observations), 0, "{kind:?}");
+    }
+    let mut observations = FaultObservations::default();
+    fact_record(&mut observations, "transfer_timeout", true);
+    assert_eq!(term(&observations), 1);
 }
 
 #[test]

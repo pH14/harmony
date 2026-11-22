@@ -432,8 +432,7 @@ fn outcome(run: &FaultCampaignRun, target: &FaultTarget) -> Outcome {
     let objective_reached =
         !target.failed() && target.found_bug() && run.reproduced_by(target.observation());
     let disposition = disposition(target);
-    let doomed =
-        disposition == ExecutionDisposition::Runnable && target.rejected() && !objective_reached;
+    let doomed = !disposition.is_failed() && target.rejected() && !objective_reached;
     Outcome {
         doomed,
         objective_reached,

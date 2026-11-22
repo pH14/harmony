@@ -823,7 +823,7 @@ mod live {
                 super::recorded_input(&first.actions, &options.answers)?,
             )?;
         }
-        let summary = json!({
+        let mut summary = json!({
             "mode": "faultlab_campaign",
             "physical_placement": {
                 "requested": resources.placement,
@@ -867,6 +867,9 @@ mod live {
                 .into_iter()
                 .collect::<std::collections::BTreeMap<_, _>>(),
         });
+        if !archive.stage_falls.is_empty() {
+            summary["stage_falls"] = json!(archive.stage_falls);
+        }
         std::fs::write(
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,

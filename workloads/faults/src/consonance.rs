@@ -863,6 +863,10 @@ impl FaultTarget {
 
     fn observe_endpoint(&mut self) -> Option<u8> {
         let keys = self.keys.as_ref()?;
+        if self.observation.stop == FaultStop::Unexpected {
+            self.observed = UNOBSERVED;
+            return None;
+        }
         let departure = self.accumulator.stage();
         self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
         let arrival = self.observed.key.and(self.accumulator.stage());
@@ -5168,6 +5172,8 @@ mod tests {
         assert_eq!(report.stage_falls, [falls("quiet", 1), falls("busy", 0)]);
         let encoded = serde_json::to_value(&report).unwrap();
         assert_eq!(encoded["stage_falls"][0]["stage"], "quiet");
+        let decoded: crate::archive::FaultArchiveReport = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.stage_falls, report.stage_falls);
         let tier = merged_report(&Arc::new(crate::campaign::fixture_keys()), &result.actions);
         assert!(tier.stage_falls.is_empty());
         assert!(
@@ -5193,12 +5199,23 @@ mod tests {
         let json = |body: &str| -> consonance_client::session::SdkEvent {
             (0, 0, body.as_bytes().to_vec())
         };
-        let run = |endpoint: consonance_client::session::SdkEvent| {
+        let run = |endpoint: consonance_client::session::SdkEvent, quiescent: bool| {
             let mut target = unbooted_target().with_keys(Arc::clone(&keys));
-            LIVE.with(|slot| {
-                *slot.borrow_mut() =
-                    Some(scripted_batches_live(vec![vec![ticks_event(5), endpoint]]));
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                scripted: Some(ScriptedRuns {
+                    batches: vec![vec![ticks_event(5), endpoint]],
+                    ..ScriptedRuns::default()
+                }),
+                run_hashes: Some(if quiescent {
+                    Vec::new()
+                } else {
+                    vec![[17; 32]; 64]
+                }),
+                terminal_when_exhausted: quiescent,
+                ..fixture_session()
             });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
             let origin = target.snapshot().unwrap().unwrap();
             assert_eq!(origin.accumulator.stage(), Some(0));
             let result = crate::campaign::execute_job(
@@ -5223,26 +5240,34 @@ mod tests {
             assert_eq!(*target.accumulator(), origin.accumulator);
             (endpoint.outcome, merged_report(&keys, &result.actions))
         };
-        let (doomed, report) = run(json(
-            r#"{"antithesis_assert":{"id":"opened","assert_type":"sometimes","must_hit":true,"hit":true,"condition":true}}"#,
-        ));
-        assert!(doomed.doomed && !doomed.objective_reached);
-        assert_eq!(doomed.disposition, ExecutionDisposition::Terminal);
-        assert!(report.assertions.0["opened"].passed);
-        assert!(report.bugs.is_empty());
-        assert_eq!(
-            report.milestones,
-            crate::archive::FaultMilestones::default()
+        for quiescent in [false, true] {
+            let (doomed, report) = run(
+                json(
+                    r#"{"antithesis_assert":{"id":"opened","assert_type":"sometimes","must_hit":true,"hit":true,"condition":true}}"#,
+                ),
+                quiescent,
+            );
+            assert!(doomed.doomed && !doomed.objective_reached, "{quiescent}");
+            assert_eq!(doomed.disposition, ExecutionDisposition::Terminal);
+            assert!(report.assertions.0["opened"].passed);
+            assert!(report.bugs.is_empty());
+            assert_eq!(
+                report.milestones,
+                crate::archive::FaultMilestones::default()
+            );
+            assert_eq!(
+                report.progress_watermark,
+                crate::archive::FaultProgressWatermark::default()
+            );
+            assert_eq!(report.stage_falls.len(), 2);
+            assert!(report.stage_falls.iter().all(|falls| falls.records == 0));
+        }
+        let (finding, report) = run(
+            json(
+                r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
+            ),
+            false,
         );
-        assert_eq!(
-            report.progress_watermark,
-            crate::archive::FaultProgressWatermark::default()
-        );
-        assert_eq!(report.stage_falls.len(), 2);
-        assert!(report.stage_falls.iter().all(|falls| falls.records == 0));
-        let (finding, report) = run(json(
-            r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
-        ));
         assert!(finding.objective_reached && !finding.doomed);
         assert_eq!(finding.disposition, ExecutionDisposition::Runnable);
         assert_eq!(report.bugs.len(), 1);
@@ -6554,7 +6579,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_and_rebuild_stop_observations_exclude_previous_park_evidence() {
+    fn terminal_and_rebuild_stops_exclude_previous_park_evidence_and_a_rebuild_stop_has_no_key() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let events = [
             (5, 0, br#"{"harmony_park":{"site":1,"edges":2}}"#.to_vec()),
@@ -6620,6 +6645,7 @@ mod tests {
                 ..fixture_session()
             });
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let departure = target.accumulator().clone();
             target.apply(action);
             assert!(!target.failed());
             assert_eq!(
@@ -6642,6 +6668,11 @@ mod tests {
             );
             if rebuilding {
                 assert_eq!(target.observation.stop, FaultStop::Unexpected);
+                assert_eq!(target.observed(), UNOBSERVED);
+                assert_eq!(target.last_action_observations()[0].stage_fall, None);
+                assert_eq!(*target.accumulator(), departure);
+            } else {
+                assert!(target.observed().key.is_some());
             }
             LIVE.with(|slot| slot.borrow_mut().take());
         }
