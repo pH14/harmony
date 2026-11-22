@@ -584,8 +584,10 @@ is the searcher's
 `ChoicePolicy` (`profiles` `inherited` or `{"fixed": {"contrary": c, "hold":
 h}}`, and `untried_first`). The action byte holds the answer: a label, 254 for
 the default or 255 for an unresolved slot. For the searcher's stall report,
-`Reporting::choice_records` rebuilds an action's choice record from the depth it
-departed and its answer byte.
+the job marks each action that was an unresolved slot in its suffix with a
+choice record built from the depth it departed and its answer byte, and
+`Reporting::choice_records` returns those marks. An answer copied into a
+continuation or a splice tail carries no mark.
 
 `root_jobs`, an optional request field, replaces the campaign with random jobs
 from the start state: jobs of 64, 256 and 1,024 actions in turn until the goal

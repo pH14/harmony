@@ -835,12 +835,14 @@ impl Reporting for FaultWorkload {
     fn choice_records(
         &self,
         run: &FaultCampaignRun,
+        plan: Option<&ChoicePlan>,
+        index: usize,
         action: &FaultAction,
         _observations: &[FaultObservations],
     ) -> Vec<ChoiceRecord> {
-        nodes::asks(&run.vocabulary, action)
-            .then(|| nodes::row(&run.vocabulary, 0, 0, &action.operation))
-            .flatten()
+        plan.zip(action.guest)
+            .filter(|(plan, guest)| guest.seed == GuestChoices::from_plan(plan, index, None).seed)
+            .and_then(|_| nodes::row(&run.vocabulary, 0, 0, &action.operation))
             .map(|row| ChoiceRecord::new(nodes::NODE_SITE_ID, row.offered, row.default, row.taken))
             .into_iter()
             .collect()
@@ -3099,23 +3101,64 @@ mod tests {
     }
 
     #[test]
-    fn the_stall_report_rebuilds_the_node_site_an_action_asked() {
+    fn the_stall_report_gives_the_fault_node_rows_a_job_writes() {
+        use searcher::search::choice::{ChoicePolicy, ChoiceProfile};
         let game = game();
         let off = run(3, vec![1]);
         let on = FaultCampaignRun::any_bug(off.vocabulary.clone().with_untried_first_nodes(true));
+        let parked = FaultCampaignRun::any_bug(
+            on.vocabulary
+                .clone()
+                .with_instrumented_events(true)
+                .with_resume_park(Some(vec![7]))
+                .unwrap(),
+        );
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
         let ticks = std::num::NonZeroU16::MIN;
         let pause = FaultAction::from(FaultOperation::Pause(2, ticks));
+        let kill = FaultAction::from(FaultOperation::Kill(1, ticks));
         let wait = FaultAction::from(FaultOperation::Wait(ticks));
-        assert!(game.choice_records(&off, &pause, &[]).is_empty());
-        assert!(game.choice_records(&on, &wait, &[]).is_empty());
-        let records = game.choice_records(&on, &pause, &[]);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].site, nodes::NODE_SITE_ID);
-        assert_eq!(
-            records[0].offered,
-            pause.operation.target_offer(&on.vocabulary)
-        );
-        assert_eq!(records[0].resolved, 2);
-        assert!(records[0].offered.contains(&records[0].resolved));
+        let copied = kill.with_guest(GuestChoices {
+            contrary: 1,
+            hold: 2,
+            seed: 3,
+            untried: None,
+        });
+        let suffix = [pause, copied, wait, kill];
+        for run in [&off, &on, &parked] {
+            let resolved = nodes::resolve(&run.vocabulary, &suffix, Some(&plan), None, 0);
+            let executed = guest_suffix(&resolved.suffix, Some(&plan), None);
+            let mut asked = 0;
+            for (index, (action, row)) in executed.iter().zip(&resolved.rows).enumerate() {
+                let expected: Vec<ChoiceRecord> = row
+                    .iter()
+                    .map(|row| {
+                        ChoiceRecord::new(
+                            nodes::NODE_SITE_ID,
+                            row.offered.clone(),
+                            row.default,
+                            row.taken,
+                        )
+                    })
+                    .collect();
+                asked += expected.len();
+                assert_eq!(
+                    game.choice_records(run, Some(&plan), index, action, &[]),
+                    expected
+                );
+                assert!(
+                    game.choice_records(run, None, index, action, &[])
+                        .is_empty()
+                );
+            }
+            assert_eq!(asked, 2);
+        }
     }
 }

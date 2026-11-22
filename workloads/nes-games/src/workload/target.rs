@@ -2695,7 +2695,7 @@ mod moves {
             .expect("a genesis record");
         assert_eq!(before, lowered.record(&origin.observation.state).0);
         let mut moved = 0;
-        for action in &result.actions {
+        for (index, action) in result.actions.iter().enumerate() {
             let last = action.observations.last().expect("an arrival");
             let after = workload
                 .observation_record(&NesRun, last)
@@ -2704,7 +2704,8 @@ mod moves {
             assert_eq!(after.values().len(), names.len());
             moved += usize::from(after.values() != before.values());
             before = after;
-            let records = workload.choice_records(&NesRun, &action.action, &action.observations);
+            let records =
+                workload.choice_records(&NesRun, None, index, &action.action, &action.observations);
             let expected: Vec<_> = action
                 .observations
                 .iter()

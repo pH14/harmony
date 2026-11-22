@@ -306,6 +306,8 @@ pub struct Observation {
     after: State,
     work_in_job: u64,
     job_work: Option<u64>,
+    #[serde(skip)]
+    asked: Option<ChoiceRecord>,
 }
 pub struct Target<L = ()> {
     state: State,
@@ -746,24 +748,15 @@ impl<K: Keying> Reporting for Workload<K> {
     fn choice_records(
         &self,
         _: &(),
-        action: &u8,
+        _: Option<&ChoicePlan>,
+        _: usize,
+        _: &u8,
         observations: &[Observation],
     ) -> Vec<ChoiceRecord> {
-        match (&self.config, observations.first().map(|seen| seen.before)) {
-            (World::Picks(w), Some(State::Picks(s)))
-                if w.choices().is_some() && *action != picks::ASK =>
-            {
-                let depth = s.depth.min(w.depth - 1);
-                let pick = w.pick(depth);
-                vec![ChoiceRecord::new(
-                    u16::from(depth),
-                    pick.offered,
-                    pick.default,
-                    picks::Config::decode(*action),
-                )]
-            }
-            _ => Vec::new(),
-        }
+        observations
+            .iter()
+            .filter_map(|observation| observation.asked.clone())
+            .collect()
     }
     fn workload_identity_sha256(&self) -> String {
         postcard_value_sha256(&(
@@ -954,6 +947,7 @@ impl<K: Keying> TargetExecution for Workload<K> {
             after: target.state,
             work_in_job: target.work + cost,
             job_work: None,
+            asked: None,
         });
         target.work += cost;
         *milestones |= self.config.goal(target.state);
@@ -1006,6 +1000,24 @@ impl<K: Keying> TargetExecution for Workload<K> {
             stop,
         )?;
         let work = target.work - start_work;
+        if let World::Picks(w) = &self.config {
+            for (asked, action) in suffix.iter().zip(&mut result.actions) {
+                if *asked == picks::ASK
+                    && action.action != picks::ASK
+                    && let Some(observation) = action.observations.first_mut()
+                    && let State::Picks(s) = observation.before
+                {
+                    let depth = s.depth.min(w.depth - 1);
+                    let pick = w.pick(depth);
+                    observation.asked = Some(ChoiceRecord::new(
+                        u16::from(depth),
+                        pick.offered,
+                        pick.default,
+                        picks::Config::decode(action.action),
+                    ));
+                }
+            }
+        }
         for observation in result
             .actions
             .iter_mut()
@@ -2331,6 +2343,73 @@ mod tests {
     }
 
     #[test]
+    fn a_picks_job_reports_the_slots_it_resolved_and_not_a_copied_answer() {
+        use searcher::search::choice::{Choice, ChoiceProfile};
+        let layout = picks::Config {
+            depth: 6,
+            seed: 7,
+            default_right: 3,
+            draw: picks::Draw::Choices(ChoicePolicy::default()),
+        };
+        let copied = picks::Config::encode(Choice::Option(layout.pick(0).right));
+        let w: Workload = Workload {
+            keying: crate::Hand::<false>,
+            config: World::Picks(layout),
+            broken: false,
+            scale: None,
+        };
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut target = w.new_target().unwrap();
+        let origin = w.snapshot(&mut target).unwrap();
+        let result = w
+            .execute_job(
+                &(),
+                &mut target,
+                &origin,
+                &[],
+                false,
+                &[copied, picks::ASK],
+                RetentionPolicy::Unprobed,
+                searcher::search::rollout::RolloutStop::new(false).with_choices(Some(plan.clone())),
+            )
+            .unwrap();
+        let records: Vec<Vec<ChoiceRecord>> = result
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                w.choice_records(
+                    &(),
+                    Some(&plan),
+                    index,
+                    &action.action,
+                    &action.observations,
+                )
+            })
+            .collect();
+        let pick = layout.pick(1);
+        assert_eq!(
+            records,
+            [
+                Vec::new(),
+                vec![ChoiceRecord::new(
+                    1,
+                    pick.offered,
+                    pick.default,
+                    picks::Config::decode(result.actions[1].action),
+                )],
+            ]
+        );
+    }
+
+    #[test]
     fn restore_preserves_state_but_not_cumulative_work() {
         let w = world();
         let mut t = w.new_target().unwrap();
@@ -2728,6 +2807,7 @@ mod tests {
                     observations: vec![Observation {
                         work_in_job: 0,
                         job_work: None,
+                        asked: None,
                         before: State::Maze(before),
                         after: State::Maze(after),
                     }],
@@ -2753,6 +2833,7 @@ mod tests {
                     observations: vec![Observation {
                         work_in_job: 0,
                         job_work: None,
+                        asked: None,
                         before: State::Maze(before),
                         after: State::Maze(config.step(before, action)),
                     }],

@@ -370,6 +370,8 @@ pub trait Reporting: CampaignTypes {
     fn choice_records(
         &self,
         _run: &Self::Run,
+        _plan: Option<&ChoicePlan>,
+        _index: usize,
         _action: &Self::Action,
         _observations: &[Self::Observations],
     ) -> Vec<ChoiceRecord> {

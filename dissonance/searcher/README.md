@@ -1516,8 +1516,10 @@ drawn from the tier since then with the count of each action those jobs ran,
 and the tier's 16 most-selected states with their place, identity, selection
 counts and input length. The watch resets when the leading tier changes or
 yields again, so one stall writes one report. It reads the archive and changes
-nothing in selection, and a run with the report records the same stream as one
-without it.
+nothing in selection. A run whose budgets count executions or work records the
+same stream with the report as without it. Under a wall-clock budget no run
+repeats, and the report's work on the coordinator can move which job a deadline
+cancels.
 
 The report has three more parts (ours), each read through a `Reporting`
 method that a workload without a catalog or choice sites leaves empty:
@@ -1544,10 +1546,14 @@ method that a workload without a catalog or choice sites leaves empty:
 - `choice_sites` lists, per choice site that a job drawn from the leading tier
   asked, the site's index and name, its `asks`, the times each option was
   `offered` and the times each was `resolved` (the label played), keyed by the
-  site's declared label names or by the label index where the site names
-  none. The coordinator reads them from `Reporting::choice_records`, because
-  the choices a job resolved reach it only inside the workload's
-  observations. A state stands at a site when a job drawn from it asked the
+  site's declared label names or by `#` and the label index where the site
+  names none. A declared name that starts with `#` takes the index form too,
+  so two options never share a key. The coordinator reads them from
+  `Reporting::choice_records`, given the job's `ChoicePlan` and the action's
+  index in the suffix, because the choices a job resolved reach it only
+  inside the workload's observations or its own actions. A record counts a
+  choice the job itself resolved, so an answer copied into a continuation or
+  a splice tail is not counted again. A state stands at a site when a job drawn from it asked the
   site in its first action, and `top_states_at_site` counts the reported
   states that stand there. A site that no leading-tier job has asked does not
   appear. The search does not know which site the stalled step needs, so a

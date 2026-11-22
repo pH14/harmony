@@ -44,7 +44,9 @@ use crate::{
             Reporting, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
             postcard_value_sha256,
         },
-        choice::{Choice, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser},
+        choice::{
+            Choice, ChoicePlan, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser,
+        },
         rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome, RolloutStop},
     },
@@ -1305,6 +1307,8 @@ impl<G: Game, M: NesBackend<P>, P: SnapshotState> Reporting for NesWorkload<G, M
     fn choice_records(
         &self,
         _run: &NesRun,
+        _plan: Option<&ChoicePlan>,
+        _index: usize,
         _action: &ButtonChord,
         observations: &[ActionObservation<G::State>],
     ) -> Vec<ChoiceRecord> {
