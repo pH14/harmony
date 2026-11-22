@@ -1127,11 +1127,6 @@ mod runtime {
             if !exits.is_empty() || tick.is_multiple_of(OOM_POLL_TICKS) {
                 oom.observe(&read_vmstat()?)?;
             }
-            if tick.is_multiple_of(COMPACT_POLL_TICKS) {
-                for compacted in runtime.disks.compact()? {
-                    log(tick, &compacted);
-                }
-            }
             let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
             for &node in &deaths {
                 supervisor.note_event_ready(node, false);
@@ -1171,6 +1166,11 @@ mod runtime {
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
                 if let Some(check) = check.filter(|check| check.closing) {
                     remount_read_only_disk(check, nodes, supervisor, &mut runtime, tick)?;
+                }
+            }
+            if tick.is_multiple_of(COMPACT_POLL_TICKS) {
+                for compacted in runtime.disks.compact()? {
+                    log(tick, &compacted);
                 }
             }
             report_event_result(

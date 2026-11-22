@@ -177,6 +177,10 @@ impl Sectors for Growing<'_> {
         while self.image.0.len() < end {
             let start = self.image.0.len();
             let bytes = CHUNK_BYTES.min(RAM_DEVICE_BYTES as usize - start);
+            self.image
+                .0
+                .try_reserve(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
             self.image.0.resize(start + bytes, 0);
             self.device
                 .read_at((start / SECTOR_BYTES) as u64, &mut self.image.0[start..])?;
@@ -197,8 +201,9 @@ fn ram_path(index: u32) -> PathBuf {
 fn ioctl(file: &File, request: u64, argument: *mut libc::c_void) -> io::Result<()> {
     // SAFETY: `file` stays open for the call, and every caller passes a
     // request whose argument layout matches `argument`: a two-word range for
-    // the block discard request, or a device-mapper buffer at least as long
-    // as the `data_size` it declares.
+    // the block discard request, which the kernel only reads, so a pointer
+    // made from a shared borrow is sound, or a device-mapper buffer at least
+    // as long as the `data_size` it declares.
     let result = unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) };
     if result < 0 {
         return Err(io::Error::last_os_error());
@@ -561,6 +566,7 @@ impl Disk {
         let log_name = self.log_name();
         let (target, params) = DiskMode::Normal.table(&format!("{RAM_MAJOR}:{}", self.first));
         mapper.suspend(&name)?;
+        self.finish_fold()?;
         self.retire_log(mapper, target, &params)?;
         let mut log = self.open(1)?;
         let mut growing = Growing {
@@ -578,12 +584,20 @@ impl Disk {
         let mut folded = std::mem::take(&mut self.folded);
         let spec = self.spec.clone();
         let sectors = self.sectors();
-        self.folding = Some(std::thread::spawn(move || {
-            folded
-                .fold(&logged, &mut image, &mut base, sectors)
-                .map_err(|error| log_error(&spec, &error))?;
-            Ok(folded)
-        }));
+        let folding = std::thread::Builder::new()
+            .spawn(move || {
+                folded
+                    .fold(&logged, &mut image, &mut base, sectors)
+                    .map_err(|error| log_error(&spec, &error))?;
+                Ok(folded)
+            })
+            .map_err(|error| {
+                format!(
+                    "node {} disk {}: write log fold thread: {error}",
+                    self.spec.node, self.spec.path
+                )
+            })?;
+        self.folding = Some(folding);
         Ok(())
     }
 
@@ -753,11 +767,10 @@ impl Disks {
             if disk.folding.as_ref().is_some_and(JoinHandle::is_finished) {
                 disk.finish_fold()?;
             }
-            compacted.append(&mut disk.compacted);
-            if disk.folding.is_some() || disk.mode != DiskMode::Normal || !disk.log_full(mapper)? {
-                continue;
+            if disk.mode == DiskMode::Normal && disk.log_full(mapper)? {
+                disk.compact(mapper)?;
             }
-            disk.compact(mapper)?;
+            compacted.append(&mut disk.compacted);
         }
         Ok(compacted)
     }

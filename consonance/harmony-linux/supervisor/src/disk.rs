@@ -569,7 +569,10 @@ impl Folded {
             let mut entry = entry;
             if entry.changes_data() && !entry.discards() {
                 let start = held.len();
-                held.resize(start + entry.sectors as usize * SECTOR_BYTES, 0);
+                let bytes = entry.sectors as usize * SECTOR_BYTES;
+                held.try_reserve(bytes)
+                    .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+                held.resize(start + bytes, 0);
                 source.read_at(entry.data, &mut held[start..])?;
                 entry.data = (start / SECTOR_BYTES) as u64;
             }
