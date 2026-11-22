@@ -103,9 +103,11 @@ The faults package also accepts `setup`, `ready`, `workload`, `check`, `command`
 `exclude_faults` lists fault kinds the search never draws, for example
 `exclude_faults = ["disk_corrupt", "power_loss_all"]`; the
 [faults README](../workloads/faults/README.md#actions) lists the
-names. `resume_park = [SITE, ...]` follows every drawn pause with a park on the
-resumed node, aimed at one of the sites, and `resume_park = []` with a park at
-any edge; the faults README describes it. Lifecycle commands and node/hook commands are
+names. `resume_park = [SITE, ...]` draws each pause of a node with park
+instrumentation as a parked pause, one action whose park counts from the
+resume and is aimed at one of the sites, and `resume_park = []` aims the park
+at any edge; the host then adds a `park-page` line to the supervisor bundle.
+The [faults README](../workloads/faults/README.md#actions) describes it. Lifecycle commands and node/hook commands are
 argument arrays; an explicit shell is required for shell syntax. Nodes, lifecycle
 commands and hooks compile into a supervisor bundle. Omit them to use the image's
 bundle. Services share the image filesystem. See the

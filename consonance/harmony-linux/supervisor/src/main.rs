@@ -123,7 +123,8 @@ mod runtime {
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
-    use harmony_supervisor::process;
+    use harmony_supervisor::page::{PageMapping, PageRecord};
+    use harmony_supervisor::process::{self, ChildStop};
     use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{HookFaults, RecoveryReadiness, RecoveryWatch};
     use harmony_supervisor::regs::{
@@ -141,8 +142,8 @@ mod runtime {
     use hypercall_doorbell::linux::DeviceTransport;
     use hypercall_proto::MAX_PAYLOAD;
     use process_proto::events::{
-        self, Command as EventCommand, Reply as EventReply, Report as EventReport, decode_reply,
-        decode_report,
+        self, Command as EventCommand, ParkedOutcome, Reply as EventReply, Report as EventReport,
+        decode_reply, decode_report,
     };
     use process_proto::{STANDING_NAMESPACE, encode_standing_question};
     use std::collections::VecDeque;
@@ -155,6 +156,9 @@ mod runtime {
     use std::process::{Child, ExitStatus, Stdio};
     use std::thread;
     use std::time::Duration;
+
+    const PARK_STOP_ATTEMPTS: u32 = 50;
+    const PARK_STOP_STEP: Duration = Duration::from_millis(1);
 
     const CATALOG: [Point; 31] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
@@ -214,11 +218,13 @@ mod runtime {
         spec: NodeSpec,
         child: Option<Child>,
         events: Option<EventChannel>,
+        page: Option<PageMapping>,
     }
 
     struct SpawnedNode {
         child: Child,
         events: EventChannel,
+        page: Option<PageMapping>,
     }
 
     struct Hook {
@@ -240,6 +246,29 @@ mod runtime {
         child: Child,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct PagePark {
+        generation: u64,
+        tick: u64,
+        cleared_in_batch: bool,
+        adopted: bool,
+        fired: bool,
+    }
+
+    impl PagePark {
+        fn outcome(self) -> ParkedOutcome {
+            if self.fired {
+                ParkedOutcome::Fired
+            } else if self.cleared_in_batch {
+                ParkedOutcome::ClearedInBatch
+            } else if self.adopted {
+                ParkedOutcome::Expired
+            } else {
+                ParkedOutcome::Unadopted
+            }
+        }
+    }
+
     struct EventChannel {
         control: UnixStream,
         report: UnixStream,
@@ -252,6 +281,9 @@ mod runtime {
         kill_arm_start: Option<u64>,
         park_armed: bool,
         park_seen: u64,
+        page_published: u64,
+        page_park: Option<PagePark>,
+        parked_outcomes: Vec<ParkedOutcome>,
         coverage_seen: (u64, u64),
         reported_kill_pending: bool,
         ready: bool,
@@ -283,6 +315,9 @@ mod runtime {
                 kill_arm_start: None,
                 park_armed: false,
                 park_seen: 0,
+                page_published: 0,
+                page_park: None,
+                parked_outcomes: Vec::new(),
                 coverage_seen: (0, 0),
                 reported_kill_pending: false,
                 ready: false,
@@ -306,6 +341,7 @@ mod runtime {
             self.outbound = None;
             self.pending = None;
             self.park_armed = false;
+            self.abandon_page_park();
             supervisor.note_event_park_held(node, false);
             self.reported_kill_pending = false;
             self.drain_reports(node, supervisor, tick, true);
@@ -325,6 +361,55 @@ mod runtime {
             } else {
                 self.deferred.push_back(command);
             }
+        }
+
+        fn abandon_page_park(&mut self) {
+            if let Some(park) = self.page_park.take() {
+                self.parked_outcomes.push(if park.fired {
+                    ParkedOutcome::Fired
+                } else {
+                    ParkedOutcome::Retired
+                });
+            }
+        }
+
+        fn note_page_park(&mut self, generation: u64, tick: u64) {
+            if let Some(previous) = self.page_park.take() {
+                self.parked_outcomes.push(previous.outcome());
+            }
+            if self.failed || self.retired {
+                self.parked_outcomes.push(ParkedOutcome::Retired);
+                return;
+            }
+            self.park_armed = true;
+            self.page_published = generation;
+            self.page_park = Some(PagePark {
+                generation,
+                tick,
+                cleared_in_batch: false,
+                adopted: false,
+                fired: false,
+            });
+        }
+
+        fn note_page_clear(&mut self, generation: u64, tick: u64) {
+            if self.failed || self.retired {
+                return;
+            }
+            self.page_published = generation;
+            if let Some(park) = self.page_park.as_mut()
+                && park.tick == tick
+            {
+                park.cleared_in_batch = true;
+            }
+        }
+
+        fn note_parked_unpublished(&mut self, outcome: ParkedOutcome) {
+            self.parked_outcomes.push(outcome);
+        }
+
+        fn take_parked_outcomes(&mut self) -> Vec<ParkedOutcome> {
+            std::mem::take(&mut self.parked_outcomes)
         }
 
         fn poll_status(&mut self) {
@@ -386,6 +471,7 @@ mod runtime {
                 log(tick, &format!("node {node} event transport: {detail}"));
             }
             self.failed = true;
+            self.abandon_page_park();
             if fatal && self.transport_error.is_none() {
                 self.transport_error = Some(detail.to_string());
             }
@@ -558,7 +644,14 @@ mod runtime {
                     self.park_armed = true;
                 }
                 Ok(EventReply::Echo(EventCommand::DisarmPark)) => {}
-                Ok(EventReply::ParkStatus { fires, armed, held }) => {
+                Ok(EventReply::ParkStatus {
+                    fires,
+                    armed,
+                    held,
+                    page_generation,
+                    page_armed,
+                    page_fired,
+                }) => {
                     let was_armed = self.park_armed;
                     if fires >= self.park_seen {
                         let delta = fires - self.park_seen;
@@ -568,8 +661,17 @@ mod runtime {
                         self.park_seen = fires;
                     }
                     supervisor.note_event_park_held(node, held && !process_dead);
-                    if !armed && !held {
+                    if let Some(park) = self.page_park.as_mut()
+                        && page_armed == park.generation
+                    {
+                        park.adopted = true;
+                        park.fired |= page_fired;
+                    }
+                    if !armed && !held && page_generation >= self.page_published {
                         self.park_armed = false;
+                        if let Some(park) = self.page_park.take() {
+                            self.parked_outcomes.push(park.outcome());
+                        }
                         if was_armed {
                             supervisor.note_process_transition();
                         }
@@ -756,12 +858,14 @@ mod runtime {
                 spec: node.clone(),
                 child: None,
                 events: None,
+                page: None,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            let spawned = spawn_node(spec, &node.spec, 0)?;
+            let spawned = spawn_node(spec, &node.spec, bundle.park_page, 0)?;
             node.child = Some(spawned.child);
             node.events = Some(spawned.events);
+            node.page = spawned.page;
             log(0, &format!("start node {id}"));
         }
 
@@ -1084,6 +1188,7 @@ mod runtime {
                 sdk,
                 supervisor,
             )?;
+            report_parked_pauses(nodes, &mut runtime.assertion_output)?;
             let ready_hooks = poll_recovery(
                 spec,
                 bundle.ready.as_deref(),
@@ -1231,6 +1336,27 @@ mod runtime {
             log(tick, &format!("node {node} ended on its own: {exit}"));
             process::write_record(output, &process::node_exit_record(Some((node, &exit))))
                 .map_err(|error| format!("node exit record: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn write_parked_outcomes(
+        node: u16,
+        outcomes: Vec<ParkedOutcome>,
+        output: &mut File,
+    ) -> Result<(), String> {
+        for outcome in outcomes {
+            process::write_record(output, &process::parked_pause_record(node, outcome))
+                .map_err(|error| format!("parked pause record: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn report_parked_pauses(nodes: &mut [Node], output: &mut File) -> Result<(), String> {
+        for (id, node) in nodes.iter_mut().enumerate() {
+            if let Some(events) = node.events.as_mut() {
+                write_parked_outcomes(id as u16, events.take_parked_outcomes(), output)?;
+            }
         }
         Ok(())
     }
@@ -1403,12 +1529,65 @@ mod runtime {
                     supervisor.note_process_transition();
                 }
             }
+            Action::ContParked(node, park) => {
+                if let Some(entry) = nodes.get_mut(usize::from(node)) {
+                    let stop = match entry.child.as_ref() {
+                        Some(_) if entry.page.is_none() => {
+                            return Err(format!(
+                                "resume node {node} with an event park: the bundle has no park-page"
+                            ));
+                        }
+                        Some(child) => process::await_child_stop(
+                            child.id(),
+                            PARK_STOP_ATTEMPTS,
+                            PARK_STOP_STEP,
+                        )
+                        .map_err(|error| format!("await node {node} stop: {error}"))?,
+                        None => ChildStop::Gone,
+                    };
+                    let unpublished = match (stop, entry.page.as_ref()) {
+                        (ChildStop::Stopped, Some(page)) => {
+                            let generation = page.page().publish(PageRecord::of(park));
+                            if let Some(events) = entry.events.as_mut() {
+                                events.note_page_park(generation, tick);
+                            }
+                            None
+                        }
+                        (ChildStop::Running, _) => Some(ParkedOutcome::NotStopped),
+                        _ => Some(ParkedOutcome::NotRunning),
+                    };
+                    if let Some(outcome) = unpublished
+                        && let Some(events) = entry.events.as_mut()
+                    {
+                        events.note_parked_unpublished(outcome);
+                    }
+                }
+                if signal_node(nodes, node, libc::SIGCONT)? {
+                    supervisor.note_process_transition();
+                }
+            }
+            Action::ClearParked(node) => {
+                if let Some(entry) = nodes.get_mut(usize::from(node))
+                    && entry.child.is_some()
+                    && let Some(page) = entry.page.as_ref()
+                {
+                    let generation = page.page().publish(PageRecord::CLEAR);
+                    if let Some(events) = entry.events.as_mut() {
+                        events.note_page_clear(generation, tick);
+                    }
+                }
+            }
             Action::Start { node, after_fault } => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
                 };
                 if let Some(events) = entry.events.as_mut() {
                     events.retire(node, supervisor, tick);
+                    write_parked_outcomes(
+                        node,
+                        events.take_parked_outcomes(),
+                        &mut runtime.assertion_output,
+                    )?;
                 }
                 if entry.child.is_some() {
                     runtime.disks.release_stalled(node)?;
@@ -1423,10 +1602,16 @@ mod runtime {
                         &mut runtime.assertion_output,
                     )?;
                 }
-                let spawned = spawn_node(spec, &entry.spec, supervisor.take_start_clock(node))?;
+                let spawned = spawn_node(
+                    spec,
+                    &entry.spec,
+                    bundle.park_page,
+                    supervisor.take_start_clock(node),
+                )?;
                 supervisor.note_event_ready(node, false);
                 entry.child = Some(spawned.child);
                 entry.events = Some(spawned.events);
+                entry.page = spawned.page;
                 supervisor.note_process_transition();
                 if bundle.ready.is_some() {
                     if let Some(probe) = runtime.recovery_probe.take() {
@@ -1460,7 +1645,6 @@ mod runtime {
                         edges: park.edges,
                         hold_nanos: park.hold_nanos,
                         target: park.target,
-                        from_arm: park.from_arm,
                     });
                 }
             }
@@ -1665,6 +1849,7 @@ mod runtime {
     fn spawn_node(
         execution: &execution_proto::ExecutionSpec,
         node: &NodeSpec,
+        park_page: bool,
         clock_offset_nanos: i64,
     ) -> Result<SpawnedNode, String> {
         let clock = if time_namespaces() {
@@ -1688,21 +1873,41 @@ mod runtime {
             .map_err(|error| format!("node {:?} event report inheritance: {error}", node.name))?;
         let control_fd = inherited_control.as_raw_fd();
         let report_fd = inherited_report.as_raw_fd();
+        let page = park_page
+            .then(PageMapping::create)
+            .transpose()
+            .map_err(|error| format!("node {:?} event page: {error}", node.name))?;
+        let inherited_page = page
+            .as_ref()
+            .map(|page| inherit_event_fd(page.fd()))
+            .transpose()
+            .map_err(|error| format!("node {:?} event page inheritance: {error}", node.name))?;
         let mut command = process::node_command(execution, &node.argv, clock)
             .map_err(|error| format!("node {:?}: {error}", node.name))?;
         command
             .env("HARMONY_EVENT_KILL_FD", control_fd.to_string())
             .env("HARMONY_EVENT_REPORT_FD", report_fd.to_string());
+        if let Some(inherited) = inherited_page.as_ref() {
+            command.env("HARMONY_EVENT_PAGE_FD", inherited.as_raw_fd().to_string());
+        }
         let child = command
             .spawn()
             .map_err(|error| format!("node {:?}: {error}", node.name))?;
+        if let Some(page) = page.as_ref() {
+            page.page().set_node(child.id());
+        }
         drop(inherited_control);
         drop(inherited_report);
-        Ok(SpawnedNode { child, events })
+        drop(inherited_page);
+        Ok(SpawnedNode {
+            child,
+            events,
+            page,
+        })
     }
 
     fn inherit_event_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
-        // SAFETY: `fd` originates from one of the socket pairs created by
+        // SAFETY: `fd` originates from a socket pair or event page created by
         // `spawn_node` and remains open while `dup` makes an owned copy.
         let duplicate = unsafe { libc::dup(fd) };
         if duplicate < 0 {
@@ -1867,8 +2072,8 @@ mod runtime {
     #[cfg(test)]
     mod tests {
         use super::{
-            Action, EventChannel, EventCommand, Supervisor, events, inherit_event_fd,
-            node_exit_violations, retire_node_child,
+            Action, EventChannel, EventCommand, ParkedOutcome, Supervisor, events,
+            inherit_event_fd, node_exit_violations, retire_node_child,
         };
         use harmony_supervisor::reconcile::ActiveWindows;
         use harmony_supervisor::recovery::RecoveryReadiness;
@@ -2216,6 +2421,149 @@ mod runtime {
             channel.drain_pending_on_death(0, &mut supervisor, 2);
             assert_eq!(supervisor.counters().event_park_held, 0);
             assert_eq!(supervisor.counters().event_park_fires, 1);
+        }
+
+        struct PageParkPeer {
+            channel: EventChannel,
+            supervisor: Supervisor,
+            child_control: UnixStream,
+            _child_report: UnixStream,
+        }
+
+        impl PageParkPeer {
+            fn new() -> Self {
+                let (control, child_control) = UnixStream::pair().expect("control pair");
+                let (report, child_report) = UnixStream::pair().expect("report pair");
+                let mut channel = EventChannel::new(control, report).expect("event channel");
+                channel.ready = true;
+                Self {
+                    channel,
+                    supervisor: Supervisor::new(1),
+                    child_control,
+                    _child_report: child_report,
+                }
+            }
+
+            fn status(&mut self, flags: u64, seen: u64, armed: u64) {
+                self.channel.queue(EventCommand::ParkStatus);
+                self.channel.drive(0, &mut self.supervisor, 1);
+                let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+                (&self.child_control)
+                    .read_exact(&mut request)
+                    .expect("park status request");
+                let mut reply = request;
+                reply[16..24].copy_from_slice(&flags.to_le_bytes());
+                reply[24..32].copy_from_slice(&seen.to_le_bytes());
+                reply[32..40].copy_from_slice(&armed.to_le_bytes());
+                (&self.child_control)
+                    .write_all(&reply)
+                    .expect("park status reply");
+                self.channel.drive(0, &mut self.supervisor, 1);
+            }
+
+            fn outcomes(&mut self) -> Vec<ParkedOutcome> {
+                self.channel.take_parked_outcomes()
+            }
+        }
+
+        const ARMED: u64 = events::EVENT_PARK_STATUS_ARMED;
+        const PAGE_FIRED: u64 = events::EVENT_PARK_STATUS_PAGE_FIRED;
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_page_park_stays_armed_until_a_reply_has_seen_its_clear() {
+            let mut peer = PageParkPeer::new();
+            peer.channel.note_page_park(2, 1);
+            peer.status(0, 0, 0);
+            assert!(peer.channel.park_armed);
+            peer.status(ARMED, 2, 2);
+            assert!(peer.channel.park_armed);
+            peer.channel.note_page_clear(4, 2);
+            peer.status(ARMED, 2, 2);
+            assert!(peer.channel.park_armed);
+            assert!(peer.channel.pending_faults() > 0);
+            peer.status(0, 2, 2);
+            assert!(peer.channel.park_armed);
+            assert!(peer.outcomes().is_empty());
+            peer.status(0, 4, 2);
+            assert!(!peer.channel.park_armed);
+            assert_eq!(peer.channel.pending_faults(), 0);
+            assert_eq!(peer.outcomes(), [ParkedOutcome::Expired]);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_page_park_ends_with_the_outcome_its_replies_showed() {
+            let mut fired = PageParkPeer::new();
+            fired.channel.note_page_park(2, 1);
+            fired.status(ARMED, 2, 2);
+            fired.status(ARMED | PAGE_FIRED, 2, 2);
+            fired.channel.note_page_clear(4, 3);
+            fired.status(PAGE_FIRED, 4, 2);
+            assert_eq!(fired.outcomes(), [ParkedOutcome::Fired]);
+
+            let mut unadopted = PageParkPeer::new();
+            unadopted.channel.note_page_park(2, 1);
+            unadopted.status(0, 2, 0);
+            unadopted.channel.note_page_clear(4, 3);
+            unadopted.status(0, 4, 0);
+            assert_eq!(unadopted.outcomes(), [ParkedOutcome::Unadopted]);
+
+            let mut batch = PageParkPeer::new();
+            batch.channel.note_page_park(2, 1);
+            batch.channel.note_page_clear(4, 1);
+            batch.status(0, 4, 0);
+            assert_eq!(batch.outcomes(), [ParkedOutcome::ClearedInBatch]);
+
+            let mut earlier = PageParkPeer::new();
+            earlier.channel.note_page_park(2, 1);
+            earlier.status(ARMED | PAGE_FIRED, 2, 2);
+            earlier.channel.note_page_park(6, 5);
+            assert_eq!(earlier.outcomes(), [ParkedOutcome::Fired]);
+            earlier.status(PAGE_FIRED, 6, 2);
+            earlier.channel.note_page_clear(8, 7);
+            earlier.status(PAGE_FIRED, 8, 2);
+            assert_eq!(earlier.outcomes(), [ParkedOutcome::Unadopted]);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_page_park_the_supervisor_stops_following_ends_as_retired_unless_it_fired() {
+            let mut restarted = PageParkPeer::new();
+            restarted.channel.note_page_park(2, 1);
+            restarted.status(ARMED, 2, 2);
+            restarted.channel.retire(0, &mut restarted.supervisor, 2);
+            assert_eq!(restarted.outcomes(), [ParkedOutcome::Retired]);
+            restarted.channel.note_page_park(4, 3);
+            assert_eq!(restarted.outcomes(), [ParkedOutcome::Retired]);
+
+            let mut fired = PageParkPeer::new();
+            fired.channel.note_page_park(2, 1);
+            fired.status(ARMED | PAGE_FIRED, 2, 2);
+            fired.channel.retire(0, &mut fired.supervisor, 2);
+            assert_eq!(fired.outcomes(), [ParkedOutcome::Fired]);
+
+            let mut broken = PageParkPeer::new();
+            broken.channel.note_page_park(2, 1);
+            broken.channel.fail_protocol(0, 2, "test");
+            assert_eq!(broken.outcomes(), [ParkedOutcome::Retired]);
+            broken.channel.note_page_park(4, 3);
+            assert_eq!(broken.outcomes(), [ParkedOutcome::Retired]);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_parked_pause_the_supervisor_did_not_publish_keeps_its_reason() {
+            let (control, _child_control) = UnixStream::pair().expect("control pair");
+            let (report, _child_report) = UnixStream::pair().expect("report pair");
+            let mut channel = EventChannel::new(control, report).expect("event channel");
+            channel.note_parked_unpublished(ParkedOutcome::NotStopped);
+            channel.note_parked_unpublished(ParkedOutcome::NotRunning);
+            assert_eq!(
+                channel.take_parked_outcomes(),
+                [ParkedOutcome::NotStopped, ParkedOutcome::NotRunning]
+            );
+            assert!(channel.take_parked_outcomes().is_empty());
         }
 
         #[test]

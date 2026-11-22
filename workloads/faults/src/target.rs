@@ -6,6 +6,7 @@ use std::num::NonZeroU16;
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
 use process_proto::EVERY_NODE;
+use process_proto::events::ParkedOutcome;
 use process_proto::registers as reg;
 use searcher::search::assertion::{Accumulator, Observed};
 use searcher::target::ExitKind;
@@ -78,7 +79,7 @@ pub enum FaultOperation {
         ticks: NonZeroU16,
     },
     EndFaults(NonZeroU16),
-    EventParkFromArm {
+    PauseParked {
         node: u16,
         edges: u32,
         hold_us: u32,
@@ -99,7 +100,8 @@ impl FaultOperation {
             | Self::DiskError(node, _)
             | Self::DiskStall(node, _)
             | Self::DiskCorrupt(node, _)
-            | Self::Clock { node, .. } => Some(node),
+            | Self::Clock { node, .. }
+            | Self::PauseParked { node, .. } => Some(node),
             Self::Wait(_)
             | Self::KillAll(_)
             | Self::PowerLossAll(_)
@@ -107,17 +109,18 @@ impl FaultOperation {
             | Self::EventPark { .. }
             | Self::Hook(..)
             | Self::ClockAll { .. }
-            | Self::EndFaults(_)
-            | Self::EventParkFromArm { .. } => None,
+            | Self::EndFaults(_) => None,
         }
     }
 
     #[must_use]
     pub fn target_offer(&self, vocabulary: &FaultVocabulary) -> Vec<u16> {
         match self {
-            Self::Kill(..) | Self::Pause(..) | Self::Restart(..) | Self::Clock { .. } => {
-                (0..vocabulary.nodes()).collect()
-            }
+            Self::Kill(..)
+            | Self::Pause(..)
+            | Self::PauseParked { .. }
+            | Self::Restart(..)
+            | Self::Clock { .. } => (0..vocabulary.nodes()).collect(),
             Self::PowerLoss(..) | Self::DiskError(..) | Self::DiskStall(..) => {
                 vocabulary.disks().to_vec()
             }
@@ -129,8 +132,7 @@ impl FaultOperation {
             | Self::EventPark { .. }
             | Self::Hook(..)
             | Self::ClockAll { .. }
-            | Self::EndFaults(_)
-            | Self::EventParkFromArm { .. } => Vec::new(),
+            | Self::EndFaults(_) => Vec::new(),
         }
     }
 
@@ -139,6 +141,19 @@ impl FaultOperation {
         match self {
             Self::Kill(_, ticks) => Self::Kill(node, ticks),
             Self::Pause(_, ticks) => Self::Pause(node, ticks),
+            Self::PauseParked {
+                edges,
+                hold_us,
+                ticks,
+                target,
+                ..
+            } => Self::PauseParked {
+                node,
+                edges,
+                hold_us,
+                ticks,
+                target,
+            },
             Self::Restart(_, ticks) => Self::Restart(node, ticks),
             Self::PowerLoss(_, ticks) => Self::PowerLoss(node, ticks),
             Self::DiskError(_, ticks) => Self::DiskError(node, ticks),
@@ -162,8 +177,7 @@ impl FaultOperation {
             | Self::EventPark { .. }
             | Self::Hook(..)
             | Self::ClockAll { .. }
-            | Self::EndFaults(_)
-            | Self::EventParkFromArm { .. }) => other,
+            | Self::EndFaults(_)) => other,
         }
     }
 
@@ -181,7 +195,7 @@ impl FaultOperation {
             | Self::DiskCorrupt(_, ticks)
             | Self::EventKill { ticks, .. }
             | Self::EventPark { ticks, .. }
-            | Self::EventParkFromArm { ticks, .. }
+            | Self::PauseParked { ticks, .. }
             | Self::Pause(_, ticks)
             | Self::Restart(_, ticks)
             | Self::Hook(_, ticks)
@@ -220,13 +234,13 @@ impl FaultOperation {
                 ticks,
                 target,
             },
-            Self::EventParkFromArm {
+            Self::PauseParked {
                 node,
                 edges,
                 hold_us,
                 target,
                 ..
-            } => Self::EventParkFromArm {
+            } => Self::PauseParked {
                 node,
                 edges,
                 hold_us: fitted_hold_us(hold_us, ticks),
@@ -385,7 +399,7 @@ impl FaultOperation {
                 put(&[15]);
                 put(&ticks.get().to_le_bytes());
             }
-            Self::EventParkFromArm {
+            Self::PauseParked {
                 node,
                 edges,
                 hold_us,
@@ -488,15 +502,14 @@ impl FaultAction {
     }
 
     #[must_use]
-    pub fn as_wait(self) -> Self {
-        let ticks = u16::try_from(self.ticks())
+    pub fn as_wait(self) -> Option<Self> {
+        let ticks = u16::try_from(action_ticks(&self))
             .ok()
-            .and_then(NonZeroU16::new)
-            .unwrap_or(NonZeroU16::MIN);
-        Self {
+            .and_then(NonZeroU16::new)?;
+        Some(Self {
             operation: FaultOperation::Wait(ticks),
             ..self
-        }
+        })
     }
 
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
@@ -604,7 +617,7 @@ impl ActionWindows {
         #[cfg(test)]
         TIMELINE_STEPS.with(|steps| steps.set(steps.get() + 1));
         start
-            .checked_add(action.ticks() * SUPERVISOR_TICK_NANOS)
+            .checked_add(action_ticks(action) * SUPERVISOR_TICK_NANOS)
             .ok_or_else(|| "action timeline overflows guest time".to_owned())
     }
 
@@ -655,7 +668,10 @@ impl ActionWindows {
 
 #[must_use]
 pub fn action_ticks(action: &FaultAction) -> u64 {
-    action.ticks()
+    match action.operation {
+        FaultOperation::PauseParked { ticks, .. } => u64::from(ticks.get()) * 2,
+        _ => action.ticks(),
+    }
 }
 
 fn restart_end(start: u64, horizon: u64) -> u64 {
@@ -684,7 +700,7 @@ fn event_park_delta(
     edges: u32,
     hold_us: u32,
     target: Option<ParkTarget>,
-    from_arm: bool,
+    at_resume: bool,
     window: (u64, u64),
 ) -> ActionDelta {
     ActionDelta {
@@ -695,7 +711,7 @@ fn event_park_delta(
                     edges,
                     hold: Span(u64::from(hold_us).saturating_mul(1_000)),
                     target,
-                    from_arm,
+                    at_resume,
                 },
             ),
             window,
@@ -721,13 +737,24 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
             target,
             ..
         } => event_park_delta(node, edges, hold_us, target, false, window),
-        FaultOperation::EventParkFromArm {
+        FaultOperation::PauseParked {
             node,
             edges,
             hold_us,
             target,
             ..
-        } => event_park_delta(node, edges, hold_us, target, true, window),
+        } => {
+            let resume = start.saturating_add(horizon / 2);
+            let mut delta = event_park_delta(node, edges, hold_us, target, true, (resume, end));
+            delta.standing.insert(
+                0,
+                standing(
+                    process_target(node, &Fault::ProcPause(Span(resume - start))),
+                    (start, resume),
+                ),
+            );
+            delta
+        }
         FaultOperation::Kill(node, _) => ActionDelta {
             standing: vec![standing(
                 process_target(node, &Fault::ProcRestart),
@@ -893,6 +920,8 @@ pub struct SdkCapture {
     pub undecided_keys: u64,
     pub parks: Vec<ParkLanding>,
     pub park_reads: Vec<ParkRead>,
+    #[serde(default)]
+    pub parked_pauses: Vec<ParkedPause>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -909,6 +938,14 @@ pub struct ParkRead {
     pub edges: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkedPause {
+    pub moment: u64,
+    pub node: u16,
+    #[serde(with = "crate::assertion::parked_outcome_name")]
+    pub outcome: ParkedOutcome,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CompletedCheck {
     pub run: u64,
@@ -918,6 +955,12 @@ pub struct CompletedCheck {
 }
 
 impl SdkCapture {
+    fn keep_parks_after(&mut self, moment: u64) {
+        self.parks.retain(|park| park.moment > moment);
+        self.park_reads.retain(|read| read.moment > moment);
+        self.parked_pauses.retain(|pause| pause.moment > moment);
+    }
+
     fn note_completed_check(
         &mut self,
         run: u64,
@@ -1001,8 +1044,7 @@ impl SdkDecoder {
         }
         let state = std::sync::Arc::make_mut(&mut self.state);
         state.action_after = Some(after);
-        state.capture.parks.retain(|park| park.moment > after);
-        state.capture.park_reads.retain(|read| read.moment > after);
+        state.capture.keep_parks_after(after);
     }
     pub fn retained_allocation(&self) -> (usize, usize) {
         fn tree_entry<K, V>() -> usize {
@@ -1037,6 +1079,7 @@ impl SdkDecoder {
         bytes += self.state.check_undecided.len() * tree_entry::<u64, u64>();
         bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
         bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
+        bytes += capture.parked_pauses.capacity() * std::mem::size_of::<ParkedPause>();
         if let Some(check) = &capture.completed_check {
             bytes += check.points.capacity() * std::mem::size_of::<String>();
             bytes += check.points.iter().map(String::capacity).sum::<usize>();
@@ -1078,6 +1121,13 @@ impl SdkDecoder {
                             moment: *moment,
                             site: read.site,
                             edges: read.edges,
+                        });
+                    }
+                    if let Some(pause) = event.parked_pause {
+                        capture.parked_pauses.push(ParkedPause {
+                            moment: *moment,
+                            node: pause.node,
+                            outcome: pause.outcome,
                         });
                     }
                     if let Some((id, outcome)) = event.assertion {
@@ -1132,8 +1182,7 @@ impl SdkDecoder {
         }
 
         if let Some(after) = state.action_after {
-            capture.parks.retain(|park| park.moment > after);
-            capture.park_reads.retain(|read| read.moment > after);
+            capture.keep_parks_after(after);
         }
         state.last_moment = events.last().map_or(state.last_moment, |event| event.0);
         state.offset = offset;
@@ -1290,6 +1339,13 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                         edges: read.edges,
                     });
                 }
+                if let Some(pause) = event.parked_pause {
+                    capture.parked_pauses.push(ParkedPause {
+                        moment: *moment,
+                        node: pause.node,
+                        outcome: pause.outcome,
+                    });
+                }
                 if let Some((id, outcome)) = event.assertion {
                     if let Some(pid) = event.pid
                         && outcome.feeds_the_key()
@@ -1411,6 +1467,8 @@ pub struct FaultObservations {
     #[serde(default)]
     pub park_reads: Vec<ParkRead>,
     #[serde(default)]
+    pub parked_pauses: Vec<ParkedPause>,
+    #[serde(default)]
     pub fault_free_checks_started: u64,
     #[serde(default)]
     pub fault_free_checks_finished: u64,
@@ -1466,6 +1524,7 @@ impl FaultObservations {
             infrastructure_failure: false,
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
+            parked_pauses: capture.parked_pauses.clone(),
             fault_free_checks_started: value(reg::FAULT_FREE_CHECKS_STARTED),
             fault_free_checks_finished: value(reg::FAULT_FREE_CHECKS_FINISHED),
             faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
@@ -1473,6 +1532,18 @@ impl FaultObservations {
             fault_free_check_passed: value(reg::FAULT_FREE_CHECK_PASSED),
             stage_fall: None,
         }
+    }
+
+    pub fn keep_parks_after(&mut self, moment: u64) {
+        self.parks.retain(|park| park.moment > moment);
+        self.park_reads.retain(|read| read.moment > moment);
+        self.parked_pauses.retain(|pause| pause.moment > moment);
+    }
+
+    pub fn clear_parks(&mut self) {
+        self.parks.clear();
+        self.park_reads.clear();
+        self.parked_pauses.clear();
     }
 
     #[must_use]
@@ -1679,6 +1750,22 @@ mod tests {
             WINDOWS.window(&mixed, 2).unwrap(),
             (ROOT + 10 * TICK, ROOT + 12 * TICK)
         );
+        let parked = [
+            FaultOperation::PauseParked {
+                node: 0,
+                edges: 1,
+                hold_us: 10_000,
+                ticks: ticks(3),
+                target: None,
+            },
+            FaultOperation::Kill(0, ticks(3)),
+        ]
+        .map(FaultAction::from);
+        assert_eq!(WINDOWS.window(&parked, 0).unwrap(), (ROOT, ROOT + 6 * TICK));
+        assert_eq!(
+            WINDOWS.window(&parked, 1).unwrap(),
+            (ROOT + 6 * TICK, ROOT + 9 * TICK)
+        );
     }
 
     #[test]
@@ -1719,13 +1806,6 @@ mod tests {
                 ticks: ticks(9),
                 target: ParkTarget::new(8, 16),
             },
-            FaultOperation::EventParkFromArm {
-                node: 1,
-                edges: 1,
-                hold_us: 1,
-                ticks: ticks(9),
-                target: None,
-            },
             FaultOperation::Pause(1, ticks(9)),
             FaultOperation::Restart(1, ticks(9)),
             FaultOperation::Hook(4, ticks(9)),
@@ -1736,6 +1816,28 @@ mod tests {
             assert_eq!(adapted.ticks(), 12);
             assert_eq!(action_ticks(&adapted), 12);
         }
+        let parked = FaultAction::from(FaultOperation::PauseParked {
+            node: 1,
+            edges: 1,
+            hold_us: 1,
+            ticks: ticks(9),
+            target: None,
+        })
+        .with_ticks(ticks(12));
+        assert_eq!(parked.ticks(), 12);
+        assert_eq!(action_ticks(&parked), 24);
+        assert_eq!(
+            parked.as_wait().map(|wait| wait.operation),
+            Some(FaultOperation::Wait(ticks(24)))
+        );
+        assert_eq!(
+            parked
+                .with_ticks(ticks(32_767))
+                .as_wait()
+                .map(|wait| wait.ticks()),
+            Some(65_534)
+        );
+        assert_eq!(parked.with_ticks(ticks(32_768)).as_wait(), None);
     }
 
     #[test]
@@ -1889,7 +1991,7 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: None,
-                    from_arm: false,
+                    at_resume: false,
                 }
             ))
         );
@@ -1914,58 +2016,73 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: ParkTarget::new(0x1000, 0x1004),
-                    from_arm: false,
+                    at_resume: false,
                 }
             ))
         );
-        let from_arm = FaultOperation::EventParkFromArm {
+        let parked = FaultAction::from(FaultOperation::PauseParked {
             node: 2,
             edges: 1,
             hold_us: 2_000_000,
-            ticks: ticks(500),
+            ticks: ticks(250),
             target: ParkTarget::new(0x1000, 0x1001),
-        };
-        let fault = action_delta(from_arm.into(), window, false)
-            .standing
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!((fault.start, fault.end), (ROOT, ROOT + 500 * TICK));
+        });
+        assert_eq!(WINDOWS.window(&[parked], 0).unwrap(), window);
+        let standing = action_delta(parked, window, false).standing;
         assert_eq!(
-            decode_process_target(&fault.target),
-            Some((
-                2,
-                Fault::ProcEventPark {
-                    edges: 1,
-                    hold: Span(2_000_000_000),
-                    target: ParkTarget::new(0x1000, 0x1001),
-                    from_arm: true,
-                }
-            ))
+            standing
+                .iter()
+                .map(|fault| (fault.start, fault.end, decode_process_target(&fault.target)))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    ROOT,
+                    ROOT + 250 * TICK,
+                    Some((2, Fault::ProcPause(Span(250 * TICK))))
+                ),
+                (
+                    ROOT + 250 * TICK,
+                    ROOT + 500 * TICK,
+                    Some((
+                        2,
+                        Fault::ProcEventPark {
+                            edges: 1,
+                            hold: Span(2_000_000_000),
+                            target: ParkTarget::new(0x1000, 0x1001),
+                            at_resume: true,
+                        }
+                    ))
+                ),
+            ]
         );
     }
 
     #[test]
-    fn a_park_from_arm_is_its_own_action_in_keys_text_and_binary() {
+    fn a_parked_pause_is_its_own_action_in_keys_text_and_binary() {
         let target = ParkTarget::new(8, 16);
-        let today = FaultOperation::EventPark {
+        let park = FaultOperation::EventPark {
             node: 1,
             edges: 3,
             hold_us: 90_000,
             ticks: ticks(9),
             target,
         };
-        let from_arm = FaultOperation::EventParkFromArm {
+        let parked = FaultOperation::PauseParked {
             node: 1,
             edges: 3,
             hold_us: 90_000,
             ticks: ticks(9),
             target,
         };
-        assert_ne!(today.key_bytes(), from_arm.key_bytes());
+        assert_ne!(park.key_bytes(), parked.key_bytes());
+        assert_ne!(
+            FaultOperation::Pause(1, ticks(9)).key_bytes(),
+            parked.key_bytes()
+        );
+        assert_eq!(parked.key_bytes()[0], 16);
         assert_eq!(
-            from_arm.with_ticks(ticks(4)),
-            FaultOperation::EventParkFromArm {
+            parked.with_ticks(ticks(4)),
+            FaultOperation::PauseParked {
                 node: 1,
                 edges: 3,
                 hold_us: 40_000,
@@ -1973,18 +2090,50 @@ mod tests {
                 target,
             }
         );
-        let text = r#"{"operation":{"EventParkFromArm":{"node":1,"edges":3,"hold_us":90000,"ticks":9,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
+        assert_eq!(parked.target_node(), Some(1));
+        assert_eq!(
+            parked.with_target_node(2),
+            FaultOperation::PauseParked {
+                node: 2,
+                edges: 3,
+                hold_us: 90_000,
+                ticks: ticks(9),
+                target,
+            }
+        );
+        let text = r#"{"operation":{"PauseParked":{"node":1,"edges":3,"hold_us":90000,"ticks":9,"target":{"start":8,"end":16}}},"coverage_quantum":1,"choice":0}"#;
         let action: FaultAction = serde_json::from_str(text).unwrap();
-        assert_eq!(action.operation, from_arm);
+        assert_eq!(action.operation, parked);
         assert_eq!(serde_json::to_string(&action).unwrap(), text);
+        assert!(
+            serde_json::from_str::<FaultAction>(&text.replace("PauseParked", "EventParkFromArm"))
+                .is_err()
+        );
         let bytes = postcard::to_allocvec(&(action, 0x55_u8)).unwrap();
+        assert_eq!(bytes[0], 16);
         assert_eq!(
             postcard::from_bytes::<(FaultAction, u8)>(&bytes).unwrap(),
             (action, 0x55)
         );
         assert_eq!(
-            postcard::to_allocvec(&FaultAction::from(today)).unwrap()[0],
+            postcard::to_allocvec(&FaultAction::from(park)).unwrap()[0],
             9
+        );
+    }
+
+    #[test]
+    fn a_pause_keeps_its_key_text_and_binary() {
+        let pause = FaultAction::from(FaultOperation::Pause(1, ticks(9))).with_choice(7);
+        let mut key = [0_u8; OPERATION_KEY_WIDTH];
+        key[..4].copy_from_slice(&[4, 1, 0, 9]);
+        assert_eq!(pause.operation.key_bytes(), key);
+        assert_eq!(
+            serde_json::to_string(&pause).unwrap(),
+            r#"{"operation":{"Pause":[1,9]},"coverage_quantum":1024,"choice":7}"#
+        );
+        assert_eq!(
+            postcard::to_allocvec(&pause).unwrap(),
+            [10, 1, 9, 128, 8, 7, 0]
         );
     }
 
@@ -2806,6 +2955,61 @@ mod tests {
             }]
         );
         assert!(capture.assertions.0.is_empty());
+    }
+
+    #[test]
+    fn parked_pause_outcomes_keep_their_moment_and_only_the_current_action_keeps_them() {
+        let line = |node: u16, outcome: ParkedOutcome| {
+            format!(
+                "{{\"harmony_parked_pause\":{{\"node\":{node},\"outcome\":\"{}\"}}}}\n",
+                outcome.name()
+            )
+            .into_bytes()
+        };
+        let events = [
+            (3, JSON_EVENT_ID, line(1, ParkedOutcome::Fired)),
+            (9, JSON_EVENT_ID, line(2, ParkedOutcome::NotStopped)),
+        ];
+        let capture = decode_sdk_events(&events).unwrap();
+        assert_eq!(capture, decode_sdk_events_reference(&events).unwrap());
+        assert_eq!(
+            capture.parked_pauses,
+            [
+                ParkedPause {
+                    moment: 3,
+                    node: 1,
+                    outcome: ParkedOutcome::Fired,
+                },
+                ParkedPause {
+                    moment: 9,
+                    node: 2,
+                    outcome: ParkedOutcome::NotStopped,
+                },
+            ]
+        );
+        let mut decoder = SdkDecoder::default();
+        decoder.append(&events).unwrap();
+        decoder.begin_action(3);
+        assert_eq!(decoder.capture().parked_pauses, &capture.parked_pauses[1..]);
+        let mut observation = FaultObservations::new(9, &capture, FaultStop::Deadline);
+        assert_eq!(observation.parked_pauses, capture.parked_pauses);
+        observation.keep_parks_after(3);
+        assert_eq!(observation.parked_pauses, &capture.parked_pauses[1..]);
+        let bytes = postcard::to_allocvec(&(&observation, &capture, 0x55_u8)).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<(FaultObservations, SdkCapture, u8)>(&bytes).unwrap(),
+            (observation.clone(), capture.clone(), 0x55)
+        );
+        observation.clear_parks();
+        assert!(observation.parked_pauses.is_empty());
+        let empty = (&observation, SdkCapture::default(), 0x55_u8);
+        assert_eq!(
+            postcard::from_bytes::<(FaultObservations, SdkCapture, u8)>(
+                &postcard::to_allocvec(&empty).unwrap()
+            )
+            .unwrap(),
+            (observation.clone(), SdkCapture::default(), 0x55)
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub struct EventPark {
     pub edges: u32,
     pub hold_nanos: u64,
     pub target: Option<ParkTarget>,
-    pub from_arm: bool,
+    pub at_resume: bool,
     pub start: u64,
 }
 
@@ -192,13 +192,13 @@ impl ActiveWindows {
                 edges,
                 hold_nanos,
                 target,
-                from_arm,
+                at_resume,
             } => {
                 flags.event_park = Some(EventPark {
                     edges: *edges,
                     hold_nanos: *hold_nanos,
                     target: *target,
-                    from_arm: *from_arm,
+                    at_resume: *at_resume,
                     start,
                 });
             }

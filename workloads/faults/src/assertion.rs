@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use process_proto::events::ParkedOutcome;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -172,6 +173,7 @@ pub struct JsonEvent {
     pub pid: Option<u64>,
     pub park: Option<ParkReport>,
     pub park_read: Option<ParkReport>,
+    pub parked_pause: Option<ParkedPauseReport>,
     pub undecided_keys: Option<u64>,
 }
 
@@ -181,6 +183,33 @@ pub struct ParkReport {
     pub edges: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkedPauseReport {
+    pub node: u16,
+    #[serde(with = "parked_outcome_name")]
+    pub outcome: ParkedOutcome,
+}
+
+pub mod parked_outcome_name {
+    use process_proto::events::ParkedOutcome;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(
+        outcome: &ParkedOutcome,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(outcome.name())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ParkedOutcome, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        ParkedOutcome::from_name(&name)
+            .ok_or_else(|| D::Error::custom(format!("unknown parked pause outcome {name:?}")))
+    }
+}
+
 #[derive(Deserialize)]
 struct RawEvent {
     antithesis_assert: Option<RawAssert>,
@@ -188,6 +217,7 @@ struct RawEvent {
     harmony_attribution: Option<RawAttribution>,
     harmony_park: Option<ParkReport>,
     harmony_park_read: Option<ParkReport>,
+    harmony_parked_pause: Option<ParkedPauseReport>,
     harmony_check: Option<RawCheck>,
 }
 
@@ -284,6 +314,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             .and_then(|attribution| attribution.pid),
         park: raw.harmony_park,
         park_read: raw.harmony_park_read,
+        parked_pause: raw.harmony_parked_pause,
         undecided_keys: raw.harmony_check.map(|check| check.undecided_keys),
     })
 }
@@ -355,6 +386,28 @@ mod tests {
         .unwrap();
         assert_eq!(undecided.undecided_keys, Some(3));
         assert_eq!(undecided.pid, Some(9));
+    }
+
+    #[test]
+    fn a_parked_pause_line_carries_its_node_and_every_outcome_name() {
+        for outcome in ParkedOutcome::ALL {
+            let line = format!(
+                r#"{{"harmony_parked_pause":{{"node":2,"outcome":"{}"}}}}"#,
+                outcome.name()
+            );
+            let event = decode_json_event(line.as_bytes()).unwrap();
+            assert_eq!(
+                event.parked_pause,
+                Some(ParkedPauseReport { node: 2, outcome })
+            );
+            assert_eq!(
+                serde_json::to_string(&event.parked_pause.unwrap()).unwrap(),
+                format!(r#"{{"node":2,"outcome":"{}"}}"#, outcome.name())
+            );
+        }
+        assert!(
+            decode_json_event(br#"{"harmony_parked_pause":{"node":2,"outcome":"fire"}}"#).is_none()
+        );
     }
 
     #[test]

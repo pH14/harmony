@@ -26,7 +26,7 @@ use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, SEARCH_CHECKPOINT_FORMAT,
 };
 use crate::search::choice::{
-    Choice, ChoicePlan, ChoicePlanRecord, ChoicePolicy, ChoiceSite, Chooser,
+    Choice, ChoicePlan, ChoicePlanRecord, ChoicePolicy, ChoiceRecord, ChoiceSite, Chooser,
 };
 use crate::search::continuation::CONTINUATION_IDENTIFIER;
 use crate::search::cost::ShrinkCost;
@@ -349,6 +349,33 @@ pub trait Reporting: CampaignTypes {
     }
     fn checkpoint_marks(_evidence: &Self::Evidence) -> usize {
         0
+    }
+    fn catalog_signals(&self, _run: &Self::Run) -> Vec<String> {
+        Vec::new()
+    }
+    fn state_record(
+        &self,
+        _run: &Self::Run,
+        _snapshot: &Self::Snapshot,
+    ) -> Option<crate::search::assertion::Record> {
+        None
+    }
+    fn observation_record(
+        &self,
+        _run: &Self::Run,
+        _observation: &Self::Observations,
+    ) -> Option<crate::search::assertion::Record> {
+        None
+    }
+    fn choice_records(
+        &self,
+        _run: &Self::Run,
+        _plan: Option<&ChoicePlan>,
+        _index: usize,
+        _action: &Self::Action,
+        _observations: &[Self::Observations],
+    ) -> Vec<ChoiceRecord> {
+        Vec::new()
     }
     fn stream_format(&self) -> &'static str;
     fn checkpoint_format(&self) -> &'static str;

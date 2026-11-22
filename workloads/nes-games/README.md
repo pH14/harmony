@@ -431,7 +431,11 @@ target keeps the record of every frame it decodes while recording, each
 interior observation carries the records of the frames since the one before,
 and `merge_action_evidence` passes them per action with the job's sequence
 number. `Reporting::direct_records` closes the file or starts another one, so a
-replay of the stream writes its own copy. The snapshot identity hashes the
+replay of the stream writes its own copy. For the searcher's stall report,
+`Reporting::state_record` and `Reporting::observation_record` decode the record
+of a snapshot's or an action endpoint's game state with `Lowered::record`, and
+`Reporting::choice_records` returns the choices an action's observations carry,
+whether or not the run records. The snapshot identity hashes the
 policy identifier with the snapshot, so saved states taken under one strategy
 are rebuilt by replay when a run resumes from them under another.
 
@@ -514,20 +518,53 @@ from the same bytes. It still runs in its own `target` and `campaign`.
 `action_end`, because the plan latches from the parent key at the action's
 end), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
-and the two hand preferences. A route stage's objective is the last route index
+and the two hand preferences. Past Kraid's defeat the strategy continues where
+the hand plan stops: energy for the hideout shaft (120), the route to the
+Norfair elevator, energy (80), the route to the Ridley elevator, energy (96),
+the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
+damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
+Ridley come energy (96), the route out of the hideout, energy (80), the route
+back through Norfair, full missiles, energy of at least
+`100 * energy_tanks + 90`, the route to the Tourian
+elevator and the route to the Zebetite door. The norfair_return objective is
+the last `to_ending` index a kept state stood on, Ridley's area included, so
+the climb out of the hideout earns credit room by room; with no credit in
+Ridley's area, one power-on run held the stage for over 4M executions without
+leaving that area. The zebetites
+stage climbs 8 per screen of the route to Mother Brain's room plus the columns
+reading destroyed, so a hit on a column is a new place through
+`zebetite_hits_left` but ranks no higher: a column heals a hit every 64 frames,
+and only a broken column, or the screen past it, lasts. The mother_brain stage
+climbs 256 per destroyed column plus boss damage and is done on
+`mother_brain_defeated`, and the escape stage climbs the escape shaft's route
+and is done on the ending. A strategy holds at most 8 aggregates, and a
+stage-scoped `last` is one per stage, so the two Ridley routes share the table
+`to_ridley` and every route after Ridley shares `to_ending`, each read by one
+`last` with no stage scope. Neither table repeats a cell, and every stage that
+reads one starts on a cell of it (the Norfair elevator's arrival and Ridley's
+room), so the unscoped `last` starts each stage at its entry cell as the
+scoped form does. Each of those stages is done on its route's last cell. The routes
+and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
+the equivalence test compares the stages up to Kraid and checks that every
+state past his defeat is located past the hand plan's stages. A route stage's objective is the last route index
 a kept state stood on within that stage,
 `last(if action_end then index(cell, route) else none, stage)`, and 0 when the
 stage is entered off the route, as the hand plan locates from action endpoints
 and carries a route objective only from a parent in the same stage. The
 kraid_door stage ends at the last cell of its route on a kept state,
-`action_end and objective + 1 >= len(to_kraid_door)`. The equivalence test
+`action_end and objective + 1 >= len(to_kraid_door) and not dead`. The equivalence test
 observes interior frames between kept states. Boss damage is the drop from
 `highest` boss health since the area last changed, rounded up to fours.
 `balance` is the rank of the smaller of missiles over capacity and health over
 the energy cap among every such ratio, so the second preference line is
 (items, tanks, balance) and ends in `"above"`, which breaks its ties by missiles
 then health as the hand balance preference does. The first line reads health
-below 8192, since health of 8000 and above is the BCD-underflow terminal.
+below 8192, since health of 8000 and above is the BCD-underflow terminal. The default
+terminal rule marks a Metroid state dead at health 0 or at 8,000 or more (a
+death's decimal borrow reads 9,700 or more), and a goal record stays a goal
+when a reject line matches it, so every Metroid goal requires `not dead`; a
+test in `metroid/game.rs` checks that no goal of a shipped Metroid strategy
+holds on a state the default terminal rule marks dead.
 Tests in `metroid/game.rs` check that the strategy's stage and objective equal
 `plan::locate` along random paths with restores, and a test in
 `metroid/archive.rs` checks the second line against the hand balance order.

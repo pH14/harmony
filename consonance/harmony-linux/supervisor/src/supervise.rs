@@ -13,6 +13,8 @@ pub enum Action {
     DiskCorrupt { node: u16, choice: u64, kill: bool },
     Stop(u16),
     Cont(u16),
+    ContParked(u16, EventPark),
+    ClearParked(u16),
     Start { node: u16, after_fault: bool },
     RunHook(u32),
     HealCuts,
@@ -39,6 +41,10 @@ impl Action {
             }
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
+            Action::ContParked(node, park) => {
+                format!("resume node {node} with event park{}", park_text(park))
+            }
+            Action::ClearParked(node) => format!("clear event park page node {node}"),
             Action::Start { node, .. } => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::HealCuts => "heal closed cut windows".to_owned(),
@@ -47,17 +53,7 @@ impl Action {
             }
             Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
             Action::ArmEventPark(node, park) => {
-                let mut text = format!(
-                    "arm event park node {node} edges {} hold {}",
-                    park.edges, park.hold_nanos
-                );
-                if let Some(target) = park.target {
-                    text.push_str(&format!(" target {:#x}..{:#x}", target.start, target.end));
-                }
-                if park.from_arm {
-                    text.push_str(" from arm");
-                }
-                text
+                format!("arm event park node {node}{}", park_text(park))
             }
             Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
             Action::SetClock { node, offset_nanos } => {
@@ -65,6 +61,14 @@ impl Action {
             }
         }
     }
+}
+
+fn park_text(park: EventPark) -> String {
+    let mut text = format!(" edges {} hold {}", park.edges, park.hold_nanos);
+    if let Some(target) = park.target {
+        text.push_str(&format!(" target {:#x}..{:#x}", target.start, target.end));
+    }
+    text
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -115,6 +119,7 @@ struct NodeState {
     event_kill_death: bool,
     restart_after_fault: bool,
     disk_faulted: bool,
+    published_park: Option<EventPark>,
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +154,7 @@ impl ProcessSupervisor {
                     event_kill_death: false,
                     restart_after_fault: false,
                     disk_faulted: false,
+                    published_park: None,
                 };
                 node_count
             ],
@@ -310,7 +316,13 @@ impl ProcessSupervisor {
                 state.paused = true;
             }
             if !now.pause && was.pause && state.alive && state.paused {
-                actions.push(Action::Cont(node));
+                match now.event_park.filter(|park| park.at_resume) {
+                    Some(park) => {
+                        actions.push(Action::ContParked(node, park));
+                        state.published_park = Some(park);
+                    }
+                    None => actions.push(Action::Cont(node)),
+                }
                 state.paused = false;
             }
             if state.alive {
@@ -331,14 +343,22 @@ impl ProcessSupervisor {
                         _ => {}
                     }
                 }
-                match (was.event_park, now.event_park) {
-                    (None, Some(park)) => actions.push(Action::ArmEventPark(node, park)),
-                    (Some(_), None) => actions.push(Action::DisarmEventPark(node)),
-                    (Some(previous), Some(park)) if previous != park => {
-                        actions.push(Action::DisarmEventPark(node));
+                if was.event_park != now.event_park {
+                    match was.event_park {
+                        Some(previous) if !previous.at_resume => {
+                            actions.push(Action::DisarmEventPark(node));
+                        }
+                        Some(previous) if state.published_park == Some(previous) => {
+                            actions.push(Action::ClearParked(node));
+                        }
+                        _ => {}
+                    }
+                    if state.published_park == was.event_park {
+                        state.published_park = None;
+                    }
+                    if let Some(park) = now.event_park.filter(|park| !park.at_resume) {
                         actions.push(Action::ArmEventPark(node, park));
                     }
-                    _ => {}
                 }
             }
             if !now.restarting()
@@ -357,11 +377,12 @@ impl ProcessSupervisor {
                 state.expected_down = false;
                 state.event_kill_death = false;
                 state.restart_after_fault = false;
+                state.published_park = None;
                 self.counters.restarts += 1;
                 if let Some(window) = now_event_kill {
                     actions.push(Action::ArmEventKill(node, window.rarity, window.start));
                 }
-                if let Some(park) = now.event_park {
+                if let Some(park) = now.event_park.filter(|park| !park.at_resume) {
                     actions.push(Action::ArmEventPark(node, park));
                 }
             }
@@ -391,11 +412,12 @@ impl ProcessSupervisor {
             self.nodes[index].paused = false;
             self.nodes[index].event_kill_death = false;
             self.nodes[index].restart_after_fault = false;
+            self.nodes[index].published_park = None;
             self.counters.restarts += 1;
             if let Some(window) = self.event_kill_selected[index] {
                 actions.push(Action::ArmEventKill(node, window.rarity, window.start));
             }
-            if let Some(park) = active.node(node).event_park {
+            if let Some(park) = active.node(node).event_park.filter(|park| !park.at_resume) {
                 actions.push(Action::ArmEventPark(node, park));
             }
         }
@@ -1551,7 +1573,7 @@ mod tests {
                     edges: 3,
                     hold_nanos: 8,
                     target: None,
-                    from_arm: false,
+                    at_resume: false,
                 },
             ),
         ]);
@@ -1565,7 +1587,7 @@ mod tests {
                         edges: 3,
                         hold_nanos: 8,
                         target: None,
-                        from_arm: false,
+                        at_resume: false,
                         start: 0,
                     },
                 ),
@@ -1587,7 +1609,7 @@ mod tests {
                 edges: 3,
                 hold_nanos: 10_000_000,
                 target: None,
-                from_arm: false,
+                at_resume: false,
             },
             0,
         );
@@ -1598,7 +1620,7 @@ mod tests {
                 edges: 3,
                 hold_nanos: 10_000_000,
                 target: None,
-                from_arm: false,
+                at_resume: false,
             },
             500_000_000,
         );
@@ -1610,7 +1632,7 @@ mod tests {
                     edges: 3,
                     hold_nanos: 10_000_000,
                     target: None,
-                    from_arm: false,
+                    at_resume: false,
                     start: 0,
                 }
             )]
@@ -1625,13 +1647,129 @@ mod tests {
                         edges: 3,
                         hold_nanos: 10_000_000,
                         target: None,
-                        from_arm: false,
+                        at_resume: false,
                         start: 500_000_000,
                     }
                 )
             ]
         );
         assert_eq!(sup.tick(&second, &[]), []);
+    }
+
+    const RESUME_PARK: ProcessAction = ProcessAction::EventPark {
+        edges: 1,
+        hold_nanos: 10_000_000,
+        target: None,
+        at_resume: true,
+    };
+
+    fn resume_park(start: u64) -> EventPark {
+        EventPark {
+            edges: 1,
+            hold_nanos: 10_000_000,
+            target: None,
+            at_resume: true,
+            start,
+        }
+    }
+
+    #[test]
+    fn a_parked_pause_installs_its_park_before_the_node_continues() {
+        let mut sup = Supervisor::new(1);
+        let paused = active(&[(0, ProcessAction::Pause(30)), (0, RESUME_PARK)]);
+        let parked = active(&[(0, RESUME_PARK)]);
+        assert_eq!(sup.tick(&paused, &[]), [Action::Stop(0)]);
+        assert_eq!(sup.tick(&paused, &[]), []);
+        assert_eq!(
+            sup.tick(&parked, &[]),
+            [Action::ContParked(0, resume_park(0))]
+        );
+        assert_eq!(sup.tick(&parked, &[]), []);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::ClearParked(0)]
+        );
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
+    }
+
+    #[test]
+    fn a_resume_park_opening_as_the_pause_closes_is_installed_at_the_resume() {
+        let mut sup = Supervisor::new(1);
+        let paused = active(&[(0, ProcessAction::Pause(30))]);
+        let mut parked = ActiveWindows::new();
+        parked.insert(0, &RESUME_PARK, 300_000_000);
+        assert_eq!(sup.tick(&paused, &[]), [Action::Stop(0)]);
+        assert_eq!(
+            sup.tick(&parked, &[]),
+            [Action::ContParked(0, resume_park(300_000_000))]
+        );
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::ClearParked(0)]
+        );
+    }
+
+    #[test]
+    fn a_resume_park_without_a_resume_is_never_armed_or_disarmed() {
+        let mut sup = Supervisor::new(1);
+        let parked = active(&[(0, RESUME_PARK)]);
+        assert_eq!(sup.tick(&parked, &[]), []);
+        assert_eq!(sup.tick(&parked, &[]), []);
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
+    }
+
+    #[test]
+    fn a_restart_drops_a_published_resume_park() {
+        let mut sup = Supervisor::new(1);
+        let paused = active(&[(0, ProcessAction::Pause(30)), (0, RESUME_PARK)]);
+        let parked = active(&[(0, RESUME_PARK)]);
+        let restart = active(&[(0, ProcessAction::Restart), (0, RESUME_PARK)]);
+        assert_eq!(sup.tick(&paused, &[]), [Action::Stop(0)]);
+        assert_eq!(
+            sup.tick(&parked, &[]),
+            [Action::ContParked(0, resume_park(0))]
+        );
+        assert_eq!(sup.tick(&restart, &[]), [Action::Kill(0)]);
+        assert_eq!(
+            sup.tick(&parked, &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
+    }
+
+    #[test]
+    fn a_second_parked_pause_clears_the_first_park_and_publishes_its_own() {
+        let mut sup = Supervisor::new(1);
+        let mut first = ActiveWindows::new();
+        first.insert(0, &ProcessAction::Pause(30), 0);
+        first.insert(0, &RESUME_PARK, 0);
+        let mut between = ActiveWindows::new();
+        between.insert(0, &RESUME_PARK, 0);
+        let mut second = ActiveWindows::new();
+        second.insert(0, &ProcessAction::Pause(30), 500_000_000);
+        second.insert(0, &RESUME_PARK, 500_000_000);
+        let mut after = ActiveWindows::new();
+        after.insert(0, &RESUME_PARK, 500_000_000);
+        assert_eq!(sup.tick(&first, &[]), [Action::Stop(0)]);
+        assert_eq!(
+            sup.tick(&between, &[]),
+            [Action::ContParked(0, resume_park(0))]
+        );
+        assert_eq!(
+            sup.tick(&second, &[]),
+            [Action::Stop(0), Action::ClearParked(0)]
+        );
+        assert_eq!(
+            sup.tick(&after, &[]),
+            [Action::ContParked(0, resume_park(500_000_000))]
+        );
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::ClearParked(0)]
+        );
     }
 
     #[test]
@@ -2228,7 +2366,7 @@ mod tests {
                     edges: 2,
                     hold_nanos: 4,
                     target: None,
-                    from_arm: false,
+                    at_resume: false,
                     start: 0,
                 }
             )
@@ -2242,16 +2380,34 @@ mod tests {
                     edges: 1,
                     hold_nanos: 4,
                     target: process_proto::events::ParkTarget::new(0x1000, 0x1004),
-                    from_arm: true,
+                    at_resume: false,
                     start: 0,
                 }
             )
             .describe(),
-            "arm event park node 1 edges 1 hold 4 target 0x1000..0x1004 from arm"
+            "arm event park node 1 edges 1 hold 4 target 0x1000..0x1004"
+        );
+        assert_eq!(
+            Action::ContParked(
+                1,
+                EventPark {
+                    edges: 1,
+                    hold_nanos: 4,
+                    target: process_proto::events::ParkTarget::new(0x1000, 0x1004),
+                    at_resume: true,
+                    start: 0,
+                }
+            )
+            .describe(),
+            "resume node 1 with event park edges 1 hold 4 target 0x1000..0x1004"
         );
         assert_eq!(
             Action::DisarmEventPark(0).describe(),
             "disarm event park node 0"
+        );
+        assert_eq!(
+            Action::ClearParked(0).describe(),
+            "clear event park page node 0"
         );
         assert_eq!(
             Action::SetClock {

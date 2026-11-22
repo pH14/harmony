@@ -233,7 +233,6 @@ timing:
 | `EndFaults(ticks)` | every standing window still open at the action's start closes there, including each `EventKill` window, fired or not, which disarms a kill that has not fired; the workload then runs undisturbed; never drawn, only applied by the settle phase |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
 | `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
-| `EventParkFromArm(node, edges, hold, ticks, target)` | as `EventPark`, except that each counted edge counts one, so the thread whose `edges`-th counted edge after the arm comes is held; never drawn on its own, only added after a `Pause` under `resume_park` |
 | `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
 | `KillAll(ticks)` | every node goes down, as in a host crash, and every node starts when the window closes; drawn only for bundles with more than one node |
 | `PowerLoss(node, ticks)` | the node goes down for the window as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
@@ -242,6 +241,7 @@ timing:
 | `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
 | `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
+| `PauseParked(node, edges, hold, ticks, target)` | a parked pause (ours): the node is stopped for `ticks`, and from the resume a park counts for another `ticks`, so the action's window is twice `ticks`; the park counts one per edge from the resume, so the thread whose `edges`-th counted edge after the resume comes is held for the hold, with the optional target as in `EventPark`; never drawn on its own, only in place of a `Pause` under `resume_park` |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once when its window opens; the window lasts the action's duration, or with the `hold_hooks` option its duration times 1, 2, 4 or 8, set by the top two bits of the action's `choice`, so it can overlap the actions after it; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
@@ -377,25 +377,55 @@ rqlite's searches turn both on
 ([harness README](../harness/README.md#rqlite)).
 
 The option `resume_park`, a list of sites, is off when absent. When it is
-present, every `Pause(node, ticks)` in a drawn suffix, and a `Pause` that ends
-the input a suffix extends, is followed by an `EventParkFromArm` on the same
-node, unless the next action already is one. The supervisor continues the node
-when the pause window closes and queues the park's arm command in the same
-step. The runtime's control thread arms the park when it reads that command,
-after it answers any status request sent while the node was stopped, so the
-resumed process runs briefly before the park counts its edges, and a visit to
-the site in that time is not counted. A replay of the input repeats that
-interval. The search's suffix limit can cut a suffix between a `Pause` and its
-park: that job ends at the resume without the park, the settle phase after it
-runs without one, and a suffix drawn from its endpoint starts with one. With
-sites listed, the park aims at one of them, picked uniformly, with `edges` 1.
-With an empty list it counts every edge, with `edges` `2^j` for `j` drawn
-uniformly from 0 through 10. Its hold is drawn as for `EventPark`. These draws
-use their own generator seeded from the job's mutation seed, so every other
-action of the suffix is the one drawn without the option. A park is added only
-on a node whose runtime announced readiness. The option needs an image with
-the instrumented event runtime and `pause` among the drawn kinds, and the
+present, every `Pause(node, ticks)` in a drawn suffix on a node whose runtime
+announced readiness is drawn as a `PauseParked` on that node with the same
+`ticks`, coverage quantum and `choice`, and a retained `PauseParked` on a node
+whose runtime has not announced readiness becomes a plain `Pause`. With sites
+listed, the park aims at one of them, picked uniformly, with `edges` 1. With
+an empty list it counts every edge, with `edges` `2^j` for `j` drawn uniformly
+from 0 through 10. Its hold is drawn as for `EventPark`. These draws use their
+own generator seeded from the job's mutation seed, so every other action of
+the suffix is the one drawn without the option. The option needs an image
+with the instrumented event runtime and `pause` among the drawn kinds, and the
 vocabulary identifier records it with its sites.
+
+A parked pause is one action, so an expansion still returns one action per
+draw and the search's suffix limit counts it once: no limit can separate the
+pause from its park. Its standing windows are the pause for the first half of
+its window and an event park with the at-resume flag for the second half.
+Under `resume_park` the host adds a `park-page` line to the supervisor bundle
+at preparation, unless the bundle already has one, so every node process gets
+the park page. The line goes into the bundle the host was given or, when it was
+given none, into a copy of the image's own, which costs one more preparation
+pass; without `resume_park` preparation is unchanged. A `run` or `branch`
+whose action input holds a `PauseParked` is refused unless its bundle has the
+line. The supervisor writes the park to the page while the node is stopped and
+continues it after the write, so the first instrumented visit after the resume
+counts toward the park
+([supervisor README](../../consonance/harmony-linux/supervisor/README.md#parked-pause),
+[runtime README](runtime/README.md#park-page)). A replay repeats it. Shrinking
+offers three simpler forms of a `PauseParked(t)`: a `Wait(2t)` over its whole
+window when `2t` fits a wait's tick count, the plain `Pause(node, t)`, and a
+`PauseParked(t/2)`. The shrink cost counts a parked pause's whole window, `2t`.
+
+A parked pause can still run as a plain pause: the supervisor writes no record
+when the node has not stopped within its wait or has exited, and a node whose
+instrumented process is not the spawned process never adopts one. Each parked
+pause therefore ends with one supervisor SDK line naming its outcome (`fired`,
+`expired`, `unadopted`, `cleared_in_batch`, `not_stopped`, `not_running` or
+`retired`, defined in the supervisor README). The host keeps each line with
+the observation it arrived in, trimmed to the action like park landings, and
+`parked_pauses` in `campaign-summary.json` and the archive report counts them
+by outcome; the map is absent when no parked pause ran.
+
+Without `resume_park` the host draws what it drew before the parked pause:
+the draw-path tests pin the default draw path's suffix digests and a pause's
+key and encodings, and a default search with this host on a given guest and
+image writes the same job and settle lines as one with the previous host. A
+default search's guest timeline on a guest that carries the park page code is
+not shown unchanged, and comparing searches cannot show it: a guest and image
+rebuilt from unchanged sources in another directory already move a search's
+timeline from its first execution (#1141).
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
@@ -443,12 +473,14 @@ use always carries it.
 
 The `fault.node` site (ours) is the target node of a fault, asked on the host.
 Its labels are node ids, as in the action text form `Pause[1, …]`, because
-the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`,
+the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`, `PauseParked`,
 `Restart` or `Clock` action offers every node, `PowerLoss`, `DiskError` and
 `DiskStall` offer the nodes with a disk, and `DiskCorrupt` offers the
 checksummed ones. An event kind keeps its drawn node, because the node comes
-from runtime readiness, and so does a `Pause` under `resume_park`, because
-its park is drawn for that node. `execute_job` resolves each such action
+from runtime readiness. A `PauseParked` offers every node, and its park moves
+with the answer; after the node is resolved, a `PauseParked` on a node whose
+runtime had not announced readiness at the parent runs as a plain `Pause`, as
+does one a splice brings to such a node. `execute_job` resolves each such action
 before it stamps `GuestChoices`, with one host `Chooser` per job built from
 the plan with hold zero. It calls `Chooser::draw` over the offer with the
 lowest offered node as the default and weight one on the node the draw
@@ -511,6 +543,17 @@ untried ordinal, like the settle record below. With `untried_first_nodes`
 off the row holds the drawn node, so both arms of a comparison write the same
 rows. An action served from the snapshot cache has no guest
 rows.
+
+For the searcher's stall report, `Reporting::state_record` and
+`Reporting::observation_record` give a snapshot's or an action's record
+through `FaultKeys::record`, and `Reporting::choice_records` rebuilds the host
+`fault.node` row the job wrote for an action, from the stored action. A job
+writes that row only with a choice plan and only for an action that targets a
+node and had no guest choices when drawn. The job stamps every such action
+with `GuestChoices::from_plan` for its plan and index, so an action whose
+guest seed matches that stamp is one the job asked; an action copied with its
+earlier guest choices is not. Guest rows stay in the target: a guest site's index is the
+order of its first ask inside one action, so it names no declared site.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
@@ -819,12 +862,38 @@ comparison. The faults-in-force, recovery-pending and fault-free-check registers
 of the [supervisor](../../consonance/harmony-linux/supervisor/README.md) end it:
 the workload is ready once neither faults nor recovery are pending, and the
 outcome is `compared` when a check that started after that has exited
-successfully. The phase also ends when the workload is not ready 3,000 ticks
-(the 30-second recovery limit) after the restarts and heal end, when no such
-check has finished 6,000 ticks after they end, or at a new violation, a terminal
-stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
-cancellation. The target then restores the snapshot, which the chain held
-through the phase, so the restore runs no action again unless the session was
+successfully. The phase also ends 6,000 ticks after the restarts and heal end,
+with outcome `not ready within the settle limit` when the workload never became
+ready and `no check without a fault in force finished` when no such check
+passed, or at a new violation, a terminal stop, an endpoint the strategy rejects
+(ours; outcome `rejected`), a hang or a cancellation. A workload that stays not
+ready can violate either of the supervisor's two recovery properties,
+`workload becomes ready within 30 seconds after faults end` and its per-node
+form (ours),
+`every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`.
+Both count from the end of the last fault in force, which for a cut is the
+heal hook's successful exit rather than the end of the heal action; a heal
+that fails leaves the cut in force, and then neither property can fail. The
+ready property fails 30 seconds after the later of that end and the moment the
+workload was first seen not ready. The per-node property fails only when a
+check without a fault in force exits successfully after 30 quiet seconds, with
+no disturbance since it started, and names a node. The harness kit's check
+retries each pinned read, from the moment that read begins, for the longer of
+its timeout and the part of the 30 seconds still to run when the check
+started, so a read can retry past the 30-second mark. It then takes a progress
+fence and reads each unanswered node's applied index, and names a node whose
+index is below the fence and has not advanced when read again 10 seconds
+later; when the fence fails it names every unanswered node without those
+reads. The limit must therefore outlast 30 seconds by the heal's run time plus
+one check. In replays of nine rqlite settles that stayed not ready, the ready
+property failed 3,050 to 3,300 ticks after the heal action ended and the
+per-node property 3,150 to 4,000. The 6,000-tick limit leaves 20 seconds past
+the latest of these. A settle whose heal runs longer than that margin, or
+whose workload loses readiness late in the settle, can still reach the limit
+before either property reports. It then ends `not ready within the settle
+limit` if the workload never became ready, and `no check without a fault in
+force finished` if it was ready once. The target then restores the
+snapshot, which the chain held through the phase, so the restore runs no action again unless the session was
 replaced or the phase restored a prefix older than the endpoint. A restore that
 finds no held link rebuilds the endpoint as any other restore does, so the hold
 saves work and never decides a result. The target also restores the job's
@@ -1194,8 +1263,8 @@ semantic events. Snapshot and schedule IDs never enter that commitment. Missing
 KVM history cannot be replaced by an empty commitment. UML carries no ordered
 normalized-event commitment and remains uncertified for whole state.
 
-The VM stream/snapshot formats are v11/v10 and UML formats v8/v6. The action policy
-is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
+The VM stream and snapshot formats are v15 and v11, and the UML formats v12 and v7. The action policy
+is `fault-action-duration-coverage-v7-parked-pause`; older contracts are refused.
 
 Restoring a source snapshot compares its independently captured receipt and
 reconstructs the SDK observation before using that saved observation, including
@@ -1421,7 +1490,7 @@ before its certified endpoint ends the requested action with stop
 `Unexpected`; that action has no endpoint, so the target folds nothing, and
 the state has no key and counts no stage fall. A target without the
 strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
-`fault-history-dag-v3` and the campaign stream and checkpoint formats carry
+`fault-history-dag-v4` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
@@ -1601,7 +1670,7 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v3`, whose endpoint frame also
+The shared history codec is `fault-history-dag-v4`, whose endpoint frame also
 carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.

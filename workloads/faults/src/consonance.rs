@@ -1249,12 +1249,7 @@ impl FaultTarget {
             crate::job_observation::stage(crate::job_observation::RestoreStage::Observation);
             let mut actual = live.observe(FaultStop::Deadline)?;
             if !snapshot.history.is_empty() {
-                actual
-                    .parks
-                    .retain(|park| park.moment > receipt.previous_moment());
-                actual
-                    .park_reads
-                    .retain(|read| read.moment > receipt.previous_moment());
+                actual.keep_parks_after(receipt.previous_moment());
             }
             if actual != snapshot.observation {
                 return Err(
@@ -1431,12 +1426,7 @@ impl FaultTarget {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
             self.action_choices = std::mem::take(&mut live.choices);
-            observation
-                .parks
-                .retain(|park| park.moment > self.history.receipt().moment());
-            observation
-                .park_reads
-                .retain(|read| read.moment > self.history.receipt().moment());
+            observation.keep_parks_after(self.history.receipt().moment());
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
@@ -1480,8 +1470,7 @@ impl FaultTarget {
                         .saturating_add(u64::from(error.starts_with(WATCHDOG_CUTOFF)));
                     self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
                     let mut observation = self.observation.clone();
-                    observation.parks.clear();
-                    observation.park_reads.clear();
+                    observation.clear_parks();
                     observation.watchdog_cutoff = error.starts_with(WATCHDOG_CUTOFF);
                     observation.infrastructure_failure = self.infrastructure_failure;
                     self.action_observations.push(observation);
@@ -2318,12 +2307,7 @@ impl Live {
             return Err("execution endpoint assurance differs from parent history".to_owned());
         }
         self.cursor.begin_action(parent.moment());
-        observation
-            .parks
-            .retain(|park| park.moment > parent.moment());
-        observation
-            .park_reads
-            .retain(|read| read.moment > parent.moment());
+        observation.keep_parks_after(parent.moment());
         let (endpoint, event_history) = match (parent.endpoint(), proof) {
             (
                 FaultEndpointCertificate::KvmWholeState(_),
@@ -2775,6 +2759,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .park_reads
                 .capacity()
                 .saturating_mul(size_of::<crate::target::ParkRead>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .parked_pauses
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkedPause>()),
         )
 }
 
@@ -5022,10 +5013,14 @@ mod tests {
 
     const FOLDING: &str = "tier = \"min(highest(ticks), 15)\"\n";
 
-    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+    fn register_event(register: u32, value: u64) -> consonance_client::session::SdkEvent {
         let mut bytes = vec![0];
-        bytes.extend_from_slice(&ticks.to_le_bytes());
-        (0, (2 << 24) | process_proto::registers::TICKS, bytes)
+        bytes.extend_from_slice(&value.to_le_bytes());
+        (0, (2 << 24) | register, bytes)
+    }
+
+    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+        register_event(process_proto::registers::TICKS, ticks)
     }
 
     fn scripted_batches_live(batches: Vec<Vec<consonance_client::session::SdkEvent>>) -> Live {
@@ -5293,6 +5288,56 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_pause_runs_as_a_plain_pause_on_a_node_not_ready_at_its_parent() {
+        let ticks = std::num::NonZeroU16::new(4).unwrap();
+        let parked = FaultAction::from(FaultOperation::PauseParked {
+            node: 0,
+            edges: 1,
+            hold_us: 1,
+            ticks,
+            target: None,
+        });
+        let wait: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let readying = || {
+            let mut ready = vec![0];
+            ready.extend_from_slice(&1_u64.to_le_bytes());
+            vec![
+                ticks_event(1),
+                (0, (2 << 24) | process_proto::registers::EVENT_READY, ready),
+            ]
+        };
+        let (mut target, _) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(vec![readying()])));
+        let root = target.snapshot().unwrap().unwrap();
+        let readied = target.apply_and_snapshot(wait).unwrap().unwrap();
+        assert_eq!(root.observation.event_ready, 0);
+        assert_eq!(readied.observation.event_ready, 1);
+        let certificates = readied.history.certificates();
+        let unparked = FaultAction::from(FaultOperation::Pause(0, ticks));
+        for (replay, expected) in [(&[][..], unparked), (&[wait][..], parked)] {
+            let mut batches: Vec<_> = replay.iter().map(|_| readying()).collect();
+            batches.push(vec![ticks_event(2)]);
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(batches)));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &root,
+                replay,
+                &certificates[certificates.len() - replay.len()..],
+                crate::archive::FaultMilestones::default(),
+                &[parked],
+                searcher::search::rollout::RolloutStop::new(false),
+                None,
+            )
+            .unwrap();
+            let executed: Vec<_> = result.actions.iter().map(|action| action.action).collect();
+            assert_eq!(executed, [expected]);
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
     fn a_rejected_endpoint_is_a_doomed_terminal_whose_coverage_and_findings_still_count() {
         use searcher::search::rollout::ExecutionDisposition;
         let request = crate::key::KeyRequest {
@@ -5424,6 +5469,72 @@ mod tests {
             assert_eq!(record["outcome"], outcome);
             assert_eq!(record["settle_actions"], u64::from(!doomed));
         }
+    }
+
+    #[test]
+    fn a_settle_whose_recovery_stays_pending_reports_the_ready_property_after_its_window() {
+        use process_proto::registers::{ALIVE, FAULTS_IN_FORCE, RECOVERY_PENDING};
+        const READY: &str = "workload becomes ready within 30 seconds after faults end";
+        let waits = 65;
+        let mut batches: Vec<Vec<consonance_client::session::SdkEvent>> = (1..=waits + 2)
+            .map(|ticks| vec![ticks_event(ticks)])
+            .collect();
+        batches[0].extend([
+            register_event(ALIVE, 1),
+            register_event(FAULTS_IN_FORCE, 0),
+            register_event(RECOVERY_PENDING, 1),
+        ]);
+        batches.last_mut().unwrap().push((
+            0,
+            0,
+            format!(
+                r#"{{"antithesis_assert":{{"id":"{READY}","assert_type":"always","must_hit":false,"hit":true,"condition":false}}}}"#
+            )
+            .into_bytes(),
+        ));
+        let (mut target, _) = keyed_target(FOLDING);
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            scripted: Some(ScriptedRuns {
+                batches,
+                ..ScriptedRuns::default()
+            }),
+            run_hashes: Some(vec![[17; 32]; 4 * waits as usize]),
+            ..fixture_session()
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let policy = crate::campaign::settle::SettlePolicy {
+            record: directory.path().join("settle.jsonl"),
+            heal: None,
+        };
+        let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
+            searcher::search::rollout::RolloutStop::new(false),
+            Some(&policy),
+        )
+        .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&policy.record).unwrap()).unwrap();
+        let end = u64::from(crate::campaign::settle::END_TICKS);
+        let wait = u64::from(crate::campaign::settle::WAIT_TICKS);
+        assert_eq!(record["outcome"], "bug");
+        assert_eq!(record["violations"], serde_json::json!([READY]));
+        assert_eq!(record["ready_after_ticks"], serde_json::Value::Null);
+        assert_eq!(record["recovery_pending_after_settle"], true);
+        assert_eq!(record["settle_actions"], waits + 1);
+        assert_eq!(record["settle_ticks"], end + waits * wait);
+        assert!(waits * wait > 3_000);
+        assert_eq!(result.actions.len(), 2 + waits as usize);
+        assert!(result.actions.last().unwrap().outcome.objective_reached);
     }
 
     #[test]
@@ -8695,7 +8806,7 @@ mod tests {
                     edges: 13,
                     hold: Span(7_000_000),
                     target: ParkTarget::new(8, 16),
-                    from_arm: false,
+                    at_resume: false,
                 },
                 moment(6),
                 moment(10),

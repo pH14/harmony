@@ -158,12 +158,53 @@ static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
     exchange_target(fd, kind, first, second, 0, 0, response);
 }
 
+static uint64_t *test_page;
+
+static int open_page(void)
+{
+    char path[] = "/tmp/harmony-event-page-XXXXXX";
+    int fd = mkstemp(path);
+    void *mapped;
+
+    assert(fd >= 0);
+    assert(unlink(path) == 0);
+    assert(ftruncate(fd, HARMONY_FAULT_PAGE_BYTES) == 0);
+    mapped = mmap(NULL, (size_t)HARMONY_FAULT_PAGE_BYTES, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, fd, 0);
+    assert(mapped != MAP_FAILED);
+    test_page = mapped;
+    __atomic_store_n(&test_page[HARMONY_FAULT_PAGE_NODE_PID], (uint64_t)getpid(),
+                     __ATOMIC_RELAXED);
+    return fd;
+}
+
+static void store_word(size_t index, uint64_t value, int order)
+{
+    __atomic_store_n(&test_page[index], value, order);
+}
+
+static void publish_page(uint64_t edges, uint64_t hold_nanos, uint64_t target_start,
+                         uint64_t target_end)
+{
+    uint64_t generation =
+        __atomic_load_n(&test_page[HARMONY_FAULT_PAGE_GENERATION], __ATOMIC_RELAXED);
+
+    store_word(HARMONY_FAULT_PAGE_GENERATION, generation + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    store_word(HARMONY_FAULT_PAGE_EDGES, edges, __ATOMIC_RELAXED);
+    store_word(HARMONY_FAULT_PAGE_HOLD_NANOS, hold_nanos, __ATOMIC_RELAXED);
+    store_word(HARMONY_FAULT_PAGE_TARGET_START, target_start, __ATOMIC_RELAXED);
+    store_word(HARMONY_FAULT_PAGE_TARGET_END, target_end, __ATOMIC_RELAXED);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, generation + 2, __ATOMIC_RELEASE);
+}
+
 int main(void)
 {
     int control[2];
     int report[2];
     char control_name[16];
     char report_name[16];
+    char page_name[16];
     unsigned char response[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE];
     unsigned char report_frame[HARMONY_FAULT_EVENT_REPORT_SIZE];
 
@@ -185,6 +226,8 @@ int main(void)
     assert(snprintf(report_name, sizeof(report_name), "%d", report[0]) > 0);
     assert(setenv("HARMONY_EVENT_KILL_FD", control_name, 1) == 0);
     assert(setenv("HARMONY_EVENT_REPORT_FD", report_name, 1) == 0);
+    assert(snprintf(page_name, sizeof(page_name), "%d", open_page()) > 0);
+    assert(setenv("HARMONY_EVENT_PAGE_FD", page_name, 1) == 0);
 
     harmony_instrumentation_event(1);
     assert(read_all(report[1], report_frame, sizeof(report_frame)) == 0);
@@ -335,18 +378,29 @@ int main(void)
         assert(get_word(response, 16) == 0);
     }
 
-    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM, 3, 1, response);
-    assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == 0);
+    assert(get_word(response, 24) == 0);
+    publish_page(3, 1, 0, 0);
     harmony_instrumentation_event(12);
     harmony_instrumentation_event(5);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 7);
     assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 2);
+    assert(get_word(response, 32) == 2);
     harmony_instrumentation_event(11);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 8);
+    assert(get_word(response, 16) ==
+           (HARMONY_FAULT_EVENT_PARK_STATUS_ARMED | HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED));
     assert(strcmp(json_report, "{\"harmony_park\":{\"site\":11,\"edges\":3}}\n") == 0);
-    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK_FROM_ARM, 1, 1, 12, 13, response);
+    publish_page(1, 1, 12, 13);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 8);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 4);
+    assert(get_word(response, 32) == 4);
     harmony_instrumentation_event(11);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 8);
@@ -358,8 +412,79 @@ int main(void)
     harmony_instrumentation_event(12);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 9);
-    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 16) ==
+           (HARMONY_FAULT_EVENT_PARK_STATUS_ARMED | HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED));
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 5, __ATOMIC_RELEASE);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED);
+    assert(get_word(response, 24) == 4);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 4, __ATOMIC_RELEASE);
+    publish_page(0, 1, 0, 0);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED);
+    assert(get_word(response, 24) == 6);
+    assert(get_word(response, 32) == 4);
+    publish_page(1, 1, 12, 12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED);
+    assert(get_word(response, 24) == 8);
+    assert(get_word(response, 32) == 4);
+    publish_page(1, 1, 0, 0);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 10);
+    assert(get_word(response, 32) == 10);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 11, __ATOMIC_RELEASE);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 10);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 10, __ATOMIC_RELEASE);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) ==
+           (HARMONY_FAULT_EVENT_PARK_STATUS_ARMED | HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED));
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":14,\"edges\":1}}\n") == 0);
+    publish_page(0, 0, 0, 0);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED);
+    assert(get_word(response, 24) == 12);
+    assert(get_word(response, 32) == 10);
+
+    publish_page(1, 1, 0, 0);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 50, 51, response);
+    publish_page(0, 0, 0, 0);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 16);
+    assert(get_word(response, 32) == 14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == 0);
+
+    store_word(HARMONY_FAULT_PAGE_NODE_PID, (uint64_t)getpid() + 1, __ATOMIC_RELAXED);
+    publish_page(1, 1, 0, 0);
+    harmony_instrumentation_event(14);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == 0);
+    assert(get_word(response, 24) == 18);
+    assert(get_word(response, 32) == 14);
+    store_word(HARMONY_FAULT_PAGE_NODE_PID, (uint64_t)getpid(), __ATOMIC_RELAXED);
 
     {
         struct sigaction action;

@@ -49,12 +49,12 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
             proptest::option::of((any::<u64>(), 1..=u64::MAX)),
             any::<bool>(),
         )
-            .prop_map(|(edges, hold, target, from_arm)| Fault::ProcEventPark {
+            .prop_map(|(edges, hold, target, at_resume)| Fault::ProcEventPark {
                 edges,
                 hold: Span(hold),
                 target: target
                     .and_then(|(start, width)| ParkTarget::new(start, start.saturating_add(width))),
-                from_arm,
+                at_resume,
             },),
         any::<u64>().prop_map(|choice| Fault::ProcPowerLoss { choice }),
         Just(Fault::ProcDiskError),

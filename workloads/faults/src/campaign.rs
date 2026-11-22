@@ -22,7 +22,7 @@ use searcher::{
             TargetExecution, ThreadPlacement, WorkloadPolicies, default_window,
             postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
-        choice::{ChoicePlan, ChoiceSite},
+        choice::{ChoicePlan, ChoiceRecord, ChoiceSite},
         cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
@@ -43,7 +43,7 @@ use crate::{
         FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark, MAX_RECORDED_BUGS,
         MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
         UndecidedChecks, action_cost, bug_outcome, merge_milestones, merge_progress_watermark,
-        milestone_key, milestones, park_threshold_bucket, resume_park, sample_action,
+        milestone_key, milestones, park_threshold_bucket, parked_pause, sample_action,
         sample_profiled_action,
     },
     assertion::Assertions,
@@ -64,9 +64,9 @@ pub(crate) mod nodes;
 pub(crate) mod settle;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v11";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v12";
 pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v12";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v7";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v8";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -80,7 +80,7 @@ const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
 const HOST_FAILURE_POLICY: &str = "host_incomplete_v3";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-coverage-v6-guest-choices";
+const ACTION_FORMAT: &str = "fault-action-duration-coverage-v7-parked-pause";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -198,6 +198,8 @@ pub struct FaultCampaignEvidence {
     undecided_execution: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     stage_falls: BTreeMap<u8, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    parked_pauses: BTreeMap<String, u64>,
 }
 
 impl FaultCampaignEvidence {
@@ -704,7 +706,11 @@ pub(crate) fn execute_job(
         None => (None, None),
     };
     let mut resolved = nodes::resolve(&run.vocabulary, suffix, stop.choices(), host_untried, depth);
-    let suffix = guest_suffix(&resolved.suffix, stop.choices(), guest_untried);
+    let suffix = guest_suffix(
+        &ready_parked_pauses(&resolved.suffix, target.observation().event_ready),
+        stop.choices(),
+        guest_untried,
+    );
     for (index, action) in suffix.iter().enumerate() {
         if let Some(mut row) = resolved.rows[index].take() {
             row.moment = target.observation().moment;
@@ -805,6 +811,47 @@ impl Reporting for FaultWorkload {
 
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
         Ok(serde_json::from_slice(bytes)?)
+    }
+
+    fn catalog_signals(&self, _run: &FaultCampaignRun) -> Vec<String> {
+        self.keys
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect()
+    }
+
+    fn state_record(
+        &self,
+        _run: &FaultCampaignRun,
+        snapshot: &FaultSnapshot,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(&snapshot.observation))
+    }
+
+    fn observation_record(
+        &self,
+        _run: &FaultCampaignRun,
+        observation: &FaultObservations,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(observation))
+    }
+
+    fn choice_records(
+        &self,
+        run: &FaultCampaignRun,
+        plan: Option<&ChoicePlan>,
+        index: usize,
+        action: &FaultAction,
+        _observations: &[FaultObservations],
+    ) -> Vec<ChoiceRecord> {
+        plan.zip(action.guest)
+            .filter(|(plan, guest)| guest.seed == GuestChoices::from_plan(plan, index, None).seed)
+            .and_then(|_| nodes::row(&run.vocabulary, 0, 0, &action.operation))
+            .map(|row| ChoiceRecord::new(nodes::NODE_SITE_ID, row.offered, row.default, row.taken))
+            .into_iter()
+            .collect()
     }
 
     fn stream_format(&self) -> &'static str {
@@ -917,6 +964,7 @@ impl Reporting for FaultWorkload {
             park_thresholds: evidence.park_thresholds.clone(),
             undecided_checks: evidence.undecided_checks,
             stage_falls: evidence.stage_falls(self.keys.compiled()),
+            parked_pauses: evidence.parked_pauses.clone(),
         }
     }
 }
@@ -1048,7 +1096,7 @@ impl InputPolicy for FaultWorkload {
         mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
-        previous: Option<&FaultAction>,
+        _previous: Option<&FaultAction>,
         draw: DurationDraw<AssertionKey>,
         replay: bool,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -1058,7 +1106,6 @@ impl InputPolicy for FaultWorkload {
             mixture,
             before,
             mutation_seed,
-            previous,
             replay,
             DurationDraw {
                 context: self.keys.context_event_ready(draw.context),
@@ -1121,59 +1168,65 @@ fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
 
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     match &action.operation {
-        FaultOperation::EventKill { node, .. }
-        | FaultOperation::EventPark { node, .. }
-        | FaultOperation::EventParkFromArm { node, .. } => 1_u64
-            .checked_shl(u32::from(*node))
-            .is_some_and(|bit| event_ready & bit != 0),
+        FaultOperation::EventKill { node, .. } | FaultOperation::EventPark { node, .. } => {
+            node_is_ready(*node, event_ready)
+        }
         _ => true,
     }
+}
+
+fn node_is_ready(node: u16, event_ready: u64) -> bool {
+    1_u64
+        .checked_shl(u32::from(node))
+        .is_some_and(|bit| event_ready & bit != 0)
+}
+
+fn unparked_unless_ready(operation: FaultOperation, event_ready: u64) -> FaultOperation {
+    match operation {
+        FaultOperation::PauseParked { node, ticks, .. } if !node_is_ready(node, event_ready) => {
+            FaultOperation::Pause(node, ticks)
+        }
+        operation => operation,
+    }
+}
+
+fn ready_parked_pauses(suffix: &[FaultAction], event_ready: u64) -> Vec<FaultAction> {
+    suffix
+        .iter()
+        .map(|action| FaultAction {
+            operation: unparked_unless_ready(action.operation, event_ready),
+            ..*action
+        })
+        .collect()
 }
 
 const PROFILE_SEED_MIX: u64 = 0x5157_4152_4d5f_6b31;
 
 const RESUME_PARK_SEED_MIX: u64 = 0x7265_7375_6d65_7061;
 
-fn paused_node(action: &FaultAction) -> Option<u16> {
-    match action.operation {
-        FaultOperation::Pause(node, _) => Some(node),
-        _ => None,
-    }
-}
-
-fn parks_from_arm_on(action: Option<&FaultAction>, node: u16) -> bool {
-    matches!(
-        action.map(|action| action.operation),
-        Some(FaultOperation::EventParkFromArm { node: parked, .. }) if parked == node
-    )
-}
-
-fn with_resume_parks(
+fn with_parked_pauses(
     suffix: Vec<FaultAction>,
-    previous: Option<&FaultAction>,
     sites: &[u64],
     event_ready: u64,
     ticks: std::num::NonZeroU16,
     mutation_seed: u64,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ RESUME_PARK_SEED_MIX);
-    let mut parked = Vec::with_capacity(suffix.len().saturating_mul(2));
-    let mut paused = previous.and_then(paused_node);
-    for action in suffix.iter().map(Some).chain([None]) {
-        if let Some(node) = paused.take()
-            && !parks_from_arm_on(action, node)
-        {
-            let park = resume_park(&mut rand, node, sites, ticks)?;
-            if event_is_ready(&park, event_ready) {
-                parked.push(park);
-            }
-        }
-        if let Some(action) = action {
-            parked.push(*action);
-            paused = paused_node(action);
-        }
-    }
-    Ok(parked)
+    suffix
+        .into_iter()
+        .map(|action| {
+            let operation = match action.operation {
+                FaultOperation::Pause(node, _) if node_is_ready(node, event_ready) => {
+                    parked_pause(&mut rand, node, sites, ticks)?
+                }
+                operation => unparked_unless_ready(operation, event_ready),
+            };
+            Ok(FaultAction {
+                operation,
+                ..action
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1183,7 +1236,6 @@ fn held_suffix(
     mixture: MixtureDraw,
     before: Option<&EmpiricalStepCheckpoint>,
     mutation_seed: u64,
-    previous: Option<&FaultAction>,
     replay: bool,
     draw: DurationDraw<u64>,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -1218,7 +1270,7 @@ fn held_suffix(
             )
         })?;
     if let Some(sites) = run.vocabulary.resume_park() {
-        suffix = with_resume_parks(suffix, previous, sites, event_ready, ticks, mutation_seed)?;
+        suffix = with_parked_pauses(suffix, sites, event_ready, ticks, mutation_seed)?;
     }
     for action in &mut suffix {
         *action = action.with_ticks(ticks);
@@ -1581,15 +1633,12 @@ impl Evaluation for FaultWorkload {
                 .or_default()
                 .armed += 1;
         }
-        let from_arm = matches!(
-            action.action.operation,
-            FaultOperation::EventParkFromArm { .. }
-        );
+        let parked = matches!(action.action.operation, FaultOperation::PauseParked { .. });
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
                 *evidence.park_sites.entry(park.site).or_default() += 1;
-                if !from_arm {
+                if !parked {
                     evidence
                         .park_thresholds
                         .entry(park_threshold_bucket(park.edges))
@@ -1599,6 +1648,12 @@ impl Evaluation for FaultWorkload {
             }
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
+            }
+            for pause in &observation.parked_pauses {
+                *evidence
+                    .parked_pauses
+                    .entry(pause.outcome.name().to_owned())
+                    .or_default() += 1;
             }
             if let Some(stage) = observation.stage_fall {
                 *evidence.stage_falls.entry(stage).or_default() += 1;
@@ -1778,6 +1833,7 @@ pub(crate) fn fixture_workload(
 mod tests {
     use super::*;
     use crate::consonance::{DEFAULT_RAM_MIB, GuestBackend};
+    use crate::target::{ActionWindows, standing_windows};
     use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
 
     #[test]
@@ -2085,6 +2141,28 @@ mod tests {
         assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
     }
 
+    #[test]
+    fn a_snapshot_checkpoint_from_the_previous_snapshot_layout_is_refused_by_its_format() {
+        let encoded = FaultSnapshotCheckpoint {
+            format: "faultlab-consonance-snapshot-root-v11".into(),
+            entries: vec![searcher::search::campaign::SnapshotCheckpointEntry {
+                id: 1,
+                snapshot: FaultSnapshot::default(),
+            }],
+        }
+        .to_bytes()
+        .unwrap();
+        let error = FaultSnapshotCheckpoint::from_bytes(&encoded, SNAPSHOT_CHECKPOINT_FORMAT)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "snapshot checkpoint format is faultlab-consonance-snapshot-root-v11; this build reads faultlab-consonance-snapshot-root-v12"
+            ),
+            "{error}"
+        );
+    }
+
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
@@ -2382,12 +2460,30 @@ mod tests {
                 site: 9,
                 edges: 1,
             }],
+            parked_pauses: vec![
+                crate::target::ParkedPause {
+                    moment: 3,
+                    node: 0,
+                    outcome: process_proto::events::ParkedOutcome::Fired,
+                },
+                crate::target::ParkedPause {
+                    moment: 4,
+                    node: 1,
+                    outcome: process_proto::events::ParkedOutcome::Unadopted,
+                },
+            ],
             ..FaultObservations::default()
         };
         let cutoff = FaultObservations {
             watchdog_cutoff: true,
             ..FaultObservations::default()
         };
+        assert!(
+            serde_json::to_value(&evidence)
+                .unwrap()
+                .get("parked_pauses")
+                .is_none()
+        );
         for observations in [vec![landed], vec![]] {
             game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
                 Err("no input".into())
@@ -2416,6 +2512,10 @@ mod tests {
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
         assert_eq!(evidence.park_reads.get(&9), Some(&1));
+        assert_eq!(
+            evidence.parked_pauses,
+            BTreeMap::from([("fired".to_owned(), 1), ("unadopted".to_owned(), 1)])
+        );
     }
 
     #[test]
@@ -2645,7 +2745,7 @@ mod tests {
     }
 
     #[test]
-    fn a_park_from_arm_follows_every_drawn_pause_only_under_resume_park() {
+    fn a_ready_pause_draws_as_a_parked_pause_only_under_resume_park() {
         let game = game();
         let vocabulary = FaultVocabulary::new(3, vec![])
             .unwrap()
@@ -2664,10 +2764,10 @@ mod tests {
             weight: 0,
             splice_weight: 0,
         };
-        let draw = DurationDraw {
+        let ready = |event_ready| DurationDraw {
             context: game.keys().context(
                 game.key_of(&FaultObservations {
-                    event_ready: 0b111,
+                    event_ready,
                     ..FaultObservations::default()
                 })
                 .unwrap(),
@@ -2675,65 +2775,91 @@ mod tests {
             max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
             duration: NonZeroU64::new(256).unwrap(),
         };
+        let draw = ready(0b111);
         let mut tables =
             DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("draw tables");
         let checkpoint = tables.checkpoint().expect("initial checkpoint");
         let mut schedule = DrawVersionSchedule::default();
         schedule.require(checkpoint.records, 0);
         tables.remember_version(&schedule).expect("keep a version");
-        let from_arm = |action: &FaultAction| match action.operation {
-            FaultOperation::EventParkFromArm {
-                node,
-                edges,
-                hold_us,
-                ticks,
-                target,
-            } => Some((node, edges, hold_us, ticks.get(), target)),
-            _ => None,
+        let windows = ActionWindows {
+            root_seal: 0,
+            hold_hooks: false,
         };
         let mut pauses = 0;
+        let mut limited = 0;
         let mut exponents = BTreeSet::new();
         for seed in 0..256 {
             let today = game
                 .expand_suffix_duration(&off, &tables, mixture, seed, None, draw)
                 .unwrap();
-            assert!(today.iter().all(|action| from_arm(action).is_none()));
+            assert!(
+                today
+                    .iter()
+                    .all(|action| !matches!(action.operation, FaultOperation::PauseParked { .. }))
+            );
             for (run, site) in [(&anywhere, None), (&sited, Some(228_994))] {
                 let parked = game
                     .expand_suffix_duration(run, &tables, mixture, seed, None, draw)
                     .unwrap();
-                let drawn: Vec<_> = parked
-                    .iter()
-                    .filter(|action| from_arm(action).is_none())
-                    .copied()
-                    .collect();
-                assert_eq!(drawn, today);
-                for (index, action) in parked.iter().enumerate() {
-                    if let FaultOperation::Pause(node, _) = action.operation {
-                        pauses += 1;
-                        let (parked_node, edges, hold_us, ticks, target) =
-                            from_arm(&parked[index + 1]).expect("a park follows the pause");
-                        assert_eq!(parked_node, node);
-                        assert_eq!(ticks, 256);
-                        assert!((10_000..=2_560_000).contains(&hold_us));
-                        match site {
-                            Some(site) => {
-                                assert_eq!(edges, 1);
-                                assert_eq!(target, fault_policy::ParkTarget::new(site, site + 1));
-                            }
-                            None => {
-                                assert!(edges.is_power_of_two() && edges <= 1024);
-                                assert_eq!(target, None);
-                                exponents.insert(edges.trailing_zeros());
-                            }
+                assert_eq!(parked.len(), today.len());
+                for (drawn, action) in today.iter().zip(&parked) {
+                    let FaultOperation::Pause(node, _) = drawn.operation else {
+                        assert_eq!(action, drawn);
+                        continue;
+                    };
+                    pauses += 1;
+                    let FaultOperation::PauseParked {
+                        node: parked_node,
+                        edges,
+                        hold_us,
+                        ticks,
+                        target,
+                    } = action.operation
+                    else {
+                        panic!("a ready pause draws as a parked pause");
+                    };
+                    assert_eq!(
+                        FaultAction {
+                            operation: drawn.operation,
+                            ..*action
+                        },
+                        *drawn
+                    );
+                    assert_eq!(parked_node, node);
+                    assert_eq!(ticks.get(), 256);
+                    assert!((10_000..=2_560_000).contains(&hold_us));
+                    match site {
+                        Some(site) => {
+                            assert_eq!(edges, 1);
+                            assert_eq!(target, fault_policy::ParkTarget::new(site, site + 1));
+                        }
+                        None => {
+                            assert!(edges.is_power_of_two() && edges <= 1024);
+                            assert_eq!(target, None);
+                            exponents.insert(edges.trailing_zeros());
                         }
                     }
-                    if from_arm(action).is_some() {
-                        assert!(matches!(
-                            parked[index - 1].operation,
-                            FaultOperation::Pause(..)
-                        ));
-                    }
+                }
+                if matches!(parked[0].operation, FaultOperation::PauseParked { .. }) {
+                    limited += 1;
+                    let standing = standing_windows(windows, &[], &parked[..1]).unwrap();
+                    assert_eq!(standing.len(), 2);
+                    assert!(matches!(
+                        fault_policy::decode_process_target(&standing[0].target),
+                        Some((_, fault_policy::Fault::ProcPause(_)))
+                    ));
+                    assert!(matches!(
+                        fault_policy::decode_process_target(&standing[1].target),
+                        Some((
+                            _,
+                            fault_policy::Fault::ProcEventPark {
+                                at_resume: true,
+                                ..
+                            }
+                        ))
+                    ));
+                    assert_eq!(standing[0].end, standing[1].start);
                 }
                 let replay = game
                     .expand_suffix_recorded_duration(
@@ -2750,87 +2876,164 @@ mod tests {
             }
         }
         assert!(pauses > 0);
+        assert!(limited > 0);
         assert_eq!(exponents, (0..=10).collect::<BTreeSet<_>>());
-        let pause = FaultAction::from(FaultOperation::Pause(
-            2,
-            std::num::NonZeroU16::new(256).unwrap(),
-        ));
-        let resumed = game
-            .expand_suffix_duration(&anywhere, &tables, mixture, 3, Some(&pause), draw)
-            .unwrap();
-        assert_eq!(from_arm(&resumed[0]).map(|park| park.0), Some(2));
-        let unready = DurationDraw {
-            context: game.keys().context(
-                game.key_of(&FaultObservations {
-                    event_ready: 0,
-                    ..FaultObservations::default()
-                })
-                .unwrap(),
-            ),
-            ..draw
-        };
         for seed in 0..32 {
             assert_eq!(
-                game.expand_suffix_duration(
-                    &anywhere,
-                    &tables,
-                    mixture,
-                    seed,
-                    Some(&pause),
-                    unready
-                )
-                .unwrap(),
-                game.expand_suffix_duration(&off, &tables, mixture, seed, Some(&pause), unready)
+                game.expand_suffix_duration(&anywhere, &tables, mixture, seed, None, ready(0))
+                    .unwrap(),
+                game.expand_suffix_duration(&off, &tables, mixture, seed, None, ready(0))
                     .unwrap()
             );
         }
     }
 
     #[test]
-    fn a_pause_already_followed_by_its_park_gets_no_second_one() {
+    fn a_retained_or_executed_parked_pause_keeps_its_park_only_on_a_ready_node() {
         let ticks = std::num::NonZeroU16::new(256).unwrap();
-        let pause = |node| FaultAction::from(FaultOperation::Pause(node, ticks));
-        let retained = FaultAction::from(FaultOperation::EventParkFromArm {
-            node: 1,
-            edges: 4,
-            hold_us: 10_000,
-            ticks,
-            target: None,
-        });
-        let wait = FaultAction::from(FaultOperation::Wait(ticks));
-        let shape = |actions: &[FaultAction]| {
-            actions
-                .iter()
-                .map(|action| match action.operation {
-                    FaultOperation::Pause(node, _) => format!("P{node}"),
-                    FaultOperation::EventParkFromArm { node, .. } => format!("A{node}"),
-                    FaultOperation::Wait(_) => "W".to_owned(),
-                    _ => "?".to_owned(),
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
+        let parked = |node| {
+            FaultAction::from(FaultOperation::PauseParked {
+                node,
+                edges: 4,
+                hold_us: 10_000,
+                ticks,
+                target: None,
+            })
+            .with_choice(9)
         };
-        let suffix = vec![pause(0), wait, pause(1), retained, pause(2)];
-        let parked = with_resume_parks(suffix.clone(), None, &[], u64::MAX, ticks, 7).unwrap();
-        assert_eq!(shape(&parked), "P0 A0 W P1 A1 P2 A2");
-        assert_eq!(parked[4], retained);
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let suffix = vec![parked(0), wait, parked(1)];
         assert_eq!(
-            parked,
-            with_resume_parks(suffix.clone(), None, &[], u64::MAX, ticks, 7).unwrap()
+            with_parked_pauses(suffix.clone(), &[], 0b011, ticks, 7).unwrap(),
+            suffix
         );
+        let unready_first = vec![
+            FaultAction::from(FaultOperation::Pause(0, ticks)).with_choice(9),
+            wait,
+            parked(1),
+        ];
         assert_eq!(
-            shape(
-                &with_resume_parks(suffix.clone(), Some(&pause(1)), &[], 0b010, ticks, 7).unwrap()
+            with_parked_pauses(suffix.clone(), &[], 0b010, ticks, 7).unwrap(),
+            unready_first
+        );
+        assert_eq!(ready_parked_pauses(&suffix, 0b011), suffix);
+        assert_eq!(ready_parked_pauses(&suffix, 0b010), unready_first);
+    }
+
+    #[test]
+    fn default_draws_match_their_recorded_digests() {
+        use sha2::{Digest, Sha256};
+        const DIGESTS: [&str; 36] = [
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "9b209cfc9a715251524b9db65d4a304c7f8e90e1b4544f28c4fd67b121bba396",
+            "be708b25e5216ec6c754f496c5648d825812b53119c2cd9af46ba32b638dd753",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "d949bdc09f664f7599c67c6833d9d20d3e13ab6bdcaade568f3a243dd016ea94",
+            "905f3184a2d72a5665368471a058593ad8a6230d19e8ef2d5f35e4684be73306",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "9b209cfc9a715251524b9db65d4a304c7f8e90e1b4544f28c4fd67b121bba396",
+            "be708b25e5216ec6c754f496c5648d825812b53119c2cd9af46ba32b638dd753",
+            "11bbfb83a9e710346a3a27a01098937eff45600c84398d59915405bb34c158b8",
+            "355da7fe7dacd4ad485d397fdd35fb1292b244b6bc14b8dc13ce83663359e512",
+            "a3c1ce73004e1bbc8f45d4003e33fecc8f38a846ff65ba7d23441ae5ec94dd4b",
+            "11bbfb83a9e710346a3a27a01098937eff45600c84398d59915405bb34c158b8",
+            "40743fba2644319ce6db0d276e1f6f6c23692d2c771cca208ac624491a9d3fbe",
+            "c1114d6506347002ce4ec2bade7cf68f7f1a791d8a8b854b1d39b8df2ee527c3",
+            "7d4b2200879e87aed23379062c6f4229bba23ea3a0d3790a35436c9d6eba4e70",
+            "becae5cdea55cdc80cf873b722cf4cb97a1ff869b4df183c01476895432a96e1",
+            "c832e1fd2fc4d1f79b92514e2ead1bdecdffbb130c2270e48f424a9ace64f581",
+            "7d4b2200879e87aed23379062c6f4229bba23ea3a0d3790a35436c9d6eba4e70",
+            "dd37ce131dffa509919605e2aa3a91e947552f26616a8a219f9dea3c9cc61104",
+            "b0ef66c59c160cdbb177d1c800d07ffcfd10db4445a90c1ce7e159b10514bd35",
+            "35b8b9ec83bbdfb9319e071c9aa8b0042770095ac6a413fd2364bf1a7d91648b",
+            "27fdb01b9ac3e35a0c97acb52c11ce4590173e6f2ca956897267bec68becdec7",
+            "0e4d4ca5a28c91ffd2b83057e3b51c059592c5d287238384ad9fe6dcc8620fe2",
+            "35b8b9ec83bbdfb9319e071c9aa8b0042770095ac6a413fd2364bf1a7d91648b",
+            "3d89b8b48ddde5b273e45d5bcb1b84d6a037399508e5b1908a8da3bc8466911a",
+            "f1f39b8efc5a84290815f397ccd14c48d744bd1b577d070d798a6e7958ab00df",
+        ];
+        let game = game();
+        let plain = FaultVocabulary::new(3, vec![]).unwrap();
+        let instrumented = plain.clone().with_instrumented_events(true);
+        let hooked = FaultVocabulary::new(3, vec![1, 2])
+            .unwrap()
+            .with_instrumented_events(true);
+        let draw = |event_ready| DurationDraw {
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
             ),
-            "A1 P0 W P1 A1 P2"
-        );
-        assert_eq!(
-            shape(
-                &with_resume_parks(vec![retained], Some(&pause(1)), &[], u64::MAX, ticks, 7)
-                    .unwrap()
-            ),
-            "A1"
-        );
+            max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
+            duration: NonZeroU64::new(256).unwrap(),
+        };
+        let alphabet = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        let empty = DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).unwrap();
+        let mut folded = DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).unwrap();
+        let source = FaultCampaignRun::any_bug(instrumented.clone());
+        for seed in 1000..1016 {
+            let suffix = game
+                .expand_suffix_duration(&source, &empty, alphabet, seed, None, draw(0b111))
+                .unwrap();
+            folded.fold_source(&suffix).unwrap();
+        }
+        folded.flush().unwrap();
+        let mixtures = [
+            alphabet,
+            MixtureDraw {
+                mixture: DrawMixture::BiasedHalf,
+                weight: 0,
+                splice_weight: 0,
+            },
+            MixtureDraw {
+                mixture: DrawMixture::Energy { scale: 4 },
+                weight: 200,
+                splice_weight: 0,
+            },
+        ];
+        let mut digests = Vec::new();
+        for vocabulary in [plain, instrumented, hooked] {
+            let run = FaultCampaignRun::any_bug(vocabulary);
+            for ready in [0_u64, 0b111] {
+                for tables in [&empty, &folded] {
+                    for mixture in mixtures {
+                        let mut digest = Sha256::new();
+                        for seed in 0..64 {
+                            let suffix = game
+                                .expand_suffix_duration(
+                                    &run,
+                                    tables,
+                                    mixture,
+                                    seed,
+                                    None,
+                                    draw(ready),
+                                )
+                                .unwrap();
+                            assert_eq!(suffix.len(), 64);
+                            digest.update(serde_json::to_string(&suffix).unwrap().as_bytes());
+                            digest.update(b"\n");
+                        }
+                        digests.push(format!("{:x}", digest.finalize()));
+                    }
+                }
+            }
+        }
+        assert_eq!(digests, DIGESTS);
     }
 
     #[test]
@@ -2949,7 +3152,11 @@ mod tests {
         let tuned = fixture_workload(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
         let mut older = policies.clone();
-        for legacy in ["500000000", "fault-action-duration-coverage-v4"] {
+        for legacy in [
+            "500000000",
+            "fault-action-duration-coverage-v4",
+            "fault-action-duration-coverage-v6-guest-choices",
+        ] {
             older.insert(ACTION_FORMAT_FIELD.to_owned(), legacy.to_owned());
             assert!(game.resolve_recorded(&older).is_err());
         }
@@ -3026,5 +3233,161 @@ mod tests {
         assert_eq!(game.untried_site(&on, &[pause, wait]), nodes::NODE_SITE_ID);
         assert_eq!(game.untried_site(&on, &[wait, pause]), 0);
         assert_eq!(game.untried_site(&on, &[]), 0);
+    }
+
+    #[test]
+    fn the_stall_report_reads_fault_records() {
+        let game = game();
+        let off = run(3, vec![1]);
+        let names: Vec<String> = game
+            .keys()
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect();
+        assert!(!names.is_empty());
+        assert_eq!(game.catalog_signals(&off), names);
+        let observation = FaultObservations {
+            restarts: 2,
+            ..FaultObservations::default()
+        };
+        assert_eq!(
+            game.observation_record(&off, &observation),
+            Some(game.keys().record(&observation))
+        );
+        let snapshot = FaultSnapshot {
+            observation: observation.clone(),
+            ..FaultSnapshot::default()
+        };
+        assert_eq!(
+            game.state_record(&off, &snapshot),
+            Some(game.keys().record(&observation))
+        );
+    }
+
+    #[test]
+    fn the_stall_report_gives_the_fault_node_rows_a_job_writes() {
+        use searcher::search::choice::{ChoicePolicy, ChoiceProfile};
+        let game = game();
+        let off = run(3, vec![1]);
+        let on = FaultCampaignRun::any_bug(off.vocabulary.clone().with_untried_first_nodes(true));
+        let parked = FaultCampaignRun::any_bug(
+            on.vocabulary
+                .clone()
+                .with_instrumented_events(true)
+                .with_resume_park(Some(vec![7]))
+                .unwrap(),
+        );
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let ticks = std::num::NonZeroU16::MIN;
+        let pause = FaultAction::from(FaultOperation::Pause(2, ticks));
+        let kill = FaultAction::from(FaultOperation::Kill(1, ticks));
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let copied = kill.with_guest(GuestChoices {
+            contrary: 1,
+            hold: 2,
+            seed: 3,
+            untried: None,
+        });
+        let suffix = [pause, copied, wait, kill];
+        for run in [&off, &on, &parked] {
+            let resolved = nodes::resolve(&run.vocabulary, &suffix, Some(&plan), None, 0);
+            let executed = guest_suffix(&resolved.suffix, Some(&plan), None);
+            let mut asked = 0;
+            for (index, (action, row)) in executed.iter().zip(&resolved.rows).enumerate() {
+                let expected: Vec<ChoiceRecord> = row
+                    .iter()
+                    .map(|row| {
+                        ChoiceRecord::new(
+                            nodes::NODE_SITE_ID,
+                            row.offered.clone(),
+                            row.default,
+                            row.taken,
+                        )
+                    })
+                    .collect();
+                asked += expected.len();
+                assert_eq!(
+                    game.choice_records(run, Some(&plan), index, action, &[]),
+                    expected
+                );
+                assert!(
+                    game.choice_records(run, None, index, action, &[])
+                        .is_empty()
+                );
+            }
+            assert_eq!(asked, 2);
+        }
+    }
+
+    #[test]
+    fn the_stall_report_counts_the_fault_node_row_of_a_parked_pause() {
+        use searcher::search::choice::{ChoicePolicy, ChoiceProfile};
+        let game = game();
+        let off = run(3, vec![1]);
+        let parked = FaultCampaignRun::any_bug(
+            off.vocabulary
+                .clone()
+                .with_untried_first_nodes(true)
+                .with_instrumented_events(true)
+                .with_resume_park(Some(vec![7]))
+                .unwrap(),
+        );
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let ticks = std::num::NonZeroU16::MIN;
+        let parked_pause = FaultAction::from(FaultOperation::PauseParked {
+            node: 2,
+            edges: 1,
+            hold_us: 10_000,
+            ticks,
+            target: fault_policy::ParkTarget::new(7, 8),
+        });
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let resolved = nodes::resolve(
+            &parked.vocabulary,
+            &[parked_pause, wait],
+            Some(&plan),
+            None,
+            0,
+        );
+        let executed = guest_suffix(&resolved.suffix, Some(&plan), None);
+        let records = game.choice_records(&parked, Some(&plan), 0, &executed[0], &[]);
+        let row = resolved.rows[0].as_ref().unwrap();
+        assert_eq!(
+            records,
+            [ChoiceRecord::new(
+                nodes::NODE_SITE_ID,
+                row.offered.clone(),
+                row.default,
+                row.taken,
+            )]
+        );
+        let ran_plain = FaultAction {
+            operation: FaultOperation::Pause(executed[0].operation.target_node().unwrap(), ticks),
+            ..executed[0]
+        };
+        assert_eq!(
+            game.choice_records(&parked, Some(&plan), 0, &ran_plain, &[]),
+            records
+        );
+        assert!(
+            game.choice_records(&parked, Some(&plan), 1, &executed[1], &[])
+                .is_empty()
+        );
     }
 }

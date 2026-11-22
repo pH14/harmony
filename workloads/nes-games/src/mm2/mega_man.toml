@@ -1,7 +1,7 @@
 goal = "ending"
 reject = "dead"
 capacity = 1
-tier = ["robot_masters", "castles", "refights_cleared", "castle_boss_defeated", "machine_shell", "screen"]
+tier = ["robot_masters", "castles", "refights_cleared", "castle_boss_defeated", "machine_shell", "room"]
 spread = ["min(stage, 13)", "room", "boss_damage / 2", "enemy_damage / 2", "x / 32", "y / 32", "posture", "min(platforms, 7)", "menu_open", "refights", "refight_boss", "min(boss_intro_frames / 64, 255)"]
 identity = ["x / 16", "y / 16", "weapon", "menu"]
 prefer_scope = "(robot_masters, castles, refights_cleared, castle_boss_defeated, machine_shell)"
