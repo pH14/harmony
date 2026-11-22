@@ -5193,10 +5193,10 @@ mod tests {
         use searcher::search::rollout::ExecutionDisposition;
         let request = crate::key::KeyRequest {
             strategy: Some(
-                "reject = \"ticks >= 4\"\n[[stage]]\nname = \"closed\"\ngoal = \"r5 > 0\"\n[[stage]]\nname = \"open\"\ngoal = \"false\"\n"
+                "reject = \"ticks >= 4\"\n[[stage]]\nname = \"closed\"\ngoal = \"open_seen > 0\"\n[[stage]]\nname = \"open\"\ngoal = \"false\"\n"
                     .to_owned(),
             ),
-            facts: BTreeMap::from([("r5".to_owned(), vec!["opened".to_owned()])]),
+            facts: BTreeMap::from([("open_seen".to_owned(), vec!["opened".to_owned()])]),
         };
         let keys = Arc::new(FaultKeys::requested(&request, 3).unwrap());
         let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();

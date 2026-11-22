@@ -1270,12 +1270,13 @@ A search config's key table can also name facts, each a list of terms:
 
 ```toml
 [workload.options.key.facts]
-r5 = ["transfer_timeout", "second_transfer"]
+stuck_transfer = ["transfer_timeout", "second_transfer"]
 ```
 
 Each fact declares one `sometimes_all` after the 18 values, in name order: a
-count `r5`, the number of its terms that hold, and one flag per term,
-`r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
+count `stuck_transfer`, the number of its terms that hold, and one flag per
+term, `stuck_transfer.transfer_timeout` and `stuck_transfer.second_transfer`.
+A term is the id of a
 Sometimes record that the target's guest processes write; the kit SDK uses
 the message as the id. A term holds while the latest hit Sometimes record
 with that id has a true condition, so a guest clears a fact by writing the
@@ -1284,7 +1285,7 @@ id neither sets nor clears the term; two kit SDK assertions of different kinds
 share an id when they share a message. The binary SDK reports a Sometimes point only when it
 passes, so a fact term must be written as a JSON record. A strategy reads a
 term by its dotted name, quoted when the id is not a plain word, for example
-`'r5.harness: a check read succeeded'`. A term the guest never writes
+`'stuck_transfer.harness: a check read succeeded'`. A term the guest never writes
 declares a flag that never holds, and nothing reports it, as with a declared
 game value that never changes; the archive report's `assertions` lists the
 ids the guest wrote. A fact term's records also count in `sometimes.count`

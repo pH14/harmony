@@ -229,7 +229,8 @@ fn request(strategy: Option<&str>, facts: &[(&str, &[&str])]) -> KeyRequest {
     }
 }
 
-const R5: (&str, &[&str]) = ("r5", &["transfer_timeout", "second_transfer"]);
+const STUCK_TRANSFER: (&str, &[&str]) =
+    ("stuck_transfer", &["transfer_timeout", "second_transfer"]);
 
 fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
     observations.assertions.record(
@@ -264,12 +265,15 @@ fn json_record(
 #[test]
 fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
     let parsed: KeyRequest = serde_json::from_str(
-        r#"{"facts": {"r5": ["transfer_timeout", "second_transfer"], "r13": ["paused_leader_behind"]}}"#,
+        r#"{"facts": {"stuck_transfer": ["transfer_timeout", "second_transfer"], "paused_leader": ["paused_leader_behind"]}}"#,
     )
     .unwrap();
     assert_eq!(
         parsed,
-        request(None, &[R5, ("r13", &["paused_leader_behind"])])
+        request(
+            None,
+            &[STUCK_TRANSFER, ("paused_leader", &["paused_leader_behind"])]
+        )
     );
     let keys = FaultKeys::requested(&parsed, 3).unwrap();
     let declarations = keys.catalog().declarations();
@@ -278,7 +282,13 @@ fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
         .iter()
         .map(|declared| (declared.name.as_str(), declared.form.as_str()))
         .collect();
-    assert_eq!(facts, [("r13", "sometimes_all"), ("r5", "sometimes_all")]);
+    assert_eq!(
+        facts,
+        [
+            ("paused_leader", "sometimes_all"),
+            ("stuck_transfer", "sometimes_all")
+        ]
+    );
     let signals: Vec<&str> = keys.catalog().signals()[DECLARATIONS..]
         .iter()
         .map(|signal| signal.name.as_str())
@@ -286,11 +296,11 @@ fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
     assert_eq!(
         signals,
         [
-            "r13",
-            "r13.paused_leader_behind",
-            "r5",
-            "r5.transfer_timeout",
-            "r5.second_transfer",
+            "paused_leader",
+            "paused_leader.paused_leader_behind",
+            "stuck_transfer",
+            "stuck_transfer.transfer_timeout",
+            "stuck_transfer.second_transfer",
         ]
     );
     assert_ne!(
@@ -301,10 +311,10 @@ fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
     fact_record(&mut observations, "second_transfer", true);
     let record = keys.record(&observations);
     let slot = |name| record.values()[keys.catalog().slot(name).unwrap()];
-    assert_eq!(slot("r5"), 1);
-    assert_eq!(slot("r5.transfer_timeout"), 0);
-    assert_eq!(slot("r5.second_transfer"), 1);
-    assert_eq!(slot("r13"), 0);
+    assert_eq!(slot("stuck_transfer"), 1);
+    assert_eq!(slot("stuck_transfer.transfer_timeout"), 0);
+    assert_eq!(slot("stuck_transfer.second_transfer"), 1);
+    assert_eq!(slot("paused_leader"), 0);
 }
 
 #[test]
@@ -336,16 +346,16 @@ fn malformed_facts_are_refused() {
     let fits = [("a", &many[..]), ("b", &many[..11])];
     assert!(FaultKeys::requested(&request(None, &fits), 3).is_ok());
     for (facts, refusal) in [
-        (&[("r-5", &["a"][..])][..], "is not a name"),
-        (&[("5r", &["a"][..])][..], "is not a name"),
-        (&[("r.5", &["a"][..])][..], "is not a name"),
+        (&[("stuck-transfer", &["a"][..])][..], "is not a name"),
+        (&[("5stuck", &["a"][..])][..], "is not a name"),
+        (&[("stuck.transfer", &["a"][..])][..], "is not a name"),
         (&[("alive", &["a"][..])][..], "built-in"),
         (&[("sometimes", &["a"][..])][..], "built-in"),
-        (&[("r5", &[][..])][..], "not 1 to 64"),
-        (&[("r5", &wide[..])][..], "not 1 to 64"),
-        (&[("r5", &["a", "a"][..])][..], "twice"),
-        (&[("r5", &["it's"][..])][..], "cannot quote"),
-        (&[("r5", &[""][..])][..], "cannot quote"),
+        (&[("stuck_transfer", &[][..])][..], "not 1 to 64"),
+        (&[("stuck_transfer", &wide[..])][..], "not 1 to 64"),
+        (&[("stuck_transfer", &["a", "a"][..])][..], "twice"),
+        (&[("stuck_transfer", &["it's"][..])][..], "cannot quote"),
+        (&[("stuck_transfer", &[""][..])][..], "cannot quote"),
         (&too_many[..], "a record holds 77"),
     ] {
         let error = FaultKeys::requested(&request(None, facts), 3)
@@ -359,7 +369,7 @@ fn malformed_facts_are_refused() {
 
 #[test]
 fn a_fact_term_follows_the_latest_sometimes_hit_whatever_kinds_share_its_id() {
-    let keys = FaultKeys::requested(&request(None, &[R5]), 3).unwrap();
+    let keys = FaultKeys::requested(&request(None, &[STUCK_TRANSFER]), 3).unwrap();
     let term = |records: &[(&str, bool, bool)]| {
         let mut observations = FaultObservations::default();
         for &(assert_type, must_hit, condition) in records {
@@ -371,7 +381,10 @@ fn a_fact_term_follows_the_latest_sometimes_hit_whatever_kinds_share_its_id() {
                 condition,
             );
         }
-        keys.record(&observations).values()[keys.catalog().slot("r5.transfer_timeout").unwrap()]
+        keys.record(&observations).values()[keys
+            .catalog()
+            .slot("stuck_transfer.transfer_timeout")
+            .unwrap()]
     };
     for other in [("always", true), ("always", false), ("reachability", true)] {
         assert_eq!(term(&[(other.0, other.1, true)]), 0, "{other:?}");
@@ -403,9 +416,9 @@ fn a_fact_term_follows_the_latest_sometimes_hit_whatever_kinds_share_its_id() {
 fn a_tier_reading_a_fact_keys_a_state_whose_fact_cleared_lower() {
     let strategy = STRATEGY.replace(
         "tier = \"sometimes.count\"",
-        "tier = [\"r5\", \"sometimes.count\"]",
+        "tier = [\"stuck_transfer\", \"sometimes.count\"]",
     );
-    let keys = FaultKeys::requested(&request(Some(&strategy), &[R5]), 3).unwrap();
+    let keys = FaultKeys::requested(&request(Some(&strategy), &[STUCK_TRANSFER]), 3).unwrap();
     let mut holds = FaultObservations::default();
     fact_record(&mut holds, "transfer_timeout", true);
     fact_record(&mut holds, "second_transfer", true);
