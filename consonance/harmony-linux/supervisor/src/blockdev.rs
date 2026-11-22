@@ -456,20 +456,21 @@ impl Disk {
     }
 
     fn format(&self, mapper: &Mapper, device: &Path, uid: u32, gid: u32) -> Result<(), String> {
-        let status = Command::new(MKFS[0])
+        let mut command = Command::new(MKFS[0]);
+        command
             .args(&MKFS[1..])
             .arg("-E")
             .arg(format!("{MKFS_EXTENDED},root_owner={uid}:{gid}"))
             .arg(device)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| {
-                format!(
-                    "{}: {error}; node disks need e2fsprogs in the image",
-                    MKFS[0]
-                )
-            })?;
+            .stdout(Stdio::null());
+        crate::process::restore_oom_score(&mut command);
+        let status = command.status().map_err(|error| {
+            format!(
+                "{}: {error}; node disks need e2fsprogs in the image",
+                MKFS[0]
+            )
+        })?;
         if !status.success() {
             return Err(format!("{} {} exited {status}", MKFS[0], device.display()));
         }

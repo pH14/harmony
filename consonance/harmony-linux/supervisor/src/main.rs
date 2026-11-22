@@ -49,6 +49,9 @@ fn run() -> Result<RunOutcome, String> {
     match spec.bundle.as_deref() {
         None => Ok(run_application(&spec)),
         Some(bundle) => {
+            #[cfg(target_os = "linux")]
+            process::exempt_from_oom_kill()
+                .map_err(|error| format!("/proc/self/oom_score_adj: {error}"))?;
             runtime::run(&spec, Path::new(bundle)).map(|()| RunOutcome::SupervisorFailure {
                 code: 1,
                 error: "structured supervisor ended without an application exit".into(),

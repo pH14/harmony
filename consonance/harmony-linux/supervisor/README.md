@@ -465,7 +465,10 @@ a flush that the teardown logs, and everything logged while a stall window is
 open. Raise the guest RAM (`ram_mib`) to match.
 A guest that runs out of memory ends the execution: the supervisor reads the
 `oom_kill` counter in `/proc/vmstat` whenever a node exits and once a second,
-and reports the first kernel OOM kill as an infrastructure error. The guest
+and reports the first kernel OOM kill as an infrastructure error. A structured
+supervisor sets its own `oom_score_adj` to -1000 and that of every process it
+starts back to 0, so the OOM killer picks one of those processes, never the
+supervisor, which holds the copied logs while folds run. The guest
 kernels charge one execution tick for each page-allocation retry, so an
 allocation that reclaim cannot satisfy still lets timers fire and the OOM
 killer run. The OCI runtime allows the container every block device and
