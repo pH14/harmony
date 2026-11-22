@@ -846,17 +846,21 @@ ready property fails 30 seconds after the later of that end and the moment the
 workload was first seen not ready. The per-node property fails only when a
 check without a fault in force exits successfully after 30 quiet seconds, with
 no disturbance since it started, and names a node. The harness kit's check
-retries each pinned read until the later of its timeout and the end of the 30
-seconds, then takes a progress fence and reads each unanswered node's applied
-index twice, 10 seconds apart; when the fence fails it names every unanswered
-node without those reads. The limit must therefore outlast 30 seconds by the
-heal's run time plus one check. In replays of nine rqlite settles that stayed
-not ready, the ready property failed 3,050 to 3,300 ticks after the heal action
-ended and the per-node property 3,150 to 4,000. The 6,000-tick limit leaves 20
-seconds past the latest of these. A settle whose heal runs longer than that
-margin, or whose workload first loses readiness late in the settle, can still
-reach the limit first and end `not ready within the settle limit` with no
-report. The target then restores the
+retries each pinned read, from the moment that read begins, for the longer of
+its timeout and the part of the 30 seconds still to run when the check
+started, so a read can retry past the 30-second mark. It then takes a progress
+fence and reads each unanswered node's applied index, and names a node whose
+index is below the fence and has not advanced when read again 10 seconds
+later; when the fence fails it names every unanswered node without those
+reads. The limit must therefore outlast 30 seconds by the heal's run time plus
+one check. In replays of nine rqlite settles that stayed not ready, the ready
+property failed 3,050 to 3,300 ticks after the heal action ended and the
+per-node property 3,150 to 4,000. The 6,000-tick limit leaves 20 seconds past
+the latest of these. A settle whose heal runs longer than that margin, or
+whose workload loses readiness late in the settle, can still reach the limit
+before either property reports. It then ends `not ready within the settle
+limit` if the workload never became ready, and `no check without a fault in
+force finished` if it was ready once. The target then restores the
 snapshot, which the chain held through the phase, so the restore runs no action again unless the session was
 replaced or the phase restored a prefix older than the endpoint. A restore that
 finds no held link rebuilds the endpoint as any other restore does, so the hold
