@@ -22,7 +22,7 @@ use searcher::{
             TargetExecution, ThreadPlacement, WorkloadPolicies, default_window,
             postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
-        choice::{ChoicePlan, ChoiceSite},
+        choice::{ChoicePlan, ChoiceRecord, ChoiceSite},
         cost::ShrinkCost,
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTables, biased_step},
@@ -805,6 +805,47 @@ impl Reporting for FaultWorkload {
 
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
         Ok(serde_json::from_slice(bytes)?)
+    }
+
+    fn catalog_signals(&self, _run: &FaultCampaignRun) -> Vec<String> {
+        self.keys
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect()
+    }
+
+    fn state_record(
+        &self,
+        _run: &FaultCampaignRun,
+        snapshot: &FaultSnapshot,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(&snapshot.observation))
+    }
+
+    fn observation_record(
+        &self,
+        _run: &FaultCampaignRun,
+        observation: &FaultObservations,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(observation))
+    }
+
+    fn choice_records(
+        &self,
+        run: &FaultCampaignRun,
+        plan: Option<&ChoicePlan>,
+        index: usize,
+        action: &FaultAction,
+        _observations: &[FaultObservations],
+    ) -> Vec<ChoiceRecord> {
+        plan.zip(action.guest)
+            .filter(|(plan, guest)| guest.seed == GuestChoices::from_plan(plan, index, None).seed)
+            .and_then(|_| nodes::row(&run.vocabulary, 0, 0, &action.operation))
+            .map(|row| ChoiceRecord::new(nodes::NODE_SITE_ID, row.offered, row.default, row.taken))
+            .into_iter()
+            .collect()
     }
 
     fn stream_format(&self) -> &'static str {
@@ -3026,5 +3067,98 @@ mod tests {
         assert_eq!(game.untried_site(&on, &[pause, wait]), nodes::NODE_SITE_ID);
         assert_eq!(game.untried_site(&on, &[wait, pause]), 0);
         assert_eq!(game.untried_site(&on, &[]), 0);
+    }
+
+    #[test]
+    fn the_stall_report_reads_fault_records() {
+        let game = game();
+        let off = run(3, vec![1]);
+        let names: Vec<String> = game
+            .keys()
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect();
+        assert!(!names.is_empty());
+        assert_eq!(game.catalog_signals(&off), names);
+        let observation = FaultObservations {
+            restarts: 2,
+            ..FaultObservations::default()
+        };
+        assert_eq!(
+            game.observation_record(&off, &observation),
+            Some(game.keys().record(&observation))
+        );
+        let snapshot = FaultSnapshot {
+            observation: observation.clone(),
+            ..FaultSnapshot::default()
+        };
+        assert_eq!(
+            game.state_record(&off, &snapshot),
+            Some(game.keys().record(&observation))
+        );
+    }
+
+    #[test]
+    fn the_stall_report_gives_the_fault_node_rows_a_job_writes() {
+        use searcher::search::choice::{ChoicePolicy, ChoiceProfile};
+        let game = game();
+        let off = run(3, vec![1]);
+        let on = FaultCampaignRun::any_bug(off.vocabulary.clone().with_untried_first_nodes(true));
+        let parked = FaultCampaignRun::any_bug(
+            on.vocabulary
+                .clone()
+                .with_instrumented_events(true)
+                .with_resume_park(Some(vec![7]))
+                .unwrap(),
+        );
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let ticks = std::num::NonZeroU16::MIN;
+        let pause = FaultAction::from(FaultOperation::Pause(2, ticks));
+        let kill = FaultAction::from(FaultOperation::Kill(1, ticks));
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let copied = kill.with_guest(GuestChoices {
+            contrary: 1,
+            hold: 2,
+            seed: 3,
+            untried: None,
+        });
+        let suffix = [pause, copied, wait, kill];
+        for run in [&off, &on, &parked] {
+            let resolved = nodes::resolve(&run.vocabulary, &suffix, Some(&plan), None, 0);
+            let executed = guest_suffix(&resolved.suffix, Some(&plan), None);
+            let mut asked = 0;
+            for (index, (action, row)) in executed.iter().zip(&resolved.rows).enumerate() {
+                let expected: Vec<ChoiceRecord> = row
+                    .iter()
+                    .map(|row| {
+                        ChoiceRecord::new(
+                            nodes::NODE_SITE_ID,
+                            row.offered.clone(),
+                            row.default,
+                            row.taken,
+                        )
+                    })
+                    .collect();
+                asked += expected.len();
+                assert_eq!(
+                    game.choice_records(run, Some(&plan), index, action, &[]),
+                    expected
+                );
+                assert!(
+                    game.choice_records(run, None, index, action, &[])
+                        .is_empty()
+                );
+            }
+            assert_eq!(asked, 2);
+        }
     }
 }

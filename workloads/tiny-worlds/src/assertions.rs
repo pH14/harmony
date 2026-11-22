@@ -347,6 +347,11 @@ fn lowered(world: &World) -> Result<(), Box<dyn Error>> {
     }
 }
 
+#[must_use]
+pub fn lowers(world: &World) -> bool {
+    lowered(world).is_ok()
+}
+
 pub fn catalog(world: &World, broken: bool) -> Result<Catalog, Box<dyn Error>> {
     lowered(world)?;
     let mut buffer = Buffer::new();
