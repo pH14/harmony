@@ -521,9 +521,11 @@ the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
 damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
 Ridley come energy (96), the route out of the hideout, energy (80), the route
 back through Norfair, energy (96), full missiles, the route to the Tourian
-elevator and the route to the Zebetite door. The norfair_return objective is 0
-in Ridley's area, because the last route index a state stood on survives a
-walk back into the hideout and would rank it level with Norfair. The zebetites
+elevator and the route to the Zebetite door. The norfair_return objective is
+the last `to_ending` index a kept state stood on, Ridley's area included, so
+the climb out of the hideout earns credit room by room; with no credit in
+Ridley's area, one power-on run held the stage for over 4M executions without
+leaving that area. The zebetites
 stage climbs 8 per screen of the route to Mother Brain's room plus the columns
 reading destroyed, so a hit on a column is a new place through
 `zebetite_hits_left` but ranks no higher: a column heals a hit every 64 frames,

@@ -126,7 +126,7 @@ latch = true
 
 [[stage]]
 name = "norfair_return"
-objective = "if area == 20 then 0 else 1 + max(last(if action_end then index(cell, to_ending) else none), 0)"
+objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
 goal = "action_end and cell == 162211 and not dead"
 latch = true
 
