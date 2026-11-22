@@ -1117,14 +1117,21 @@ impl FaultTarget {
         let endpoint = self
             .snapshot()?
             .ok_or("a detached run needs a runnable endpoint")?;
+        let receipt = endpoint.history.receipt().clone();
+        with_live(&self.config, |live| Ok(live.chain.hold(&receipt)))?;
         let action_observations = self.action_observations.clone();
         let execution_ticks = self.execution_ticks;
         let guest_horizons_run = self.guest_horizons_run;
         let job = crate::job_observation::take();
         let result = run(self);
         let rewound = self.restore(&endpoint);
+        let released = with_live(&self.config, |live| {
+            live.chain.release_hold();
+            Ok(())
+        });
         crate::job_observation::put(job);
         rewound?;
+        released?;
         if self.failed {
             return Err("the endpoint before a detached run could not be restored".into());
         }
@@ -5087,6 +5094,44 @@ mod tests {
                 selector: searcher::search::archive::SelectorAccounting::default(),
             },
         )
+    }
+
+    #[test]
+    fn the_restore_after_a_detached_run_under_store_pressure_rebuilds_nothing() {
+        let _fixture = ResidencyFixture;
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, _) = keyed_target(FOLDING);
+        let mut live = scripted_runs_live(&[1; 32]);
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: Arc::new(consonance_client::cache::LocalIndex::new(4096)),
+                namespace: Namespace::exact(&[b"held-endpoint"]),
+            }),
+        );
+        live.chain.certify(0, fixture_genesis()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        for _ in 0..3 {
+            target.apply_and_snapshot(action).unwrap().unwrap();
+        }
+        let endpoint = target.snapshot().unwrap().unwrap();
+        let before = thread_parent_rebuild_runs();
+        let links = target
+            .run_detached(|target| {
+                for _ in 0..3 {
+                    target.apply(action);
+                }
+                LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links())
+            })
+            .unwrap();
+        let after = thread_parent_rebuild_runs();
+        assert_eq!(links, 3);
+        assert_eq!(after.actions - before.actions, 0);
+        assert_eq!(target.history.receipt(), endpoint.history.receipt());
     }
 
     #[test]

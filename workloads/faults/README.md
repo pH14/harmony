@@ -599,7 +599,12 @@ Before each execution and after each sealed prefix, a worker reports its
 store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
 budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. While the total
+its newest prefix, and then drops back to the setup snapshot. While a settle
+phase runs, the chain holds the job's endpoint: it drops the prefixes the phase
+appended, oldest first, before the endpoint and the prefixes older than it, and
+keeps setup, the endpoint and the phase's newest prefix even when the store is
+still over budget, so the store can exceed the budget by one prefix until the
+phase ends. While the total
 is over budget, every other worker also drops prefix snapshots until its store
 is no larger than at its last report that fit the budget, so the stores stop
 growing while the largest store's worker is busy. The run prints the worker count and budget, and
@@ -808,7 +813,9 @@ successfully. The phase also ends when the workload is not ready 3,000 ticks
 (the 30-second recovery limit) after the restarts and heal end, when no such
 check has finished 6,000 ticks after they end, or at a new violation, a terminal
 stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
-cancellation. The target then restores the snapshot and its
+cancellation. The target then restores the snapshot, which the chain held
+through the phase, so the restore runs no action again unless the session was
+replaced, and its
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
 those of the run without the phase. The snapshots taken during the phase stay in
