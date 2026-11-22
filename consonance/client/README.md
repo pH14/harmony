@@ -416,11 +416,22 @@ the index keeps its mapped segments, including those that only a caller's
 new segment at that limit evicts entries until a segment dies, or is refused. The budget also counts the bytes
 each worker's local snapshot store reports, so the cache gets what the stores
 leave. When nothing can be evicted the index refuses the extent and the worker
-keeps its snapshot local. A report that leaves the total over budget after
-eviction asks the worker with the largest store to shrink. It also asks any
-worker to shrink whose store is larger than at its last report that fit the
-budget. A busy worker with the largest store can go a minute or more without a
-report, and the other stores must not grow meanwhile.
+keeps its snapshot local. A store report over budget shrinks stores before it
+evicts shared entries (ours): while any store is larger than the minimum store
+that `LocalIndex::with_store_floor` sets, the report evicts nothing and asks the
+reporting worker to shrink if its own store is above that minimum. Once every
+store is at or below it, the report evicts shared entries until the total fits.
+A store that was asked to shrink and then itself reports the same size again
+could not shed anything more, so it counts as at its minimum until it reports a
+different size. Shared entries are evicted once every other store is at its
+minimum or counts as there too.
+A shared entry is a prefix that any worker can import, while a store's oldest
+prefixes serve only its own worker. An index without a minimum store evicts
+first. A report that leaves the total over budget after eviction asks the
+worker with the largest store to shrink. It also asks any worker to shrink
+whose store is larger than at its last report that fit the budget. A busy
+worker with the largest store can go a minute or more without a report, and the
+other stores must not grow meanwhile.
 
 `Session::store_bytes` reports the snapshot store's page and VM-state bytes
 plus its index bytes, which include each layer's page table and lookup cache.
@@ -470,8 +481,8 @@ reserve counting toward the second copy. It is then the room less
 when every worker moves a full transient of incompressible pages at once, usage
 reaches the limit with no reserve left and does not pass it. A budget at or
 below the plan leaves what the plan leaves.
-`LocalIndex::measured` takes the planned budget, the worker count and the
-transient. The index sets its budget at each check and evicts entries or asks
+`LocalIndex::measured` takes the planned budget, the worker count, the
+transient and the minimum store. The index sets its budget at each check and evicts entries or asks
 the largest store to shrink to fit it. A worker that briefly needs more memory,
 for example to decompress a long chain for an import, lowers the budget until
 that memory is free again. `CacheStats::lowest_budget` and
