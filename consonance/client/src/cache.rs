@@ -240,6 +240,7 @@ struct State {
     stores: BTreeMap<u64, usize>,
     fitted: BTreeMap<u64, usize>,
     asked: BTreeMap<u64, usize>,
+    exhausted: BTreeSet<u64>,
     stored: usize,
     next_id: u64,
     floor: u128,
@@ -420,6 +421,7 @@ impl State {
         if bytes.is_none() {
             self.fitted.remove(&holder);
             self.asked.remove(&holder);
+            self.exhausted.remove(&holder);
         }
     }
 }
@@ -494,6 +496,7 @@ impl LocalIndex {
                 stores: BTreeMap::new(),
                 fitted: BTreeMap::new(),
                 asked: BTreeMap::new(),
+                exhausted: BTreeSet::new(),
                 stored: 0,
                 next_id: 0,
                 floor: 0,
@@ -747,10 +750,15 @@ impl CacheIndex for LocalIndex {
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
         state.set_store(holder, Some(bytes));
         state.measure(headroom, self.workers, self.transient);
+        if state.asked.get(&holder) == Some(&bytes) {
+            state.exhausted.insert(holder);
+        } else {
+            state.exhausted.remove(&holder);
+        }
         let floored = state
             .stores
             .iter()
-            .all(|(id, &store)| store <= self.store_floor || state.asked.get(id) == Some(&store));
+            .all(|(id, &store)| store <= self.store_floor || state.exhausted.contains(id));
         while floored && state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
                 break;
@@ -1566,11 +1574,11 @@ mod tests {
         index.release(b);
         assert!(!index.report_store(1, page));
         assert!(index.report_store(1, 3 * page));
+        assert!(index.report_store(2, page));
         assert_eq!(index.stats().evictions, 0);
         assert!(!index.report_store(1, 3 * page));
-        assert_eq!(index.stats().evictions, 1);
+        assert_eq!(index.stats().evictions, 2);
         assert!(index.report_store(1, 4 * page));
-        assert_eq!(index.stats().evictions, 1);
         index.forget_store(1);
         assert!(!index.report_store(2, 3 * page));
     }

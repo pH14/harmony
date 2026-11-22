@@ -421,9 +421,10 @@ evicts shared entries (ours): while any store is larger than the minimum store
 that `LocalIndex::with_store_floor` sets, the report evicts nothing and asks the
 reporting worker to shrink if its own store is above that minimum. Once every
 store is at or below it, the report evicts shared entries until the total fits.
-A store that was asked to shrink and reports the same size again could not
-shed anything more, so it no longer holds shared entries in place: the report
-evicts them as if that store were at its minimum.
+A store that was asked to shrink and then itself reports the same size again
+could not shed anything more, so it counts as at its minimum until it reports a
+different size. Shared entries are evicted once every other store is at its
+minimum or counts as there too.
 A shared entry is a prefix that any worker can import, while a store's oldest
 prefixes serve only its own worker. An index without a minimum store evicts
 first. A report that leaves the total over budget after eviction asks the

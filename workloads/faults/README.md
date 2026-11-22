@@ -612,7 +612,9 @@ the restore at the end of the phase may also drop the newest prefix, but not
 the endpoint. The same holds while the store shrinks toward its guest RAM: a
 report only asks the worker to shrink, and the chain chooses which prefixes go.
 When the chain has nothing left to drop, the worker reports again, and the
-cache then evicts shared entries for it. While the total
+cache then counts its store as at the guest RAM, so shared entries go once no
+other store is above it. The hold keeps at most one link beyond what the chain
+keeps without it, and releasing it frees nothing until the next fit. While the total
 is over budget, every other worker also drops prefix snapshots until its store
 is no larger than at its last report that fit the budget, so the stores stop
 growing while the largest store's worker is busy. The run prints the worker count and budget, and
@@ -823,7 +825,9 @@ check has finished 6,000 ticks after they end, or at a new violation, a terminal
 stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
 cancellation. The target then restores the snapshot, which the chain held
 through the phase, so the restore runs no action again unless the session was
-replaced, and its
+replaced or the phase restored a prefix older than the endpoint. A restore that
+finds no held link rebuilds the endpoint as any other restore does, so the hold
+saves work and never decides a result. The target also restores the job's
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
 those of the run without the phase. The snapshots taken during the phase stay in
