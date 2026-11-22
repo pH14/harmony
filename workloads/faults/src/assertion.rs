@@ -34,7 +34,7 @@ pub struct AssertionOutcome {
     pub location: String,
     pub passed: bool,
     pub failed: bool,
-    pub holds: bool,
+    pub holds: Option<bool>,
 }
 
 impl AssertionOutcome {
@@ -67,7 +67,7 @@ impl AssertionOutcome {
     pub fn merge(&mut self, other: &Self) {
         self.passed |= other.passed;
         self.failed |= other.failed;
-        if other.passed || other.failed {
+        if other.holds.is_some() {
             self.holds = other.holds;
         }
     }
@@ -266,7 +266,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
                 location,
                 passed,
                 failed,
-                holds: passed,
+                holds: (kind == AssertionKind::Sometimes && record.hit).then_some(record.condition),
             },
         ))
     });
@@ -405,21 +405,21 @@ mod tests {
             (outcome.passed, outcome.holds)
         };
         assertions.record(id.clone(), declared.clone());
-        assert_eq!(holds(&assertions), (false, false));
+        assert_eq!(holds(&assertions), (false, None));
         assertions.record(id.clone(), true_now.clone());
-        assert_eq!(holds(&assertions), (true, true));
+        assert_eq!(holds(&assertions), (true, Some(true)));
         assertions.record(id.clone(), declared.clone());
-        assert_eq!(holds(&assertions), (true, true));
+        assert_eq!(holds(&assertions), (true, Some(true)));
         assertions.record(id.clone(), false_now.clone());
-        assert_eq!(holds(&assertions), (true, false));
+        assert_eq!(holds(&assertions), (true, Some(false)));
         assert_eq!(assertions.key(), AssertionSet::of([id.as_str()]));
         let mut later = Assertions::default();
         later.record(id.clone(), true_now);
         assertions.merge(&later);
-        assert_eq!(holds(&assertions), (true, true));
+        assert_eq!(holds(&assertions), (true, Some(true)));
         let mut cleared = Assertions::default();
         cleared.record(id.clone(), false_now);
         assertions.merge(&cleared);
-        assert_eq!(holds(&assertions), (true, false));
+        assert_eq!(holds(&assertions), (true, Some(false)));
     }
 }

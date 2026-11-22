@@ -1227,10 +1227,11 @@ Each fact declares one `sometimes_all` after the 18 values, in name order: a
 count `r5`, the number of its terms that hold, and one flag per term,
 `r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
 Sometimes record that the target's guest processes write; the kit SDK uses
-the message as the id. Only a Sometimes record holds a term, so an Always or
-Reachable record with the same id does not. A term holds while the latest hit
-record with that id has a true condition, so a guest clears a fact by writing the same Sometimes
-with a false condition. The binary SDK reports a Sometimes point only when it
+the message as the id. A term holds while the latest hit Sometimes record
+with that id has a true condition, so a guest clears a fact by writing the
+same Sometimes with a false condition. A record of another kind with the same
+id neither sets nor clears the term; two kit SDK assertions of different kinds
+share an id when they share a message. The binary SDK reports a Sometimes point only when it
 passes, so a fact term must be written as a JSON record. A strategy reads a
 term by its dotted name, quoted when the id is not a plain word, for example
 `'r5.harness: a check read succeeded'`. A term the guest never writes
@@ -1328,7 +1329,8 @@ the snapshot, so a job's parent, a detached settle run and the action applied
 after it continue from the fold the snapshot saved. A rebuilt prefix that stops
 before its certified endpoint ends the requested action with stop
 `Unexpected`; that action has no endpoint, so the target folds nothing, and
-the state has no key and counts no stage fall. The snapshot codec
+the state has no key and counts no stage fall. A target without the
+strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
 `fault-history-dag-v3` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator

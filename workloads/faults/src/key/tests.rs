@@ -56,7 +56,7 @@ fn observation(rand: &mut RomuDuoJrRand, nodes: u16, edges: &[u64]) -> FaultObse
                 location: String::new(),
                 passed,
                 failed: !passed,
-                holds: passed,
+                holds: (kind == AssertionKind::Sometimes).then_some(passed),
             },
         );
     }
@@ -232,26 +232,33 @@ fn request(strategy: Option<&str>, facts: &[(&str, &[&str])]) -> KeyRequest {
 const R5: (&str, &[&str]) = ("r5", &["transfer_timeout", "second_transfer"]);
 
 fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
-    assertion_record(observations, AssertionKind::Sometimes, id, holds);
-}
-
-fn assertion_record(
-    observations: &mut FaultObservations,
-    kind: AssertionKind,
-    id: &str,
-    holds: bool,
-) {
     observations.assertions.record(
         id.to_owned(),
         AssertionOutcome {
-            kind,
+            kind: AssertionKind::Sometimes,
             message: id.to_owned(),
             location: String::new(),
             passed: holds,
             failed: !holds,
-            holds,
+            holds: Some(holds),
         },
     );
+}
+
+fn json_record(
+    observations: &mut FaultObservations,
+    assert_type: &str,
+    must_hit: bool,
+    id: &str,
+    condition: bool,
+) {
+    let event = format!(
+        r#"{{"antithesis_assert":{{"id":"{id}","assert_type":"{assert_type}","must_hit":{must_hit},"hit":true,"condition":{condition}}}}}"#
+    );
+    let (id, outcome) = crate::assertion::decode_json_event(event.as_bytes())
+        .and_then(|event| event.assertion)
+        .unwrap();
+    observations.assertions.record(id, outcome);
 }
 
 #[test]
@@ -351,23 +358,45 @@ fn malformed_facts_are_refused() {
 }
 
 #[test]
-fn a_fact_term_holds_only_for_a_sometimes_record() {
+fn a_fact_term_follows_the_latest_sometimes_hit_whatever_kinds_share_its_id() {
     let keys = FaultKeys::requested(&request(None, &[R5]), 3).unwrap();
-    let term = |observations: &FaultObservations| {
-        keys.record(observations).values()[keys.catalog().slot("r5.transfer_timeout").unwrap()]
-    };
-    for kind in [
-        AssertionKind::Always,
-        AssertionKind::AlwaysOrUnreachable,
-        AssertionKind::Reachable,
-    ] {
+    let term = |records: &[(&str, bool, bool)]| {
         let mut observations = FaultObservations::default();
-        assertion_record(&mut observations, kind, "transfer_timeout", true);
-        assert_eq!(term(&observations), 0, "{kind:?}");
+        for &(assert_type, must_hit, condition) in records {
+            json_record(
+                &mut observations,
+                assert_type,
+                must_hit,
+                "transfer_timeout",
+                condition,
+            );
+        }
+        keys.record(&observations).values()[keys.catalog().slot("r5.transfer_timeout").unwrap()]
+    };
+    for other in [("always", true), ("always", false), ("reachability", true)] {
+        assert_eq!(term(&[(other.0, other.1, true)]), 0, "{other:?}");
     }
-    let mut observations = FaultObservations::default();
-    fact_record(&mut observations, "transfer_timeout", true);
-    assert_eq!(term(&observations), 1);
+    assert_eq!(term(&[("sometimes", true, true)]), 1);
+    assert_eq!(
+        term(&[("sometimes", true, false), ("always", true, true)]),
+        0
+    );
+    assert_eq!(
+        term(&[("always", true, true), ("sometimes", true, true)]),
+        1
+    );
+    assert_eq!(
+        term(&[("sometimes", true, true), ("always", true, false)]),
+        1
+    );
+    assert_eq!(
+        term(&[
+            ("always", true, false),
+            ("sometimes", true, true),
+            ("sometimes", true, false)
+        ]),
+        0
+    );
 }
 
 #[test]
@@ -404,7 +433,7 @@ fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservat
                 location: String::new(),
                 passed: true,
                 failed: false,
-                holds: true,
+                holds: Some(true),
             },
         );
     }

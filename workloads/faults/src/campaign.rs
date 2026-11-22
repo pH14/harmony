@@ -2254,7 +2254,7 @@ mod tests {
                                 location: String::new(),
                                 passed: false,
                                 failed: true,
-                                holds: false,
+                                holds: None,
                             },
                         )
                     })
@@ -2444,7 +2444,7 @@ mod tests {
                     location: String::new(),
                     passed: false,
                     failed: true,
-                    holds: false,
+                    holds: None,
                 },
             );
             FaultObservations {

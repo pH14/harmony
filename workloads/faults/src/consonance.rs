@@ -862,11 +862,13 @@ impl FaultTarget {
     }
 
     fn observe_endpoint(&mut self) -> Option<u8> {
-        let keys = self.keys.as_ref()?;
-        if self.observation.stop == FaultStop::Unexpected {
-            self.observed = UNOBSERVED;
-            return None;
-        }
+        let keys = match &self.keys {
+            Some(keys) if self.observation.stop != FaultStop::Unexpected => keys,
+            _ => {
+                self.observed = UNOBSERVED;
+                return None;
+            }
+        };
         let departure = self.accumulator.stage();
         self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
         let arrival = self.observed.key.and(self.accumulator.stage());
@@ -2853,7 +2855,7 @@ mod tests {
                 location: "l".repeat(16384),
                 passed: true,
                 failed: false,
-                holds: true,
+                holds: None,
             };
             string_bytes += id.len() + outcome.message.len() + outcome.location.len();
             snapshot.observation.assertions.record(id, outcome);
@@ -5262,16 +5264,21 @@ mod tests {
             assert_eq!(report.stage_falls.len(), 2);
             assert!(report.stage_falls.iter().all(|falls| falls.records == 0));
         }
-        let (finding, report) = run(
-            json(
-                r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
-            ),
-            false,
-        );
-        assert!(finding.objective_reached && !finding.doomed);
-        assert_eq!(finding.disposition, ExecutionDisposition::Runnable);
-        assert_eq!(report.bugs.len(), 1);
-        assert!(report.bugs[0].observations.violations().contains("kept"));
+        for (quiescent, disposition) in [
+            (false, ExecutionDisposition::Runnable),
+            (true, ExecutionDisposition::Terminal),
+        ] {
+            let (finding, report) = run(
+                json(
+                    r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
+                ),
+                quiescent,
+            );
+            assert!(finding.objective_reached && !finding.doomed, "{quiescent}");
+            assert_eq!(finding.disposition, disposition);
+            assert_eq!(report.bugs.len(), 1);
+            assert!(report.bugs[0].observations.violations().contains("kept"));
+        }
     }
 
     #[test]
@@ -6595,8 +6602,9 @@ mod tests {
                 br#"{"harmony_park_read":{"site":3,"edges":4}}"#.to_vec(),
             ),
         ];
+        let (_, ticks_register, ticks_bytes) = ticks_event(7);
         for rebuilding in [false, true] {
-            let mut target = unbooted_target();
+            let (mut target, _) = keyed_target(FOLDING);
             let mut prefix = events[..2].to_vec();
             prefix.push((10, u32::MAX, Vec::new()));
             let mut decoder = SdkDecoder::default();
@@ -6640,6 +6648,7 @@ mod tests {
                     prefix
                         .into_iter()
                         .chain(events[2..].iter().cloned())
+                        .chain([(20, ticks_register, ticks_bytes.clone())])
                         .collect(),
                 ),
                 ..fixture_session()
@@ -6673,7 +6682,9 @@ mod tests {
                 assert_eq!(*target.accumulator(), departure);
             } else {
                 assert!(target.observed().key.is_some());
+                assert_ne!(*target.accumulator(), departure);
             }
+            assert_eq!(target.observation.ticks, 7);
             LIVE.with(|slot| slot.borrow_mut().take());
         }
     }

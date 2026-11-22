@@ -13,7 +13,7 @@ use searcher::search::assertion::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{assertion::AssertionKind, target::FaultObservations};
+use crate::target::FaultObservations;
 
 pub const STRATEGY: &str = include_str!("faults.toml");
 
@@ -263,9 +263,7 @@ pub fn declare(
                     .assertions
                     .0
                     .get(**term)
-                    .is_some_and(|outcome| {
-                        outcome.kind == AssertionKind::Sometimes && outcome.holds
-                    })
+                    .is_some_and(|outcome| outcome.holds == Some(true))
             })
             .fold(0_u64, |holding, (index, _)| holding | 1 << index);
         out.declare(Assertion::SometimesAll {
