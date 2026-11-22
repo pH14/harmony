@@ -62,6 +62,7 @@ struct Link {
 pub struct Chain {
     links: Vec<Link>,
     shared: Option<Shared>,
+    held: Option<SnapId>,
 }
 
 impl Chain {
@@ -76,6 +77,40 @@ impl Chain {
                 observations: None,
             }],
             shared,
+            held: None,
+        }
+    }
+
+    pub fn hold(&mut self, receipt: &HistoryReceipt) -> bool {
+        self.held = self
+            .certified(receipt)
+            .filter(|&at| at != 0)
+            .map(|at| self.links[at].point.snap);
+        self.held.is_some()
+    }
+
+    pub fn release_hold(&mut self) {
+        self.held = None;
+    }
+
+    fn held_at(&self) -> Option<usize> {
+        let held = self.held?;
+        self.links
+            .iter()
+            .position(|link| link.point.snap == held)
+            .filter(|&at| at != 0)
+    }
+
+    fn victim(&self) -> Option<usize> {
+        let tip = self.links.len().checked_sub(1)?;
+        if tip < 2 {
+            return None;
+        }
+        match self.held_at() {
+            Some(held) if held + 1 < tip => Some(held + 1),
+            Some(held) if held > 1 => Some(1),
+            Some(_) => None,
+            None => Some(1),
         }
     }
 
@@ -102,8 +137,10 @@ impl Chain {
             observations: None,
         });
         let mut dropped = Vec::new();
-        if self.links.len() > CHAIN_LIMIT + 1 {
-            let link = self.links.remove(1);
+        if self.links.len() > CHAIN_LIMIT + 1
+            && let Some(at) = self.victim()
+        {
+            let link = self.links.remove(at);
             dropped.extend(self.retire(link));
         }
         Ok(dropped)
@@ -278,17 +315,19 @@ impl Chain {
         self.retire(link)
     }
 
-    pub fn evict_oldest(&mut self) -> Option<SnapId> {
-        if self.links.len() <= 2 {
-            return None;
-        }
-        let link = self.links.remove(1);
+    pub fn evict(&mut self) -> Option<SnapId> {
+        let at = self.victim()?;
+        let link = self.links.remove(at);
         self.retire(link)
     }
 
     pub fn shed(&mut self, keep: usize) -> Vec<SnapId> {
-        match self.evict_oldest() {
-            Some(snap) => vec![snap],
+        if let Some(snap) = self.evict() {
+            return vec![snap];
+        }
+        match self.held_at() {
+            Some(held) if keep > 1 && held + 1 < self.links.len() => Vec::new(),
+            Some(held) => self.truncate(held + 1),
             None => self.truncate(keep),
         }
     }
@@ -401,12 +440,50 @@ mod tests {
         assert_eq!(dropped, (1..=8).map(SnapId).collect::<Vec<_>>());
         assert_eq!(chain.provenance(0).unwrap(), &root());
         assert_eq!(chain.certified(&receipt), Some(CHAIN_LIMIT));
-        while chain.evict_oldest().is_some() {}
+        while chain.evict().is_some() {}
         assert_eq!(chain.links(), 2);
         assert_eq!(chain.certified(&receipt), Some(1));
         assert!(chain.shed(2).is_empty());
         assert_eq!(chain.truncate(1), vec![SnapId(40)]);
         assert_eq!(chain.links(), 1);
+    }
+
+    #[test]
+    fn a_held_endpoint_outlives_the_links_appended_after_it() {
+        let mut chain = chain(None);
+        let mut receipt = root();
+        for depth in 1..=4 {
+            receipt = child(&receipt, 1);
+            chain
+                .push_history(point(depth), None, receipt.clone())
+                .unwrap();
+        }
+        let endpoint = receipt.clone();
+        assert!(chain.hold(&endpoint));
+        let mut dropped = Vec::new();
+        for depth in 5..=(CHAIN_LIMIT as u64 + 8) {
+            receipt = child(&receipt, 1);
+            dropped.extend(
+                chain
+                    .push_history(point(depth), None, receipt.clone())
+                    .unwrap(),
+            );
+        }
+        assert_eq!(dropped, (5..=12).map(SnapId).collect::<Vec<_>>());
+        assert_eq!(chain.certified(&endpoint), Some(4));
+        while chain.evict().is_some() {}
+        assert_eq!(chain.links(), 3);
+        assert_eq!(chain.certified(&endpoint), Some(1));
+        assert_eq!(chain.certified(&receipt), Some(2));
+        assert!(chain.shed(2).is_empty());
+        assert_eq!(chain.links(), 3);
+        assert_eq!(chain.shed(1), vec![SnapId(CHAIN_LIMIT as u64 + 8)]);
+        assert_eq!(chain.certified(&endpoint), Some(1));
+        assert!(chain.shed(1).is_empty());
+        chain.release_hold();
+        assert_eq!(chain.shed(1), vec![SnapId(4)]);
+        let setup = root();
+        assert!(!chain.hold(&setup));
     }
 
     #[test]

@@ -1117,12 +1117,21 @@ impl FaultTarget {
         let endpoint = self
             .snapshot()?
             .ok_or("a detached run needs a runnable endpoint")?;
+        let receipt = endpoint.history.receipt().clone();
+        with_live(&self.config, |live| Ok(live.chain.hold(&receipt)))?;
         let action_observations = self.action_observations.clone();
         let execution_ticks = self.execution_ticks;
         let guest_horizons_run = self.guest_horizons_run;
         let job = crate::job_observation::take();
         let result = run(self);
         let rewound = self.restore(&endpoint);
+        LIVE.with(|slot| {
+            if let Some(live) = slot.borrow_mut().as_mut()
+                && live.key == self.config.key
+            {
+                live.chain.release_hold();
+            }
+        });
         crate::job_observation::put(job);
         rewound?;
         if self.failed {
@@ -2043,6 +2052,7 @@ impl Live {
         while self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT) {
             let dropped = self.chain.shed(keep);
             if dropped.is_empty() {
+                self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT);
                 return Ok(());
             }
             self.drop_snapshots(dropped)?;
@@ -5087,6 +5097,83 @@ mod tests {
                 selector: searcher::search::archive::SelectorAccounting::default(),
             },
         )
+    }
+
+    #[test]
+    fn the_restore_after_a_detached_run_under_store_pressure_rebuilds_nothing() {
+        use consonance_client::cache::LocalIndex;
+        for index in [
+            LocalIndex::new(4096),
+            LocalIndex::new(4096).with_store_floor(4096),
+        ] {
+            restore_after_detached_run_under_pressure(&Arc::new(index));
+        }
+    }
+
+    fn restore_after_detached_run_under_pressure(
+        index: &Arc<consonance_client::cache::LocalIndex>,
+    ) {
+        let _fixture = ResidencyFixture;
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, _) = keyed_target(FOLDING);
+        let mut live = scripted_runs_live(&[1; 32]);
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: Arc::clone(index) as Arc<dyn CacheIndex>,
+                namespace: Namespace::exact(&[b"held-endpoint"]),
+            }),
+        );
+        live.chain.certify(0, fixture_genesis()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        for _ in 0..3 {
+            target.apply_and_snapshot(action).unwrap().unwrap();
+        }
+        let endpoint = target.snapshot().unwrap().unwrap();
+        let before = thread_parent_rebuild_runs();
+        let links = target
+            .run_detached(|target| {
+                for _ in 0..3 {
+                    target.apply(action);
+                }
+                LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links())
+            })
+            .unwrap();
+        let after = thread_parent_rebuild_runs();
+        assert_eq!(links, 3);
+        assert_eq!(after.actions - before.actions, 0);
+        assert_eq!(target.history.receipt(), endpoint.history.receipt());
+    }
+
+    #[test]
+    fn a_detached_run_that_loses_the_held_endpoint_restores_it_by_rebuilding() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, _) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[1; 16])));
+        for _ in 0..3 {
+            target.apply_and_snapshot(action).unwrap().unwrap();
+        }
+        let endpoint = target.snapshot().unwrap().unwrap();
+        let before = thread_parent_rebuild_runs();
+        target
+            .run_detached(|target| {
+                target.apply(action);
+                LIVE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let live = slot.as_mut().unwrap();
+                    let dropped = live.chain.truncate(2);
+                    live.drop_snapshots(dropped).unwrap();
+                });
+            })
+            .unwrap();
+        let after = thread_parent_rebuild_runs();
+        assert_eq!(after.actions - before.actions, 2);
+        assert_eq!(target.history.receipt(), endpoint.history.receipt());
+        assert_eq!(*target.accumulator(), endpoint.accumulator);
     }
 
     #[test]
