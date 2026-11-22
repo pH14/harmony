@@ -457,12 +457,15 @@ lowest node is the default only because `Chooser::draw` takes one, and the
 site is declared with `ChoiceSite::without_default`. The first ask of a job
 therefore takes the node at the plan's untried ordinal in its parent's
 permutation of the offer while one remains untried: the first such job at a
-parent takes a uniform node, as the draw does, and three at one parent whose
-first actions have the same offer of at least three nodes take three nodes. Kinds with different
-offers share the parent's count and each walks its own permutation, so a
-`Pause` and a `DiskError` can take the same node before either offer is
-exhausted. Every other ask answers the drawn node, so the draw's random word
-and arithmetic decide it as they do with the site off. When the suffix's first action asks this
+parent takes a uniform node, as the draw does, and jobs at one parent whose
+first actions have the same offer take distinct nodes while their ordinals
+are below the offer's size. Kinds with different offers share the parent's
+count and each walks its own permutation, so a `Pause` and a `DiskError` can
+take the same node before either offer is exhausted, and ordinals spent on
+disk faults can leave later `Kill` jobs past the end of their offer, where
+they keep their drawn node. Every other ask answers the drawn node, so the
+draw's random word and arithmetic decide it as they do with the site off.
+When the suffix's first action asks this
 site, `InputPolicy::untried_site` names `fault.node`, so the job's untried
 ordinal counts only the parent's jobs that started at `fault.node` and the
 host takes it. Otherwise it names site 0, and the ordinal comes from the

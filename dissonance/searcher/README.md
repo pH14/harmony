@@ -588,10 +588,13 @@ permutation of the offered labels in place of the default-first order. The
 coordinator lists these sites once from `InputPolicy::choice_sites`, and each
 plan carries one seed per listed site (`ChoicePlan::permuted`), mixed from the
 campaign seed, the parent entry's id and the site. Every job from one parent
-therefore walks the same permutation of one offer, so n jobs whose first asks
-offer the same labels take n distinct labels while n is at most the offer's
-size, and the first job at a parent takes a uniform label. Asks with different offers share the site's count and
-each permutes its own offer, so they can repeat a label. Replay rebuilds the
+therefore walks the same permutation of one offer, so jobs whose first asks
+offer the same labels take distinct labels while their ordinals are below the
+offer's size, and the first job at a parent takes a uniform label. Asks with
+different offers share the site's count and each permutes its own offer, so
+they can repeat a label, and ordinals spent on one offer can leave another's
+jobs past its end, where they keep the answer they would take without the
+walk. Replay rebuilds the
 plan from the same parent, so it recomputes the seed. A checkpoint keeps the
 counts, so a resume with another campaign seed continues each count over
 permutations drawn from the new seed, and a parent's later jobs can repeat
@@ -684,8 +687,8 @@ ordinal). A cancelled job's record carries `untried_site` too. Both records
 leave `untried_site` out when it is 0, so a record without it counted at
 site 0 or took no ordinal.
 Replay rebuilds each plan at its reservation from the replayed archive, takes
-the ordinal from the recorded site's count, checks that the replayed suffix
-names that site, checks that a cancelled job whose rebuilt plan took no
+the ordinal from the recorded site's count, checks for a plan with an
+ordinal that the replayed suffix names that site, checks that a cancelled job whose rebuilt plan took no
 ordinal names no site, and refuses a stream whose plan or policy differs, and a
 checkpoint does not resume under another policy. A job without a plan, such
 as a continuation, gives the entries it keeps its parent's profile. The plan
