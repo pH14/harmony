@@ -470,7 +470,7 @@ struct SnapshotEndpoint {
 impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapshot>
     for FaultSnapshotCodec
 {
-    const FORMAT: &'static str = "fault-history-dag-v3";
+    const FORMAT: &'static str = "fault-history-dag-v4";
     type DecodeState = std::collections::BTreeMap<[u8; 32], FaultHistory>;
     fn encode(
         snapshot: &crate::target::FaultSnapshot,
@@ -1035,7 +1035,7 @@ mod tests {
         let mut input = &bytes[8..];
         let (_, codec, entries): (String, String, u64) =
             postcard::from_bytes(&frame(&mut input)).unwrap();
-        assert_eq!(codec, "fault-history-dag-v3");
+        assert_eq!(codec, "fault-history-dag-v4");
         assert_eq!(entries, 132);
         let mut rows = std::collections::BTreeSet::new();
         let mut endpoints = 0;

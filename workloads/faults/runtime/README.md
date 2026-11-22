@@ -119,10 +119,11 @@ arms nothing.
 Only the spawned process arms a record: a runtime whose `getpid()` differs
 from the page's pid word marks each record seen and arms nothing. So a node
 whose instrumented process is not the spawned pid never adopts a record. A
-wrapper that forks the server instead of `exec`ing it, or a server that runs in
-its own pid namespace, is such a node: its parked pauses run as plain pauses,
-and the supervisor reports each one as `unadopted` (see the supervisor
-README). rqlite's node chain keeps the pid: `node.sh` `exec`s `harness-net`,
+wrapper that forks the server instead of `exec`ing it is such a node: its
+parked pauses run as plain pauses, and the supervisor reports each one as
+`unadopted` (see the supervisor README). A server in its own pid namespace
+usually is too, but the check compares bare numbers, so a server whose pid
+inside its namespace equals the spawned pid adopts and fires the record. rqlite's node chain keeps the pid: `node.sh` `exec`s `harness-net`,
 which `exec`s `ip netns exec`, which `exec`s `rqlited`, and none of the node's
 namespaces is a pid namespace. The pid word also covers a
 process that forked before its runtime started, which has no fork handler to

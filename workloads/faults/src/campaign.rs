@@ -64,9 +64,9 @@ pub(crate) mod nodes;
 pub(crate) mod settle;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v11";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v12";
 pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v12";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v7";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v8";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -2098,6 +2098,28 @@ mod tests {
         let mut malformed = serde_json::to_value(&snapshot.history).unwrap();
         malformed[1][1]["certificate"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
+    }
+
+    #[test]
+    fn a_snapshot_checkpoint_from_the_previous_snapshot_layout_is_refused_by_its_format() {
+        let encoded = FaultSnapshotCheckpoint {
+            format: "faultlab-consonance-snapshot-root-v11".into(),
+            entries: vec![searcher::search::campaign::SnapshotCheckpointEntry {
+                id: 1,
+                snapshot: FaultSnapshot::default(),
+            }],
+        }
+        .to_bytes()
+        .unwrap();
+        let error = FaultSnapshotCheckpoint::from_bytes(&encoded, SNAPSHOT_CHECKPOINT_FORMAT)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "snapshot checkpoint format is faultlab-consonance-snapshot-root-v11; this build reads faultlab-consonance-snapshot-root-v12"
+            ),
+            "{error}"
+        );
     }
 
     fn config(knobs: &[&str]) -> FaultConfig {

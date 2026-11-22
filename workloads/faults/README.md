@@ -1434,7 +1434,7 @@ before its certified endpoint ends the requested action with stop
 `Unexpected`; that action has no endpoint, so the target folds nothing, and
 the state has no key and counts no stage fall. A target without the
 strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
-`fault-history-dag-v3` and the campaign stream and checkpoint formats carry
+`fault-history-dag-v4` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
@@ -1614,7 +1614,7 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v3`, whose endpoint frame also
+The shared history codec is `fault-history-dag-v4`, whose endpoint frame also
 carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.

@@ -285,9 +285,10 @@ side, and why the first visit after the resume counts, are in
 Right after each spawn, before any record, the supervisor writes the node's pid
 into the page's sixth word. The runtime arms a record only in the process with
 that pid, so a node whose instrumented process is not the spawned process, such
-as a wrapper that forks the server instead of `exec`ing it or a server in its
-own pid namespace, never adopts a record, and its parked pauses run as plain
-pauses. rqlite's node chain `exec`s through to `rqlited` and keeps the pid.
+as a wrapper that forks the server instead of `exec`ing it, never adopts a
+record, and its parked pauses run as plain pauses. The runtime compares bare
+pid numbers, so a server in its own pid namespace whose pid there equals the
+spawned pid does adopt the record. rqlite's node chain `exec`s through to `rqlited` and keeps the pid.
 
 `ContParked` writes the record only once the node has stopped. A
 process-directed `SIGSTOP` marks one thread, and the node's other threads can
