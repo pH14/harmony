@@ -60,6 +60,7 @@ use crate::{
     },
 };
 
+pub(crate) mod nodes;
 pub(crate) mod settle;
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
@@ -539,11 +540,14 @@ pub(crate) fn capture_replayed_prefix(
     Ok(snapshot)
 }
 
-fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultAction> {
+fn guest_suffix(
+    suffix: &[FaultAction],
+    plan: Option<&ChoicePlan>,
+    mut untried: Option<u32>,
+) -> Vec<FaultAction> {
     let Some(plan) = plan else {
         return suffix.to_vec();
     };
-    let mut untried = plan.untried;
     suffix
         .iter()
         .enumerate()
@@ -693,8 +697,24 @@ pub(crate) fn execute_job(
         objective_seen: parent_outcome.objective_reached,
         results: Vec::with_capacity(suffix.len()),
     };
-    let suffix = guest_suffix(suffix, stop.choices());
+    let depth = target.actions().len() as u64;
+    let untried = stop.choices().and_then(|plan| plan.untried);
+    let host_untried = untried.filter(|_| {
+        suffix
+            .first()
+            .is_some_and(|action| nodes::asks(&run.vocabulary, action))
+    });
+    let mut resolved = nodes::resolve(&run.vocabulary, suffix, stop.choices(), host_untried, depth);
+    let suffix = guest_suffix(
+        &resolved.suffix,
+        stop.choices(),
+        untried.filter(|_| host_untried.is_none()),
+    );
     for (index, action) in suffix.iter().enumerate() {
+        if let Some(mut row) = resolved.rows[index].take() {
+            row.moment = target.observation().moment;
+            nodes::record(depth, resolved.untried.filter(|_| index == 0), &row);
+        }
         let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
         if job_hung(target, "suffix execution")? {
@@ -910,8 +930,12 @@ impl InputPolicy for FaultWorkload {
     fn simpler_actions(&self, _run: &FaultCampaignRun, action: &FaultAction) -> Vec<FaultAction> {
         simpler_fault_actions(action)
     }
-    fn choice_sites(&self, _run: &FaultCampaignRun) -> Vec<ChoiceSite> {
-        vec![ChoiceSite::new(GUEST_SITE, Vec::new())]
+    fn choice_sites(&self, run: &FaultCampaignRun) -> Vec<ChoiceSite> {
+        let mut sites = vec![ChoiceSite::new(GUEST_SITE, Vec::new())];
+        if run.vocabulary.untried_first_nodes() {
+            sites.push(nodes::site(&run.vocabulary));
+        }
+        sites
     }
     fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
         settle_tail(last)
@@ -2950,7 +2974,7 @@ mod tests {
             untried: Some(0),
         });
         let fresh = wait.with_choice(6);
-        let stamped = guest_suffix(&[copied, fresh, fresh], Some(&plan));
+        let stamped = guest_suffix(&[copied, fresh, fresh], Some(&plan), plan.untried);
         assert_eq!(stamped[0], copied);
         assert_eq!(
             stamped[1],
@@ -2965,6 +2989,9 @@ mod tests {
             stamped[2].guest.unwrap().seed
         );
         assert_eq!(stamped[1].guest.unwrap().contrary, CERTAIN / 2);
-        assert_eq!(guest_suffix(&[copied, fresh], None), vec![copied, fresh]);
+        assert_eq!(
+            guest_suffix(&[copied, fresh], None, None),
+            vec![copied, fresh]
+        );
     }
 }

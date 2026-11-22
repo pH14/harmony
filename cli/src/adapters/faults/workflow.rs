@@ -226,6 +226,7 @@ fn configured_vocabulary(vocabulary: FaultVocabulary, c: &Config) -> Result<Faul
         .excluding(&c.exclude_faults)
         .with_hooks_replace_waits(c.hooks_replace_waits)
         .with_hold_hooks(c.hold_hooks)
+        .with_untried_first_nodes(c.untried_first_nodes)
         .with_resume_park(c.resume_park.clone())?)
 }
 
@@ -1069,6 +1070,13 @@ mod tests {
         c.hooks_replace_waits = true;
         let both = configured_vocabulary(admitted.clone(), &c).unwrap();
         assert!(both.hooks_replace_waits() && both.hold_hooks());
+        assert!(!both.untried_first_nodes());
+        c.untried_first_nodes = true;
+        assert!(
+            configured_vocabulary(admitted.clone(), &c)
+                .unwrap()
+                .untried_first_nodes()
+        );
         c.resume_park = Some(Vec::new());
         assert!(configured_vocabulary(admitted, &c).is_err());
     }

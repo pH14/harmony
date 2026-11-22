@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::PathBuf, sync::Arc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::guest::{GuestAnswer, GuestChoice};
+use crate::guest::{ActionChoice, GuestAnswer};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
@@ -104,7 +104,7 @@ pub struct ReplaySummary {
     pub check: Option<crate::target::CheckEvidence>,
     pub timeline: Vec<ReplayStep>,
     #[serde(skip)]
-    pub choices: Vec<GuestChoice>,
+    pub choices: Vec<ActionChoice>,
 }
 
 #[cfg(any(

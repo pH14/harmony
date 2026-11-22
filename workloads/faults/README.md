@@ -352,7 +352,12 @@ The target identity includes `hold_hooks`, so held and unheld executions share
 no cached snapshot. A replay holds hooks as its config says, so a held
 search's actions replay as searched only under the search's config.
 
-Both are off by default because both take away the quiet time that a
+The option `untried_first_nodes` turns on the `fault.node` choice site
+described below. It is off unless the workload sets it to `true`, the
+vocabulary identifier names it when it is on, and with it off a search draws
+exactly what it draws without the site.
+
+Both hook options are off by default because both take away the quiet time that a
 readiness property needs. Garage's `workload becomes ready within 30 seconds
 after faults end` fails only when the workload stays not ready through 30
 seconds with no fault in force, and the supervisor counts an open hook window
@@ -409,9 +414,10 @@ continuations.
 
 A guest driver's `sdk.Below(site, n)` asks a choice under fault-policy's
 `CHOICE_NAMESPACE` ([harness kit](../harness/README.md)), and the package
-answers it (ours). The faults workload offers the searcher one choice site,
-`guest`, so every drawn job carries the searcher's `ChoicePlan` with its
-CONTRARY rate, hold probability and untried ordinal. The `guest` site declares
+answers it (ours). The faults workload offers the searcher the choice site
+`guest`, and with `untried_first_nodes` a second site, `fault.node`, so every
+drawn job carries the searcher's `ChoicePlan` with its CONTRARY rate, hold
+probability and untried ordinal. The `guest` site declares
 no rate of its own (`ChoiceSite::with_contrary`), so the plan's `declared`
 list is empty. Because a guest asks at
 moments and with option counts only the guest knows, and an action must stay
@@ -435,6 +441,30 @@ debug terminal takes every default. In text, an action without `GuestChoices`
 omits the field; the binary encoding that history digests and snapshot records
 use always carries it.
 
+The `fault.node` site (ours) is the target node of a fault, asked on the host.
+Its labels are node ids, as in the action text form `Pause[1, …]`, because
+the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`,
+`Restart` or `Clock` action offers every node, `PowerLoss`, `DiskError` and
+`DiskStall` offer the nodes with a disk, and `DiskCorrupt` offers the
+checksummed ones. An event kind keeps its drawn node, because the node comes
+from runtime readiness, and so does a `Pause` under `resume_park`, because
+its park is drawn for that node. `execute_job` resolves each such action
+before it stamps `GuestChoices`, with one host `Chooser` per job built from
+the plan with hold zero. It calls `Chooser::draw` over the offer with the
+lowest offered node as the default and weight one on the node the draw
+picked and zero on the others. The first ask of a job therefore takes the
+node at the plan's untried ordinal while one remains untried, and every other
+ask answers the drawn node, so the draw's random word and arithmetic decide
+it as they do with the site off. The untried ordinal goes to the host when
+the suffix's first action asks this site and to the guest's first stamped
+action otherwise. The stored action holds the answer, so replay asks nothing.
+The offer depends only on the kind and the vocabulary. At resolve time the
+host also has the parent's `alive` mask from the supervisor, so `Kill` and
+`Pause` could offer running nodes and `Restart` stopped ones; the offer does
+not use it. The faults workload resolves in its own `execute_job`, not
+through `TargetExecution::resolve_action`, because the offer needs the run's
+vocabulary.
+
 A recorded input can pin answers: `{"actions": [...], "answers": [{"step": 3,
 "choice": 12, "label": 1}]}` replaces the answer to guest choice 12 (counting
 from 0 within the action) of step 3 (counting actions from 1, as replay steps
@@ -448,10 +478,19 @@ part of the target identity, `branch` moves them onto its continuation,
 actions, and `shrink` refuses a run that has them. Each replay step counts its guest
 choices (`choices`, absent when zero), and `debug run`, `replay` and `branch`
 write every choice to `choices.jsonl` beside `report.json`: the run, step,
-choice ordinal, decision moment, guest clock, site, option count, default,
-what the `Chooser` took, the label applied, and `answered` when an input
-answer replaced it. A search writes no per-choice records; an action served
-from the snapshot cache has none either.
+who asked (`asker`), choice ordinal, decision moment, guest clock, site,
+option count, default, what the `Chooser` took, the label applied, and
+`answered` when an input answer replaced it. Host and guest choices share
+this row. `asker` is `action` for a host site and `{"process": pid}` for a
+guest draw, the pid being the upper half of the guest's request id. A host
+row has no choice ordinal, lists its `offered` labels and has guest clock
+zero. Pins address guest rows only, and a host answer changes when the
+input's action names another node. A search writes no per-choice records
+unless the environment variable `HARMONY_FAULTS_CHOICE_RECORD` names a file:
+each host ask in a job then appends its row there, with the parent's path
+length (`depth`) and, on the ask that took it, the untried ordinal, like the
+settle record below. An action served from the snapshot cache has no guest
+rows.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a

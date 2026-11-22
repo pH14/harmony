@@ -128,14 +128,25 @@ impl GuestAnswers {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Asker {
+    Action,
+    Process(u32),
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct GuestChoice {
+pub struct ActionChoice {
     pub step: u64,
-    pub choice: u64,
+    pub asker: Asker,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<u64>,
     pub moment: u64,
     pub clock: u64,
     pub site: String,
     pub options: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offered: Vec<u16>,
     pub default: u16,
     pub taken: Choice,
     pub label: u16,
@@ -149,7 +160,7 @@ pub struct GuestChooser {
     answers: Option<RecordedEnv>,
     sites: BTreeMap<String, u16>,
     offered: Vec<u16>,
-    records: Vec<GuestChoice>,
+    records: Vec<ActionChoice>,
 }
 
 impl GuestChooser {
@@ -165,7 +176,7 @@ impl GuestChooser {
         }
     }
 
-    pub fn answer(&mut self, moment: u64, payload: &[u8]) -> Result<Answer, String> {
+    pub fn answer(&mut self, moment: u64, process: u32, payload: &[u8]) -> Result<Answer, String> {
         let question = ChoiceQuestion::decode(payload)
             .map_err(|error| format!("guest choice question: {error}"))?;
         let choice = self.records.len() as u64;
@@ -189,13 +200,15 @@ impl GuestChooser {
             Some(_) => question.default,
             None => planned,
         };
-        self.records.push(GuestChoice {
+        self.records.push(ActionChoice {
             step: self.step,
-            choice,
+            asker: Asker::Process(process),
+            choice: Some(choice),
             moment,
             clock: question.clock,
             site: question.site,
             options: question.options,
+            offered: Vec::new(),
             default: question.default,
             taken,
             label,
@@ -209,7 +222,7 @@ impl GuestChooser {
     }
 
     #[must_use]
-    pub fn into_records(self) -> Vec<GuestChoice> {
+    pub fn into_records(self) -> Vec<ActionChoice> {
         self.records
     }
 }
@@ -254,7 +267,11 @@ mod tests {
                 "register.key"
             };
             chooser
-                .answer(1_000 + index, &question(site, 4, (index % 4) as u16, index))
+                .answer(
+                    1_000 + index,
+                    7,
+                    &question(site, 4, (index % 4) as u16, index),
+                )
                 .unwrap();
         }
         chooser
@@ -319,10 +336,10 @@ mod tests {
         .unwrap();
         let mut chooser = GuestChooser::new(3, Some(guest), answers.at(3));
         assert_eq!(
-            chooser.answer(1, &question("a", 4, 2, 0)).unwrap(),
+            chooser.answer(1, 7, &question("a", 4, 2, 0)).unwrap(),
             Answer::Nominal
         );
-        let unoffered = chooser.answer(2, &question("a", 4, 2, 1)).unwrap();
+        let unoffered = chooser.answer(2, 7, &question("a", 4, 2, 1)).unwrap();
         assert_ne!(unoffered, Answer::Nominal);
         let records = chooser.into_records();
         assert!(records[0].answered);
@@ -349,6 +366,6 @@ mod tests {
     #[test]
     fn malformed_questions_are_refused() {
         let mut chooser = GuestChooser::new(1, None, None);
-        assert!(chooser.answer(1, &[1, 0]).is_err());
+        assert!(chooser.answer(1, 7, &[1, 0]).is_err());
     }
 }

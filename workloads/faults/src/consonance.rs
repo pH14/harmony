@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
-use crate::guest::{GuestAnswers, GuestChoice, GuestChoices, GuestChooser};
+use crate::guest::{ActionChoice, GuestAnswers, GuestChoices, GuestChooser};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::key::{FaultKeys, UNOBSERVED};
 use crate::target::{
@@ -621,7 +621,7 @@ struct Live {
     telemetry: LiveTelemetry,
     cursor: ObservationCursor,
     answers: Arc<GuestAnswers>,
-    choices: Vec<GuestChoice>,
+    choices: Vec<ActionChoice>,
 }
 
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
@@ -762,7 +762,7 @@ pub struct FaultTarget {
     history: FaultHistory,
     observation: FaultObservations,
     action_observations: Vec<FaultObservations>,
-    action_choices: Vec<GuestChoice>,
+    action_choices: Vec<ActionChoice>,
     failed: bool,
     watchdog_cutoffs: u64,
     infrastructure_failure: bool,
@@ -913,7 +913,7 @@ impl FaultTarget {
     }
 
     #[must_use]
-    pub fn last_action_choices(&self) -> &[GuestChoice] {
+    pub fn last_action_choices(&self) -> &[ActionChoice] {
         &self.action_choices
     }
 
@@ -1545,7 +1545,8 @@ fn resolution_for_stop(
     let service = u16::from_le_bytes(*service);
     let answer = match guest {
         Some(guest) if service == CHOICE_NAMESPACE => {
-            match choice_answer(&guest.answer(vtime.0, payload)?)? {
+            let process = u32::try_from(id.0 >> 32)?;
+            match choice_answer(&guest.answer(vtime.0, process, payload)?)? {
                 Some(label) => ChannelAnswer::data(label.to_vec())?,
                 None => ChannelAnswer::Nominal,
             }
@@ -1592,7 +1593,7 @@ struct ExecutedAction {
     observation: FaultObservations,
     snapshot: Option<(SnapId, u64)>,
     proof: EndpointProof,
-    choices: Vec<GuestChoice>,
+    choices: Vec<ActionChoice>,
 }
 
 struct ObservedEndpoint {
@@ -4317,7 +4318,7 @@ mod tests {
         (live, resolutions)
     }
 
-    fn advance_each(live: &mut Live, actions: &[FaultAction]) -> Vec<Vec<GuestChoice>> {
+    fn advance_each(live: &mut Live, actions: &[FaultAction]) -> Vec<Vec<ActionChoice>> {
         let mut history = FaultHistory::genesis(live.chain.provenance(0).unwrap().clone()).unwrap();
         actions
             .iter()
@@ -4364,6 +4365,7 @@ mod tests {
                 let answer = expected
                     .answer(
                         resolution.vtime.0,
+                        0,
                         &DecisionSession::choice_question(asked, resolution.vtime.0),
                     )
                     .unwrap();
