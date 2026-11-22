@@ -1,4 +1,4 @@
-goal = "ending"
+goal = "ending and not dead"
 reject = ["dead"]
 capacity = 1
 spread = ["area", "map_x", "map_y"]

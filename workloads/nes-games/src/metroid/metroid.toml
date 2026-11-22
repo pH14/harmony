@@ -1,4 +1,4 @@
-goal = "ending"
+goal = "ending and not dead"
 reject = ["dead"]
 capacity = 1
 spread = ["area", "map_x", "map_y", "boss_damage", "zebetite_hits_left"]
@@ -12,163 +12,163 @@ prefer_scope = "0"
 [[stage]]
 name = "maru_mari"
 objective = "max(last(if action_end then index(cell, to_maru_mari) else none, stage), 0)"
-goal = "(equipment / 16) % 2 == 1"
+goal = "(equipment / 16) % 2 == 1 and not dead"
 
 [[stage]]
 name = "energy_before_missiles"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 64"
+goal = "action_end and health / 10 >= 64 and not dead"
 latch = true
 
 [[stage]]
 name = "missiles"
 objective = "max(last(if action_end then index(cell, to_missiles) else none, stage), 0)"
-goal = "missile_capacity > 0"
+goal = "missile_capacity > 0 and not dead"
 
 [[stage]]
 name = "energy_before_bombs"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 64"
+goal = "action_end and health / 10 >= 64 and not dead"
 latch = true
 
 [[stage]]
 name = "bombs"
 objective = "max(last(if action_end then index(cell, to_bombs) else none, stage), 0)"
-goal = "equipment % 2 == 1"
+goal = "equipment % 2 == 1 and not dead"
 
 [[stage]]
 name = "energy_before_kraid_door"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 64"
+goal = "action_end and health / 10 >= 64 and not dead"
 latch = true
 
 [[stage]]
 name = "kraid_door"
 objective = "max(last(if action_end then index(cell, to_kraid_door) else none, stage), 0)"
-goal = "action_end and objective + 1 >= len(to_kraid_door)"
+goal = "action_end and objective + 1 >= len(to_kraid_door) and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_kraid"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 80"
+goal = "action_end and health / 10 >= 80 and not dead"
 latch = true
 
 [[stage]]
 name = "kraid"
 objective = "boss_damage"
-goal = "kraid_defeated"
+goal = "kraid_defeated and not dead"
 
 [[stage]]
 name = "energy_after_kraid"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 120"
+goal = "action_end and health / 10 >= 120 and not dead"
 latch = true
 
 [[stage]]
 name = "norfair_elevator"
 objective = "max(last(if action_end then index(cell, to_norfair) else none, stage), 0)"
-goal = "action_end and objective + 1 >= len(to_norfair)"
+goal = "action_end and objective + 1 >= len(to_norfair) and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_ridley_elevator"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 80"
+goal = "action_end and health / 10 >= 80 and not dead"
 latch = true
 
 [[stage]]
 name = "ridley_elevator"
 objective = "max(last(if action_end then index(cell, to_ridley) else none), 0)"
-goal = "action_end and cell == 202524"
+goal = "action_end and cell == 202524 and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_ridley_door"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 96"
+goal = "action_end and health / 10 >= 96 and not dead"
 latch = true
 
 [[stage]]
 name = "ridley_door"
 objective = "max(last(if action_end then index(cell, to_ridley) else none), 0)"
-goal = "action_end and cell == 201829"
+goal = "action_end and cell == 201829 and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_ridley"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 96"
+goal = "action_end and health / 10 >= 96 and not dead"
 latch = true
 
 [[stage]]
 name = "ridley"
 objective = "boss_damage"
-goal = "ridley_defeated"
+goal = "ridley_defeated and not dead"
 
 [[stage]]
 name = "energy_after_ridley"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 96"
+goal = "action_end and health / 10 >= 96 and not dead"
 latch = true
 
 [[stage]]
 name = "ridley_exit"
 objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
-goal = "action_end and cell == 172522"
+goal = "action_end and cell == 172522 and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_norfair_return"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 80"
+goal = "action_end and health / 10 >= 80 and not dead"
 latch = true
 
 [[stage]]
 name = "norfair_return"
 objective = "if area == 20 then 0 else 1 + max(last(if action_end then index(cell, to_ending) else none), 0)"
-goal = "action_end and cell == 162211"
+goal = "action_end and cell == 162211 and not dead"
 latch = true
 
 [[stage]]
 name = "missiles_before_tourian"
 objective = "missiles"
-goal = "action_end and missiles >= missile_capacity"
+goal = "action_end and missiles >= missile_capacity and not dead"
 latch = true
 
 [[stage]]
 name = "energy_before_tourian"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 100 * energy_tanks + 90"
+goal = "action_end and health / 10 >= 100 * energy_tanks + 90 and not dead"
 latch = true
 
 [[stage]]
 name = "tourian_elevator"
 objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
-goal = "action_end and cell == 190304"
+goal = "action_end and cell == 190304 and not dead"
 latch = true
 
 [[stage]]
 name = "zebetite_door"
 objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
-goal = "action_end and cell == 190411"
+goal = "action_end and cell == 190411 and not dead"
 latch = true
 
 [[stage]]
 name = "zebetites"
 objective = "8 * max(last(if action_end then index(cell, to_ending) else none), 0) + zebetites_destroyed"
-goal = "action_end and cell == 190211"
+goal = "action_end and cell == 190211 and not dead"
 latch = true
 
 [[stage]]
 name = "mother_brain"
 objective = "256 * zebetites_destroyed + boss_damage"
-goal = "mother_brain_defeated"
+goal = "mother_brain_defeated and not dead"
 
 [[stage]]
 name = "escape"
 objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
-goal = "ending"
+goal = "ending and not dead"
 
 [[stage]]
 name = "after_ending"

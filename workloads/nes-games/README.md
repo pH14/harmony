@@ -545,14 +545,18 @@ a kept state stood on within that stage,
 stage is entered off the route, as the hand plan locates from action endpoints
 and carries a route objective only from a parent in the same stage. The
 kraid_door stage ends at the last cell of its route on a kept state,
-`action_end and objective + 1 >= len(to_kraid_door)`. The equivalence test
+`action_end and objective + 1 >= len(to_kraid_door) and not dead`. The equivalence test
 observes interior frames between kept states. Boss damage is the drop from
 `highest` boss health since the area last changed, rounded up to fours.
 `balance` is the rank of the smaller of missiles over capacity and health over
 the energy cap among every such ratio, so the second preference line is
 (items, tanks, balance) and ends in `"above"`, which breaks its ties by missiles
 then health as the hand balance preference does. The first line reads health
-below 8192, since health of 8000 and above is the BCD-underflow terminal.
+below 8192, since health of 8000 and above is the BCD-underflow terminal. A dead
+Metroid state reads health of 9,700 or more, and a goal record stays a goal
+when a reject line matches it, so every Metroid goal requires `not dead`; a
+test in `metroid/game.rs` checks that no goal of a shipped Metroid strategy
+holds on a state the default terminal rule marks dead.
 Tests in `metroid/game.rs` check that the strategy's stage and objective equal
 `plan::locate` along random paths with restores, and a test in
 `metroid/archive.rs` checks the second line against the hand balance order.

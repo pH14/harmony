@@ -317,11 +317,17 @@ impl Game for Metroid {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::{
         metroid::{
+            keying::POSITION_STRATEGY,
             plan::{self, PLAN},
-            target::{JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED, TEN_MISSILE_DOOR},
+            target::{
+                BCD_BORROW_HEALTH, JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED,
+                TEN_MISSILE_DOOR,
+            },
         },
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
         workload::{Lowered, target::windowed},
@@ -511,6 +517,94 @@ mod tests {
             .compiled
             .observe(&record, &mut Accumulator::default())
             .goal
+    }
+
+    fn deaths(strategy: &str) -> Vec<MetroidMechanicalState> {
+        let mut cells = vec![0_u32];
+        cells.extend(
+            strategy
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|token| token.parse::<u32>().ok())
+                .filter(|cell| (160_000..210_000).contains(cell)),
+        );
+        cells.sort_unstable();
+        cells.dedup();
+        let mut deaths = Vec::new();
+        for cell in cells {
+            for health in [0, BCD_BORROW_HEALTH, 9_700, 9_999] {
+                for energy_tanks in 0..=6 {
+                    for won in [false, true] {
+                        let full = if won { u8::MAX } else { 0 };
+                        deaths.push(MetroidMechanicalState {
+                            area: u8::try_from(cell / 10_000).unwrap(),
+                            map_x: u8::try_from(cell / 100 % 100).unwrap(),
+                            map_y: u8::try_from(cell % 100).unwrap(),
+                            mode: 3,
+                            health,
+                            equipment: full,
+                            missiles: full,
+                            missile_capacity: full,
+                            energy_tanks,
+                            zebetites_destroyed: if won { 5 } else { 0 },
+                            bosses: if won { 2 } else { 0 },
+                            statues: if won { 2 } else { 0 },
+                            mother_brain_defeated: won,
+                            ending: won,
+                            kraid_defeated: won,
+                            ..MetroidMechanicalState::default()
+                        });
+                    }
+                }
+            }
+        }
+        deaths
+    }
+
+    fn goals(
+        lowered: &Lowered<Metroid>,
+        state: &MetroidMechanicalState,
+        action_end: bool,
+    ) -> (bool, Vec<bool>) {
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(action_end);
+        let header = lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal;
+        let stages = lowered
+            .compiled
+            .stage_goals(&record, &Accumulator::default());
+        (header, stages)
+    }
+
+    #[test]
+    fn no_metroid_goal_holds_on_a_dead_state() {
+        let mut holding = BTreeSet::new();
+        for (file, strategy) in [
+            ("metroid.toml", Metroid::STRATEGY),
+            ("position.toml", POSITION_STRATEGY),
+        ] {
+            let lowered = Lowered::new(Metroid, strategy).unwrap();
+            let names = lowered.compiled.stage_names();
+            for death in deaths(strategy) {
+                assert!(MetroidTerminalPolicy::default().is_dead(death), "{death:?}");
+                for action_end in [false, true] {
+                    let (header, stages) = goals(&lowered, &death, action_end);
+                    if header {
+                        holding.insert(format!("{file} header goal"));
+                    }
+                    for (name, holds) in names.iter().zip(stages) {
+                        if holds {
+                            holding.insert(format!("{file} stage {name}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            holding.is_empty(),
+            "goals that hold on a dead state: {holding:?}"
+        );
     }
 
     #[test]
