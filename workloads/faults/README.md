@@ -604,12 +604,15 @@ evicts entries to keep the total in budget. When eviction
 cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. While a settle
-phase runs, the chain holds the job's endpoint: it drops the prefixes the phase
-appended, oldest first, before the endpoint and the prefixes older than it, and
-keeps setup, the endpoint and the phase's newest prefix even when the store is
-still over budget, so the store can exceed the budget by one prefix until the
-phase ends. The same holds while the store shrinks toward its guest RAM: a
-report only asks the worker to shrink, and the chain chooses which prefixes go. While the total
+phase runs, the chain holds the job's endpoint: it drops the prefixes after the
+endpoint, oldest first, then the prefixes before it. After a push it keeps
+setup, the endpoint and the newest prefix even when the store is still over
+budget, so the store can exceed the budget by one prefix until the phase ends;
+the restore at the end of the phase may also drop the newest prefix, but not
+the endpoint. The same holds while the store shrinks toward its guest RAM: a
+report only asks the worker to shrink, and the chain chooses which prefixes go.
+When the chain has nothing left to drop, the worker reports again, and the
+cache then evicts shared entries for it. While the total
 is over budget, every other worker also drops prefix snapshots until its store
 is no larger than at its last report that fit the budget, so the stores stop
 growing while the largest store's worker is busy. The run prints the worker count and budget, and

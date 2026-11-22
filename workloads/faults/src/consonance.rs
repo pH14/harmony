@@ -1125,13 +1125,15 @@ impl FaultTarget {
         let job = crate::job_observation::take();
         let result = run(self);
         let rewound = self.restore(&endpoint);
-        let released = with_live(&self.config, |live| {
-            live.chain.release_hold();
-            Ok(())
+        LIVE.with(|slot| {
+            if let Some(live) = slot.borrow_mut().as_mut()
+                && live.key == self.config.key
+            {
+                live.chain.release_hold();
+            }
         });
         crate::job_observation::put(job);
         rewound?;
-        released?;
         if self.failed {
             return Err("the endpoint before a detached run could not be restored".into());
         }
@@ -2050,6 +2052,7 @@ impl Live {
         while self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT) {
             let dropped = self.chain.shed(keep);
             if dropped.is_empty() {
+                self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT);
                 return Ok(());
             }
             self.drop_snapshots(dropped)?;
@@ -5144,7 +5147,6 @@ mod tests {
         assert_eq!(links, 3);
         assert_eq!(after.actions - before.actions, 0);
         assert_eq!(target.history.receipt(), endpoint.history.receipt());
-        assert_eq!(index.stats().evictions, 0);
     }
 
     #[test]

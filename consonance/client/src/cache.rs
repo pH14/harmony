@@ -239,6 +239,7 @@ struct State {
     divergences: BTreeMap<Namespace, Arc<CacheDivergence>>,
     stores: BTreeMap<u64, usize>,
     fitted: BTreeMap<u64, usize>,
+    asked: BTreeMap<u64, usize>,
     stored: usize,
     next_id: u64,
     floor: u128,
@@ -418,6 +419,7 @@ impl State {
             .saturating_add(bytes.unwrap_or(0));
         if bytes.is_none() {
             self.fitted.remove(&holder);
+            self.asked.remove(&holder);
         }
     }
 }
@@ -491,6 +493,7 @@ impl LocalIndex {
                 divergences: BTreeMap::new(),
                 stores: BTreeMap::new(),
                 fitted: BTreeMap::new(),
+                asked: BTreeMap::new(),
                 stored: 0,
                 next_id: 0,
                 floor: 0,
@@ -746,8 +749,8 @@ impl CacheIndex for LocalIndex {
         state.measure(headroom, self.workers, self.transient);
         let floored = state
             .stores
-            .values()
-            .all(|&store| store <= self.store_floor);
+            .iter()
+            .all(|(id, &store)| store <= self.store_floor || state.asked.get(id) == Some(&store));
         while floored && state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
                 break;
@@ -770,6 +773,9 @@ impl CacheIndex for LocalIndex {
         let shrink = over && (bytes > self.store_floor || grew || largest == Some(holder));
         if shrink {
             state.stats.shrinks += 1;
+            state.asked.insert(holder, bytes);
+        } else {
+            state.asked.remove(&holder);
         }
         shrink
     }
@@ -1534,6 +1540,24 @@ mod tests {
     #[test]
     fn a_store_above_its_floor_shrinks_before_any_shared_entry_is_evicted() {
         let page = PAGE as u64;
+        let index = LocalIndex::with_segment_bytes(8 * PAGE, PAGE).with_store_floor(page);
+        let space = ns("a");
+        let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let b = put(&index, space, b"b", None, &[(1, 1)], &[]).unwrap();
+        index.release(a);
+        index.release(b);
+        assert!(!index.report_store(1, 2 * page));
+        assert!(!index.report_store(2, 3 * page));
+        assert!(index.report_store(2, 5 * page));
+        assert!(index.report_store(1, 2 * page));
+        assert_eq!((index.stats().evictions, index.stats().shrinks), (0, 2));
+        assert!(!index.report_store(2, 4 * page));
+        assert_eq!(index.stats().evictions, 0);
+    }
+
+    #[test]
+    fn a_store_that_cannot_shrink_lets_shared_entries_go() {
+        let page = PAGE as u64;
         let index = LocalIndex::with_segment_bytes(4 * PAGE, PAGE).with_store_floor(page);
         let space = ns("a");
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
@@ -1542,15 +1566,13 @@ mod tests {
         index.release(b);
         assert!(!index.report_store(1, page));
         assert!(index.report_store(1, 3 * page));
-        assert!(index.report_store(1, 3 * page));
-        assert_eq!((index.stats().evictions, index.stats().shrinks), (0, 2));
-        assert!(!index.report_store(1, 2 * page));
-        assert!(!index.report_store(1, page));
-        assert!(index.report_store(2, 2 * page));
         assert_eq!(index.stats().evictions, 0);
-        assert!(!index.report_store(2, page));
-        assert!(!index.report_store(3, page));
-        assert_eq!((index.stats().evictions, index.stats().shrinks), (1, 3));
+        assert!(!index.report_store(1, 3 * page));
+        assert_eq!(index.stats().evictions, 1);
+        assert!(index.report_store(1, 4 * page));
+        assert_eq!(index.stats().evictions, 1);
+        index.forget_store(1);
+        assert!(!index.report_store(2, 3 * page));
     }
 
     #[test]
