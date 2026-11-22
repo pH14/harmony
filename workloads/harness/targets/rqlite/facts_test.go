@@ -10,17 +10,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"harmony.local/harness/kit/family"
+	"harmony.local/harness/kit/sdk"
 )
 
 type fact struct {
@@ -590,6 +594,39 @@ func TestSnapshotFactsSeeAFollowerCompactAheadOfTheLeader(t *testing.T) {
 	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, true, true)
 }
 
+func TestEitherALowerTermOrNoLeaderMakesADeposedLeader(t *testing.T) {
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	for _, c := range []struct {
+		x       raftView
+		deposed bool
+	}{
+		{view("Follower", "n2", 2, 600, 600, 0), true},
+		{view("Follower", "", 3, 600, 600, 0), true},
+		{view("Follower", "n2", 3, 600, 600, 0), false},
+	} {
+		read := factSink(t)
+		runSnapshotFacts(0, 1, true, []raftView{c.x, leader, {}}, []raftView{c.x, leader, {}})
+		expectConditions(t, snapshotConditions(t, read), c.deposed, false, false, false, false, false, false)
+	}
+}
+
+func TestAFollowerAlreadyAheadHasNotCompactedAhead(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n1", 6, 1889, 1889, 1777)
+	x := view("Follower", "n1", 6, 1814, 1814, 1800)
+	runSnapshotFacts(2, 1, true, []raftView{leader, {}, x}, []raftView{leader, {}, x})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, true, false)
+}
+
+func TestALeaderSnapshotEqualToTheNodesIsNotBelow(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n1", 6, 1889, 1889, 1777)
+	runSnapshotFacts(2, 1, true,
+		[]raftView{leader, {}, view("Follower", "n1", 6, 1777, 1777, 0)},
+		[]raftView{leader, {}, view("Follower", "n1", 6, 1777, 1777, 1777)})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
 func TestSnapshotFactsNeedTrailingLogsWithinTheTail(t *testing.T) {
 	for _, c := range []struct {
 		trailing uint64
@@ -649,6 +686,36 @@ func TestAnUnreadableConnectionRecordFailsTheHook(t *testing.T) {
 	}
 }
 
+func TestAConnectionRecordThatFailsPartwayCountsNoClient(t *testing.T) {
+	read := factSink(t)
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.WriteFile(path, []byte("0 n1\n"+strings.Repeat("x", 70000)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	x := view("Leader", "n1", 2, 480, 482, 0)
+	f := runSnapshotFactsWith(path, 0, 1, true, []raftView{x, {}, {}}, []raftView{x, {}, {}})
+	if f.err == nil {
+		t.Fatal("no error for an unreadable connection record")
+	}
+	if snapshotConditions(t, read)[3] {
+		t.Fatal("client_on_node held from part of a record")
+	}
+}
+
+func TestClientOnNodeIsFalseWhenTheNodeDoesNotAnswer(t *testing.T) {
+	read := factSink(t)
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.WriteFile(path, []byte("0 n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	f := runSnapshotFactsWith(path, 0, 1, true, []raftView{{}, leader, {}}, []raftView{{}, leader, {}})
+	if f.err != nil {
+		t.Fatal(f.err)
+	}
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
 func TestTheDriveRecordsEachConnectionOnlyWithTheVariable(t *testing.T) {
 	dir := t.TempDir()
 	saved := connections
@@ -662,16 +729,91 @@ func TestTheDriveRecordsEachConnectionOnlyWithTheVariable(t *testing.T) {
 		t.Fatalf("connection record %+v", got)
 	}
 	connections = &connectionLog{path: filepath.Join(dir, "connections")}
+	want := map[int]string{}
 	for process := range 3 {
 		c, err := adapter{}.Connect(context.Background(), process)
 		if err != nil {
 			t.Fatal(err)
 		}
+		want[process] = nodeName(slices.Index(nodes, c.(*client).base))
 		c.Close()
 	}
 	current, err := readConnections(connections.path)
-	if err != nil || len(current) != 3 {
-		t.Fatalf("connections %v, error %v", current, err)
+	if err != nil || !maps.Equal(current, want) {
+		t.Fatalf("connections %v, want %v, error %v", current, want, err)
+	}
+}
+
+func TestAFailedConnectionRecordStillConnects(t *testing.T) {
+	saved := connections
+	t.Cleanup(func() { connections = saved })
+	connections = &connectionLog{path: filepath.Join(t.TempDir(), "missing", "connections")}
+	c, err := adapter{}.Connect(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+}
+
+func drawTrace(t *testing.T, facts bool) string {
+	t.Helper()
+	bases := make([]string, len(nodeNames))
+	for i := range nodeNames {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/status" {
+				fmt.Fprint(w, `{"store":{"raft":{"state":"Follower","term":"2","commit_index":"480","last_log_index":"482","last_snapshot_index":"0"},"leader":{"node_id":""}}}`)
+			}
+		}))
+		t.Cleanup(server.Close)
+		bases[i] = server.URL
+	}
+	saved := connections
+	t.Cleanup(func() { connections = saved })
+	connections = nil
+	var hook *snapshotFacts
+	if facts {
+		path := filepath.Join(t.TempDir(), "connections")
+		connections = &connectionLog{path: path}
+		hook = &snapshotFacts{sample: raftViewOf, connections: path}
+	}
+	var trace []string
+	for process := range 3 {
+		c, err := adapter{}.Connect(context.Background(), process)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trace = append(trace, c.(*client).base)
+		c.Close()
+	}
+	var out bytes.Buffer
+	if err := recordSnapshot(&out, bases, hook); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(out.String())
+	return strings.Join(append(trace, fields[1], fields[2], strconv.FormatUint(sdk.Random(), 10)), " ")
+}
+
+func TestTheFactsAddNoDraw(t *testing.T) {
+	if mode := os.Getenv("RQLITE_DRAW_MODE"); mode != "" {
+		fmt.Println("trace", drawTrace(t, mode == "facts"))
+		return
+	}
+	traces := map[string]string{}
+	for _, mode := range []string{"plain", "facts"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestTheFactsAddNoDraw$")
+		cmd.Env = append(os.Environ(), "RQLITE_DRAW_MODE="+mode, "HARNESS_SEED=7", "ANTITHESIS_OUTPUT_DIR="+t.TempDir())
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", mode, err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "trace ") {
+				traces[mode] = line
+			}
+		}
+	}
+	if traces["plain"] == "" || traces["plain"] != traces["facts"] {
+		t.Fatalf("plain %q, facts %q", traces["plain"], traces["facts"])
 	}
 }
 
@@ -690,12 +832,13 @@ func TestRaftViewDecodesNumbersAndStrings(t *testing.T) {
 	server, _ := leaderServer(t,
 		answer(http.StatusOK, `{"store":{"raft":{"state":"Follower","term":"6","commit_index":1814,"last_log_index":"1815","last_snapshot_index":"1777"},"leader":{"node_id":"n1"}}}`),
 		answer(http.StatusOK, `{"store":{"open":false}}`),
-		answer(http.StatusServiceUnavailable, ""))
+		answer(http.StatusServiceUnavailable, ""),
+		answer(http.StatusOK, `{"store":{"raft":{"state":"Follower","term":"6","commit_index":"null","last_log_index":"1815","last_snapshot_index":"1777"},"leader":{"node_id":"n1"}}}`))
 	want := view("Follower", "n1", 6, 1814, 1815, 1777)
 	if got := raftViewOf(context.Background(), server.URL); got != want {
 		t.Fatalf("view %+v, want %+v", got, want)
 	}
-	for range 2 {
+	for range 3 {
 		if got := raftViewOf(context.Background(), server.URL); got.answered {
 			t.Fatalf("view %+v from a node without Raft statistics", got)
 		}

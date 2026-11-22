@@ -736,18 +736,24 @@ snapshot hook, which then writes seven `Sometimes` assertions of ours through
 the JSON record, each with its condition, true or false, once per hook run. The
 hook reads every node's `/status` at once just before its request and again
 after the answer, each read with a 1 second deadline. Those reads are the only
-requests `bundle-admin` does not send, and they add no draw. The bundle also
+requests `bundle-admin` does not send, and they add no draw. A node that does
+not answer holds the hook for up to that deadline at each of the two reads, so
+a hook that a cut holds open can keep the cut up to 2 seconds longer than in
+`bundle-admin`. The bundle also
 sets `HARNESS_RQLITE_CONNECTIONS=1` on the workload, so the drive appends each
 register process's drawn node to `/tmp/rqlite/connections` when the process
 connects. A process connects when it starts and again only after an operation
 outlives its deadline, so the last line for each process names the node it
-sends to. A write sent to a follower cannot reach a leader cut off from it:
+sends to. A failed append goes to the drive's standard error and the
+connection goes ahead, so the drive draws as it does without the record. A
+write sent to a follower cannot reach a leader cut off from it:
 with `redirect`, the follower asks the leader for its address before it
-answers. When the hook cannot read that file, or a line in it is not a process
-number and a node ID, `client_on_node` is false and the hook exits 1 after its
-request. A node that does
-not answer, or whose answer lacks a Raft state, term, commit index, last log
-index or last snapshot index, makes every fact about it false. X is the node
+answers. A missing file means no process has connected yet. When the hook
+cannot read that file, or a line in it is not a process number and a node ID,
+`client_on_node` is false and the hook exits 1 after its request. A node that
+does not answer, or whose answer lacks a Raft state, term, commit index, last
+log index or last snapshot index, makes every fact about it false, including
+`client_on_node`. X is the node
 the hook drew. The leader is another node that reports itself leader, the one
 in the highest term when two do; when none does, the facts that need a leader
 are false. The facts mark the steps by which a leader cut off with entries past

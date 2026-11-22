@@ -125,7 +125,7 @@ func (a adapter) Connect(_ context.Context, process int) (runner.Client, error) 
 	at := int(sdk.Below("rqlite.connect", uint64(len(nodes))))
 	if connections != nil {
 		if err := connections.record(process, at); err != nil {
-			return nil, err
+			fmt.Fprintf(os.Stderr, "connection record: %v\n", err)
 		}
 	}
 	return newClient(nodes[at]), nil
@@ -452,12 +452,7 @@ func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 type raftStat uint64
 
 func (r *raftStat) UnmarshalJSON(data []byte) error {
-	text := strings.Trim(string(data), `"`)
-	if text == "null" {
-		*r = 0
-		return nil
-	}
-	value, err := strconv.ParseUint(text, 10, 64)
+	value, err := strconv.ParseUint(strings.Trim(string(data), `"`), 10, 64)
 	if err != nil {
 		return fmt.Errorf("raft stat %s: %w", data, err)
 	}

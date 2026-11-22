@@ -347,7 +347,10 @@ func readConnections(path string) (map[int]string, error) {
 		}
 		current[process] = fields[1]
 	}
-	return current, lines.Err()
+	if err := lines.Err(); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 
 type raftView struct {
@@ -470,7 +473,7 @@ func (f *snapshotFacts) start(ctx context.Context, bases []string, via int, trai
 			clients++
 		}
 	}
-	sdk.Sometimes(clients > 0, "client_on_node", map[string]any{"node": nodeName(via), "clients": clients})
+	sdk.Sometimes(x.answered && clients > 0, "client_on_node", map[string]any{"node": nodeName(via), "clients": clients})
 }
 
 func (f *snapshotFacts) end(ctx context.Context) {
