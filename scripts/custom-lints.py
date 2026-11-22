@@ -53,6 +53,7 @@ SYSTEM_NAMES = [
     r"postgres(?:ql)?",
     r"cockroach(?:db)?",
     r"foundationdb",
+    r"rqlite[a-z]*",
     r"k3s",
     r"faultlab",
     r"fault[-_ ]library",

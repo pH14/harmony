@@ -39,7 +39,7 @@ const F_PROC_DISK_CORRUPT: u8 = 25;
 const F_PROC_CLOCK: u8 = 26;
 
 const PARK_TARGETED: u8 = 1;
-const PARK_FROM_ARM: u8 = 2;
+const PARK_AT_RESUME: u8 = 2;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -102,16 +102,16 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             edges,
             hold,
             target,
-            from_arm,
+            at_resume,
         } => {
             w.push(F_PROC_EVENT_PARK);
             put_u32(w, *edges);
             put_u64(w, hold.0);
-            let from_arm = if *from_arm { PARK_FROM_ARM } else { 0 };
+            let at_resume = if *at_resume { PARK_AT_RESUME } else { 0 };
             match target {
-                None => w.push(from_arm),
+                None => w.push(at_resume),
                 Some(target) => {
-                    w.push(PARK_TARGETED | from_arm);
+                    w.push(PARK_TARGETED | at_resume);
                     put_u64(w, target.start);
                     put_u64(w, target.end);
                 }
@@ -178,7 +178,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
                 return Err(EnvError::Malformed);
             }
             let flags = r.u8()?;
-            if flags & !(PARK_TARGETED | PARK_FROM_ARM) != 0 {
+            if flags & !(PARK_TARGETED | PARK_AT_RESUME) != 0 {
                 return Err(EnvError::Malformed);
             }
             let target = if flags & PARK_TARGETED == 0 {
@@ -190,7 +190,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
                 edges,
                 hold: Span(hold),
                 target,
-                from_arm: flags & PARK_FROM_ARM != 0,
+                at_resume: flags & PARK_AT_RESUME != 0,
             }
         }
         F_PROC_POWER_LOSS => Fault::ProcPowerLoss { choice: r.u64()? },

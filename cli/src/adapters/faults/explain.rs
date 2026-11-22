@@ -602,14 +602,16 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             hold_us,
             ..
         } => format!("park {} after {edges} edges for {hold_us} us", node(index)),
-        FaultOperation::EventParkFromArm {
+        FaultOperation::PauseParked {
             node: index,
             edges,
             hold_us,
+            ticks,
             ..
         } => format!(
-            "park {} after {edges} edges from now for {hold_us} us",
-            node(index)
+            "pause {} for {}, then park it after {edges} edges from the resume for {hold_us} us",
+            node(index),
+            span(ticks)
         ),
         FaultOperation::PowerLoss(index, ticks) => format!(
             "cut power to {} for {} (unflushed writes lost)",
@@ -2195,14 +2197,14 @@ mod tests {
                 "park n1 after 12 edges for 3500 us",
             ),
             (
-                FaultOperation::EventParkFromArm {
+                FaultOperation::PauseParked {
                     node: 1,
                     edges: 1,
                     hold_us: 3500,
-                    ticks: ticks(1),
+                    ticks: ticks(128),
                     target: None,
                 },
-                "park n2 after 1 edges from now for 3500 us",
+                "pause n2 for 1.28 s, then park it after 1 edges from the resume for 3500 us",
             ),
             (
                 FaultOperation::PowerLoss(1, ticks(200)),

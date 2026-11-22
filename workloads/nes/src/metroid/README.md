@@ -128,7 +128,31 @@ Each stage climbs one integer:
   done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
-  few touches of margin.
+  few touches of margin. The strategy in `metroid.toml` continues past Kraid,
+  where this plan ends. Its stage after Kraid is done at 120 energy, six
+  touches for the six screens of the hideout shaft at map column 12 that the
+  route out climbs, which needs the energy tank in Kraid's room. A touch in
+  Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
+  the Ridley elevator is done at 80, one touch for each of the eight screens
+  of the shaft at Norfair column 30. A touch in Ridley's hideout costs 24
+  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there are done at 96,
+  four touches. Its routes run from Kraid's door to the Norfair elevator
+  `(22,13)`, from there to the Ridley elevator `(25,24)` and on to Ridley's
+  door `(18,29)`, built from the same tables as the routes below, with the
+  elevators Brinstar `(22,11)` to Norfair `(22,13)` and Norfair `(25,22)` to
+  Ridley's hideout `(25,24)`. A tile is solid below `$80` in Brinstar and below
+  `$70` elsewhere (routine `LD651`), and blast tiles run from that bound to
+  `$9F` in Brinstar and `$97` elsewhere. In the Ridley bank, room pointers 0
+  and 1 point to the same data, so rooms are read through the pointer table
+  rather than the disassembly's room labels. The Ridley stage is done on
+  Ridley's defeat bit at `$687C`. Back in Brinstar before the Tourian
+  elevator, the strategy refills missiles to capacity first and then energy to
+  within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
+  390 of 399.9 with three tanks), in that order
+  because farming missiles costs energy and an energy stage stays done after
+  the loss. The `tanks` term counts missile tanks as well as energy tanks, so
+  energy goals use `energy_tanks`; the preferences below use `tanks` on
+  purpose, to rank by tanks collected of either kind.
 - The boss stage climbs boss damage. It is done when Kraid is defeated, read
   from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
   0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would
@@ -180,12 +204,19 @@ different place from one that has not. Without it, a state that fired a
 missile into a column shares a slot with the state that did not fire, and the
 preferences keep the one with more missiles. A column healing or respawning
 moves the state to another place without ranking it above or below the rest of
-Tourian. The game keeps five Zebetite slots at
+Tourian. A broken column does rank: the zebetites and mother_brain objectives
+count the slots reading 2 or 3, so a slot the game reuses for a new column
+lowers the objective by that column. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
-alive, 2 destroyed) and its missile hit count at offset 3; a column dies at
-eight hits while healing one hit every 64 frames it is not hit, and the game
-loads the columns of each screen as Samus enters it. The state also counts the
-destroyed columns for the `zebetite_destroyed` milestone.
+alive, 2 on the frames the column breaks, 3 once its tiles are cleared) and
+its missile hit count at offset 3; a column dies at eight hits while healing
+one hit every 64 frames it is not hit, at offset 4's timer, and the game loads
+the columns of each screen as Samus enters it and clears a slot whose screen
+scrolls out. The state counts the columns reading 2 or 3 as destroyed for the
+`zebetite_destroyed` milestone, since a RAM trace of a run to the ending reads
+3 at every action end after a column broke. The count falls when a cleared
+column's slot is reused, so it counts the broken columns still in a slot, not
+every column broken so far.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
 hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds
@@ -294,6 +325,21 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+`metroid-strategy-probe` replays a chord tape from power-on on the shared
+target under `metroid.toml` or `--strategy`, and prints the stage, objective
+and resources at every action where the stage changes and at the last one
+(`--every` prints every action, `--wram START:LEN` the frame bytes there, work
+RAM first and then the cartridge window, and `--cartridge START:LEN` any span
+of cartridge RAM, such as the room's tiles from offset 0; `--frames FIRST:LAST`
+prints every frame's record of the `--terms` it names, by default missiles,
+health, x, y and boss health, for the actions in that range). It ends with the frame's sha256 and
+the game's `rooted_genesis` verdict, so it shows whether the tape ends with
+Samus alive in play or in an item pickup before the ending, and which stages it earns on the way; the workload's other root
+checks (a goal, a reject or an overrun on the way, a missing endpoint key) are
+not applied, and a tape with no actions is refused. `--cartridge` reads the
+emulator after the action, so on an action that the target cut short at a goal
+or a reject it shows the state after the whole chord, not at the printed frame.
+
 ## Shared target
 
 `nes-eval` game `metroid-strategy` runs `MetroidStrategyGame`, the `Metroid`
@@ -307,9 +353,21 @@ its one move is the hand target's volley from [Actions](#actions). The game
 offers it at a `missiles` choice site while Samus is in play, alive, holding
 missiles and in a room with a missile target. One answer in 12 leaves the
 default chord, and the label is the count to fire, drawn evenly from 1 to the
-missiles held, as the hand target draws it, except that the label caps the
-count at 63. Where no volley can be offered the answer is an ordinary chord,
-while the hand target's volley waits 12 frames there. A `root_input` tape must end alive before the
+smaller of the missiles held and the missiles the room's target takes, and the
+label caps the count at 63. A
+closed door of palette 2 takes 10, any other closed missile door 5, the live
+Zebetite columns of the screen the hits they still need up to 8, one column's
+worth, and a boss in view its health over 4 rounded up, the damage one missile
+does, except Mother Brain, who takes one. She counts no second hit within 19
+frames of the last, while a volley fires about every 8 frames, so in the four
+tapes we measured a burst at her spent most of its missiles for nothing; one
+missile per answer spaces the shots by the actions between answers. With
+several targets in the room the largest of these counts. Where no
+volley can be offered the answer is an ordinary chord, while the hand target's
+volley waits 12 frames there. The hand
+target draws from 1 to every missile held, and a volley at a door it misses
+then spends the whole stock: Tourian's missile doors took 120 to 160 missiles
+in one volley in the hand campaign. A `root_input` tape must end alive before the
 ending in play or the item pickup pause, so a milestone tape the search
 produced roots unedited. `nes-film --game metroid-strategy` films its
 witness and milestone tapes, with `--root-input` for a rooted run, from power-on

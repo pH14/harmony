@@ -208,6 +208,61 @@ pub fn signal_group(pid: u32, signal: libc::c_int) -> io::Result<()> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildStop {
+    Stopped,
+    Running,
+    Gone,
+}
+
+#[cfg(target_os = "linux")]
+pub fn await_child_stop(
+    pid: u32,
+    attempts: u32,
+    step: std::time::Duration,
+) -> io::Result<ChildStop> {
+    for attempt in 0..=attempts {
+        // SAFETY: siginfo_t is plain old data, and waitid fills it or leaves
+        // it zeroed when no child has changed state.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a writable siginfo_t for the duration of the call,
+        // and waitid reads only the scalar arguments. WNOWAIT leaves a stopped
+        // or exited child waitable, so the supervisor's own reaping is unchanged.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &mut info,
+                libc::WSTOPPED | libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ECHILD) {
+                return Ok(ChildStop::Gone);
+            }
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        } else {
+            // SAFETY: waitid succeeded, so `info` holds either zeroes or a
+            // child state change, and si_pid reads that union's pid field.
+            let changed = unsafe { info.si_pid() };
+            if changed != 0 {
+                return Ok(if info.si_code == libc::CLD_STOPPED {
+                    ChildStop::Stopped
+                } else {
+                    ChildStop::Gone
+                });
+            }
+        }
+        if attempt < attempts {
+            std::thread::sleep(step);
+        }
+    }
+    Ok(ChildStop::Running)
+}
+
 pub fn run_once(spec: &ExecutionSpec) -> io::Result<ExitStatus> {
     run_argv_once(spec, &spec.argv)
 }
@@ -413,6 +468,14 @@ pub fn node_recovery_record(violation: Option<(&str, u64, &str)>) -> String {
     ) + "\n"
 }
 
+#[must_use]
+pub fn parked_pause_record(node: u16, outcome: process_proto::events::ParkedOutcome) -> String {
+    format!(
+        r#"{{"harmony_parked_pause":{{"node":{node},"outcome":"{}"}}}}"#,
+        outcome.name()
+    ) + "\n"
+}
+
 #[cfg(unix)]
 pub fn read_check_nodes(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
@@ -579,6 +642,49 @@ mod tests {
         assert!(violated.contains(r#""condition":false"#));
         assert!(violated.contains(r#""details":{"node":1,"exit":"signal 11"}"#));
         assert!(violated.contains(NODE_EXIT_ASSERTION));
+    }
+
+    #[test]
+    fn a_parked_pause_record_is_one_json_line_naming_the_node_and_outcome() {
+        assert_eq!(
+            parked_pause_record(2, process_proto::events::ParkedOutcome::ClearedInBatch),
+            "{\"harmony_parked_pause\":{\"node\":2,\"outcome\":\"cleared_in_batch\"}}\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_reads_running_until_its_group_stop_and_gone_after_it_dies() {
+        let step = std::time::Duration::from_millis(1);
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exec sleep 10")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert_eq!(await_child_stop(pid, 0, step).unwrap(), ChildStop::Running);
+        signal_group(pid, libc::SIGSTOP).unwrap();
+        assert_eq!(
+            await_child_stop(pid, 10_000, step).unwrap(),
+            ChildStop::Stopped
+        );
+        assert_eq!(await_child_stop(pid, 0, step).unwrap(), ChildStop::Stopped);
+        signal_group(pid, libc::SIGCONT).unwrap();
+        assert!(
+            (0..10_000).any(|_| {
+                std::thread::sleep(step);
+                await_child_stop(pid, 0, step).unwrap() == ChildStop::Running
+            }),
+            "child {pid} stayed stopped after SIGCONT"
+        );
+        signal_group(pid, libc::SIGKILL).unwrap();
+        assert_eq!(
+            await_child_stop(pid, 10_000, step).unwrap(),
+            ChildStop::Gone
+        );
+        assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
+        assert_eq!(await_child_stop(pid, 0, step).unwrap(), ChildStop::Gone);
     }
 
     #[test]
