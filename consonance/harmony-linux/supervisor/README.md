@@ -264,7 +264,10 @@ supervisor builds each disk before the setup command runs:
    through to the data disk and logs every completed write, flush, FUA write and
    discard, with the flags of each. The kernel logs FUA writes and marks when
    they complete, and holds a copy of every other write until the next flush,
-   which logs the held writes in completion order ahead of itself.
+   which logs the held writes in completion order ahead of itself. A kernel
+   thread writes queued entries to the log in order. When the target is torn
+   down, it queues the held writes ahead of every entry not yet written, then
+   its end mark.
 3. A linear device named `harmony-disk-<node>-<generation>` maps the whole log
    device. The filesystem lives on this device, and disk fault windows swap its
    table.
@@ -276,15 +279,19 @@ A power-loss window (`PowerLoss { choice }` in `process-proto`) kills its node
 as a kill window does and keeps it down until a later restart window. It then
 cuts the disk:
 
-1. It suspends both devices without flushing or freezing the filesystem and
-   swaps in `error` tables. Unwritten page cache never reaches the data disk,
-   and the old `dm-log-writes` target writes its end mark.
+1. It suspends the log device without flushing or freezing the filesystem,
+   adds a `harmony-drain` mark to the log, and waits until the kernel has
+   written that mark, so no entry is still queued when the target is torn
+   down. It then swaps an `error` table under the log device and then under the
+   disk device. Unwritten page cache never reaches the data disk, and the old
+   `dm-log-writes` target writes its end mark.
 2. It detaches the mount and requests deferred device removals, so other
    nodes' mount namespaces can let go of the old filesystem later.
-3. It reads the log ([`disk`](src/disk.rs)). Every write before the last flush
-   and every FUA write is kept. Of the other writes after that flush, a prefix
-   in log order is kept: its length is the choice, mixed with the node index,
-   modulo the number of such writes plus one. A choice of zero keeps none.
+3. It reads the log ([`disk`](src/disk.rs)) and drops the drain mark. Every
+   write before the last flush and every FUA write is kept. Of the other writes
+   after that flush, a prefix in log order is kept: its length is the choice,
+   mixed with the node index, modulo the number of such writes plus one. A
+   choice of zero keeps none.
 4. It applies the kept writes to the replay base, which then holds the disk as
    it would be after the power cut, and copies the base back over every range a
    dropped write touched. The data disk then equals the base.
@@ -295,31 +302,37 @@ Once a second the supervisor reads the status of each disk's `dm-log-writes`
 device. When a disk with no error or stall window open has logged 64 MiB or
 more, the supervisor compacts its log:
 
-1. It suspends the disk device without flushing, so no write is in flight, and
-   swaps a linear table onto the data disk under the log device. The old
-   `dm-log-writes` target logs the writes waiting for a flush and its end mark.
-2. It reads the log and applies every entry up to the last flush to the replay
-   base. It keeps the later entries and their data in its own memory, drops the
-   end mark, and keeps the extents of the applied plain writes after the format
-   mark for corruption draws.
+1. It suspends the disk device without flushing, so no write is in flight,
+   waits for the drain mark as a cut does, and swaps a linear table onto the
+   data disk under the log device. The old `dm-log-writes` target logs the
+   writes waiting for a flush and its end mark.
+2. It reads the log and applies to the replay base every entry up to the last
+   flush and the FUA writes and marks after it. It keeps the writes still
+   waiting for a flush and their data in its own memory, drops the end mark,
+   and keeps the extents of the applied plain writes after the format mark for
+   corruption draws.
 3. It zeroes and discards the log, loads a new `dm-log-writes` table and
    resumes the disk.
 
-A later cut or compaction puts the kept entries in front of the new log. The
-kept writes that waited for a flush go after the new log's FUA writes and marks
-that come before its first flush or first other write, where the kernel would
-have logged them in one log. A power loss, a remount or a corruption draw then
-sees the entries one uncompacted log would hold, in the same order, and reaches
-the same disk bytes, kept prefix and flipped bit.
+A later cut or compaction puts the kept writes after the new log's FUA writes
+and marks that come before its first flush or first other write, where the
+kernel would have logged them in one log. A power loss, a remount or a
+corruption draw then sees the entries one uncompacted log would hold, in the
+same order, and reaches the same disk bytes, kept prefix and flipped bit.
 
 A log that fills its RAM disk stops logging and has no end mark; the supervisor
-reports that as an infrastructure error. A power-loss window for a node without
-a disk acts as a kill. Every disk and log page lives in guest memory. Each disk
-can cost its size for the data disk, its size for the replay base, the log up
-to 64 MiB plus one second of writes, the writes since the last flush (held by
-the kernel, or by the supervisor after a compaction), and 16 bytes of
-supervisor memory for each plain write applied by a compaction since the
-format mark or the last cut; raise the guest RAM (`ram_mib`) to match. A guest
+reports that as an infrastructure error at the next cut or compaction. A
+power-loss window for a node without a disk acts as a kill. Every disk and log
+page lives in guest memory. Each disk can cost its size for the data disk, its
+size for the replay base, the log, the writes since the last flush, and 16
+bytes of supervisor memory for each plain write applied by a compaction since
+the format mark or the last cut. The kernel holds the writes since the last
+flush; after a compaction the supervisor holds those that were waiting. While a
+compaction runs, each waiting write it keeps is held twice: once in the log or
+the supervisor's previous copy, and once in the new copy. The log holds what was logged since the last cut or compaction: everything the
+setup command and node startup write before the supervisor starts polling, then
+up to 64 MiB plus one second of writes, more while a stall window is open. Raise
+the guest RAM (`ram_mib`) to match. A guest
 that runs out of memory ends the execution: the supervisor reads the `oom_kill`
 counter in `/proc/vmstat` whenever a node exits and once a second, and reports
 the first kernel OOM kill as an infrastructure error. The guest kernels charge one

@@ -22,6 +22,7 @@ const COPY_SECTORS: u64 = 128;
 const PAGE_SECTORS: u64 = 8;
 const GOLDEN: u64 = 0x9e37_79b9_7f4a_7c15;
 pub const FORMAT_MARK: &str = "harmony-formatted";
+pub const DRAIN_MARK: &str = "harmony-drain";
 pub const MIN_STALL_MILLIS: u64 = 50;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -143,6 +144,11 @@ impl LogEntry {
     }
 
     #[must_use]
+    pub fn waits(self) -> bool {
+        self.changes_data() && !self.forced()
+    }
+
+    #[must_use]
     pub fn plain(self) -> bool {
         self.flags & (FLUSH | FUA | DISCARD | MARK | METADATA) == 0 && self.sectors != 0
     }
@@ -168,18 +174,49 @@ fn word(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(word)
 }
 
-pub fn read_log(log: &mut impl Sectors, log_sectors: u64) -> Result<Vec<LogEntry>, LogError> {
+fn names(header: &[u8], mark: &[u8]) -> bool {
+    word(header, 16) & MARK != 0
+        && usize::try_from(word(header, 24)).is_ok_and(|length| length == mark.len())
+        && header.get(32..32 + mark.len()) == Some(mark)
+}
+
+fn super_block(log: &mut impl Sectors) -> Result<(u64, u64), LogError> {
     let mut header = [0_u8; SECTOR_BYTES];
     log.read_at(0, &mut header)?;
     if word(&header, 0) != LOG_MAGIC || word(&header, 8) != LOG_VERSION {
         return Err(LogError::NoLog);
     }
-    let count = word(&header, 16);
     let sector_size = u32::from_le_bytes([header[24], header[25], header[26], header[27]]);
     if !sector_size.is_power_of_two() || !(512..=4096).contains(&sector_size) {
         return Err(LogError::SectorSize(sector_size));
     }
-    let scale = u64::from(sector_size) / SECTOR_BYTES as u64;
+    Ok((
+        word(&header, 16),
+        u64::from(sector_size) / SECTOR_BYTES as u64,
+    ))
+}
+
+pub fn drain_logged(log: &mut impl Sectors, last_sector: u64) -> Result<bool, LogError> {
+    let scale = match super_block(log) {
+        Ok((_, scale)) => scale,
+        Err(LogError::NoLog) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let Some(at) = last_sector
+        .checked_add(1)
+        .and_then(|end| end.checked_sub(scale))
+        .filter(|&at| at >= scale)
+    else {
+        return Ok(false);
+    };
+    let mut header = [0_u8; SECTOR_BYTES];
+    log.read_at(at, &mut header)?;
+    Ok(names(&header, DRAIN_MARK.as_bytes()))
+}
+
+pub fn read_log(log: &mut impl Sectors, log_sectors: u64) -> Result<Vec<LogEntry>, LogError> {
+    let (count, scale) = super_block(log)?;
+    let mut header = [0_u8; SECTOR_BYTES];
     let log_sectors = log_sectors / scale;
     let mut entries = Vec::new();
     let mut at = 1_u64;
@@ -197,17 +234,16 @@ pub fn read_log(log: &mut impl Sectors, log_sectors: u64) -> Result<Vec<LogEntry
             flags: word(&header, 16),
             data: (at + 1) * scale,
         };
-        let mark_length = usize::try_from(word(&header, 24)).unwrap_or(usize::MAX);
-        end_mark = entry.flags & MARK != 0
-            && mark_length == END_MARK.len()
-            && header.get(32..32 + END_MARK.len()) == Some(END_MARK);
+        end_mark = names(&header, END_MARK);
         let logged = if entry.discards() { 0 } else { logged_sectors };
         at = at
             .checked_add(1)
             .and_then(|at| at.checked_add(logged))
             .filter(|&end| end <= log_sectors)
             .ok_or(LogError::OutOfRange(index))?;
-        entries.push(entry);
+        if !names(&header, DRAIN_MARK.as_bytes()) {
+            entries.push(entry);
+        }
     }
     if !end_mark {
         return Err(LogError::Incomplete);
@@ -381,8 +417,8 @@ fn flip(folded: &[(u64, u64)], entries: &[LogEntry], choice: u64) -> Option<Flip
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Folded {
     entries: usize,
+    flushed: usize,
     written: Vec<(u64, u64)>,
-    logged: Vec<LogEntry>,
     waiting: Vec<LogEntry>,
     held: Vec<u8>,
 }
@@ -391,9 +427,9 @@ impl Folded {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "{} log entries folded into the replay base, {} kept with {} bytes of data",
+            "{} log entries folded into the replay base, {} writes waiting for a flush kept with {} bytes of data",
             self.entries,
-            self.logged.len() + self.waiting.len(),
+            self.waiting.len(),
             self.held.len()
         )
     }
@@ -406,16 +442,15 @@ impl Folded {
         let shift = self.held_sectors();
         let released = logged
             .iter()
-            .position(|entry| entry.flushes() || (entry.changes_data() && !entry.forced()))
+            .position(|entry| entry.flushes() || entry.waits())
             .unwrap_or(logged.len());
         let moved = |entry: &LogEntry| LogEntry {
             data: entry.data + shift,
             ..*entry
         };
-        self.logged
+        logged[..released]
             .iter()
-            .copied()
-            .chain(logged[..released].iter().map(moved))
+            .map(moved)
             .chain(self.waiting.iter().copied())
             .chain(logged[released..].iter().map(moved))
             .collect()
@@ -443,7 +478,11 @@ impl Folded {
     ) -> Result<(), LogError> {
         let entries = self.order(logged.split_last().map_or(logged, |(_, logged)| logged));
         let durable = durable(&entries);
-        let (folded, kept) = entries.split_at(durable);
+        let settled = entries[durable..]
+            .iter()
+            .position(|entry| entry.waits())
+            .map_or(entries.len(), |index| durable + index);
+        let (folded, kept) = entries.split_at(settled);
         in_device(folded.iter().chain(kept), device_sectors)?;
         let mut source = Held {
             held: &self.held,
@@ -461,8 +500,7 @@ impl Folded {
             }
         }
         let mut held = Vec::new();
-        let mut logged = Vec::new();
-        let mut waiting = Vec::new();
+        let mut waiting = Vec::with_capacity(kept.len());
         for &entry in kept {
             let mut entry = entry;
             if entry.changes_data() && !entry.discards() {
@@ -471,15 +509,13 @@ impl Folded {
                 source.read_at(entry.data, &mut held[start..])?;
                 entry.data = (start / SECTOR_BYTES) as u64;
             }
-            if entry.changes_data() && !entry.forced() {
-                waiting.push(entry);
-            } else {
-                logged.push(entry);
-            }
+            waiting.push(entry);
         }
-        self.entries += durable;
+        if durable > 0 {
+            self.flushed = self.entries + durable;
+        }
+        self.entries += settled;
         self.held = held;
-        self.logged = logged;
         self.waiting = waiting;
         Ok(())
     }
@@ -495,8 +531,12 @@ impl Folded {
     }
 
     fn counted(&self, mut plan: Plan) -> Plan {
+        plan.durable += if plan.durable == 0 {
+            self.flushed
+        } else {
+            self.entries
+        };
         plan.entries += self.entries;
-        plan.durable += self.entries;
         plan
     }
 
@@ -662,6 +702,11 @@ pub mod dm {
     #[must_use]
     pub fn logged_sectors(line: &str) -> Option<u64> {
         line.split(' ').nth(1)?.parse().ok()
+    }
+
+    #[must_use]
+    pub fn logging_disabled(line: &str) -> bool {
+        line.split(' ').nth(2) == Some("logging_disabled")
     }
 
     #[must_use]
@@ -868,7 +913,8 @@ mod tests {
                         Op::Fua(..) => self.entry(sector, sectors, FUA, &payload),
                         Op::Commit(..) => {
                             self.release();
-                            self.entry(sector, sectors, FLUSH | FUA, &payload);
+                            self.entry(0, 0, FLUSH, &[]);
+                            self.entry(sector, sectors, FUA, &payload);
                         }
                         Op::Meta(..) => self.unflushed.push((sector, sectors, METADATA, payload)),
                         _ => self.unflushed.push((sector, sectors, 0, payload)),
@@ -888,15 +934,29 @@ mod tests {
             }
         }
 
-        fn finish(&mut self) {
-            self.release();
-            self.entry(0, 0, MARK, END_MARK);
+        fn super_block(&mut self) {
             let mut header = [0_u8; SECTOR_BYTES];
             header[0..8].copy_from_slice(&LOG_MAGIC.to_le_bytes());
             header[8..16].copy_from_slice(&LOG_VERSION.to_le_bytes());
             header[16..24].copy_from_slice(&self.count.to_le_bytes());
             header[24..28].copy_from_slice(&(SECTOR_BYTES as u32).to_le_bytes());
             self.log.write_at(0, &header).unwrap();
+        }
+
+        fn drain(&mut self) {
+            self.entry(0, 0, MARK, DRAIN_MARK.as_bytes());
+            self.super_block();
+        }
+
+        fn teardown(&mut self) {
+            self.release();
+            self.entry(0, 0, MARK, END_MARK);
+            self.super_block();
+        }
+
+        fn finish(&mut self) {
+            self.drain();
+            self.teardown();
         }
     }
 
@@ -1290,7 +1350,9 @@ mod tests {
         let status = dm::status_line(&reply).unwrap();
         assert_eq!(status, "812 131073 logging_disabled");
         assert_eq!(dm::logged_sectors(status), Some(131_073));
+        assert!(dm::logging_disabled(status));
         assert_eq!(dm::logged_sectors("3 24"), Some(24));
+        assert!(!dm::logging_disabled("3 24"));
         assert_eq!(dm::logged_sectors("3"), None);
         let mut full = reply.clone();
         full[28..32].copy_from_slice(&(1_u32 << 8).to_le_bytes());
@@ -1317,7 +1379,7 @@ mod tests {
             Op::Write(16, 6, 1),
         ];
         let (disk, entries) = compacted(&ops, &[4]);
-        assert_eq!(disk.folded.entries, 2);
+        assert_eq!(disk.folded.entries, 3);
         let sectors = entries
             .iter()
             .filter(|entry| entry.changes_data())
@@ -1325,6 +1387,65 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(sectors, [4, 12, 4, 8, 16]);
         assert_compaction_changes_nothing(&ops, &[4], &[0, 1]);
+    }
+
+    #[test]
+    fn compaction_keeps_only_the_writes_still_waiting_for_a_flush() {
+        let ops = [
+            Op::Write(0, 1, 2),
+            Op::Flush,
+            Op::Fua(4, 2, 1),
+            Op::Mark,
+            Op::Fua(8, 3, 2),
+            Op::Write(12, 4, 1),
+            Op::Fua(16, 5, 1),
+        ];
+        let (disk, _) = compacted(&ops, &[5]);
+        assert_eq!(disk.folded.entries, 5);
+        assert!(disk.folded.waiting.is_empty() && disk.folded.held.is_empty());
+        let (disk, _) = compacted(&ops, &[5, 7]);
+        assert_eq!((disk.folded.entries, disk.folded.flushed), (6, 2));
+        assert_eq!(shape(&disk.folded.waiting), [(12, 1, 0)]);
+        assert_eq!(disk.folded.held, [4; SECTOR_BYTES]);
+        for points in [&[5][..], &[7], &[5, 7], &[3, 5, 7]] {
+            assert_compaction_changes_nothing(&ops, points, &[0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn a_drain_mark_counts_as_logged_once_it_is_the_last_entry() {
+        let mut recorder = Recorder::new();
+        recorder.apply(&Op::Write(0, 1, 1));
+        assert!(!drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
+        recorder.apply(&Op::Fua(4, 2, 1));
+        recorder.super_block();
+        assert!(!drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
+        let before = recorder.next - 1;
+        recorder.drain();
+        assert!(!drain_logged(&mut recorder.log, before).unwrap());
+        assert!(drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
+        recorder.teardown();
+        let entries = read_log(&mut recorder.log, 256).unwrap();
+        assert_eq!(shape(&entries), [(4, 1, FUA), (0, 1, 0), (0, 0, MARK)]);
+        assert_eq!(recorder.count, 4);
+
+        let mut log = Memory::sectors(64);
+        let mut header = [0_u8; SECTOR_BYTES];
+        header[0..8].copy_from_slice(&LOG_MAGIC.to_le_bytes());
+        header[8..16].copy_from_slice(&LOG_VERSION.to_le_bytes());
+        header[16..24].copy_from_slice(&1_u64.to_le_bytes());
+        header[24..28].copy_from_slice(&4096_u32.to_le_bytes());
+        log.write_at(0, &header).unwrap();
+        assert!(!drain_logged(&mut log, 7).unwrap());
+        for (mark, logged) in [(FORMAT_MARK, false), (DRAIN_MARK, true)] {
+            let mut entry = [0_u8; SECTOR_BYTES];
+            entry[16..24].copy_from_slice(&MARK.to_le_bytes());
+            entry[24..32].copy_from_slice(&(mark.len() as u64).to_le_bytes());
+            entry[32..32 + mark.len()].copy_from_slice(mark.as_bytes());
+            log.write_at(8, &entry).unwrap();
+            assert_eq!(drain_logged(&mut log, 15).unwrap(), logged, "{mark}");
+        }
+        assert!(!drain_logged(&mut log, u64::MAX).unwrap());
     }
 
     #[test]

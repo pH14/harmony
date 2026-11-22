@@ -12,8 +12,8 @@ use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
 
 use crate::bundle::DiskSpec;
 use crate::disk::{
-    self, DiskMode, FORMAT_MARK, Flip, Folded, LogEntry, LogError, Plan, RAM_DEVICE_BYTES,
-    RAM_DEVICES_PER_DISK, SECTOR_BYTES, Sectors, dm,
+    self, DRAIN_MARK, DiskMode, FORMAT_MARK, Flip, Folded, LogEntry, LogError, Plan,
+    RAM_DEVICE_BYTES, RAM_DEVICES_PER_DISK, SECTOR_BYTES, Sectors, dm,
 };
 
 const RAM_MAJOR: u32 = 1;
@@ -28,6 +28,8 @@ const MOUNT_DATA: &std::ffi::CStr = c"noinit_itable";
 const LOG_SECTORS: u64 = RAM_DEVICE_BYTES / SECTOR_BYTES as u64;
 pub const COMPACT_LOG_BYTES: u64 = 64 << 20;
 pub const COMPACT_POLL_TICKS: u64 = 100;
+const DRAIN_POLLS: u32 = 1000;
+const DRAIN_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 
 #[repr(C, align(4096))]
 struct Chunk([u8; CHUNK_BYTES]);
@@ -40,6 +42,14 @@ pub struct RamDevice {
 
 impl RamDevice {
     fn open(index: u32) -> io::Result<Self> {
+        Self::opened(index, true)
+    }
+
+    fn reader(index: u32) -> io::Result<Self> {
+        Self::opened(index, false)
+    }
+
+    fn opened(index: u32, write: bool) -> io::Result<Self> {
         let path = ram_path(index);
         if !path.exists() {
             mknodat(
@@ -52,7 +62,7 @@ impl RamDevice {
         }
         let file = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(write)
             .custom_flags(libc::O_DIRECT)
             .open(&path)?;
         Ok(Self {
@@ -388,10 +398,42 @@ impl Disk {
         mapper.send(&self.log_name(), &format!("mark {FORMAT_MARK}"))
     }
 
+    fn retire_log(&self, mapper: &Mapper, target: &str, params: &str) -> Result<(), String> {
+        let log_name = self.log_name();
+        mapper.suspend(&log_name)?;
+        mapper.send(&log_name, &format!("mark {DRAIN_MARK}"))?;
+        let device = self.first + 1;
+        let mut log = RamDevice::reader(device)
+            .map_err(|error| format!("{}: {error}", ram_path(device).display()))?;
+        let mut drained = false;
+        for _ in 0..DRAIN_POLLS {
+            let line = mapper.status(&log_name)?;
+            if dm::logging_disabled(&line) {
+                drained = true;
+                break;
+            }
+            let last = dm::logged_sectors(&line)
+                .ok_or_else(|| format!("{log_name}: unexpected status {line:?}"))?;
+            if disk::drain_logged(&mut log, last).map_err(|error| log_error(&self.spec, &error))? {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(DRAIN_WAIT);
+        }
+        drop(log);
+        if !drained {
+            return Err(format!(
+                "{log_name}: the write log did not log its drain mark"
+            ));
+        }
+        mapper.load(&log_name, self.sectors(), target, params)?;
+        mapper.resume(&log_name)
+    }
+
     fn cut(&self, mapper: &Mapper) -> Result<Vec<LogEntry>, String> {
         let name = self.name();
         let log_name = self.log_name();
-        mapper.fail(&log_name, self.sectors())?;
+        self.retire_log(mapper, "error", "")?;
         mapper.fail(&name, self.sectors())?;
         rustix::mount::unmount(Path::new(&self.spec.path), UnmountFlags::DETACH)
             .map_err(|error| format!("unmount {}: {error}", self.spec.path))?;
@@ -432,7 +474,7 @@ impl Disk {
         let log_name = self.log_name();
         let (target, params) = DiskMode::Normal.table(&format!("{RAM_MAJOR}:{}", self.first));
         mapper.suspend(&name)?;
-        mapper.replace(&log_name, self.sectors(), target, &params)?;
+        self.retire_log(mapper, target, &params)?;
         {
             let mut log = self.open(1)?;
             let mut base = self.open(2)?;
