@@ -21,6 +21,7 @@ static void forward_json(const char *data, size_t size);
 
 #define TARGET UINT64_C(0x40)
 #define ARMED HARMONY_FAULT_EVENT_PARK_STATUS_ARMED
+#define FIRED HARMONY_FAULT_EVENT_PARK_STATUS_PAGE_FIRED
 
 struct node {
     pid_t pid;
@@ -29,6 +30,8 @@ struct node {
     int go;
     int done;
     int json;
+    int early_go;
+    int early_done;
     char fired[160];
 };
 
@@ -80,6 +83,15 @@ static void visit(int go, int done)
     assert(write(done, "g", 1) == 1);
     assert(next_byte(go) == 'v');
     harmony_instrumentation_event(TARGET);
+    _exit(0);
+}
+
+static void visit_and_report(int go, int done)
+{
+    assert(write(done, "g", 1) == 1);
+    assert(next_byte(go) == 'v');
+    harmony_instrumentation_event(TARGET);
+    assert(write(done, "d", 1) == 1);
     _exit(0);
 }
 
@@ -209,7 +221,7 @@ static void reports(const struct node *node, const char *expected)
     assert(strcmp(buffer, expected) == 0);
 }
 
-static void start(struct node *node, int published)
+static void start(struct node *node, int published, int early)
 {
     char path[] = "/tmp/harmony-page-test-XXXXXX";
     int page_fd = mkstemp(path);
@@ -218,6 +230,9 @@ static void start(struct node *node, int published)
     int go[2];
     int done[2];
     int json[2];
+    int ready[2];
+    int early_go[2] = {-1, -1};
+    int early_done[2] = {-1, -1};
     void *mapped;
 
     assert(page_fd >= 0);
@@ -233,8 +248,11 @@ static void start(struct node *node, int published)
     assert(pipe(done) == 0);
     assert(pipe(json) == 0);
     assert(fcntl(json[0], F_SETFL, O_NONBLOCK) == 0);
-    if (published)
-        publish_target();
+    assert(pipe(ready) == 0);
+    if (early) {
+        assert(pipe(early_go) == 0);
+        assert(pipe(early_done) == 0);
+    }
     node->pid = fork();
     assert(node->pid >= 0);
     if (node->pid == 0) {
@@ -243,14 +261,42 @@ static void start(struct node *node, int published)
         assert(close(go[1]) == 0);
         assert(close(done[0]) == 0);
         assert(close(json[0]) == 0);
+        assert(close(ready[1]) == 0);
+        assert(next_byte(ready[0]) == 's');
+        assert(close(ready[0]) == 0);
         assert(munmap(mapped, (size_t)HARMONY_FAULT_PAGE_BYTES) == 0);
         page = NULL;
         json_fd = json[1];
         set_fd("HARMONY_EVENT_KILL_FD", control[0]);
         set_fd("HARMONY_EVENT_REPORT_FD", report[0]);
         set_fd("HARMONY_EVENT_PAGE_FD", page_fd);
+        if (early) {
+            pid_t child;
+
+            assert(close(early_go[1]) == 0);
+            assert(close(early_done[0]) == 0);
+            child = fork();
+            assert(child >= 0);
+            if (child == 0)
+                visit_and_report(early_go[0], early_done[1]);
+            assert(close(early_go[0]) == 0);
+            assert(close(early_done[1]) == 0);
+        }
         run_node(go[0], done[1]);
     }
+    assert(close(ready[0]) == 0);
+    __atomic_store_n(&page[HARMONY_FAULT_PAGE_NODE_PID], (uint64_t)node->pid,
+                     __ATOMIC_RELAXED);
+    if (published)
+        publish_target();
+    assert(write(ready[1], "s", 1) == 1);
+    assert(close(ready[1]) == 0);
+    if (early) {
+        assert(close(early_go[0]) == 0);
+        assert(close(early_done[1]) == 0);
+    }
+    node->early_go = early_go[1];
+    node->early_done = early_done[0];
     assert(close(page_fd) == 0);
     assert(close(control[0]) == 0);
     assert(close(report[0]) == 0);
@@ -287,9 +333,9 @@ static void a_record_published_before_the_runtime_starts_is_adopted(void)
 {
     struct node node;
 
-    start(&node, 1);
+    start(&node, 1, 0);
     step(&node, 'v');
-    park_status(&node, 1, ARMED, 2);
+    park_status(&node, 1, ARMED | FIRED, 2);
     reports(&node, node.fired);
     finish(&node);
 }
@@ -298,14 +344,14 @@ static void a_clearing_record_disarms_the_park(void)
 {
     struct node node;
 
-    start(&node, 0);
+    start(&node, 0, 0);
     publish_target();
     step(&node, 'v');
-    park_status(&node, 1, ARMED, 2);
+    park_status(&node, 1, ARMED | FIRED, 2);
     reports(&node, node.fired);
     publish(0, 0, 0, 0);
     step(&node, 'v');
-    park_status(&node, 1, 0, 4);
+    park_status(&node, 1, FIRED, 4);
     reports(&node, "");
     finish(&node);
 }
@@ -315,7 +361,7 @@ static void a_disarm_queued_while_stopped_leaves_the_next_park(void)
     struct node node;
     unsigned char response[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE];
 
-    start(&node, 0);
+    start(&node, 0, 0);
     publish_target();
     park_status(&node, 0, ARMED, 2);
     stop(&node);
@@ -326,7 +372,7 @@ static void a_disarm_queued_while_stopped_leaves_the_next_park(void)
     assert(kill(node.pid, SIGCONT) == 0);
     assert(next_byte(node.done) == 'd');
     read_response(node.control, HARMONY_FAULT_EVENT_CMD_PARK, response);
-    park_status(&node, 1, ARMED, 6);
+    park_status(&node, 1, ARMED | FIRED, 6);
     reports(&node, node.fired);
     finish(&node);
 }
@@ -335,7 +381,7 @@ static void a_forked_child_neither_fires_nor_adopts_its_parents_park(void)
 {
     struct node node;
 
-    start(&node, 0);
+    start(&node, 0, 0);
     publish_target();
     park_status(&node, 0, ARMED, 2);
     assert(write(node.go, "f", 1) == 1);
@@ -345,7 +391,7 @@ static void a_forked_child_neither_fires_nor_adopts_its_parents_park(void)
     reports(&node, "");
     park_status(&node, 0, ARMED, 4);
     step(&node, 'v');
-    park_status(&node, 1, ARMED, 4);
+    park_status(&node, 1, ARMED | FIRED, 4);
     reports(&node, node.fired);
     finish(&node);
 }
@@ -354,12 +400,12 @@ static void an_execed_image_maps_the_page_and_adopts_its_record(void)
 {
     struct node node;
 
-    start(&node, 0);
+    start(&node, 0, 0);
     publish_target();
     assert(write(node.go, "x", 1) == 1);
     await_hello(&node);
     step(&node, 'v');
-    park_status(&node, 1, ARMED, 2);
+    park_status(&node, 1, ARMED | FIRED, 2);
     reports(&node, node.fired);
     finish(&node);
 }
@@ -368,7 +414,7 @@ static void a_forked_child_that_execs_leaves_the_page_behind(void)
 {
     struct node node;
 
-    start(&node, 0);
+    start(&node, 0, 0);
     publish_target();
     park_status(&node, 0, ARMED, 2);
     assert(write(node.go, "e", 1) == 1);
@@ -377,8 +423,29 @@ static void a_forked_child_that_execs_leaves_the_page_behind(void)
     reports(&node, "");
     park_status(&node, 0, ARMED, 2);
     step(&node, 'v');
-    park_status(&node, 1, ARMED, 2);
+    park_status(&node, 1, ARMED | FIRED, 2);
     reports(&node, node.fired);
+    finish(&node);
+}
+
+static void a_process_forked_before_the_first_callback_never_adopts_a_record(void)
+{
+    struct node node;
+
+    start(&node, 0, 1);
+    publish_target();
+    assert(next_byte(node.early_done) == 'g');
+    assert(write(node.early_go, "v", 1) == 1);
+    assert(next_byte(node.early_done) == 'd');
+    assert(next_byte(node.early_done) == 0);
+    await_hello(&node);
+    reports(&node, "");
+    park_status(&node, 0, ARMED, 2);
+    step(&node, 'v');
+    park_status(&node, 1, ARMED | FIRED, 2);
+    reports(&node, node.fired);
+    assert(close(node.early_go) == 0);
+    assert(close(node.early_done) == 0);
     finish(&node);
 }
 
@@ -392,6 +459,7 @@ static const struct {
     {"fork", a_forked_child_neither_fires_nor_adopts_its_parents_park},
     {"exec", an_execed_image_maps_the_page_and_adopts_its_record},
     {"fork-exec", a_forked_child_that_execs_leaves_the_page_behind},
+    {"early-fork", a_process_forked_before_the_first_callback_never_adopts_a_record},
 };
 
 int main(int argc, char **argv)

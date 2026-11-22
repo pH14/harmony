@@ -14,12 +14,14 @@ pub const EVENT_RARITY_LIMIT: u8 = 64;
 pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
 pub const EVENT_PARK_STATUS_ARMED: u64 = 1;
 pub const EVENT_PARK_STATUS_HELD: u64 = 2;
+pub const EVENT_PARK_STATUS_PAGE_FIRED: u64 = 4;
 pub const EVENT_PAGE_GENERATION: usize = 0;
 pub const EVENT_PAGE_EDGES: usize = 1;
 pub const EVENT_PAGE_HOLD_NANOS: usize = 2;
 pub const EVENT_PAGE_TARGET_START: usize = 3;
 pub const EVENT_PAGE_TARGET_END: usize = 4;
-pub const EVENT_PAGE_WORDS: usize = 5;
+pub const EVENT_PAGE_NODE_PID: usize = 5;
+pub const EVENT_PAGE_WORDS: usize = 6;
 pub const EVENT_PAGE_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -60,11 +62,54 @@ pub enum Reply {
         armed: bool,
         held: bool,
         page_generation: u64,
+        page_armed: u64,
+        page_fired: bool,
     },
     CoverageStatus {
         crossings: u64,
         digest: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ParkedOutcome {
+    Fired,
+    Expired,
+    Unadopted,
+    ClearedInBatch,
+    NotStopped,
+    NotRunning,
+    Retired,
+}
+
+impl ParkedOutcome {
+    pub const ALL: [Self; 7] = [
+        Self::Fired,
+        Self::Expired,
+        Self::Unadopted,
+        Self::ClearedInBatch,
+        Self::NotStopped,
+        Self::NotRunning,
+        Self::Retired,
+    ];
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fired => "fired",
+            Self::Expired => "expired",
+            Self::Unadopted => "unadopted",
+            Self::ClearedInBatch => "cleared_in_batch",
+            Self::NotStopped => "not_stopped",
+            Self::NotRunning => "not_running",
+            Self::Retired => "retired",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|outcome| outcome.name() == name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,7 +185,10 @@ pub fn decode_reply(expected: Command, frame: &[u8]) -> Result<Reply, ProtocolEr
         if kind != EVENT_CMD_PARK_STATUS {
             return Err(ProtocolError::MismatchedReply);
         }
-        if second & !(EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD) != 0 {
+        if second
+            & !(EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD | EVENT_PARK_STATUS_PAGE_FIRED)
+            != 0
+        {
             return Err(ProtocolError::InvalidParkStatus);
         }
         return Ok(Reply::ParkStatus {
@@ -148,6 +196,8 @@ pub fn decode_reply(expected: Command, frame: &[u8]) -> Result<Reply, ProtocolEr
             armed: second & EVENT_PARK_STATUS_ARMED != 0,
             held: second & EVENT_PARK_STATUS_HELD != 0,
             page_generation: read_u64(frame, 24),
+            page_armed: read_u64(frame, 32),
+            page_fired: second & EVENT_PARK_STATUS_PAGE_FIRED != 0,
         });
     }
     if matches!(expected, Command::CoverageStatus) {
@@ -299,15 +349,22 @@ mod tests {
     }
 
     #[test]
-    fn park_status_carries_runtime_fires_flags_and_page_generation() {
+    fn park_status_carries_runtime_fires_flags_and_page_generations() {
         let mut frame = encode_command(Command::ParkStatus);
         frame[8..16].copy_from_slice(&3_u64.to_le_bytes());
         frame[24..32].copy_from_slice(&6_u64.to_le_bytes());
-        for (flags, armed, held) in [
-            (0, false, false),
-            (EVENT_PARK_STATUS_ARMED, true, false),
-            (EVENT_PARK_STATUS_HELD, false, true),
-            (EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD, true, true),
+        frame[32..40].copy_from_slice(&4_u64.to_le_bytes());
+        for (flags, armed, held, page_fired) in [
+            (0, false, false, false),
+            (EVENT_PARK_STATUS_ARMED, true, false, false),
+            (EVENT_PARK_STATUS_HELD, false, true, false),
+            (
+                EVENT_PARK_STATUS_ARMED | EVENT_PARK_STATUS_HELD,
+                true,
+                true,
+                false,
+            ),
+            (EVENT_PARK_STATUS_PAGE_FIRED, false, false, true),
         ] {
             frame[16..24].copy_from_slice(&flags.to_le_bytes());
             assert_eq!(
@@ -317,14 +374,31 @@ mod tests {
                     armed,
                     held,
                     page_generation: 6,
+                    page_armed: 4,
+                    page_fired,
                 })
             );
         }
-        frame[16..24].copy_from_slice(&4_u64.to_le_bytes());
+        frame[16..24].copy_from_slice(&8_u64.to_le_bytes());
         assert_eq!(
             decode_reply(Command::ParkStatus, &frame),
             Err(ProtocolError::InvalidParkStatus)
         );
+    }
+
+    #[test]
+    fn every_parked_outcome_has_a_distinct_name_that_reads_back() {
+        let mut names: Vec<&str> = ParkedOutcome::ALL
+            .iter()
+            .map(|outcome| outcome.name())
+            .collect();
+        for outcome in ParkedOutcome::ALL {
+            assert_eq!(ParkedOutcome::from_name(outcome.name()), Some(outcome));
+        }
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), ParkedOutcome::ALL.len());
+        assert_eq!(ParkedOutcome::from_name("fire"), None);
     }
 
     #[test]

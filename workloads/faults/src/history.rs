@@ -427,6 +427,7 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
         budget.reserve(self.accumulator.heap_bytes())?;
         budget.array::<crate::target::ParkLanding>(self.observation.parks.capacity())?;
         budget.array::<crate::target::ParkRead>(self.observation.park_reads.capacity())?;
+        budget.array::<crate::target::ParkedPause>(self.observation.parked_pauses.capacity())?;
         if let Some(check) = &self.observation.check {
             budget.array::<String>(check.points.capacity())?;
             for point in &check.points {
@@ -905,10 +906,13 @@ mod tests {
         let base = charge(&snapshot);
         snapshot.observation.parks = Vec::with_capacity(31);
         snapshot.observation.park_reads = Vec::with_capacity(47);
+        snapshot.observation.parked_pauses = Vec::with_capacity(13);
         snapshot.observation.check = Some(crate::target::CheckEvidence {
             points: Vec::with_capacity(11),
             ..Default::default()
         });
+        let pauses =
+            snapshot.observation.parked_pauses.capacity() * size_of::<crate::target::ParkedPause>();
         let points = &mut snapshot.observation.check.as_mut().unwrap().points;
         let mut point = String::with_capacity(8192);
         point.push_str("check point");
@@ -916,6 +920,7 @@ mod tests {
         let vectors = snapshot.observation.parks.capacity()
             * size_of::<crate::target::ParkLanding>()
             + snapshot.observation.park_reads.capacity() * size_of::<crate::target::ParkRead>()
+            + pauses
             + points.capacity() * size_of::<String>()
             + points[0].capacity();
         assert_eq!(charge(&snapshot) - base, vectors);

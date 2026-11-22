@@ -1240,12 +1240,7 @@ impl FaultTarget {
             crate::job_observation::stage(crate::job_observation::RestoreStage::Observation);
             let mut actual = live.observe(FaultStop::Deadline)?;
             if !snapshot.history.is_empty() {
-                actual
-                    .parks
-                    .retain(|park| park.moment > receipt.previous_moment());
-                actual
-                    .park_reads
-                    .retain(|read| read.moment > receipt.previous_moment());
+                actual.keep_parks_after(receipt.previous_moment());
             }
             if actual != snapshot.observation {
                 return Err(
@@ -1422,12 +1417,7 @@ impl FaultTarget {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
             self.action_choices = std::mem::take(&mut live.choices);
-            observation
-                .parks
-                .retain(|park| park.moment > self.history.receipt().moment());
-            observation
-                .park_reads
-                .retain(|read| read.moment > self.history.receipt().moment());
+            observation.keep_parks_after(self.history.receipt().moment());
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
@@ -1471,8 +1461,7 @@ impl FaultTarget {
                         .saturating_add(u64::from(error.starts_with(WATCHDOG_CUTOFF)));
                     self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
                     let mut observation = self.observation.clone();
-                    observation.parks.clear();
-                    observation.park_reads.clear();
+                    observation.clear_parks();
                     observation.watchdog_cutoff = error.starts_with(WATCHDOG_CUTOFF);
                     observation.infrastructure_failure = self.infrastructure_failure;
                     self.action_observations.push(observation);
@@ -2308,12 +2297,7 @@ impl Live {
             return Err("execution endpoint assurance differs from parent history".to_owned());
         }
         self.cursor.begin_action(parent.moment());
-        observation
-            .parks
-            .retain(|park| park.moment > parent.moment());
-        observation
-            .park_reads
-            .retain(|read| read.moment > parent.moment());
+        observation.keep_parks_after(parent.moment());
         let (endpoint, event_history) = match (parent.endpoint(), proof) {
             (
                 FaultEndpointCertificate::KvmWholeState(_),
@@ -2765,6 +2749,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .park_reads
                 .capacity()
                 .saturating_mul(size_of::<crate::target::ParkRead>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .parked_pauses
+                .capacity()
+                .saturating_mul(size_of::<crate::target::ParkedPause>()),
         )
 }
 

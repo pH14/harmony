@@ -478,6 +478,8 @@ pub struct FaultArchiveReport {
     pub undecided_checks: UndecidedChecks,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stage_falls: Vec<StageFalls>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parked_pauses: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

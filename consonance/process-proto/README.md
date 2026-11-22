@@ -12,10 +12,16 @@ the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 kill rarity width, the park edge-count range, the optional
 park target (a nonempty range of module offsets), exact command
 acknowledgements, runtime hello (protocol version 6), kill provenance,
-event-park armed and held status with the park page generation the runtime has
-adopted, and bucketed edge-coverage status without naming a workload policy.
-It also fixes the park page layout: five `u64` words (generation, edge count,
-hold in nanoseconds, target start and end) in a 4,096-byte page.
+event-park status, and bucketed edge-coverage status without naming a workload
+policy. Park status carries the fire count, the armed, held and page-fired
+flags, the park page generation the runtime has seen, and the last page
+generation that armed a park; page-fired says that park has fired. It also
+fixes the park page layout: six `u64` words (generation, edge count, hold in
+nanoseconds, target start and end, and the pid of the spawned node process) in
+a 4,096-byte page. `ParkedOutcome` names how each parked pause ended (`fired`,
+`expired`, `unadopted`, `cleared_in_batch`, `not_stopped`, `not_running`,
+`retired`); the supervisor writes the name in its SDK line and the faults host
+reads it back.
 
 A park window's at-resume flag (flag bit 2 beside the target flag) marks a
 park that the supervisor delivers through the park page when it resumes a

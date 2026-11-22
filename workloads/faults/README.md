@@ -408,6 +408,25 @@ offers three simpler forms of a `PauseParked(t)`: a `Wait(2t)` over its whole
 window when `2t` fits a wait's tick count, the plain `Pause(node, t)`, and a
 `PauseParked(t/2)`. The shrink cost counts a parked pause's whole window, `2t`.
 
+A parked pause can still run as a plain pause: the supervisor writes no record
+when the node has not stopped within its wait or has exited, and a node whose
+instrumented process is not the spawned process never adopts one. Each parked
+pause therefore ends with one supervisor SDK line naming its outcome (`fired`,
+`expired`, `unadopted`, `cleared_in_batch`, `not_stopped`, `not_running` or
+`retired`, defined in the supervisor README). The host keeps each line with
+the observation it arrived in, trimmed to the action like park landings, and
+`parked_pauses` in `campaign-summary.json` and the archive report counts them
+by outcome; the map is absent when no parked pause ran.
+
+Without `resume_park` the host draws what it drew before the parked pause:
+the draw-path tests pin the default draw path's suffix digests and a pause's
+key and encodings, and a default search with this host on a given guest and
+image writes the same job and settle lines as one with the previous host. A
+default search's guest timeline on a guest that carries the park page code is
+not shown unchanged, and comparing searches cannot show it: a guest and image
+rebuilt from unchanged sources in another directory already move a search's
+timeline from its first execution (#1141).
+
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
 branch, and the branch reseeds the host-served SDK entropy stream

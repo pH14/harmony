@@ -2,8 +2,8 @@
 
 use crate::reconcile::EventPark;
 use process_proto::events::{
-    EVENT_PAGE_EDGES, EVENT_PAGE_GENERATION, EVENT_PAGE_HOLD_NANOS, EVENT_PAGE_TARGET_END,
-    EVENT_PAGE_TARGET_START, EVENT_PAGE_WORDS,
+    EVENT_PAGE_EDGES, EVENT_PAGE_GENERATION, EVENT_PAGE_HOLD_NANOS, EVENT_PAGE_NODE_PID,
+    EVENT_PAGE_TARGET_END, EVENT_PAGE_TARGET_START, EVENT_PAGE_WORDS,
 };
 use std::sync::atomic::{AtomicU64, Ordering, fence};
 
@@ -53,6 +53,15 @@ impl<'a> ParkPage<'a> {
     #[must_use]
     pub fn generation(self) -> u64 {
         self.words[EVENT_PAGE_GENERATION].load(Ordering::Acquire)
+    }
+
+    pub fn set_node(self, pid: u32) {
+        self.words[EVENT_PAGE_NODE_PID].store(u64::from(pid), Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn node(self) -> u64 {
+        self.words[EVENT_PAGE_NODE_PID].load(Ordering::Relaxed)
     }
 
     pub fn publish(self, record: PageRecord) -> u64 {
@@ -297,7 +306,10 @@ mod tests {
     fn a_mapped_page_starts_at_generation_zero_and_is_shared_through_its_descriptor() {
         let mapping = PageMapping::create().unwrap();
         assert_eq!(mapping.page().generation(), 0);
+        assert_eq!(mapping.page().node(), 0);
+        mapping.page().set_node(4321);
         assert_eq!(mapping.page().publish(record(5)), 2);
+        assert_eq!(mapping.page().node(), 4321);
         let path = format!("/proc/self/fd/{}", mapping.fd());
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(bytes.len(), process_proto::events::EVENT_PAGE_BYTES);
@@ -306,6 +318,7 @@ mod tests {
         assert_eq!(word(EVENT_PAGE_GENERATION), 2);
         assert_eq!(word(EVENT_PAGE_EDGES), 5);
         assert_eq!(word(EVENT_PAGE_TARGET_END), 6);
+        assert_eq!(word(EVENT_PAGE_NODE_PID), 4321);
     }
 
     #[cfg(target_os = "linux")]

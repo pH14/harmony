@@ -282,13 +282,71 @@ reader over ordinary memory; the mapping is a thin Linux wrapper. The runtime
 side, and why the first visit after the resume counts, are in
 `workloads/faults/runtime/README.md`.
 
+Right after each spawn, before any record, the supervisor writes the node's pid
+into the page's sixth word. The runtime arms a record only in the process with
+that pid, so a node whose instrumented process is not the spawned process, such
+as a wrapper that forks the server instead of `exec`ing it or a server in its
+own pid namespace, never adopts a record, and its parked pauses run as plain
+pauses. rqlite's node chain `exec`s through to `rqlited` and keeps the pid.
+
+`ContParked` writes the record only once the node has stopped. A
+process-directed `SIGSTOP` marks one thread, and the node's other threads can
+run user code until the group stop takes effect, so a record written earlier
+could reach a thread that is still running. `process::await_child_stop` calls
+`waitid(P_PID, WSTOPPED | WEXITED | WNOHANG | WNOWAIT)` on the node's pid up to
+51 times, sleeping 1 ms with `std::thread::sleep` between calls, so it waits
+50 ms at most. The kernel reports the stop once every thread of the process has
+stopped, and `WNOWAIT` leaves the state waitable, so the supervisor's own
+reaping is unchanged. If the node has stopped, the supervisor writes the
+record and then sends `SIGCONT`. If it is still running after the last call,
+or has exited, the supervisor sends `SIGCONT` without a record, and the pause
+runs as a plain pause.
+
+The sleeps are `nanosleep` calls, which Linux measures on the guest's
+monotonic clock, the same clock the poll loop's 10 ms tick sleeps on. In a
+Consonance guest that clock is virtual time (`docs/DETERMINISM.md`): it
+advances at normalized machine events, never from host wall time, and a timer
+fires at the first event boundary that reaches its deadline. A replay of an
+execution runs the same guest events with the same deadlines, so each `waitid`
+call sees the same node state, and the wait ends at the same call with the
+same result.
+
 After the write the supervisor treats the park as in effect, as it does after a
 command arm. The park status reply carries the page generation the runtime has
 adopted, and the supervisor ignores a reply that shows the park neither armed
 nor holding until that generation reaches the one it wrote, so a status reply
 sent before the resume cannot end the park. The same check applies to a clear:
 the park stays in effect until a reply has seen the clearing record and shows
-the park neither armed nor holding.
+the park neither armed nor holding. The reply also carries the last generation
+that armed a park in the node and whether that park fired; a reply counts for
+the parked pause only when that generation is the one the supervisor wrote, so
+an earlier pause's fire is never credited to a later one.
+
+Each parked pause ends with one SDK line from the supervisor,
+`{"harmony_parked_pause":{"node":N,"outcome":"O"}}`, written to the same
+`sdk.jsonl` sink as the node exit record, at the end of the poll in which the
+outcome is known. The outcomes are:
+
+- `fired`: the park adopted from the record fired.
+- `expired`: the runtime armed the record and the park ended without firing.
+- `unadopted`: the record was written and no reply ever showed it armed, as
+  for a node whose process is not the spawned pid.
+- `cleared_in_batch`: the clearing record was written in the same poll as the
+  park record, so the park window ended at the resume.
+- `not_stopped`: the node had not stopped within the wait, and no record was
+  written.
+- `not_running`: the node had exited or had no process, and no record was
+  written.
+- `retired`: the supervisor stopped following the park before it ended,
+  because the node was restarted or killed or its event channel failed, and no
+  reply had shown it fired.
+
+The precedence is `fired`, then `cleared_in_batch`, then `expired`, then
+`unadopted`. A later record on the same node ends the earlier park with its
+outcome. A parked pause still open when the execution stops writes no line.
+The faults host keeps these lines with the observation in which they arrived
+and counts them by outcome in the archive report's `parked_pauses` map
+(`workloads/faults/README.md`).
 
 ## Node disks
 

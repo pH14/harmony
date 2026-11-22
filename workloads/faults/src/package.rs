@@ -875,6 +875,9 @@ mod live {
         if !archive.stage_falls.is_empty() {
             summary["stage_falls"] = json!(archive.stage_falls);
         }
+        if !archive.parked_pauses.is_empty() {
+            summary["parked_pauses"] = json!(archive.parked_pauses);
+        }
         std::fs::write(
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,

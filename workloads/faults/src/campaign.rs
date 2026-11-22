@@ -198,6 +198,8 @@ pub struct FaultCampaignEvidence {
     undecided_execution: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     stage_falls: BTreeMap<u8, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    parked_pauses: BTreeMap<String, u64>,
 }
 
 impl FaultCampaignEvidence {
@@ -921,6 +923,7 @@ impl Reporting for FaultWorkload {
             park_thresholds: evidence.park_thresholds.clone(),
             undecided_checks: evidence.undecided_checks,
             stage_falls: evidence.stage_falls(self.keys.compiled()),
+            parked_pauses: evidence.parked_pauses.clone(),
         }
     }
 }
@@ -1604,6 +1607,12 @@ impl Evaluation for FaultWorkload {
             }
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
+            }
+            for pause in &observation.parked_pauses {
+                *evidence
+                    .parked_pauses
+                    .entry(pause.outcome.name().to_owned())
+                    .or_default() += 1;
             }
             if let Some(stage) = observation.stage_fall {
                 *evidence.stage_falls.entry(stage).or_default() += 1;
@@ -2388,12 +2397,30 @@ mod tests {
                 site: 9,
                 edges: 1,
             }],
+            parked_pauses: vec![
+                crate::target::ParkedPause {
+                    moment: 3,
+                    node: 0,
+                    outcome: process_proto::events::ParkedOutcome::Fired,
+                },
+                crate::target::ParkedPause {
+                    moment: 4,
+                    node: 1,
+                    outcome: process_proto::events::ParkedOutcome::Unadopted,
+                },
+            ],
             ..FaultObservations::default()
         };
         let cutoff = FaultObservations {
             watchdog_cutoff: true,
             ..FaultObservations::default()
         };
+        assert!(
+            serde_json::to_value(&evidence)
+                .unwrap()
+                .get("parked_pauses")
+                .is_none()
+        );
         for observations in [vec![landed], vec![]] {
             game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
                 Err("no input".into())
@@ -2422,6 +2449,10 @@ mod tests {
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
         assert_eq!(evidence.park_reads.get(&9), Some(&1));
+        assert_eq!(
+            evidence.parked_pauses,
+            BTreeMap::from([("fired".to_owned(), 1), ("unadopted".to_owned(), 1)])
+        );
     }
 
     #[test]
