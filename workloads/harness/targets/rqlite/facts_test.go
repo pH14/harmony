@@ -208,12 +208,12 @@ func readHistory(t *testing.T, path string) string {
 	return string(text)
 }
 
-func TestAppliedIndexReadsOnlyTheIndex(t *testing.T) {
+func TestIndexesReadOnlyTheIndexes(t *testing.T) {
 	server, _ := leaderServer(t, answer(http.StatusOK, `{"store":{"db_applied_index":12,"raft":{"state":7,"term":null}}}`))
 	c := newClient(server.URL)
 	defer c.Close()
-	if applied, err := c.appliedIndex(context.Background()); err != nil || applied != 12 {
-		t.Fatalf("applied %d, error %v", applied, err)
+	if status, err := c.indexes(context.Background()); err != nil || status.applied != 12 {
+		t.Fatalf("status %+v, error %v", status, err)
 	}
 }
 
@@ -428,7 +428,7 @@ func writeWith(ctx context.Context, base string) error {
 func indexWith(ctx context.Context, base string) error {
 	c := newClient(base)
 	defer c.Close()
-	_, err := c.appliedIndex(ctx)
+	_, err := c.indexes(ctx)
 	return err
 }
 

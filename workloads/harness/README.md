@@ -749,6 +749,30 @@ that changed no row, such as a `cas` that did not match, leaves every replica's
 state equal, so no comparison of replicas sees it; only a comparison of the
 nodes' Raft logs does.
 
+Every `/status` answer the adapter reads, for a pinned read's fence wait or
+for the check's `Applied` query, also feeds two `Always` properties (ours): a
+node's `store.db_applied_index` and its `store.raft.last_snapshot_index` never
+decrease while its process runs. The process is named by `node.start_time`,
+which rqlited sets when it starts its HTTP service, so a restart starts both
+values afresh, and an answer without the field is not compared. A correct
+follower applies entries in order and installs a leader's snapshot only when
+the leader has compacted entries the follower lacks, so a restore moves both
+values forward. rqlited keeps the old applied index until the restored
+database has replaced the old one, so a restore reports no lower value on the
+way. Answers to concurrent requests can arrive out of order, so an answer is
+compared only with the highest value among the answers that arrived before its
+request was sent. An answer that leaves an index out, as `/status` does while
+the store is not open, is not compared for that index. Each property fails at
+most once per node process and names the highest value and the lower answer.
+The drive and each check run in their own processes, each with its own highest
+values, so a property sees a regression only when one process reads the node
+before and after it. Each property fires when its own index falls. A node that
+installs a snapshot older than its own applied state fails the applied
+property, and also the snapshot property when the installed snapshot is older
+than one it held. That happens in the install and reject loop of
+hashicorp/raft, which a follower reaches when the leader sends it a snapshot
+older than one the follower took itself.
+
 A register write is a definite failure on a dial error, an HTTP status other
 than 200 and 500, a 500 with body `leader not found`, a response error
 `not leader` or `store not open`, or a statement error. An append is a
@@ -1518,6 +1542,9 @@ container. Opt-in options:
   sequence missing on the node.
 - An rqlite pinned read trusts `db_applied_index` to count only entries the
   node's SQLite database has applied.
+- The rqlite properties that a node's applied and snapshot indexes never
+  decrease trust `node.start_time` to differ between two processes of one
+  node.
 - An etcd pinned read trusts a member to answer a put only after it has applied
   the put.
 - A Consul pinned read trusts a server's `stale` answer to come from a state
