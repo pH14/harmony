@@ -48,7 +48,7 @@ surfaced decision, snapshot point, or assertion. Protocol and machine failures
 are reported separately from these outcomes.
 
 A package service uses SDK opcode 3 with a little-endian namespace (`u16`),
-request identity (`u64`), and opaque payload. Namespaces 1–3 are reserved for
+request identity (`u64`), and opaque payload. Namespaces 1–4 are reserved for
 platform supplies. Packages assign identities that are unique within a service
 at a given execution moment.
 
@@ -94,7 +94,7 @@ current server implements the whole-state digest. An unavailable scope returns
 `Unsupported` rather than a substitute value.
 
 `EventHistory` is available for V-time-wired VMMs. Fresh wiring starts the count
-and commitment at zero. Version 2 counts commitment records, including normalized
+and commitment at zero. Version 3 counts commitment records, including normalized
 transport events and completed semantic service exchanges. Each normalized event commits class, payload,
 virtual time and ordered interrupt deadline/vector association. Snapshot capture
 and diagnostic trace retirement are neutral; replay, branch, portable import
@@ -162,7 +162,7 @@ State, output and ordered history have separate roles:
 |---|---|
 | `state_hash` | Digest of modeled state that can affect future execution, including latent state. |
 | `observable_digest` | Digest of output deliberately emitted by the guest. |
-| `EventHistory` | Count and v1 SHA-256 commitment of ordered normalized execution events; distinct from endpoint state. |
+| `EventHistory` | Count and v3 SHA-256 commitment of ordered normalized execution events; distinct from endpoint state. |
 | `Hash { scope }` | Protocol operation used to request a digest. |
 
 `state_hash` establishes replay identity. `observable_digest` describes visible

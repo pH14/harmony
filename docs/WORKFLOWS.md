@@ -46,6 +46,7 @@ what owns it, and the linter rejects them.
 | `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
 | `Checks / Dissonance Workloads / Tiny Worlds` | `dissonance-workloads-tiny-worlds-checks.yml` | pull_request, push |
+| `Checks / Dissonance Workloads / Twin Dragons Browser` | `twin-dragons-browser.yml` | pull_request, push, workflow_dispatch |
 | `Checks / Harmony Workloads / Languages` | `harmony-workloads-languages-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |

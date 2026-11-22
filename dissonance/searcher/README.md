@@ -2000,7 +2000,7 @@ preserve existing body bytes without first materializing unbounded temporary
 vectors. These contracts prepare bounded publication images; frozen state does
 not grant execution or import trust.
 
-Whole-search checkpoint v10 uses the same workload codec in a typed `HMSTORE2`
+Whole-search checkpoint v18 uses the same workload codec in a typed `HMSTORE2`
 append store. Snapshot frames refer to semantic shared keys using checksummed
 physical ranges. Shared frames carry earlier parent locators, so resume validates
 the reachable graph iteratively without a global dictionary in each checkpoint.
@@ -2018,9 +2018,8 @@ Appended unreferenced tails may remain after a fatal failure. The bounded immuta
 image and publication worker described above own persistence; synchronous pressure
 handback uses this same codec and publication order.
 
-Whole-search checkpoint v10 combines the current coordinator/archive body with
-shared snapshot frames. Both earlier v9 layouts are refused before decoding a
-body: upstream's flat snapshot store and the earlier shared-frame layout used
-by the integration branch. There is no legacy format fallback. The shared
+Whole-search checkpoint v18 combines the current coordinator/archive body with
+shared snapshot frames. A checkpoint of any other format is refused before
+decoding a body. There is no legacy format fallback. The shared
 codec remains workload-owned; assurance metadata is interpreted and validated
 by that workload's codec, never by generic storage or routing.
