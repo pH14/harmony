@@ -901,6 +901,16 @@ failure. A write is a definite failure only when the dial fails; every other
 write error is indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
+The adapter also asserts an always property of its own: a linearizable
+request's response revision is never below a revision acknowledged before the
+request was sent. Puts, transactions and ranges without `serializable` are
+linearizable; each successful answer's header revision is compared with the
+highest revision any member had acknowledged when the request left, and then
+raises that highest revision. Serializable ranges, including pinned and
+`replicas` reads, answer from one member's store, which may lag, so they are
+exempt. The property catches a stale linearizable read even when the key's
+value has not changed since, which the register check cannot see.
+
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.8` and `v3.6.9`; pass
 `ETCD_SOURCE_SHA256` for other versions. Build the single-member image with
