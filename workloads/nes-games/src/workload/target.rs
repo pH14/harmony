@@ -2588,8 +2588,10 @@ mod moves {
             redrawn: false,
             seed: 11,
             untried: None,
+            untried_site: 0,
             held: Vec::new(),
             declared: ChoiceSite::declared_contrary(&workload.lowered().choice_sites()),
+            permuted: Vec::new(),
         };
         assert_eq!(plan.declared, [(CHORD_SITES, CERTAIN / 4)]);
         let suffix = vec![chord::ask(None); 400];

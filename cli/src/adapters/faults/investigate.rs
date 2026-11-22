@@ -777,6 +777,7 @@ mod tests {
             key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
             hold_hooks: false,
+            vocabulary: None,
         };
         let mut report = Report::new(
             "replay",
@@ -922,6 +923,7 @@ mod tests {
             key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
             hold_hooks: false,
+            vocabulary: None,
         };
         let mut report = Report::new(
             "search",
@@ -1003,6 +1005,7 @@ mod tests {
             key: faults_workload::key::KeyRequest::default(),
             answers: Vec::new(),
             hold_hooks: false,
+            vocabulary: None,
         };
         let mut report = Report::new(
             "search",

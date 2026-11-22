@@ -352,7 +352,12 @@ The target identity includes `hold_hooks`, so held and unheld executions share
 no cached snapshot. A replay holds hooks as its config says, so a held
 search's actions replay as searched only under the search's config.
 
-Both are off by default because both take away the quiet time that a
+The option `untried_first_nodes` turns on the `fault.node` choice site
+described below. It is off unless the workload sets it to `true`, the
+vocabulary identifier names it when it is on, and with it off a search draws
+exactly what it draws without the site.
+
+Both hook options are off by default because both take away the quiet time that a
 readiness property needs. Garage's `workload becomes ready within 30 seconds
 after faults end` fails only when the workload stays not ready through 30
 seconds with no fault in force, and the supervisor counts an open hook window
@@ -409,9 +414,10 @@ continuations.
 
 A guest driver's `sdk.Below(site, n)` asks a choice under fault-policy's
 `CHOICE_NAMESPACE` ([harness kit](../harness/README.md)), and the package
-answers it (ours). The faults workload offers the searcher one choice site,
-`guest`, so every drawn job carries the searcher's `ChoicePlan` with its
-CONTRARY rate, hold probability and untried ordinal. The `guest` site declares
+answers it (ours). The faults workload offers the searcher the choice site
+`guest`, and with `untried_first_nodes` a second site, `fault.node`, so every
+drawn job carries the searcher's `ChoicePlan` with its CONTRARY rate, hold
+probability and untried ordinal. The `guest` site declares
 no rate of its own (`ChoiceSite::with_contrary`), so the plan's `declared`
 list is empty. Because a guest asks at
 moments and with option counts only the guest knows, and an action must stay
@@ -435,6 +441,43 @@ debug terminal takes every default. In text, an action without `GuestChoices`
 omits the field; the binary encoding that history digests and snapshot records
 use always carries it.
 
+The `fault.node` site (ours) is the target node of a fault, asked on the host.
+Its labels are node ids, as in the action text form `Pause[1, …]`, because
+the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`,
+`Restart` or `Clock` action offers every node, `PowerLoss`, `DiskError` and
+`DiskStall` offer the nodes with a disk, and `DiskCorrupt` offers the
+checksummed ones. An event kind keeps its drawn node, because the node comes
+from runtime readiness, and so does a `Pause` under `resume_park`, because
+its park is drawn for that node. `execute_job` resolves each such action
+before it stamps `GuestChoices`, with one host `Chooser` per job built from
+the plan with hold zero. It calls `Chooser::draw` over the offer with the
+lowest offered node as the default and weight one on the node the draw
+picked and zero on the others. The draw is uniform over the offer, so the
+lowest node is the default only because `Chooser::draw` takes one, and the
+site is declared with `ChoiceSite::without_default`. The first ask of a job
+therefore takes the node at the plan's untried ordinal in its parent's
+permutation of the offer while one remains untried: the first such job at a
+parent takes a uniform node, as the draw does, and jobs at one parent whose
+first actions have the same offer take distinct nodes while their ordinals
+are below the offer's size. Kinds with different offers share the parent's
+count and each walks its own permutation, so a `Pause` and a `DiskError` can
+take the same node before either offer is exhausted, and ordinals spent on
+disk faults can leave later `Kill` jobs past the end of their offer, where
+they keep their drawn node. Every other ask answers the drawn node, so the
+draw's random word and arithmetic decide it as they do with the site off.
+When the suffix's first action asks this
+site, `InputPolicy::untried_site` names `fault.node`, so the job's untried
+ordinal counts only the parent's jobs that started at `fault.node` and the
+host takes it. Otherwise it names site 0, and the ordinal comes from the
+parent's shared count and goes to the guest's first stamped action, as with
+the site off. The stored action holds the answer, so replay asks nothing.
+The offer depends only on the kind and the vocabulary. At resolve time the
+host also has the parent's `alive` mask from the supervisor, so `Kill` and
+`Pause` could offer running nodes and `Restart` stopped ones; the offer does
+not use it. The faults workload resolves in its own `execute_job`, not
+through `TargetExecution::resolve_action`, because the offer needs the run's
+vocabulary.
+
 A recorded input can pin answers: `{"actions": [...], "answers": [{"step": 3,
 "choice": 12, "label": 1}]}` replaces the answer to guest choice 12 (counting
 from 0 within the action) of step 3 (counting actions from 1, as replay steps
@@ -446,12 +489,28 @@ part of the target identity, `branch` moves them onto its continuation,
 `search --from` keeps those within its prefix, its `bug-N.json`, `hang-N.json`,
 `failure-N.json` and `first-bug-input.json` carry the answers within their
 actions, and `shrink` refuses a run that has them. Each replay step counts its guest
-choices (`choices`, absent when zero), and `debug run`, `replay` and `branch`
-write every choice to `choices.jsonl` beside `report.json`: the run, step,
-choice ordinal, decision moment, guest clock, site, option count, default,
-what the `Chooser` took, the label applied, and `answered` when an input
-answer replaced it. A search writes no per-choice records; an action served
-from the snapshot cache has none either.
+choices (`choices`, absent when zero), and `debug run` and `replay` write every
+choice of the run, and `branch` every choice of its continuation, to
+`choices.jsonl` beside `report.json`: the run, step,
+who asked (`asker`), choice ordinal, decision moment, guest clock, site,
+option count, default, what the `Chooser` took, the label applied, and
+`answered` when an input answer replaced it. Host and guest choices share
+this row. `asker` is `action` for a host site and `{"process": pid}` for a
+guest draw, the pid being the upper half of the guest's request id. A host
+row has no choice ordinal, lists its `offered` labels and counts them as its
+options, has guest clock zero, and comes first among its step's rows; the
+run writes one from the stored action for every applied action of a kind
+with a `fault.node` offer, whether or not a `Chooser` picked the node. Event
+kinds have no offer and no row. Pins address guest rows only, and a host answer changes when the
+input's action names another node. A search writes no per-choice records
+unless the environment variable `HARMONY_FAULTS_CHOICE_RECORD` names a file:
+each freshly drawn node fault of a job with a plan, a `Pause` under
+`resume_park` included, then appends its host row there, with the parent's
+path length (`depth`) and, when the first ask took the untried node, the
+untried ordinal, like the settle record below. With `untried_first_nodes`
+off the row holds the drawn node, so both arms of a comparison write the same
+rows. An action served from the snapshot cache has no guest
+rows.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
@@ -1231,12 +1290,13 @@ A search config's key table can also name facts, each a list of terms:
 
 ```toml
 [workload.options.key.facts]
-r5 = ["transfer_timeout", "second_transfer"]
+stuck_transfer = ["transfer_timeout", "second_transfer"]
 ```
 
 Each fact declares one `sometimes_all` after the 18 values, in name order: a
-count `r5`, the number of its terms that hold, and one flag per term,
-`r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
+count `stuck_transfer`, the number of its terms that hold, and one flag per
+term, `stuck_transfer.transfer_timeout` and `stuck_transfer.second_transfer`.
+A term is the id of a
 Sometimes record that the target's guest processes write; the kit SDK uses
 the message as the id. A term holds while the latest hit Sometimes record
 with that id has a true condition, so a guest clears a fact by writing the
@@ -1245,7 +1305,7 @@ id neither sets nor clears the term; two kit SDK assertions of different kinds
 share an id when they share a message. The binary SDK reports a Sometimes point only when it
 passes, so a fact term must be written as a JSON record. A strategy reads a
 term by its dotted name, quoted when the id is not a plain word, for example
-`'r5.harness: a check read succeeded'`. A term the guest never writes
+`'stuck_transfer.harness: a check read succeeded'`. A term the guest never writes
 declares a flag that never holds, and nothing reports it, as with a declared
 game value that never changes; the archive report's `assertions` lists the
 ids the guest wrote. A fact term's records also count in `sometimes.count`

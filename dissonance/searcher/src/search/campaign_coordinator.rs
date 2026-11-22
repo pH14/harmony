@@ -572,6 +572,7 @@ where
                         selector: job.selector,
                         suffix_limit: job.suffix_limit,
                         shrink: job.shrink,
+                        untried_site: job.choices.as_ref().map_or(0, |plan| plan.untried_site),
                     },
                 ),
             )?;
@@ -1798,7 +1799,7 @@ where
                 parent_index,
                 mutation_seed,
                 config.campaign_seed,
-                drawn,
+                drawn.then(|| workload.untried_site(&config.run, &suffix)),
             );
             core.start_suffix_job(parent_id, suffix_limit);
             core.archive.pin_metadata(parent_id)?;

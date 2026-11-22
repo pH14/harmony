@@ -226,6 +226,7 @@ fn configured_vocabulary(vocabulary: FaultVocabulary, c: &Config) -> Result<Faul
         .excluding(&c.exclude_faults)
         .with_hooks_replace_waits(c.hooks_replace_waits)
         .with_hold_hooks(c.hold_hooks)
+        .with_untried_first_nodes(c.untried_first_nodes)
         .with_resume_park(c.resume_park.clone())?)
 }
 
@@ -320,15 +321,9 @@ fn resume_start(
 }
 
 pub(super) fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
-    let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
-    let expected = manifest
-        .artifacts
-        .get("vocabulary.json")
-        .ok_or("recorded vocabulary.json artifact is missing")?;
-    if crate::runtime::digest(&bytes) != *expected {
-        return Err("recorded artifact vocabulary.json changed during load".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(manifest
+        .vocabulary(out)?
+        .ok_or("recorded vocabulary.json artifact is missing")?)
 }
 
 fn search_faults(
@@ -1069,6 +1064,13 @@ mod tests {
         c.hooks_replace_waits = true;
         let both = configured_vocabulary(admitted.clone(), &c).unwrap();
         assert!(both.hooks_replace_waits() && both.hold_hooks());
+        assert!(!both.untried_first_nodes());
+        c.untried_first_nodes = true;
+        assert!(
+            configured_vocabulary(admitted.clone(), &c)
+                .unwrap()
+                .untried_first_nodes()
+        );
         c.resume_park = Some(Vec::new());
         assert!(configured_vocabulary(admitted, &c).is_err());
     }

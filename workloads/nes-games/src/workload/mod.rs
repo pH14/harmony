@@ -2011,8 +2011,10 @@ mod tests {
             redrawn: false,
             seed,
             untried,
+            untried_site: 0,
             held: Vec::new(),
             declared: vec![(CHORD_SITES, contrary)],
+            permuted: Vec::new(),
         })
     }
 
@@ -2022,8 +2024,10 @@ mod tests {
             redrawn: false,
             seed,
             untried,
+            untried_site: 0,
             held: Vec::new(),
             declared: Vec::new(),
+            permuted: Vec::new(),
         })
     }
 

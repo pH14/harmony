@@ -203,7 +203,24 @@ impl Manifest {
             key: self.config.key.clone(),
             answers: self.answers.clone(),
             hold_hooks: self.config.hold_hooks,
+            vocabulary: self.vocabulary(path)?,
         })
+    }
+
+    pub fn vocabulary(
+        &self,
+        path: &Path,
+    ) -> Result<Option<faults_workload::bundle::FaultVocabulary>> {
+        self.artifacts
+            .get("vocabulary.json")
+            .map(|expected| -> Result<_> {
+                let bytes = fs::read(path.join("artifacts/vocabulary.json"))?;
+                if crate::runtime::digest(&bytes) != *expected {
+                    return Err("recorded artifact vocabulary.json changed during load".into());
+                }
+                Ok(serde_json::from_slice(&bytes)?)
+            })
+            .transpose()
     }
 
     pub fn uml_profile_identity(&self, path: &Path) -> Result<Option<String>> {

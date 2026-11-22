@@ -94,6 +94,8 @@ thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
     static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static TEST_CHOICE_POLICY: std::cell::Cell<Option<ChoicePolicy>> = const { std::cell::Cell::new(None) };
+    static TEST_UNTRIED_SITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_PERMUTED_SITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const TEST_ASK: u8 = 200;
@@ -204,10 +206,12 @@ impl<const CHOICES: bool> InputPolicy for ChoiceTestWorkload<CHOICES> {
     }
     fn choice_sites(&self, _run: &Self::Run) -> Vec<ChoiceSite> {
         if CHOICES {
-            vec![ChoiceSite::new(
-                "step",
-                (1..=4).map(|label: u8| label.to_string()),
-            )]
+            let site = ChoiceSite::new("step", (1..=4).map(|label: u8| label.to_string()));
+            vec![if TEST_PERMUTED_SITE.with(std::cell::Cell::get) {
+                site.without_default()
+            } else {
+                site
+            }]
         } else {
             Vec::new()
         }
@@ -216,6 +220,9 @@ impl<const CHOICES: bool> InputPolicy for ChoiceTestWorkload<CHOICES> {
         TEST_CHOICE_POLICY
             .with(std::cell::Cell::get)
             .unwrap_or_default()
+    }
+    fn untried_site(&self, _run: &Self::Run, suffix: &[Self::Action]) -> u16 {
+        u16::from(TEST_UNTRIED_SITES.with(std::cell::Cell::get) && !suffix.len().is_multiple_of(2))
     }
     fn draw_table_parameters(&self, _run: &Self::Run) -> EmpiricalStepParameters {
         EmpiricalStepParameters {
@@ -2055,7 +2062,7 @@ fn run_choices_with_checkpoints(
     config: &CampaignConfig<ChoiceTestWorkload<true>>,
     origin: &CampaignOrigin<ChoiceTestWorkload<true>>,
     checkpoints: Option<CheckpointPlan>,
-) -> (CampaignOutcome<ChoiceTestWorkload<true>>, Vec<u8>) {
+) -> (CampaignOutcome<ChoiceTestWorkload<true>>, Vec<u8>, Vec<u8>) {
     let mut stream = Vec::new();
     let mut progress = Vec::new();
     let outcome = run_campaign_checkpointed_with_options(
@@ -2070,7 +2077,7 @@ fn run_choices_with_checkpoints(
         },
     )
     .unwrap();
-    (outcome, progress)
+    (outcome, progress, stream)
 }
 
 #[test]
@@ -2132,7 +2139,7 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
     let directory = checkpoint_directory(label);
     let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
-    let (original, original_progress) = run_choices_with_checkpoints(
+    let (original, original_progress, _) = run_choices_with_checkpoints(
         &config,
         &CampaignOrigin::Genesis,
         Some(CheckpointPlan {
@@ -2160,7 +2167,7 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
         let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
             .parse()
             .unwrap();
-        let (resumed, resumed_progress) = run_choices_with_checkpoints(
+        let (resumed, resumed_progress, _) = run_choices_with_checkpoints(
             &config,
             &CampaignOrigin::SearchCheckpoint {
                 path,
@@ -2175,6 +2182,101 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
         );
         assert_eq!(resumed.0.archive, original.0.archive);
     }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+fn job_walks(stream: &[u8], after: u64) -> Vec<serde_json::Value> {
+    std::str::from_utf8(stream)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["event"] == "job" && record["sequence"].as_u64().unwrap() > after)
+        .map(|job| {
+            serde_json::json!([
+                job["sequence"],
+                job["reservation"],
+                job["parent_id"],
+                job["mutation_seed"],
+                job["choices"],
+            ])
+        })
+        .collect()
+}
+
+#[test]
+fn a_resumed_search_continues_each_site_walk_and_permutation_where_it_stopped() {
+    TEST_UNTRIED_SITES.with(|sites| sites.set(true));
+    TEST_PERMUTED_SITE.with(|permuted| permuted.set(true));
+    let label = "choices-site-resume";
+    let directory = checkpoint_directory(label);
+    let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let (original, original_progress, original_stream) = run_choices_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: true,
+            on_top_progress: true,
+            on_stall: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let mut kept = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .collect::<Vec<_>>();
+    kept.sort();
+    assert!(kept.len() >= 2, "{label} kept {kept:?}");
+    let all = job_walks(&original_stream, 0);
+    let mut spanning = 0;
+    for path in kept {
+        let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
+            .parse()
+            .unwrap();
+        let (resumed, resumed_progress, resumed_stream) = run_choices_with_checkpoints(
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256: None,
+            },
+            None,
+        );
+        let after = job_walks(&resumed_stream, resume_at);
+        assert_eq!(
+            after,
+            job_walks(&original_stream, resume_at),
+            "resumed at {resume_at} walked otherwise"
+        );
+        assert_eq!(
+            progress_lines_after(&resumed_progress, resume_at),
+            progress_lines_after(&original_progress, resume_at),
+            "resumed at {resume_at} diverged"
+        );
+        assert_eq!(resumed.0.archive, original.0.archive);
+        spanning += after
+            .iter()
+            .filter(|job| {
+                job[4]["untried_site"] == 1
+                    && all.iter().any(|before| {
+                        before[0].as_u64() <= Some(resume_at)
+                            && before[2] == job[2]
+                            && before[4]["untried_site"] == 1
+                    })
+            })
+            .count();
+    }
+    assert!(spanning > 0, "no site 1 walk continued across a resume");
+    TEST_UNTRIED_SITES.with(|sites| sites.set(false));
+    TEST_PERMUTED_SITE.with(|permuted| permuted.set(false));
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -2296,4 +2398,89 @@ fn a_search_checkpoint_does_not_resume_under_another_choice_policy() {
         "{error}"
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn each_untried_site_counts_its_own_jobs_and_replay_checks_the_site() {
+    let site = |record: &serde_json::Value| {
+        record
+            .get("untried_site")
+            .map_or(0, |site| site.as_u64().unwrap())
+    };
+    let config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut plain = Vec::new();
+    run_campaign_checkpointed(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut plain,
+        None,
+    )
+    .unwrap();
+    assert!(
+        !std::str::from_utf8(&plain)
+            .unwrap()
+            .contains("untried_site")
+    );
+    TEST_UNTRIED_SITES.with(|sites| sites.set(true));
+    let mut bytes = Vec::new();
+    let live = run_campaign_checkpointed(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let records: Vec<serde_json::Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let cancels = records
+        .iter()
+        .filter(|record| record["event"] == "cancel")
+        .count() as u64;
+    let mut walks = BTreeMap::<(u64, u64), Vec<(u64, u64)>>::new();
+    for job in records.iter().filter(|record| {
+        record["event"] == "job"
+            && record
+                .get("choices")
+                .is_some_and(|choices| choices.get("untried").is_some())
+    }) {
+        walks
+            .entry((job["parent_id"].as_u64().unwrap(), site(&job["choices"])))
+            .or_default()
+            .push((
+                job["reservation"].as_u64().unwrap(),
+                job["choices"]["untried"].as_u64().unwrap(),
+            ));
+    }
+    for walk in walks.values_mut() {
+        walk.sort_unstable();
+        for (position, (_, ordinal)) in walk.iter().enumerate() {
+            assert!(*ordinal >= position as u64 && *ordinal <= position as u64 + cancels);
+        }
+        assert!(walk.windows(2).all(|pair| pair[0].1 < pair[1].1));
+    }
+    assert!(
+        walks.iter().any(|((parent, site), walk)| *site == 1
+            && walk[0].1 == 0
+            && walks
+                .get(&(*parent, 0))
+                .is_some_and(|other| other[0].1 == 0)),
+        "no parent started a walk at both sites"
+    );
+    let (replayed, _) =
+        replay_campaign_checkpointed(&ChoiceTestWorkload::<true>, &bytes, None, None).unwrap();
+    assert_eq!(live.0, replayed);
+    TEST_UNTRIED_SITES.with(|sites| sites.set(false));
+    let error = replay_campaign_checkpointed(&ChoiceTestWorkload::<true>, &bytes, None, None)
+        .expect_err("a stream whose suffix asks at another untried site replayed")
+        .to_string();
+    assert!(
+        error.contains("asks its first choice at another untried site"),
+        "{error}"
+    );
 }

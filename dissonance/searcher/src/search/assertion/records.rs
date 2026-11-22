@@ -16,7 +16,7 @@ use super::{
 };
 use crate::search::choice::ChoiceRecord;
 
-pub const RECORDS_FORMAT: &str = "assertion-records-v9";
+pub const RECORDS_FORMAT: &str = "assertion-records-v10";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StreamIdentity {

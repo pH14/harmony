@@ -13,6 +13,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+use crate::bundle::FaultVocabulary;
 use crate::guest::GuestChoices;
 
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
@@ -88,6 +89,84 @@ pub enum FaultOperation {
 }
 
 impl FaultOperation {
+    #[must_use]
+    pub fn target_node(&self) -> Option<u16> {
+        match *self {
+            Self::Kill(node, _)
+            | Self::Pause(node, _)
+            | Self::Restart(node, _)
+            | Self::PowerLoss(node, _)
+            | Self::DiskError(node, _)
+            | Self::DiskStall(node, _)
+            | Self::DiskCorrupt(node, _)
+            | Self::Clock { node, .. } => Some(node),
+            Self::Wait(_)
+            | Self::KillAll(_)
+            | Self::PowerLossAll(_)
+            | Self::EventKill { .. }
+            | Self::EventPark { .. }
+            | Self::Hook(..)
+            | Self::ClockAll { .. }
+            | Self::EndFaults(_)
+            | Self::EventParkFromArm { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn target_offer(&self, vocabulary: &FaultVocabulary) -> Vec<u16> {
+        match self {
+            Self::Kill(..) | Self::Pause(..) | Self::Restart(..) | Self::Clock { .. } => {
+                (0..vocabulary.nodes()).collect()
+            }
+            Self::PowerLoss(..) | Self::DiskError(..) | Self::DiskStall(..) => {
+                vocabulary.disks().to_vec()
+            }
+            Self::DiskCorrupt(..) => vocabulary.checksummed().to_vec(),
+            Self::Wait(_)
+            | Self::KillAll(_)
+            | Self::PowerLossAll(_)
+            | Self::EventKill { .. }
+            | Self::EventPark { .. }
+            | Self::Hook(..)
+            | Self::ClockAll { .. }
+            | Self::EndFaults(_)
+            | Self::EventParkFromArm { .. } => Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_target_node(self, node: u16) -> Self {
+        match self {
+            Self::Kill(_, ticks) => Self::Kill(node, ticks),
+            Self::Pause(_, ticks) => Self::Pause(node, ticks),
+            Self::Restart(_, ticks) => Self::Restart(node, ticks),
+            Self::PowerLoss(_, ticks) => Self::PowerLoss(node, ticks),
+            Self::DiskError(_, ticks) => Self::DiskError(node, ticks),
+            Self::DiskStall(_, ticks) => Self::DiskStall(node, ticks),
+            Self::DiskCorrupt(_, ticks) => Self::DiskCorrupt(node, ticks),
+            Self::Clock {
+                offset_ms,
+                rate_ppm,
+                ticks,
+                ..
+            } => Self::Clock {
+                node,
+                offset_ms,
+                rate_ppm,
+                ticks,
+            },
+            other @ (Self::Wait(_)
+            | Self::KillAll(_)
+            | Self::PowerLossAll(_)
+            | Self::EventKill { .. }
+            | Self::EventPark { .. }
+            | Self::Hook(..)
+            | Self::ClockAll { .. }
+            | Self::EndFaults(_)
+            | Self::EventParkFromArm { .. }) => other,
+        }
+    }
+
     #[must_use]
     pub fn ticks(&self) -> u64 {
         match *self {

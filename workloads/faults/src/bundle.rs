@@ -7,6 +7,7 @@ pub const MAX_NODES: u16 = 64;
 pub const CHECKSUMMED: &str = "checksummed";
 pub const HOOKS_REPLACE_WAITS: &str = "hooks_replace_waits";
 pub const HOLD_HOOKS: &str = "hold_hooks";
+pub const UNTRIED_FIRST_NODES: &str = "untried_first_nodes";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,6 +95,8 @@ pub struct FaultVocabulary {
     hooks_replace_waits: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     hold_hooks: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    untried_first_nodes: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resume_park: Option<Vec<u64>>,
 }
@@ -124,6 +127,7 @@ impl FaultVocabulary {
             excluded: Vec::new(),
             hooks_replace_waits: false,
             hold_hooks: false,
+            untried_first_nodes: false,
             resume_park: None,
         })
     }
@@ -196,6 +200,12 @@ impl FaultVocabulary {
     #[must_use]
     pub fn with_hold_hooks(mut self, enabled: bool) -> Self {
         self.hold_hooks = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_untried_first_nodes(mut self, enabled: bool) -> Self {
+        self.untried_first_nodes = enabled;
         self
     }
 
@@ -399,10 +409,16 @@ impl FaultVocabulary {
         self.hold_hooks
     }
 
+    #[must_use]
+    pub fn untried_first_nodes(&self) -> bool {
+        self.untried_first_nodes
+    }
+
     fn options(&self) -> Option<String> {
         let names = [
             (self.hooks_replace_waits, HOOKS_REPLACE_WAITS),
             (self.hold_hooks, HOLD_HOOKS),
+            (self.untried_first_nodes, UNTRIED_FIRST_NODES),
         ]
         .into_iter()
         .filter_map(|(enabled, name)| enabled.then_some(name))
@@ -540,11 +556,13 @@ impl FaultVocabulary {
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
         }
-        let (mut hooks_replace_waits, mut hold_hooks) = (false, false);
+        let (mut hooks_replace_waits, mut hold_hooks, mut untried_first_nodes) =
+            (false, false, false);
         for name in options.into_iter().flat_map(|options| options.split(',')) {
             match name {
                 HOOKS_REPLACE_WAITS => hooks_replace_waits = true,
                 HOLD_HOOKS => hold_hooks = true,
+                UNTRIED_FIRST_NODES => untried_first_nodes = true,
                 _ => return Err(format!("fault vocabulary has an unknown option {name:?}")),
             }
         }
@@ -587,6 +605,7 @@ impl FaultVocabulary {
             .excluding(&excluded)
             .with_hooks_replace_waits(hooks_replace_waits)
             .with_hold_hooks(hold_hooks)
+            .with_untried_first_nodes(untried_first_nodes)
             .with_resume_park(resume_park.clone())?;
         if vocabulary.excluded != excluded {
             return Err("fault vocabulary lists excluded fault kinds out of order".to_owned());

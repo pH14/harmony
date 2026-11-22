@@ -7,7 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::search::rand::RomuDuoJrRand;
+use crate::search::rand::{RomuDuoJrRand, splitmix64};
 
 pub const CERTAIN: u32 = 1 << 16;
 
@@ -18,6 +18,8 @@ pub const CHOICE_POLICY_PREFIX: &str = "choices_v1:";
 const PROFILE_SEED_MIX: u64 = 0x6368_6f69_6365_5f70;
 
 const ANSWER_SEED_MIX: u64 = 0x6368_6f69_6365_5f61;
+
+const PERMUTED_SEED_MIX: u64 = 0x6368_6f69_6365_5f77;
 
 const CONTRARY_HALVINGS: usize = 6;
 
@@ -50,6 +52,7 @@ pub struct ChoiceSite {
     pub name: String,
     pub labels: Vec<String>,
     pub contrary: Option<u32>,
+    pub no_default: bool,
 }
 
 impl ChoiceSite {
@@ -59,6 +62,15 @@ impl ChoiceSite {
             name: name.to_owned(),
             labels: labels.into_iter().collect(),
             contrary: None,
+            no_default: false,
+        }
+    }
+
+    #[must_use]
+    pub fn without_default(self) -> Self {
+        Self {
+            no_default: true,
+            ..self
         }
     }
 
@@ -88,6 +100,16 @@ impl ChoiceSite {
             .iter()
             .enumerate()
             .filter_map(|(index, site)| Some((u16::try_from(index).ok()?, site.contrary?)))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn sites_without_default(sites: &[Self]) -> Vec<u16> {
+        sites
+            .iter()
+            .enumerate()
+            .filter(|(_, site)| site.no_default)
+            .filter_map(|(index, _)| u16::try_from(index).ok())
             .collect()
     }
 }
@@ -199,8 +221,10 @@ pub struct ChoicePlan {
     pub redrawn: bool,
     pub seed: u64,
     pub untried: Option<u32>,
+    pub untried_site: u16,
     pub held: Vec<(u16, Choice)>,
     pub declared: Vec<(u16, u32)>,
+    pub permuted: Vec<(u16, u64)>,
 }
 
 impl ChoicePlan {
@@ -219,8 +243,24 @@ impl ChoicePlan {
             redrawn,
             seed: mutation_seed ^ ANSWER_SEED_MIX,
             untried,
+            untried_site: 0,
             held,
             declared,
+            permuted: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_permuted_sites(self, sites: &[u16], campaign_seed: u64, parent_id: u64) -> Self {
+        let mut state = campaign_seed ^ PERMUTED_SEED_MIX;
+        let mut parent = splitmix64(&mut state) ^ parent_id;
+        let parent = splitmix64(&mut parent);
+        Self {
+            permuted: sites
+                .iter()
+                .map(|site| (*site, parent ^ u64::from(*site)))
+                .collect(),
+            ..self
         }
     }
 
@@ -230,6 +270,7 @@ impl ChoicePlan {
             profile: self.profile,
             redrawn: self.redrawn,
             untried: self.untried,
+            untried_site: self.untried_site,
         }
     }
 }
@@ -241,6 +282,12 @@ pub struct ChoicePlanRecord {
     pub redrawn: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untried: Option<u32>,
+    #[serde(default, skip_serializing_if = "is_first_site")]
+    pub untried_site: u16,
+}
+
+fn is_first_site(site: &u16) -> bool {
+    *site == 0
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -277,8 +324,10 @@ pub struct Chooser {
     rand: RomuDuoJrRand,
     untried: Option<u32>,
     asked: bool,
+    took_untried: bool,
     held: Vec<(u16, Choice)>,
     declared: Vec<(u16, u32)>,
+    permuted: Vec<(u16, u64)>,
 }
 
 impl Chooser {
@@ -289,9 +338,16 @@ impl Chooser {
             rand: RomuDuoJrRand::with_seed(plan.seed),
             untried: plan.untried,
             asked: false,
+            took_untried: false,
             held: plan.held.clone(),
             declared: plan.declared.clone(),
+            permuted: plan.permuted.clone(),
         }
+    }
+
+    #[must_use]
+    pub fn untried_taken(&self) -> Option<u32> {
+        self.untried.filter(|_| self.took_untried)
     }
 
     #[must_use]
@@ -346,8 +402,9 @@ impl Chooser {
         };
         if first
             && let Some(ordinal) = self.untried
-            && let Some(label) = untried_order(offered, default).nth(ordinal as usize)
+            && let Some(label) = self.untried_label(site, offered, default, ordinal as usize)
         {
+            self.took_untried = true;
             return normal(label);
         }
         if let Some(previous) = self
@@ -382,6 +439,19 @@ impl Chooser {
             }
             Draw::Weighted => weighted_pick(&mut self.rand, offered.iter().copied())
                 .map_or(Choice::Default, normal),
+        }
+    }
+
+    fn untried_label(
+        &self,
+        site: u16,
+        offered: &[(u16, u32)],
+        default: u16,
+        ordinal: usize,
+    ) -> Option<u16> {
+        match self.permuted.iter().find(|(permuted, _)| *permuted == site) {
+            Some((_, seed)) => permuted_order(offered, *seed).get(ordinal).copied(),
+            None => untried_order(offered, default).nth(ordinal),
         }
     }
 
@@ -444,6 +514,17 @@ fn untried_order(offered: &[(u16, u32)], default: u16) -> impl Iterator<Item = u
         .chain(rest)
 }
 
+fn permuted_order(offered: &[(u16, u32)], seed: u64) -> Vec<u16> {
+    let mut labels: Vec<u16> = offered.iter().map(|(label, _)| *label).collect();
+    labels.sort_unstable();
+    labels.dedup();
+    let mut rand = RomuDuoJrRand::with_seed(seed);
+    for last in (1..labels.len()).rev() {
+        labels.swap(last, below(&mut rand, last + 1));
+    }
+    labels
+}
+
 #[must_use]
 pub fn deviations<'a>(
     answers: impl IntoIterator<Item = (usize, &'a [(u16, Choice)])>,
@@ -478,8 +559,10 @@ mod tests {
             redrawn: false,
             seed: 7,
             untried,
+            untried_site: 0,
             held: Vec::new(),
             declared: Vec::new(),
+            permuted: Vec::new(),
         }
     }
 
@@ -594,6 +677,41 @@ mod tests {
                 Choice::Option(6),
                 Choice::Default
             ]
+        );
+    }
+
+    #[test]
+    fn untried_first_at_a_site_without_a_default_walks_one_permutation_per_parent() {
+        let sites = [
+            ChoiceSite::new("guest", Vec::new()),
+            ChoiceSite::new("node", ["0", "1", "2"].map(str::to_owned)).without_default(),
+        ];
+        assert_eq!(ChoiceSite::sites_without_default(&sites), [1]);
+        let offered = [(0, 1), (1, 1), (2, 1)];
+        let first = |parent: u64, ordinal: u32| {
+            let plan = plan(0, 0, Some(ordinal)).with_permuted_sites(
+                &ChoiceSite::sites_without_default(&sites),
+                3,
+                parent,
+            );
+            let mut chooser = Chooser::new(&plan);
+            chooser.draw(1, &offered, 0)
+        };
+        for parent in 0..16 {
+            let mut walked: Vec<u16> = (0..3)
+                .map(|ordinal| first(parent, ordinal).label(&[0, 1, 2], 0))
+                .collect();
+            walked.sort_unstable();
+            assert_eq!(walked, [0, 1, 2], "parent {parent}");
+        }
+        let starts: std::collections::BTreeSet<u16> = (0..64)
+            .map(|parent| first(parent, 0).label(&[0, 1, 2], 0))
+            .collect();
+        assert_eq!(starts.into_iter().collect::<Vec<_>>(), [0, 1, 2]);
+        let defaulted = plan(0, 0, Some(0)).with_permuted_sites(&[1], 3, 5);
+        assert_eq!(
+            Chooser::new(&defaulted).choose(0, &[4, 6], 6),
+            Choice::Default
         );
     }
 

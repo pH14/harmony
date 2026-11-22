@@ -564,8 +564,10 @@ mod tests {
             redrawn: false,
             seed,
             untried: None,
+            untried_site: 0,
             held: Vec::new(),
             declared: Vec::new(),
+            permuted: Vec::new(),
         });
         let mut records = Vec::new();
         let tree = shares(chords, previous, |previous| {
@@ -621,8 +623,10 @@ mod tests {
             redrawn: false,
             seed: 3,
             untried: None,
+            untried_site: 0,
             held: Vec::new(),
             declared: Vec::new(),
+            permuted: Vec::new(),
         });
         let mut previous = None;
         for _ in 0..2_000 {
