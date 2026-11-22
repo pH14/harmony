@@ -204,9 +204,9 @@ different place from one that has not. Without it, a state that fired a
 missile into a column shares a slot with the state that did not fire, and the
 preferences keep the one with more missiles. A column healing or respawning
 moves the state to another place without ranking it above or below the rest of
-Tourian. A cleared column does rank: the zebetites and mother_brain objectives
-count the slots reading 3, so a slot the game reuses for a new column lowers
-the objective by that column. The game keeps five Zebetite slots at
+Tourian. A broken column does rank: the zebetites and mother_brain objectives
+count the slots reading 2 or 3, so a slot the game reuses for a new column
+lowers the objective by that column. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
 alive, 2 on the frames the column breaks, 3 once its tiles are cleared) and
 its missile hit count at offset 3; a column dies at eight hits while healing
@@ -214,8 +214,9 @@ one hit every 64 frames it is not hit, at offset 4's timer, and the game loads
 the columns of each screen as Samus enters it and clears a slot whose screen
 scrolls out. The state counts the columns reading 2 or 3 as destroyed for the
 `zebetite_destroyed` milestone, since a RAM trace of a run to the ending reads
-3 at every action end after a column broke. The count falls when a cleared column's slot is reused, so it
-is not a progress measure.
+3 at every action end after a column broke. The count falls when a cleared
+column's slot is reused, so it counts the broken columns still in a slot, not
+every column broken so far.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
 hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds
@@ -332,8 +333,8 @@ RAM first and then the cartridge window, and `--cartridge START:LEN` any span
 of cartridge RAM, such as the room's tiles from offset 0; `--frames FIRST:LAST`
 prints every frame's record of the `--terms` it names, by default missiles,
 health, x, y and boss health, for the actions in that range). It ends with the frame's sha256 and
-the game's `rooted_genesis` verdict, so it shows whether the tape ends in
-live play and which stages it earns on the way; the workload's other root
+the game's `rooted_genesis` verdict, so it shows whether the tape ends with
+Samus alive in play or in an item pickup before the ending, and which stages it earns on the way; the workload's other root
 checks (a goal, a reject or an overrun on the way, a missing endpoint key) are
 not applied, and a tape with no actions is refused. `--cartridge` reads the
 emulator after the action, so on an action that the target cut short at a goal
