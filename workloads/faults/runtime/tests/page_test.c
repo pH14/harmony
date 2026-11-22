@@ -20,6 +20,17 @@ static void forward_json(const char *data, size_t size);
 #include "../fault_runtime_shim.c"
 
 #define TARGET UINT64_C(0x40)
+#define ARMED HARMONY_FAULT_EVENT_PARK_STATUS_ARMED
+
+struct node {
+    pid_t pid;
+    int control;
+    int report;
+    int go;
+    int done;
+    int json;
+    char fired[160];
+};
 
 static uint64_t *page;
 
@@ -44,17 +55,44 @@ static unsigned char next_byte(int fd)
     }
 }
 
-static void visit_in_child(int go, int done)
+static void set_fd(const char *name, int fd)
+{
+    char value[16];
+
+    assert(snprintf(value, sizeof(value), "%d", fd) > 0);
+    assert(setenv(name, value, 1) == 0);
+}
+
+static void exec_as(char *mode, int go, int done)
+{
+    char name[] = "page-test";
+    char *argv[] = {name, mode, NULL};
+
+    set_fd("PAGE_TEST_GO_FD", go);
+    set_fd("PAGE_TEST_DONE_FD", done);
+    set_fd("PAGE_TEST_JSON_FD", json_fd);
+    (void)execv("/proc/self/exe", argv);
+    _exit(3);
+}
+
+static void visit(int go, int done)
+{
+    assert(write(done, "g", 1) == 1);
+    assert(next_byte(go) == 'v');
+    harmony_instrumentation_event(TARGET);
+    _exit(0);
+}
+
+static void visit_in_child(int go, int done, int execs)
 {
     pid_t child = fork();
     int status;
 
     assert(child >= 0);
     if (child == 0) {
-        assert(write(done, "g", 1) == 1);
-        assert(next_byte(go) == 'v');
-        harmony_instrumentation_event(TARGET);
-        _exit(0);
+        if (execs)
+            exec_as("visit", go, done);
+        visit(go, done);
     }
     assert(waitpid(child, &status, 0) == child);
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
@@ -70,8 +108,10 @@ static void run_node(int go, int done)
             _exit(0);
         if (byte == 'v')
             harmony_instrumentation_event(TARGET);
+        else if (byte == 'x')
+            exec_as("node", go, done);
         else
-            visit_in_child(go, done);
+            visit_in_child(go, done, byte == 'e');
         assert(write(done, "d", 1) == 1);
     }
 }
@@ -92,8 +132,12 @@ static void publish(uint64_t edges, uint64_t hold_nanos, uint64_t start, uint64_
                      __ATOMIC_RELEASE);
 }
 
-static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
-                     unsigned char *response)
+static void publish_target(void)
+{
+    publish(1, 1000, TARGET, TARGET + 1);
+}
+
+static void send_request(int fd, uint64_t kind, uint64_t first, uint64_t second)
 {
     unsigned char request[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE] = {0};
 
@@ -101,42 +145,57 @@ static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
     put_u64(request + 8, first);
     put_u64(request + 16, second);
     assert(write_all(fd, request, sizeof(request)) == 0);
-    assert(read_all(fd, response, HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE) == 0);
 }
 
-static void park_status(int fd, uint64_t fires, uint64_t flags, uint64_t generation)
+static void read_response(int fd, uint64_t kind, unsigned char *response)
+{
+    assert(read_all(fd, response, HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE) == 0);
+    assert(get_u64(response) == kind);
+}
+
+static void park_status(const struct node *node, uint64_t fires, uint64_t flags,
+                        uint64_t generation)
 {
     unsigned char response[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE];
 
-    exchange(fd, HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
-    assert(get_u64(response) == HARMONY_FAULT_EVENT_CMD_PARK_STATUS);
+    send_request(node->control, HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0);
+    read_response(node->control, HARMONY_FAULT_EVENT_CMD_PARK_STATUS, response);
     assert(get_u64(response + 8) == fires);
     assert(get_u64(response + 16) == flags);
     assert(get_u64(response + 24) == generation);
 }
 
-static void step(int go, int done, unsigned char byte)
+static void await_hello(const struct node *node)
 {
-    assert(write(go, &byte, 1) == 1);
-    assert(next_byte(done) == 'd');
+    unsigned char hello[HARMONY_FAULT_EVENT_REPORT_SIZE];
+
+    assert(read_all(node->report, hello, sizeof(hello)) == 0);
+    assert(get_u64(hello) == HARMONY_FAULT_EVENT_REPORT_HELLO);
+    assert(get_u64(hello + 8) == HARMONY_FAULT_EVENT_PROTOCOL_VERSION);
 }
 
-static void stop(pid_t node)
+static void step(const struct node *node, unsigned char byte)
+{
+    assert(write(node->go, &byte, 1) == 1);
+    assert(next_byte(node->done) == 'd');
+}
+
+static void stop(const struct node *node)
 {
     int status;
 
-    assert(kill(node, SIGSTOP) == 0);
-    assert(waitpid(node, &status, WUNTRACED) == node);
+    assert(kill(node->pid, SIGSTOP) == 0);
+    assert(waitpid(node->pid, &status, WUNTRACED) == node->pid);
     assert(WIFSTOPPED(status));
 }
 
-static void reports(int fd, const char *expected)
+static void reports(const struct node *node, const char *expected)
 {
     char buffer[512];
     size_t used = 0;
 
     for (;;) {
-        ssize_t got = read(fd, buffer + used, sizeof(buffer) - 1 - used);
+        ssize_t got = read(node->json, buffer + used, sizeof(buffer) - 1 - used);
 
         if (got < 0 && errno == EINTR)
             continue;
@@ -150,31 +209,17 @@ static void reports(int fd, const char *expected)
     assert(strcmp(buffer, expected) == 0);
 }
 
-static void set_fd(const char *name, int fd)
-{
-    char value[16];
-
-    assert(snprintf(value, sizeof(value), "%d", fd) > 0);
-    assert(setenv(name, value, 1) == 0);
-}
-
-int main(void)
+static void start(struct node *node, int published)
 {
     char path[] = "/tmp/harmony-page-test-XXXXXX";
-    char expected[160];
     int page_fd = mkstemp(path);
     int control[2];
     int report[2];
     int go[2];
     int done[2];
     int json[2];
-    unsigned char hello[HARMONY_FAULT_EVENT_REPORT_SIZE];
-    unsigned char response[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE];
     void *mapped;
-    pid_t node;
-    int status;
 
-    alarm(10);
     assert(page_fd >= 0);
     assert(unlink(path) == 0);
     assert(ftruncate(page_fd, HARMONY_FAULT_PAGE_BYTES) == 0);
@@ -188,11 +233,11 @@ int main(void)
     assert(pipe(done) == 0);
     assert(pipe(json) == 0);
     assert(fcntl(json[0], F_SETFL, O_NONBLOCK) == 0);
-
-    publish(1, 1000, TARGET, TARGET + 1);
-    node = fork();
-    assert(node >= 0);
-    if (node == 0) {
+    if (published)
+        publish_target();
+    node->pid = fork();
+    assert(node->pid >= 0);
+    if (node->pid == 0) {
         assert(close(control[1]) == 0);
         assert(close(report[1]) == 0);
         assert(close(go[1]) == 0);
@@ -206,44 +251,170 @@ int main(void)
         set_fd("HARMONY_EVENT_PAGE_FD", page_fd);
         run_node(go[0], done[1]);
     }
+    assert(close(page_fd) == 0);
     assert(close(control[0]) == 0);
     assert(close(report[0]) == 0);
     assert(close(go[0]) == 0);
     assert(close(done[1]) == 0);
     assert(close(json[1]) == 0);
-    assert(read_all(report[1], hello, sizeof(hello)) == 0);
-    assert(get_u64(hello) == HARMONY_FAULT_EVENT_REPORT_HELLO);
-    assert(get_u64(hello + 8) == HARMONY_FAULT_EVENT_PROTOCOL_VERSION);
+    node->control = control[1];
+    node->report = report[1];
+    node->go = go[1];
+    node->done = done[0];
+    node->json = json[0];
+    assert(snprintf(node->fired, sizeof(node->fired),
+                    "%ld {\"harmony_park\":{\"site\":%llu,\"edges\":1}}\n",
+                    (long)node->pid, (unsigned long long)TARGET) > 0);
+    await_hello(node);
+}
 
-    step(go[1], done[0], 'v');
-    park_status(control[1], 0, 0, 2);
-    reports(json[0], "");
+static void finish(struct node *node)
+{
+    int status;
 
-    stop(node);
-    publish(1, 1000, TARGET, TARGET + 1);
-    assert(write(go[1], "v", 1) == 1);
-    assert(kill(node, SIGCONT) == 0);
-    assert(next_byte(done[0]) == 'd');
-    park_status(control[1], 1, HARMONY_FAULT_EVENT_PARK_STATUS_ARMED, 4);
-    assert(snprintf(expected, sizeof(expected),
-                    "%ld {\"harmony_park\":{\"site\":%llu,\"edges\":1}}\n", (long)node,
-                    (unsigned long long)TARGET) > 0);
-    reports(json[0], expected);
-
-    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
-    park_status(control[1], 1, 0, 4);
-    assert(write(go[1], "f", 1) == 1);
-    assert(next_byte(done[0]) == 'g');
-    publish(1, 1000, TARGET, TARGET + 1);
-    step(go[1], done[0], 'v');
-    reports(json[0], "");
-    park_status(control[1], 1, HARMONY_FAULT_EVENT_PARK_STATUS_ARMED, 6);
-    step(go[1], done[0], 'v');
-    park_status(control[1], 2, HARMONY_FAULT_EVENT_PARK_STATUS_ARMED, 6);
-    reports(json[0], expected);
-
-    assert(close(go[1]) == 0);
-    assert(waitpid(node, &status, 0) == node);
+    assert(close(node->go) == 0);
+    assert(waitpid(node->pid, &status, 0) == node->pid);
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(close(node->control) == 0);
+    assert(close(node->report) == 0);
+    assert(close(node->done) == 0);
+    assert(close(node->json) == 0);
+    assert(munmap(page, (size_t)HARMONY_FAULT_PAGE_BYTES) == 0);
+    page = NULL;
+}
+
+static void a_record_published_before_the_runtime_starts_is_adopted(void)
+{
+    struct node node;
+
+    start(&node, 1);
+    step(&node, 'v');
+    park_status(&node, 1, ARMED, 2);
+    reports(&node, node.fired);
+    finish(&node);
+}
+
+static void a_clearing_record_disarms_the_park(void)
+{
+    struct node node;
+
+    start(&node, 0);
+    publish_target();
+    step(&node, 'v');
+    park_status(&node, 1, ARMED, 2);
+    reports(&node, node.fired);
+    publish(0, 0, 0, 0);
+    step(&node, 'v');
+    park_status(&node, 1, 0, 4);
+    reports(&node, "");
+    finish(&node);
+}
+
+static void a_disarm_queued_while_stopped_leaves_the_next_park(void)
+{
+    struct node node;
+    unsigned char response[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE];
+
+    start(&node, 0);
+    publish_target();
+    park_status(&node, 0, ARMED, 2);
+    stop(&node);
+    send_request(node.control, HARMONY_FAULT_EVENT_CMD_PARK, 0, 0);
+    publish(0, 0, 0, 0);
+    publish_target();
+    assert(write(node.go, "v", 1) == 1);
+    assert(kill(node.pid, SIGCONT) == 0);
+    assert(next_byte(node.done) == 'd');
+    read_response(node.control, HARMONY_FAULT_EVENT_CMD_PARK, response);
+    park_status(&node, 1, ARMED, 6);
+    reports(&node, node.fired);
+    finish(&node);
+}
+
+static void a_forked_child_neither_fires_nor_adopts_its_parents_park(void)
+{
+    struct node node;
+
+    start(&node, 0);
+    publish_target();
+    park_status(&node, 0, ARMED, 2);
+    assert(write(node.go, "f", 1) == 1);
+    assert(next_byte(node.done) == 'g');
+    publish_target();
+    step(&node, 'v');
+    reports(&node, "");
+    park_status(&node, 0, ARMED, 4);
+    step(&node, 'v');
+    park_status(&node, 1, ARMED, 4);
+    reports(&node, node.fired);
+    finish(&node);
+}
+
+static void an_execed_image_maps_the_page_and_adopts_its_record(void)
+{
+    struct node node;
+
+    start(&node, 0);
+    publish_target();
+    assert(write(node.go, "x", 1) == 1);
+    await_hello(&node);
+    step(&node, 'v');
+    park_status(&node, 1, ARMED, 2);
+    reports(&node, node.fired);
+    finish(&node);
+}
+
+static void a_forked_child_that_execs_leaves_the_page_behind(void)
+{
+    struct node node;
+
+    start(&node, 0);
+    publish_target();
+    park_status(&node, 0, ARMED, 2);
+    assert(write(node.go, "e", 1) == 1);
+    assert(next_byte(node.done) == 'g');
+    step(&node, 'v');
+    reports(&node, "");
+    park_status(&node, 0, ARMED, 2);
+    step(&node, 'v');
+    park_status(&node, 1, ARMED, 2);
+    reports(&node, node.fired);
+    finish(&node);
+}
+
+static const struct {
+    const char *name;
+    void (*run)(void);
+} scenarios[] = {
+    {"startup", a_record_published_before_the_runtime_starts_is_adopted},
+    {"clear", a_clearing_record_disarms_the_park},
+    {"stale-disarm", a_disarm_queued_while_stopped_leaves_the_next_park},
+    {"fork", a_forked_child_neither_fires_nor_adopts_its_parents_park},
+    {"exec", an_execed_image_maps_the_page_and_adopts_its_record},
+    {"fork-exec", a_forked_child_that_execs_leaves_the_page_behind},
+};
+
+int main(int argc, char **argv)
+{
+    size_t index;
+    int ran = 0;
+
+    if (argc == 2 && (strcmp(argv[1], "node") == 0 || strcmp(argv[1], "visit") == 0)) {
+        int go = harmony_fault_parse_fd("PAGE_TEST_GO_FD");
+        int done = harmony_fault_parse_fd("PAGE_TEST_DONE_FD");
+
+        json_fd = harmony_fault_parse_fd("PAGE_TEST_JSON_FD");
+        if (strcmp(argv[1], "node") == 0)
+            run_node(go, done);
+        visit(go, done);
+    }
+    alarm(10);
+    for (index = 0; index < sizeof(scenarios) / sizeof(scenarios[0]); index++) {
+        if (argc == 2 && strcmp(argv[1], scenarios[index].name) != 0)
+            continue;
+        scenarios[index].run();
+        ran++;
+    }
+    assert(ran > 0);
     return 0;
 }

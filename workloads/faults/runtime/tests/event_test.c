@@ -427,11 +427,40 @@ int main(void)
     assert(get_word(response, 24) == 8);
     publish_page(1, 1, 0, 0);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 9);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 10);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 11, __ATOMIC_RELEASE);
     harmony_instrumentation_event(14);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 9);
-    assert(get_word(response, 16) == 0);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
     assert(get_word(response, 24) == 10);
+    store_word(HARMONY_FAULT_PAGE_GENERATION, 10, __ATOMIC_RELEASE);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":14,\"edges\":1}}\n") == 0);
+    publish_page(0, 0, 0, 0);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == 0);
+    assert(get_word(response, 24) == 12);
+
+    publish_page(1, 1, 0, 0);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 50, 51, response);
+    publish_page(0, 0, 0, 0);
+    harmony_instrumentation_event(14);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    assert(get_word(response, 16) == HARMONY_FAULT_EVENT_PARK_STATUS_ARMED);
+    assert(get_word(response, 24) == 16);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 16) == 0);
 
     {
         struct sigaction action;

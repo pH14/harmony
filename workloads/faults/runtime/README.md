@@ -89,12 +89,15 @@ stop placed between reading and using that state.
 
 When the supervisor's bundle carries `park-page`, each node process inherits a
 one-page shared memory file in `HARMONY_EVENT_PAGE_FD` beside the two event
-descriptors. The runtime maps it read-only before it sends the hello, closes
-the descriptor, and takes the page's current generation as already seen, so it
-never adopts a record written for an earlier process of the node. If the
-variable is set but the mapping fails, the runtime does not start and sends no
-hello. Without the variable the runtime takes the path described above, with
-no page.
+descriptors. The runtime maps it read-only before it sends the hello and keeps
+the descriptor open, so an image the node `exec`s inherits the descriptor with
+the event descriptors and maps the page again. A runtime starts with
+generation 0 as seen: each node process gets a new page, so the record on the
+page is always the node's current parked pause (ours), and a runtime that
+starts after a record was written, in a late first callback or after an
+`exec`, adopts it at its first callback. If the variable is set but the mapping
+fails, the runtime does not start and sends no hello. Without the variable the
+runtime takes the path described above, with no page.
 
 The page holds five `u64` words: generation, edge count `k`, hold in
 nanoseconds, and the target start and end. The supervisor writes a record
@@ -102,28 +105,48 @@ while the node is stopped for a parked pause (ours) and sends `SIGCONT` after
 it. It makes the generation odd, writes the fields, and stores the next even
 generation with release ordering. The runtime reads the page at the start of
 every callback and of every control command, under the callback lock. It loads
-the generation with acquire ordering, skips it if it is odd or already seen,
-reads the fields, and loads the generation again; a changed generation is
-skipped too. A skipped read does not count the callback's edge against the
-park and retries at the next callback. An accepted record arms a park that
-counts from its arming, as above. A record outside the command's ranges is
-marked seen and arms nothing.
+the generation with acquire ordering, stops if it is already seen, and skips it
+if it is odd. Otherwise it reads the fields and loads the generation again; a
+changed generation is skipped too. A callback that skips a read spends no park
+at all, neither the new record's nor one armed before it, and the read retries
+at the next callback. An accepted record with zero edges clears a park adopted
+from the page. Any other accepted record arms a park that counts from its
+arming, as above; a record outside the command's ranges is marked seen and
+arms nothing.
 
-The claim that the first visit after the resume counts rests on that order. The
-record is complete before `SIGCONT`, every task of the node has been stopped
-for the whole pause, so no callback runs while the record is being written,
-and each task's first callback after the resume reads the new generation
-before it counts its edge. A visit before the pause saw the old generation and
-was not counted.
+A park adopted from the page ends only through the page. A disarm command
+leaves it armed, because a disarm the supervisor sent before a pause can be
+read after the resume that published the next record. A clearing record leaves
+a park armed by command alone, and an arm command replaces a park adopted from
+the page with its own.
+
+The claim that the first visit after the resume counts rests on that order and
+on the guest running one CPU (`nosmp maxcpus=1`). The record is complete before
+`SIGCONT`. The supervisor sends `SIGSTOP` and can write the record and send
+`SIGCONT` before it has seen the node stop, but on one CPU no task of the node
+runs user code between the two signals: a pending stop is taken before any
+return to user mode, and a continue withdraws a stop that has not yet taken
+effect. So no callback runs while the record is being written, and each task's
+first callback after the resume reads the new generation before it counts its
+edge. A visit before the pause saw the old generation and was not counted. A
+guest with more than one CPU would need the supervisor to check that every task
+of the node has stopped before it writes the record.
 
 The park status reply's fourth word is the generation the runtime has adopted,
-so the supervisor can tell a reply sent before the resume from one sent after
-it. A forked child drops the page in a `pthread_atfork` child handler: it
-never adopts a later record and keeps whatever park state it inherited, as it
-does for a park armed by command. `tests/page_test.c` runs a forked node with a
-real `SIGSTOP` and `SIGCONT` and checks that a record published during the stop
-fires at the first visit after the resume, that a disarm command stops it, and
-that a forked child neither adopts a later record nor reports one.
+so the supervisor can tell a reply sent before the resume or before a clear
+from one sent after it. A forked child drops the page in a `pthread_atfork`
+child handler, together with any park it inherited from the page, and marks
+its copy of the descriptor close-on-exec. It never fires its parent's parked
+pause and never adopts a later record, and an image it `exec`s finds no page
+and runs without the event runtime. It keeps a park armed by command, as
+before. `tests/page_test.c` runs each case on its own node with a real
+`SIGSTOP` and `SIGCONT`: a record written before the runtime starts is adopted
+at its first callback; a clearing record disarms the park; a disarm queued
+while the node is stopped leaves the record published before the resume armed;
+a forked child of a node with an adopted park neither fires it nor adopts a
+later record; an image the node `exec`s maps the page and fires the record
+written before the `exec`; and an image that a forked child `exec`s fires
+nothing.
 
 ## Kill rarity and coverage
 
