@@ -748,7 +748,8 @@ outcome is `compared` when a check that started after that has exited
 successfully. The phase also ends when the workload is not ready 3,000 ticks
 (the 30-second recovery limit) after the restarts and heal end, when no such
 check has finished 6,000 ticks after they end, or at a new violation, a terminal
-stop, a hang or a cancellation. The target then restores the snapshot and its
+stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
+cancellation. The target then restores the snapshot and its
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
 those of the run without the phase. The snapshots taken during the phase stay in
@@ -1215,6 +1216,40 @@ The archive key is a strategy key compiled by the searcher's assertion keys
   `workload.finished`, `event.kill_fires`, `event.park_fires`,
   `event.park_held` and `event.kill_armed`.
 
+A search config's key table can also name facts, each a list of terms:
+
+```toml
+[workload.options.key.facts]
+r5 = ["transfer_timeout", "second_transfer"]
+```
+
+Each fact declares one `sometimes_all` after the 18 values, in name order: a
+count `r5`, the number of its terms that hold, and one flag per term,
+`r5.transfer_timeout` and `r5.second_transfer`. A term is the id of a
+Sometimes record that the target's guest processes write; the kit SDK uses
+the message as the id. A term holds while the latest hit Sometimes record
+with that id has a true condition, so a guest clears a fact by writing the
+same Sometimes with a false condition. A record of another kind with the same
+id neither sets nor clears the term; two kit SDK assertions of different kinds
+share an id when they share a message. The binary SDK reports a Sometimes point only when it
+passes, so a fact term must be written as a JSON record. A strategy reads a
+term by its dotted name, quoted when the id is not a plain word, for example
+`'r5.harness: a check read succeeded'`. A term the guest never writes
+declares a flag that never holds, and nothing reports it, as with a declared
+game value that never changes; the archive report's `assertions` lists the
+ids the guest wrote. A fact term's records also count in `sometimes.count`
+and `sometimes.set` like every other passed Sometimes, and stay there after
+the fact clears.
+
+A fact name is ASCII letters, digits and underscores, starts with a letter or
+an underscore, and is not the first part of a built-in value's name, such as
+`sometimes` or `alive`. A fact holds 1 to 64 terms, and the facts together
+declare at most 77 values: a record holds 95 values beside the reserved
+`action_end`, and the built-in values take 18. The key policy identifier
+covers the catalog, so it pins the facts, and the vocabulary identifier does
+not change. A target keeps its key table in the search config it runs with,
+beside `[workload.options]` lines such as `hold_hooks`.
+
 The shipped strategy's tier is the passed count. Its place is the
 passed set and every lifecycle count except liveness, clamped at 8, plus two
 flags for faults still in effect when the state is saved: a thread held by an
@@ -1263,16 +1298,65 @@ validates the recorded context. It is read from the key's lanes named
 `hooks_running`, `event.ready`, `kill_fires`, `park_fires`,
 `checks_finished`, `workload_running` and the identity lane `alive`; a
 strategy without one of them leaves that part of the context zero, and packs
-no bits for a node mask it does not read. A strategy
-with stages, a reject line or aggregates is refused, because the workload
-keeps no accumulator and draws its tier directly.
+no bits for a node mask it does not read. A strategy may give stages, latched
+stages and aggregates. Every stage reads the shared `spread` and `identity`
+lines, given at the top level or under `[every_stage]`, because the duration
+context reads its lanes from them, so `FaultKeys::new` refuses a `[[stage]]`
+that gives its own `spread` or `identity`.
+
+A reject line, at the top level or in a stage, marks states the search does
+not keep. An action endpoint that matches one while the strategy's `goal` line
+does not hold is a doomed terminal, whether the guest was still running or had
+stopped, unless the run's objective counts a bug there. `Compiled::observe`
+gives it no key and leaves the accumulator as the
+action found it, so it advances no stage and counts no stage fall. The job
+stops at it, it is never an archive entry, the settle phase skips it, and the
+campaign report counts it in `doomed_endpoints` rather than in the archive
+report's `deaths`. The evidence takes nothing of it into the milestones, the
+progress watermark or the champion input. Its assertions still count in the
+archive report's `assertions` coverage, and a property it violates is still a
+finding. A rejected endpoint where the objective counts a bug is that finding,
+and the evidence merges it as it merges any finding.
+
+Each `FaultTarget` carries the strategy's accumulator, the searcher's
+`Accumulator`. The target folds its observation into a fresh accumulator with
+`action_end` false when it starts or resets, and folds each completed action's
+endpoint observation once with `action_end` true. Every way of applying an
+action goes through that one fold: a new action, a replayed parent action, a
+rebuilt prefix action and a settle action. A `FaultSnapshot` saves the
+accumulator and the endpoint's `Observed` key, and a restore takes both from
+the snapshot, so a job's parent, a detached settle run and the action applied
+after it continue from the fold the snapshot saved. A rebuilt prefix that stops
+before its certified endpoint ends the requested action with stop
+`Unexpected`; that action has no endpoint, so the target folds nothing, and
+the state has no key and counts no stage fall. A target without the
+strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
+`fault-history-dag-v3` and the campaign stream and checkpoint formats carry
+both. A rooted search (`search --from BRANCH`) starts the accumulator at the
+root: a branch root carries only its endpoint observation, so its accumulator
+is that observation folded into a fresh accumulator, as at genesis.
+
+A staged strategy's archive report and `campaign-summary.json` list
+`stage_falls`: every stage with the
+number of action endpoints whose stage is below the stage of the state the
+action departed from, counted under the stage they fall to. The games make the
+same count with `Checker::stage_falls` when they re-key their records, and
+count keyed records only. The target counts falls live (ours): at each
+completed action whose endpoint has a key, it compares the departure
+accumulator's stage with the endpoint's and records a fall in that action's
+`FaultObservations::stage_fall`. An endpoint without a key counts no fall. The
+campaign evidence counts the falls of every action it merges, kept or not. A
+fall inside an action is not seen, and
+an action of a detached settle run counts only when the job applies it again.
+A tier strategy's report and summary have no `stage_falls`.
 
 [`strategy-keys.json`](src/key/strategy-keys.json) records the key and
 duration context the shipped strategy gives 64 sampled states for each of 1,
 3, 8 and 10 nodes, and a test checks that the strategy still gives them.
 
 `workload.options.key.strategy` in a search config replaces the shipped
-strategy text. The key table accepts no other field.
+strategy text, and `workload.options.key.facts` names the facts. The key
+table accepts no other field.
 
 The Consonance backend needs Linux and KVM, or HVF on macOS. The UML backend
 needs Linux. The action model, the bundle
@@ -1427,11 +1511,12 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v2`. Every receipt frame retains
+The shared history codec is `fault-history-dag-v3`, whose endpoint frame also
+carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.
 Changing assurance is refused even if the receipt root and frame checksum are
 recomputed. The codec does not upgrade an ordinary execution into a qualified
-composition. Older DAG-v1 codecs and flat snapshot envelopes are refused;
+composition. Older DAG codecs and flat snapshot envelopes are refused;
 whole-search checkpoints require the distinct v10 envelope. The current
 execution identity remains v11 and ordered event history remains v3.

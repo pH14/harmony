@@ -14,7 +14,7 @@ use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
 use searcher::{
     search::{
         archive::{KeyShape, RetentionPolicy},
-        assertion::AssertionKey,
+        assertion::{AssertionKey, Compiled, StageFalls},
         campaign::{
             ArchiveFormat, ArchiveReportState, CampaignActionResult, CampaignCandidate,
             CampaignConfig, CampaignExecutionOptions, CampaignJobResult, CampaignModeReport,
@@ -62,10 +62,10 @@ use crate::{
 
 pub(crate) mod settle;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v14";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v10";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v11";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v6";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v11";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v12";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v7";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -171,6 +171,11 @@ impl FaultWorkload {
     pub fn key_of(&self, observations: &FaultObservations) -> Option<AssertionKey> {
         self.keys.key(observations)
     }
+
+    pub fn fresh_target(&self) -> Result<FaultTarget, String> {
+        FaultTarget::fresh(&self.kernel, &self.initramfs, &self.config)
+            .map(|target| target.with_keys(Arc::clone(&self.keys)))
+    }
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -190,6 +195,8 @@ pub struct FaultCampaignEvidence {
     park_thresholds: BTreeMap<u32, ParkThresholds>,
     undecided_checks: UndecidedChecks,
     undecided_execution: Option<(u64, u64)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    stage_falls: BTreeMap<u8, u64>,
 }
 
 impl FaultCampaignEvidence {
@@ -206,6 +213,21 @@ impl FaultCampaignEvidence {
             _ => {}
         }
         self.undecided_execution = Some((sequence, keys));
+    }
+
+    fn stage_falls(&self, compiled: &Compiled) -> Vec<StageFalls> {
+        compiled
+            .stage_names()
+            .into_iter()
+            .zip(0_u8..)
+            .map(|(stage, index)| StageFalls {
+                stage: stage.to_owned(),
+                records: self
+                    .stage_falls
+                    .get(&index)
+                    .map_or(0, |&records| usize::try_from(records).unwrap_or(usize::MAX)),
+            })
+            .collect()
     }
 
     fn recordable_bug<'a>(
@@ -234,7 +256,7 @@ type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
 fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&(
-        "fault-snapshot-identity-v2",
+        "fault-snapshot-identity-v3",
         snapshot.history.receipt().root(),
         &snapshot.observation,
         snapshot.failed,
@@ -242,6 +264,12 @@ fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
         snapshot
             .event_history
             .map(|history| (control_proto::EventHistory::VERSION, history)),
+        &snapshot.accumulator,
+        (
+            snapshot.observed.key,
+            snapshot.observed.rejected,
+            snapshot.observed.goal,
+        ),
     ))
 }
 
@@ -401,12 +429,18 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
 }
 
 fn outcome(run: &FaultCampaignRun, target: &FaultTarget) -> Outcome {
+    let objective_reached =
+        !target.failed() && target.found_bug() && run.reproduced_by(target.observation());
+    let disposition = disposition(target);
+    let doomed = !disposition.is_failed() && target.rejected() && !objective_reached;
     Outcome {
-        doomed: false,
-        objective_reached: !target.failed()
-            && target.found_bug()
-            && run.reproduced_by(target.observation()),
-        disposition: disposition(target),
+        doomed,
+        objective_reached,
+        disposition: if doomed {
+            ExecutionDisposition::Terminal
+        } else {
+            disposition
+        },
     }
 }
 
@@ -498,7 +532,11 @@ pub(crate) fn capture_replayed_prefix(
     } else {
         endpoint
     };
-    snapshot.ok_or_else(|| "cannot search from a terminal point; rewind further".into())
+    let mut snapshot = snapshot.ok_or("cannot search from a terminal point; rewind further")?;
+    target.start_accumulator();
+    snapshot.accumulator = target.accumulator().clone();
+    snapshot.observed = target.observed();
+    Ok(snapshot)
 }
 
 fn guest_suffix(suffix: &[FaultAction], plan: Option<&ChoicePlan>) -> Vec<FaultAction> {
@@ -535,10 +573,12 @@ impl JobSteps {
             ExecutionDisposition,
         ) -> Option<CampaignCandidate<FaultWorkload>>,
     ) -> Outcome {
-        merge_action_milestones(&mut self.aggregate, target);
         let raw = outcome(run, target);
+        if !raw.doomed {
+            merge_action_milestones(&mut self.aggregate, target);
+        }
         let outcome = Outcome {
-            doomed: false,
+            doomed: raw.doomed,
             objective_reached: raw.objective_reached && !self.objective_seen,
             disposition: raw.disposition,
         };
@@ -596,7 +636,6 @@ fn apply_settled(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
-    key_of: impl Fn(&FaultObservations) -> Option<AssertionKey>,
     run: &FaultCampaignRun,
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
@@ -673,7 +712,7 @@ pub(crate) fn execute_job(
         let captured = captured?;
         let outcome = steps.record(run, target, *action, |target, disposition| match captured {
             Some(snapshot) if matches!(disposition, ExecutionDisposition::Runnable) => {
-                key_of(target.observation()).map(|key| CampaignCandidate {
+                target.observed().key.map(|key| CampaignCandidate {
                     key,
                     viable: true,
                     snapshot,
@@ -689,7 +728,10 @@ pub(crate) fn execute_job(
         let suffix_actions = steps.results.len();
         let skip = if steps.objective_seen {
             Some(settle::Skip::Finding)
-        } else if !matches!(disposition(target), ExecutionDisposition::Runnable) {
+        } else if !matches!(
+            outcome(run, target).disposition,
+            ExecutionDisposition::Runnable
+        ) {
             Some(settle::Skip::Terminal)
         } else if stop.cancelled() {
             Some(settle::Skip::Cancelled)
@@ -809,7 +851,7 @@ impl Reporting for FaultWorkload {
                 result,
                 target.actions(),
                 target.observation(),
-                self.keys.key(target.observation()),
+                target.observed().key,
                 || target.state_hash_current(),
             )?
         };
@@ -859,6 +901,7 @@ impl Reporting for FaultWorkload {
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
             undecided_checks: evidence.undecided_checks,
+            stage_falls: evidence.stage_falls(self.keys.compiled()),
         }
     }
 }
@@ -1194,7 +1237,8 @@ impl TargetExecution for FaultWorkload {
             &self.config,
             self.snapshot_cache.clone(),
             self.session_worker.clone(),
-        )?;
+        )?
+        .with_keys(Arc::clone(&self.keys));
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
         if seal != target.root_seal() {
             return Err(format!(
@@ -1327,7 +1371,6 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
-            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1352,7 +1395,6 @@ impl TargetExecution for FaultWorkload {
         stop: searcher::search::rollout::RolloutStop,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
         execute_job(
-            |observations| self.key_of(observations),
             run,
             target,
             origin_snapshot,
@@ -1384,8 +1426,16 @@ impl Evaluation for FaultWorkload {
         run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
+        Ok(self.rollout_outcome(run, target)?.objective_reached)
+    }
+
+    fn rollout_outcome(
+        &self,
+        run: &FaultCampaignRun,
+        target: &FaultTarget,
+    ) -> Result<Outcome, Box<dyn Error>> {
         require_completed_attempt(target, "bootstrap or rollout evaluation")?;
-        Ok(outcome(run, target).objective_reached)
+        Ok(outcome(run, target))
     }
 
     fn key_shape(&self) -> KeyShape {
@@ -1393,7 +1443,9 @@ impl Evaluation for FaultWorkload {
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<AssertionKey, Box<dyn Error>> {
-        self.key_of(target.observation())
+        target
+            .observed()
+            .key
             .ok_or_else(|| "the faults strategy gives this state no key".into())
     }
 
@@ -1480,8 +1532,10 @@ impl Evaluation for FaultWorkload {
                 },
             }));
         }
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
+        if !action.outcome.doomed {
+            merge_progress_watermark(&mut evidence.watermark, &action.observations);
+            merge_milestones(&mut evidence.aggregate, action.milestones);
+        }
         if let FaultOperation::EventPark { edges, .. } = action.action.operation
             && !action.observations.is_empty()
         {
@@ -1510,6 +1564,9 @@ impl Evaluation for FaultWorkload {
             for read in &observation.park_reads {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
             }
+            if let Some(stage) = observation.stage_fall {
+                *evidence.stage_falls.entry(stage).or_default() += 1;
+            }
             evidence.note_undecided_keys(
                 sequence,
                 observation
@@ -1519,8 +1576,8 @@ impl Evaluation for FaultWorkload {
             );
         }
         let bug = evidence.recordable_bug(&action.observations);
-        let champion = (milestone_key(action.milestones)
-            > milestone_key(evidence.champion_milestones))
+        let champion = (!action.outcome.doomed
+            && milestone_key(action.milestones) > milestone_key(evidence.champion_milestones))
         .then_some(action.milestones);
         let failed = action.outcome.disposition.is_failed()
             && evidence.failures.len() < MAX_RECORDED_FAILURES;
@@ -1634,6 +1691,14 @@ pub(crate) fn fixture_run() -> FaultCampaignRun {
 #[cfg(test)]
 pub(crate) fn fixture_keys() -> FaultKeys {
     FaultKeys::new(crate::key::STRATEGY, 3).expect("the shipped strategy compiles")
+}
+
+#[cfg(test)]
+impl FaultWorkload {
+    pub(crate) fn with_fixture_keys(mut self, keys: Arc<FaultKeys>) -> Self {
+        self.keys = keys;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -1929,6 +1994,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let game = game();
         let identity = game.snapshot_identity_sha256(&snapshot).unwrap();
@@ -2188,6 +2254,7 @@ mod tests {
                                 location: String::new(),
                                 passed: false,
                                 failed: true,
+                                holds: None,
                             },
                         )
                     })
@@ -2377,6 +2444,7 @@ mod tests {
                     location: String::new(),
                     passed: false,
                     failed: true,
+                    holds: None,
                 },
             );
             FaultObservations {

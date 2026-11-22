@@ -672,7 +672,7 @@ mod live {
                 "the search's hold_hooks option differs from its fault vocabulary's".into(),
             );
         }
-        let keys = FaultKeys::new(options.key.strategy(), vocabulary.nodes())?;
+        let keys = FaultKeys::requested(&options.key, vocabulary.nodes())?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
         #[cfg(target_os = "linux")]
@@ -725,8 +725,7 @@ mod live {
                 expected_sha256: Some(checkpoint.sha256.clone()),
             },
             super::SearchStart::Actions(actions) => {
-                let mut target =
-                    FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;
+                let mut target = game.fresh_target()?;
                 let snapshot = crate::campaign::capture_replayed_prefix(&mut target, actions)?;
                 let snapshots = SnapshotCheckpoint {
                     format: game.checkpoint_format().into(),
@@ -824,7 +823,7 @@ mod live {
                 super::recorded_input(&first.actions, &options.answers)?,
             )?;
         }
-        let summary = json!({
+        let mut summary = json!({
             "mode": "faultlab_campaign",
             "physical_placement": {
                 "requested": resources.placement,
@@ -868,6 +867,9 @@ mod live {
                 .into_iter()
                 .collect::<std::collections::BTreeMap<_, _>>(),
         });
+        if !archive.stage_falls.is_empty() {
+            summary["stage_falls"] = json!(archive.stage_falls);
+        }
         std::fs::write(
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,
@@ -996,7 +998,7 @@ mod live {
             memory.workers,
             memory_needs(options.ram_mib).transient,
         ));
-        let keys = FaultKeys::new(options.key.strategy(), run.vocabulary.nodes())?;
+        let keys = FaultKeys::requested(&options.key, run.vocabulary.nodes())?;
         let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)));
         let workers = memory.workers;

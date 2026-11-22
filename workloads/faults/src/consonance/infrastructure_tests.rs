@@ -87,7 +87,6 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
     supervisor.read_exact(&mut acknowledgement)?;
     assert_eq!(&acknowledgement, b"A");
     let result = crate::campaign::execute_job(
-        crate::campaign::fixture_key,
         &crate::campaign::fixture_run(),
         &mut target,
         &root,

@@ -56,6 +56,7 @@ fn observation(rand: &mut RomuDuoJrRand, nodes: u16, edges: &[u64]) -> FaultObse
                 location: String::new(),
                 passed,
                 failed: !passed,
+                holds: (kind == AssertionKind::Sometimes).then_some(passed),
             },
         );
     }
@@ -157,13 +158,42 @@ fn an_edited_strategy_compiles_without_a_rebuild_and_keys_differently() {
 }
 
 #[test]
-fn a_strategy_with_aggregates_stages_or_rejects_is_refused() {
+fn stages_latches_and_aggregates_compile_and_stages_keep_the_shared_context_lines() {
     for strategy in [
-        "tier = \"highest(ticks)\"\n",
-        "[[stage]]\ngoal = \"sometimes.count > 2\"\n",
+        "tier = \"min(highest(ticks), 15)\"\n",
+        "[[stage]]\ngoal = \"sometimes.count > 2\"\nlatch = true\n[[stage]]\ngoal = \"false\"\n",
+        "[every_stage]\nspread = [\"alive\"]\n[[stage]]\ngoal = \"min(highest(hooks.finished), 8) > 2\"\n[[stage]]\ngoal = \"false\"\n",
         "reject = \"always.violated > 0\"\n",
+        "[[stage]]\ngoal = \"false\"\nreject = \"always.violated > 0\"\n",
     ] {
-        assert!(FaultKeys::new(strategy, 3).is_err(), "{strategy}");
+        assert!(FaultKeys::new(strategy, 3).is_ok(), "{strategy}");
+    }
+    let shared = FaultKeys::new(
+        "[every_stage]\nidentity = [\"alive\"]\n[[stage]]\ngoal = \"false\"\n",
+        3,
+    )
+    .unwrap();
+    let context = shared.context(
+        shared
+            .key(&FaultObservations {
+                alive: 0b101,
+                ..FaultObservations::default()
+            })
+            .unwrap(),
+    );
+    assert_eq!((context.place.get() >> 4) & 0b111, 0b101);
+    for (strategy, refusal) in [
+        (
+            "[[stage]]\nname = \"early\"\ngoal = \"false\"\nspread = [\"alive\"]\n",
+            "stage `early` gives its own `spread` or `identity`",
+        ),
+        (
+            "[[stage]]\ngoal = \"false\"\nidentity = [\"alive\"]\n",
+            "stage `false` gives its own",
+        ),
+    ] {
+        let error = FaultKeys::new(strategy, 3).unwrap_err().to_string();
+        assert!(error.contains(refusal), "{strategy}: {error}");
     }
 }
 
@@ -176,10 +206,216 @@ fn the_declarations_saturate_into_their_ranges() {
         ..FaultObservations::default()
     };
     let keys = FaultKeys::new(STRATEGY, 3).unwrap();
+    let mut declared = Vec::new();
+    declare(&observations, 3, &[], &mut declared);
     keys.catalog()
-        .checked_record(declare(&observations, 3))
+        .checked_record(declared)
         .expect("every value lies in its declared range");
     assert_eq!(keys.catalog().signals().len(), DECLARATIONS);
+}
+
+fn request(strategy: Option<&str>, facts: &[(&str, &[&str])]) -> KeyRequest {
+    KeyRequest {
+        strategy: strategy.map(str::to_owned),
+        facts: facts
+            .iter()
+            .map(|(name, terms)| {
+                (
+                    (*name).to_owned(),
+                    terms.iter().map(|term| (*term).to_owned()).collect(),
+                )
+            })
+            .collect(),
+    }
+}
+
+const R5: (&str, &[&str]) = ("r5", &["transfer_timeout", "second_transfer"]);
+
+fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
+    observations.assertions.record(
+        id.to_owned(),
+        AssertionOutcome {
+            kind: AssertionKind::Sometimes,
+            message: id.to_owned(),
+            location: String::new(),
+            passed: holds,
+            failed: !holds,
+            holds: Some(holds),
+        },
+    );
+}
+
+fn json_record(
+    observations: &mut FaultObservations,
+    assert_type: &str,
+    must_hit: bool,
+    id: &str,
+    condition: bool,
+) {
+    let event = format!(
+        r#"{{"antithesis_assert":{{"id":"{id}","assert_type":"{assert_type}","must_hit":{must_hit},"hit":true,"condition":{condition}}}}}"#
+    );
+    let (id, outcome) = crate::assertion::decode_json_event(event.as_bytes())
+        .and_then(|event| event.assertion)
+        .unwrap();
+    observations.assertions.record(id, outcome);
+}
+
+#[test]
+fn the_key_table_names_facts_that_declare_one_sometimes_all_each() {
+    let parsed: KeyRequest = serde_json::from_str(
+        r#"{"facts": {"r5": ["transfer_timeout", "second_transfer"], "r13": ["paused_leader_behind"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed,
+        request(None, &[R5, ("r13", &["paused_leader_behind"])])
+    );
+    let keys = FaultKeys::requested(&parsed, 3).unwrap();
+    let declarations = keys.catalog().declarations();
+    assert_eq!(declarations.len(), DECLARATIONS + 2);
+    let facts: Vec<(&str, &str)> = declarations[DECLARATIONS..]
+        .iter()
+        .map(|declared| (declared.name.as_str(), declared.form.as_str()))
+        .collect();
+    assert_eq!(facts, [("r13", "sometimes_all"), ("r5", "sometimes_all")]);
+    let signals: Vec<&str> = keys.catalog().signals()[DECLARATIONS..]
+        .iter()
+        .map(|signal| signal.name.as_str())
+        .collect();
+    assert_eq!(
+        signals,
+        [
+            "r13",
+            "r13.paused_leader_behind",
+            "r5",
+            "r5.transfer_timeout",
+            "r5.second_transfer",
+        ]
+    );
+    assert_ne!(
+        keys.compiled().policy_identifier(),
+        shipped().compiled().policy_identifier()
+    );
+    let mut observations = FaultObservations::default();
+    fact_record(&mut observations, "second_transfer", true);
+    let record = keys.record(&observations);
+    let slot = |name| record.values()[keys.catalog().slot(name).unwrap()];
+    assert_eq!(slot("r5"), 1);
+    assert_eq!(slot("r5.transfer_timeout"), 0);
+    assert_eq!(slot("r5.second_transfer"), 1);
+    assert_eq!(slot("r13"), 0);
+}
+
+#[test]
+fn a_key_table_without_facts_keeps_the_shipped_catalog_and_policy() {
+    let absent: KeyRequest = serde_json::from_str("{}").unwrap();
+    assert_eq!(absent, KeyRequest::default());
+    assert_eq!(serde_json::to_string(&absent).unwrap(), "{}");
+    let keys = FaultKeys::requested(&absent, 3).unwrap();
+    assert_eq!(keys.catalog(), shipped().catalog());
+    assert_eq!(
+        keys.compiled().policy_identifier(),
+        shipped().compiled().policy_identifier()
+    );
+    assert_eq!(
+        keys.compiled().policy_identifier(),
+        SHIPPED_POLICY_AT_THREE_NODES
+    );
+}
+
+const SHIPPED_POLICY_AT_THREE_NODES: &str = "assertion_key_1e87540489cc2523";
+
+#[test]
+fn malformed_facts_are_refused() {
+    let many: Vec<String> = (0..64).map(|term| format!("t{term}")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let too_many = [("a", &many[..]), ("b", &many[..12])];
+    let wide: Vec<String> = (0..65).map(|term| format!("t{term}")).collect();
+    let wide: Vec<&str> = wide.iter().map(String::as_str).collect();
+    let fits = [("a", &many[..]), ("b", &many[..11])];
+    assert!(FaultKeys::requested(&request(None, &fits), 3).is_ok());
+    for (facts, refusal) in [
+        (&[("r-5", &["a"][..])][..], "is not a name"),
+        (&[("5r", &["a"][..])][..], "is not a name"),
+        (&[("r.5", &["a"][..])][..], "is not a name"),
+        (&[("alive", &["a"][..])][..], "built-in"),
+        (&[("sometimes", &["a"][..])][..], "built-in"),
+        (&[("r5", &[][..])][..], "not 1 to 64"),
+        (&[("r5", &wide[..])][..], "not 1 to 64"),
+        (&[("r5", &["a", "a"][..])][..], "twice"),
+        (&[("r5", &["it's"][..])][..], "cannot quote"),
+        (&[("r5", &[""][..])][..], "cannot quote"),
+        (&too_many[..], "a record holds 77"),
+    ] {
+        let error = FaultKeys::requested(&request(None, facts), 3)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(refusal), "{facts:?}: {error}");
+    }
+    let unknown = serde_json::from_str::<KeyRequest>(r#"{"fact": 1}"#).unwrap_err();
+    assert!(unknown.to_string().contains("unknown field"), "{unknown}");
+}
+
+#[test]
+fn a_fact_term_follows_the_latest_sometimes_hit_whatever_kinds_share_its_id() {
+    let keys = FaultKeys::requested(&request(None, &[R5]), 3).unwrap();
+    let term = |records: &[(&str, bool, bool)]| {
+        let mut observations = FaultObservations::default();
+        for &(assert_type, must_hit, condition) in records {
+            json_record(
+                &mut observations,
+                assert_type,
+                must_hit,
+                "transfer_timeout",
+                condition,
+            );
+        }
+        keys.record(&observations).values()[keys.catalog().slot("r5.transfer_timeout").unwrap()]
+    };
+    for other in [("always", true), ("always", false), ("reachability", true)] {
+        assert_eq!(term(&[(other.0, other.1, true)]), 0, "{other:?}");
+    }
+    assert_eq!(term(&[("sometimes", true, true)]), 1);
+    assert_eq!(
+        term(&[("sometimes", true, false), ("always", true, true)]),
+        0
+    );
+    assert_eq!(
+        term(&[("always", true, true), ("sometimes", true, true)]),
+        1
+    );
+    assert_eq!(
+        term(&[("sometimes", true, true), ("always", true, false)]),
+        1
+    );
+    assert_eq!(
+        term(&[
+            ("always", true, false),
+            ("sometimes", true, true),
+            ("sometimes", true, false)
+        ]),
+        0
+    );
+}
+
+#[test]
+fn a_tier_reading_a_fact_keys_a_state_whose_fact_cleared_lower() {
+    let strategy = STRATEGY.replace(
+        "tier = \"sometimes.count\"",
+        "tier = [\"r5\", \"sometimes.count\"]",
+    );
+    let keys = FaultKeys::requested(&request(Some(&strategy), &[R5]), 3).unwrap();
+    let mut holds = FaultObservations::default();
+    fact_record(&mut holds, "transfer_timeout", true);
+    fact_record(&mut holds, "second_transfer", true);
+    let mut cleared = holds.clone();
+    fact_record(&mut cleared, "transfer_timeout", false);
+    assert_eq!(holds.assertions.key(), cleared.assertions.key());
+    let (holds, cleared) = (key(&keys, &holds), key(&keys, &cleared));
+    assert!(cleared.progress < holds.progress, "{cleared:?} {holds:?}");
+    assert_eq!(keys.view(holds).progress, [2, 2]);
+    assert_eq!(keys.view(cleared).progress, [1, 2]);
 }
 
 fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
@@ -197,6 +433,7 @@ fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservat
                 location: String::new(),
                 passed: true,
                 failed: false,
+                holds: Some(true),
             },
         );
     }

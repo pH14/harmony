@@ -424,6 +424,7 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
         budget: &mut searcher::search::checkpoint::image::ImageBudget,
     ) -> Result<(), Box<dyn std::error::Error>> {
         budget.reserve(std::mem::size_of::<Self>())?;
+        budget.reserve(self.accumulator.heap_bytes())?;
         budget.array::<crate::target::ParkLanding>(self.observation.parks.capacity())?;
         budget.array::<crate::target::ParkRead>(self.observation.park_reads.capacity())?;
         if let Some(check) = &self.observation.check {
@@ -460,12 +461,15 @@ struct SnapshotEndpoint {
     failed: bool,
     endpoint: Option<FaultEndpointCertificate>,
     event_history: Option<(u64, [u8; 32])>,
+    accumulator: searcher::search::assertion::Accumulator,
+    #[serde(with = "crate::key::ObservedDef")]
+    observed: searcher::search::assertion::Observed,
 }
 
 impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapshot>
     for FaultSnapshotCodec
 {
-    const FORMAT: &'static str = "fault-history-dag-v2";
+    const FORMAT: &'static str = "fault-history-dag-v3";
     type DecodeState = std::collections::BTreeMap<[u8; 32], FaultHistory>;
     fn encode(
         snapshot: &crate::target::FaultSnapshot,
@@ -502,6 +506,8 @@ impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapsho
                 failed: snapshot.failed,
                 endpoint: snapshot.endpoint,
                 event_history: snapshot.event_history,
+                accumulator: snapshot.accumulator.clone(),
+                observed: snapshot.observed,
             })?,
         })
     }
@@ -548,6 +554,8 @@ impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapsho
             failed: endpoint.failed,
             endpoint: endpoint.endpoint,
             event_history: endpoint.event_history,
+            accumulator: endpoint.accumulator,
+            observed: endpoint.observed,
         })
     }
 }
@@ -806,6 +814,7 @@ mod tests {
                 endpoint: Some(endpoint),
                 event_history: fixture_event_history(endpoint),
                 failed: false,
+                ..Default::default()
             });
             if step < depth {
                 observation.moment += 1;
@@ -921,6 +930,7 @@ mod tests {
                     location: String::new(),
                     passed: true,
                     failed: false,
+                    holds: None,
                 },
             );
         }
@@ -1020,7 +1030,7 @@ mod tests {
         let mut input = &bytes[8..];
         let (_, codec, entries): (String, String, u64) =
             postcard::from_bytes(&frame(&mut input)).unwrap();
-        assert_eq!(codec, "fault-history-dag-v2");
+        assert_eq!(codec, "fault-history-dag-v3");
         assert_eq!(entries, 132);
         let mut rows = std::collections::BTreeSet::new();
         let mut endpoints = 0;
@@ -1086,6 +1096,41 @@ mod tests {
         assert_eq!(memory.bytes(), 0);
         assert!(retention.nodes.is_empty());
     }
+
+    #[test]
+    fn dag_codec_carries_each_endpoint_s_accumulator_and_observed_key() {
+        let keys = crate::key::FaultKeys::new("tier = \"min(highest(ticks), 15)\"\n", 3).unwrap();
+        let mut snapshots = dag_ladder(3, 9);
+        let mut accumulator = searcher::search::assertion::Accumulator::default();
+        for (depth, snapshot) in snapshots.iter_mut().enumerate() {
+            snapshot.observed = keys.observe(&snapshot.observation, &mut accumulator, depth > 0);
+            snapshot.accumulator = accumulator.clone();
+        }
+        let checkpoint = SnapshotCheckpoint {
+            format: "dag-accumulator-test".into(),
+            entries: snapshots
+                .iter()
+                .enumerate()
+                .map(|(id, snapshot)| SnapshotCheckpointEntry {
+                    id: id as u64,
+                    snapshot: snapshot.clone(),
+                })
+                .collect(),
+        };
+        let decoded = SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(
+            &checkpoint.to_bytes().unwrap(),
+            "dag-accumulator-test",
+        )
+        .unwrap();
+        assert_eq!(decoded, checkpoint);
+        for (entry, snapshot) in decoded.entries.iter().zip(&snapshots) {
+            assert!(entry.snapshot.accumulator.heap_bytes() > 0);
+            assert_eq!(entry.snapshot.accumulator, snapshot.accumulator);
+            assert_eq!(entry.snapshot.observed, snapshot.observed);
+            assert_eq!(entry.snapshot.observed.key, keys.key(&snapshot.observation));
+        }
+    }
+
     #[test]
     fn dag_codec_preserves_assurance_and_refuses_relabelled_receipts_and_old_codec() {
         #[derive(Serialize)]
@@ -1173,7 +1218,7 @@ mod tests {
         let mut old = b"HMSNAP02".to_vec();
         frame(
             &mut old,
-            &("assurance-dag-test", "fault-history-dag-v1", 1_u64),
+            &("assurance-dag-test", "fault-history-dag-v2", 1_u64),
         );
         let error = SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(
             &old,
@@ -1461,6 +1506,7 @@ mod tests {
             observation: observation.clone(),
             failed: false,
             endpoint: Some(endpoint),
+            ..Default::default()
         });
         assert_ne!(
             snapshots[0].history.ancestor(1).unwrap().allocations(),
@@ -1546,6 +1592,7 @@ mod tests {
             observation,
             failed: false,
             endpoint: Some(endpoint),
+            ..Default::default()
         };
         retention.canonicalize(&mut seed).unwrap();
         retention.retain(&seed, &mut memory);
@@ -1658,6 +1705,7 @@ mod tests {
                 endpoint: Some(endpoint),
                 event_history: fixture_event_history(endpoint),
                 failed: false,
+                ..Default::default()
             };
             let checkpoint = SnapshotCheckpoint {
                 format: "dag-deep-test".into(),

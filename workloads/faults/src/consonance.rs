@@ -36,6 +36,7 @@ use fault_policy::{
     CHOICE_NAMESPACE, STANDING_NAMESPACE, StandingWindow, choice_answer, encode_standing,
     encode_windows,
 };
+use searcher::search::assertion::{Accumulator, Observed};
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,6 +44,7 @@ use sha2::{Digest, Sha256};
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::guest::{GuestAnswers, GuestChoice, GuestChoices, GuestChooser};
 use crate::history::{FaultHistory, HistoryReceipt};
+use crate::key::{FaultKeys, UNOBSERVED};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
     FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
@@ -767,6 +769,9 @@ pub struct FaultTarget {
     execution_ticks: u64,
     guest_horizons_run: u64,
     root_seal: u64,
+    keys: Option<Arc<FaultKeys>>,
+    accumulator: Accumulator,
+    observed: Observed,
 }
 
 #[cfg(target_os = "macos")]
@@ -835,7 +840,56 @@ impl FaultTarget {
             execution_ticks: 0,
             guest_horizons_run: 0,
             root_seal,
+            keys: None,
+            accumulator: Accumulator::default(),
+            observed: UNOBSERVED,
         })
+    }
+
+    #[must_use]
+    pub fn with_keys(mut self, keys: Arc<FaultKeys>) -> Self {
+        self.keys = Some(keys);
+        self.start_accumulator();
+        self
+    }
+
+    pub(crate) fn start_accumulator(&mut self) {
+        self.accumulator = Accumulator::default();
+        self.observed = match &self.keys {
+            Some(keys) => keys.observe(&self.observation, &mut self.accumulator, false),
+            None => UNOBSERVED,
+        };
+    }
+
+    fn observe_endpoint(&mut self) -> Option<u8> {
+        let keys = match &self.keys {
+            Some(keys) if self.observation.stop != FaultStop::Unexpected => keys,
+            _ => {
+                self.observed = UNOBSERVED;
+                return None;
+            }
+        };
+        let departure = self.accumulator.stage();
+        self.observed = keys.observe(&self.observation, &mut self.accumulator, true);
+        let arrival = self.observed.key.and(self.accumulator.stage());
+        departure
+            .zip(arrival)
+            .and_then(|(from, to)| (to < from).then_some(to))
+    }
+
+    #[must_use]
+    pub fn observed(&self) -> Observed {
+        self.observed
+    }
+
+    #[must_use]
+    pub fn rejected(&self) -> bool {
+        self.observed.rejected.is_some() && !self.observed.goal
+    }
+
+    #[must_use]
+    pub fn accumulator(&self) -> &Accumulator {
+        &self.accumulator
     }
 
     pub fn fresh(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
@@ -1039,8 +1093,12 @@ impl FaultTarget {
 
     pub fn probe<T>(&mut self, inspect: impl FnOnce(&mut Self) -> T) -> T {
         let observation = self.observation.clone();
+        let accumulator = self.accumulator.clone();
+        let observed = self.observed;
         let result = inspect(self);
         self.observation = observation;
+        self.accumulator = accumulator;
+        self.observed = observed;
         result
     }
 
@@ -1107,10 +1165,13 @@ impl FaultTarget {
                 self.failed = false;
                 self.watchdog_cutoffs = 0;
                 self.infrastructure_failure = false;
+                self.start_accumulator();
             }
             Err(error) => {
                 eprintln!("fault target reset failed: {error}");
                 self.history = FaultHistory::default();
+                self.accumulator = Accumulator::default();
+                self.observed = UNOBSERVED;
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
                 self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
@@ -1212,6 +1273,8 @@ impl FaultTarget {
                 self.actions.take();
                 self.history = FaultHistory::default();
                 self.observation = FaultObservations::default();
+                self.accumulator = Accumulator::default();
+                self.observed = UNOBSERVED;
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
                 self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
@@ -1227,6 +1290,8 @@ impl FaultTarget {
         self.actions.take();
         self.history = snapshot.history.clone();
         self.observation = snapshot.observation.clone();
+        self.accumulator = snapshot.accumulator.clone();
+        self.observed = snapshot.observed;
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         self.watchdog_cutoffs = 0;
@@ -1263,6 +1328,8 @@ impl FaultTarget {
             failed: false,
             endpoint: Some(endpoint),
             event_history,
+            accumulator: self.accumulator.clone(),
+            observed: self.observed,
         };
         validate_snapshot_prefix_certificates(&snapshot, self.config.uml.is_some())?;
         Ok(Some(snapshot))
@@ -1360,7 +1427,7 @@ impl FaultTarget {
             ))
         });
         match result {
-            Ok((observation, ran, receipt)) => {
+            Ok((mut observation, ran, receipt)) => {
                 let endpoint = receipt.as_ref().map(HistoryReceipt::endpoint);
                 if let Some(receipt) = receipt {
                     match self.history.push(receipt) {
@@ -1384,6 +1451,7 @@ impl FaultTarget {
                     .saturating_add(crate::target::action_ticks(&action));
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
+                observation.stage_fall = self.observe_endpoint();
                 self.action_observations.push(observation);
                 endpoint
             }
@@ -2643,6 +2711,7 @@ impl Live {
 #[must_use]
 pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
     size_of::<FaultSnapshot>()
+        .saturating_add(snapshot.accumulator.heap_bytes())
         .saturating_add(
             snapshot
                 .observation
@@ -2786,6 +2855,7 @@ mod tests {
                 location: "l".repeat(16384),
                 passed: true,
                 failed: false,
+                holds: None,
             };
             string_bytes += id.len() + outcome.message.len() + outcome.location.len();
             snapshot.observation.assertions.record(id, outcome);
@@ -2968,7 +3038,11 @@ mod tests {
             execution_ticks: 17,
             guest_horizons_run: 0,
             root_seal: 0,
+            keys: None,
+            accumulator: Accumulator::default(),
+            observed: UNOBSERVED,
         }
+        .with_keys(Arc::new(crate::campaign::fixture_keys()))
     }
 
     fn fixture_genesis() -> HistoryReceipt {
@@ -3091,6 +3165,15 @@ mod tests {
         static PLANNED_BRANCHES: RefCell<Option<Vec<PlannedBranch>>> = const { RefCell::new(None) };
     }
 
+    const SCRIPTED_WORK: u64 = u64::MAX;
+
+    #[derive(Debug, Default)]
+    struct ScriptedRuns {
+        batches: Vec<Vec<consonance_client::session::SdkEvent>>,
+        depths: BTreeMap<u64, usize>,
+        depth: usize,
+    }
+
     #[derive(Debug, Default)]
     struct TimedOutRestore {
         endpoint_state: consonance_client::endpoint::EndpointState,
@@ -3101,6 +3184,7 @@ mod tests {
         branch_calls: u64,
         sdk_offsets: Vec<u32>,
         sdk_event_count: u64,
+        scripted: Option<ScriptedRuns>,
         run_events: Option<Vec<consonance_client::session::SdkEvent>>,
         abandon_on_hash: bool,
         hash_failure: bool,
@@ -3455,6 +3539,9 @@ mod tests {
                 if self.run_hashes.is_some() {
                     self.hash = self.snapshots.get(&snapshot.0).copied();
                 }
+                if let Some(scripted) = &mut self.scripted {
+                    scripted.depth = scripted.depths.get(&snapshot.0).copied().unwrap_or(0);
+                }
                 self.current = snapshot.0;
                 if let Some(history) = self.histories.get(&snapshot.0) {
                     self.history = *history;
@@ -3491,6 +3578,12 @@ mod tests {
                 if let Some(history) = self.histories.get(&snapshot.0) {
                     self.history = *history;
                 }
+                if let Some(scripted) = &mut self.scripted {
+                    scripted.depth = scripted.depths.get(&snapshot.0).copied().unwrap_or(0);
+                    let events = self.events.get(&snapshot.0).cloned().unwrap_or_default();
+                    self.events.insert(SCRIPTED_WORK, events);
+                    self.current = SCRIPTED_WORK;
+                }
                 Ok(())
             } else {
                 Err(SessionError::Hung(WALL_LIMIT).into())
@@ -3500,6 +3593,15 @@ mod tests {
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
             if let Some(events) = self.run_events.take() {
                 self.events.insert(self.current, events);
+            }
+            if let Some(scripted) = &mut self.scripted {
+                let batch = scripted
+                    .batches
+                    .get(scripted.depth)
+                    .cloned()
+                    .unwrap_or_default();
+                scripted.depth += 1;
+                self.events.entry(self.current).or_default().extend(batch);
             }
             if self.run_hung && self.run_hashes.as_ref().is_none_or(Vec::is_empty) {
                 return Err(SessionError::Hung(WALL_LIMIT).into());
@@ -3528,6 +3630,11 @@ mod tests {
             self.next_snap += 1;
             self.snapshots.insert(self.next_snap, self.hash.unwrap());
             self.histories.insert(self.next_snap, self.history);
+            if let Some(scripted) = &mut self.scripted {
+                scripted.depths.insert(self.next_snap, scripted.depth);
+                let events = self.events.get(&self.current).cloned().unwrap_or_default();
+                self.events.insert(self.next_snap, events);
+            }
             Ok((SnapId(self.next_snap), self.moment))
         }
 
@@ -3654,6 +3761,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -3714,6 +3822,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4308,6 +4417,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4525,6 +4635,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -4560,6 +4671,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash,
             hash_failure: false,
@@ -4849,6 +4961,379 @@ mod tests {
     }
 
     #[test]
+    fn a_target_keys_each_endpoint_by_its_fold_and_restores_the_snapshot_fold() {
+        let keys = crate::campaign::fixture_keys();
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; 2], false))
+        });
+        let root = target.snapshot().unwrap().unwrap();
+        assert_eq!(root.accumulator, *target.accumulator());
+        assert_eq!(root.observed, target.observed());
+        assert_eq!(root.observed.key, keys.key(&root.observation));
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let first = target.apply_and_snapshot(action).unwrap().unwrap();
+        let mut expected = Accumulator::default();
+        assert_eq!(
+            keys.observe(&root.observation, &mut expected, false),
+            root.observed
+        );
+        assert_eq!(
+            keys.observe(&first.observation, &mut expected, true),
+            first.observed
+        );
+        assert_eq!(first.accumulator, expected);
+        assert_eq!(first.observed.key, keys.key(&first.observation));
+        assert_eq!(target.observed(), first.observed);
+        target.restore(&root).unwrap();
+        assert_eq!(*target.accumulator(), root.accumulator);
+        assert_eq!(target.observed(), root.observed);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    const FOLDING: &str = "tier = \"min(highest(ticks), 15)\"\n";
+
+    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+        let mut bytes = vec![0];
+        bytes.extend_from_slice(&ticks.to_le_bytes());
+        (0, (2 << 24) | process_proto::registers::TICKS, bytes)
+    }
+
+    fn scripted_batches_live(batches: Vec<Vec<consonance_client::session::SdkEvent>>) -> Live {
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            scripted: Some(ScriptedRuns {
+                batches,
+                ..ScriptedRuns::default()
+            }),
+            run_hashes: Some(vec![[17; 32]; 64]),
+            ..fixture_session()
+        });
+        live
+    }
+
+    fn scripted_runs_live(ticks: &[u64]) -> Live {
+        scripted_batches_live(
+            ticks
+                .iter()
+                .map(|&ticks| vec![ticks_event(ticks)])
+                .collect(),
+        )
+    }
+
+    fn keyed_target(strategy: &str) -> (FaultTarget, Arc<FaultKeys>) {
+        let keys = Arc::new(FaultKeys::new(strategy, 3).unwrap());
+        (unbooted_target().with_keys(Arc::clone(&keys)), keys)
+    }
+
+    fn merged_report(
+        keys: &Arc<FaultKeys>,
+        actions: &[searcher::search::campaign::CampaignActionResult<
+            crate::campaign::FaultWorkload,
+        >],
+    ) -> crate::archive::FaultArchiveReport {
+        use searcher::search::campaign::{ArchiveReportState, Evaluation, Reporting};
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+            boot_cache: None,
+            answers: Vec::new(),
+            hold_hooks: false,
+        };
+        let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config)
+            .with_fixture_keys(Arc::clone(keys));
+        let mut evidence = crate::campaign::FaultCampaignEvidence::default();
+        for (sequence, action) in (0..).zip(actions) {
+            game.merge_action_evidence(&mut evidence, action, sequence, || {
+                Ok(crate::archive::FaultInput::default())
+            })
+            .unwrap();
+        }
+        game.archive_report(
+            &evidence,
+            ArchiveReportState {
+                seed: 0,
+                executions: 0,
+                entries: Vec::new(),
+                progress_curve: Vec::new(),
+                retained: 0,
+                rejected: 0,
+                terminal_endpoints: 0,
+                terminal_objectives: 0,
+                doomed_endpoints: 0,
+                execution_failures: 0,
+                hung_jobs: 0,
+                selector: searcher::search::archive::SelectorAccounting::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn replayed_rebuilt_and_settled_parents_fold_each_action_as_the_live_path_did() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, keys) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 2, 7])));
+        let root = target.snapshot().unwrap().unwrap();
+        let first = target.apply_and_snapshot(action).unwrap().unwrap();
+        let second = target.apply_and_snapshot(action).unwrap().unwrap();
+        let detached = target
+            .run_detached(|target| {
+                target.apply(action);
+                target.apply(action);
+                (
+                    target.observation().ticks,
+                    *target.accumulator() != second.accumulator,
+                )
+            })
+            .unwrap();
+        assert_eq!(detached, (7, true));
+        assert_eq!(*target.accumulator(), second.accumulator);
+        assert_eq!(target.observed(), second.observed);
+        let third = target.apply_and_snapshot(action).unwrap().unwrap();
+        let ticks = [&root, &first, &second, &third].map(|snapshot| snapshot.observation.ticks);
+        assert_eq!(ticks, [0, 5, 1, 2]);
+        let mut expected = Accumulator::default();
+        let _ = keys.observe(&root.observation, &mut expected, false);
+        let observed = [&first, &second, &third]
+            .map(|snapshot| keys.observe(&snapshot.observation, &mut expected, true));
+        assert_eq!(third.accumulator, expected);
+        assert_eq!(third.observed, observed[2]);
+        assert_eq!(keys.view(third.observed.key.unwrap()).progress, [5]);
+        let mut skipped = Accumulator::default();
+        let _ = keys.observe(&root.observation, &mut skipped, false);
+        let _ = keys.observe(&third.observation, &mut skipped, true);
+        assert_ne!(skipped, third.accumulator);
+        let certificates = second.history.certificates();
+        for (origin, replay) in [(&root, &[action, action][..]), (&first, &[action][..])] {
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 2, 7])));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                origin,
+                replay,
+                &certificates[certificates.len() - replay.len()..],
+                crate::archive::FaultMilestones::default(),
+                &[action],
+                searcher::search::rollout::RolloutStop::new(false),
+                None,
+            )
+            .unwrap();
+            let candidate = &result.actions[0].candidate.as_ref().unwrap().snapshot;
+            assert_eq!(candidate.observation.ticks, 2);
+            assert_eq!(candidate.accumulator, third.accumulator);
+            assert_eq!(candidate.observed, third.observed);
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn a_staged_strategy_reports_each_fall_back_to_an_earlier_stage() {
+        use searcher::search::assertion::StageFalls;
+        let staged = "[[stage]]\nname = \"quiet\"\ngoal = \"ticks >= 4\"\n[[stage]]\nname = \"busy\"\ngoal = \"false\"\n";
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, keys) = keyed_target(staged);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[5, 1, 6])));
+        let origin = target.snapshot().unwrap().unwrap();
+        assert_eq!(origin.accumulator.stage(), Some(0));
+        let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[action, action, action],
+            searcher::search::rollout::RolloutStop::new(false),
+            None,
+        )
+        .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        let stages: Vec<_> = result
+            .actions
+            .iter()
+            .map(|action| {
+                let candidate = &action.candidate.as_ref().unwrap().snapshot;
+                (
+                    action.observations[0].stage_fall,
+                    candidate.accumulator.stage(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            stages,
+            [(None, Some(1)), (Some(0), Some(0)), (None, Some(1))]
+        );
+        let falls = |stage: &str, records| StageFalls {
+            stage: stage.to_owned(),
+            records,
+        };
+        let report = merged_report(&keys, &result.actions);
+        assert_eq!(report.stage_falls, [falls("quiet", 1), falls("busy", 0)]);
+        let encoded = serde_json::to_value(&report).unwrap();
+        assert_eq!(encoded["stage_falls"][0]["stage"], "quiet");
+        let decoded: crate::archive::FaultArchiveReport = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.stage_falls, report.stage_falls);
+        let tier = merged_report(&Arc::new(crate::campaign::fixture_keys()), &result.actions);
+        assert!(tier.stage_falls.is_empty());
+        assert!(
+            serde_json::to_value(&tier)
+                .unwrap()
+                .get("stage_falls")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_rejected_endpoint_is_a_doomed_terminal_whose_coverage_and_findings_still_count() {
+        use searcher::search::rollout::ExecutionDisposition;
+        let request = crate::key::KeyRequest {
+            strategy: Some(
+                "reject = \"ticks >= 4\"\n[[stage]]\nname = \"closed\"\ngoal = \"r5 > 0\"\n[[stage]]\nname = \"open\"\ngoal = \"false\"\n"
+                    .to_owned(),
+            ),
+            facts: BTreeMap::from([("r5".to_owned(), vec!["opened".to_owned()])]),
+        };
+        let keys = Arc::new(FaultKeys::requested(&request, 3).unwrap());
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let json = |body: &str| -> consonance_client::session::SdkEvent {
+            (0, 0, body.as_bytes().to_vec())
+        };
+        let run = |endpoint: consonance_client::session::SdkEvent, quiescent: bool| {
+            let mut target = unbooted_target().with_keys(Arc::clone(&keys));
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                scripted: Some(ScriptedRuns {
+                    batches: vec![vec![ticks_event(5), endpoint]],
+                    ..ScriptedRuns::default()
+                }),
+                run_hashes: Some(if quiescent {
+                    Vec::new()
+                } else {
+                    vec![[17; 32]; 64]
+                }),
+                terminal_when_exhausted: quiescent,
+                ..fixture_session()
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let origin = target.snapshot().unwrap().unwrap();
+            assert_eq!(origin.accumulator.stage(), Some(0));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &origin,
+                &[],
+                &[],
+                crate::archive::FaultMilestones::default(),
+                &[action, action],
+                searcher::search::rollout::RolloutStop::new(true),
+                None,
+            )
+            .unwrap();
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(result.actions.len(), 1);
+            let endpoint = &result.actions[0];
+            assert!(endpoint.candidate.is_none());
+            assert_eq!(endpoint.observations[0].stage_fall, None);
+            assert!(target.rejected());
+            assert_eq!(target.observed().key, None);
+            assert_eq!(*target.accumulator(), origin.accumulator);
+            (endpoint.outcome, merged_report(&keys, &result.actions))
+        };
+        for quiescent in [false, true] {
+            let (doomed, report) = run(
+                json(
+                    r#"{"antithesis_assert":{"id":"opened","assert_type":"sometimes","must_hit":true,"hit":true,"condition":true}}"#,
+                ),
+                quiescent,
+            );
+            assert!(doomed.doomed && !doomed.objective_reached, "{quiescent}");
+            assert_eq!(doomed.disposition, ExecutionDisposition::Terminal);
+            assert!(report.assertions.0["opened"].passed);
+            assert!(report.bugs.is_empty());
+            assert_eq!(
+                report.milestones,
+                crate::archive::FaultMilestones::default()
+            );
+            assert_eq!(
+                report.progress_watermark,
+                crate::archive::FaultProgressWatermark::default()
+            );
+            assert_eq!(report.stage_falls.len(), 2);
+            assert!(report.stage_falls.iter().all(|falls| falls.records == 0));
+        }
+        for (quiescent, disposition) in [
+            (false, ExecutionDisposition::Runnable),
+            (true, ExecutionDisposition::Terminal),
+        ] {
+            let (finding, report) = run(
+                json(
+                    r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#,
+                ),
+                quiescent,
+            );
+            assert!(finding.objective_reached && !finding.doomed, "{quiescent}");
+            assert_eq!(finding.disposition, disposition);
+            assert_eq!(report.bugs.len(), 1);
+            assert!(report.bugs[0].observations.violations().contains("kept"));
+        }
+    }
+
+    #[test]
+    fn the_settle_phase_stops_at_and_skips_an_endpoint_the_strategy_rejects() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let directory = tempfile::tempdir().unwrap();
+        for (ticks, doomed, outcome) in [
+            (&[1, 5][..], false, "rejected"),
+            (&[5][..], true, "skipped: the execution ended terminal"),
+        ] {
+            let (mut target, _) = keyed_target("reject = \"ticks >= 4\"\n");
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(ticks)));
+            let origin = target.snapshot().unwrap().unwrap();
+            let policy = crate::campaign::settle::SettlePolicy {
+                record: directory.path().join(format!("{doomed}.jsonl")),
+                heal: None,
+            };
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &origin,
+                &[],
+                &[],
+                crate::archive::FaultMilestones::default(),
+                &[action],
+                searcher::search::rollout::RolloutStop::new(false),
+                Some(&policy),
+            )
+            .unwrap();
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(result.actions.len(), 1);
+            assert_eq!(result.actions[0].outcome.doomed, doomed);
+            assert_eq!(result.actions[0].candidate.is_none(), doomed);
+            assert_eq!(target.rejected(), doomed);
+            let record: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&policy.record).unwrap()).unwrap();
+            assert_eq!(record["outcome"], outcome);
+            assert_eq!(record["settle_actions"], u64::from(!doomed));
+        }
+    }
+
+    #[test]
+    fn snapshot_memory_charge_counts_the_aggregate_accumulator() {
+        let keys = FaultKeys::new(FOLDING, 3).unwrap();
+        let mut snapshot = FaultSnapshot::default();
+        let pure = snapshot_memory_charge(&snapshot);
+        snapshot.observed = keys.observe(&snapshot.observation, &mut snapshot.accumulator, false);
+        assert!(snapshot.accumulator.heap_bytes() > 0);
+        assert_eq!(
+            snapshot_memory_charge(&snapshot),
+            pure + snapshot.accumulator.heap_bytes()
+        );
+    }
+
+    #[test]
     fn action_capture_hashes_once_and_standalone_snapshot_reads_the_live_endpoint() {
         let mut target = unbooted_target();
         LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
@@ -4919,7 +5404,6 @@ mod tests {
             }));
         });
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -4971,7 +5455,6 @@ mod tests {
                 .collect::<Vec<_>>();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5022,7 +5505,6 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let error = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5065,7 +5547,6 @@ mod tests {
             .unwrap(),
         );
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5096,7 +5577,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5140,7 +5620,6 @@ mod tests {
             let origin = target.snapshot().unwrap().unwrap();
             let before = capture_hash_calls();
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &origin,
@@ -5168,7 +5647,6 @@ mod tests {
         let before = capture_hash_calls();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -5403,6 +5881,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
@@ -5439,6 +5918,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5483,6 +5963,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -5583,6 +6064,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5626,6 +6108,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5642,7 +6125,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let keyframe = target.snapshot().unwrap().unwrap();
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &keyframe,
@@ -5676,10 +6158,10 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5713,6 +6195,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
@@ -5730,6 +6213,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5745,7 +6229,6 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5779,6 +6262,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
+            ..Default::default()
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
@@ -5796,6 +6280,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5811,7 +6296,6 @@ mod tests {
         });
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let error = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &snapshot,
@@ -5849,6 +6333,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -5865,7 +6350,6 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let origin = target.snapshot().unwrap().unwrap();
         let result = crate::campaign::execute_job(
-            crate::campaign::fixture_key,
             &crate::campaign::fixture_run(),
             &mut target,
             &origin,
@@ -6033,6 +6517,7 @@ mod tests {
             observation,
             failed: false,
             endpoint: Some(endpoint),
+            ..Default::default()
         };
         let mut importer = scripted_capture_live(Vec::new(), false);
         importer.chain = Chain::new(
@@ -6101,7 +6586,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_and_rebuild_stop_observations_exclude_previous_park_evidence() {
+    fn terminal_and_rebuild_stops_exclude_previous_park_evidence_and_a_rebuild_stop_has_no_key() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let events = [
             (5, 0, br#"{"harmony_park":{"site":1,"edges":2}}"#.to_vec()),
@@ -6117,8 +6602,9 @@ mod tests {
                 br#"{"harmony_park_read":{"site":3,"edges":4}}"#.to_vec(),
             ),
         ];
+        let (_, ticks_register, ticks_bytes) = ticks_event(7);
         for rebuilding in [false, true] {
-            let mut target = unbooted_target();
+            let (mut target, _) = keyed_target(FOLDING);
             let mut prefix = events[..2].to_vec();
             prefix.push((10, u32::MAX, Vec::new()));
             let mut decoder = SdkDecoder::default();
@@ -6162,11 +6648,13 @@ mod tests {
                     prefix
                         .into_iter()
                         .chain(events[2..].iter().cloned())
+                        .chain([(20, ticks_register, ticks_bytes.clone())])
                         .collect(),
                 ),
                 ..fixture_session()
             });
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let departure = target.accumulator().clone();
             target.apply(action);
             assert!(!target.failed());
             assert_eq!(
@@ -6189,7 +6677,14 @@ mod tests {
             );
             if rebuilding {
                 assert_eq!(target.observation.stop, FaultStop::Unexpected);
+                assert_eq!(target.observed(), UNOBSERVED);
+                assert_eq!(target.last_action_observations()[0].stage_fall, None);
+                assert_eq!(*target.accumulator(), departure);
+            } else {
+                assert!(target.observed().key.is_some());
+                assert_ne!(*target.accumulator(), departure);
             }
+            assert_eq!(target.observation.ticks, 7);
             LIVE.with(|slot| slot.borrow_mut().take());
         }
     }
@@ -6263,6 +6758,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: true,
@@ -7106,6 +7602,7 @@ mod tests {
             branch_calls: 0,
             sdk_offsets: Vec::new(),
             sdk_event_count: 0,
+            scripted: None,
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
@@ -7148,6 +7645,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
@@ -7171,7 +7669,6 @@ mod tests {
                 );
             }
             let result = crate::campaign::execute_job(
-                crate::campaign::fixture_key,
                 &crate::campaign::fixture_run(),
                 &mut target,
                 &keyframe,
@@ -7292,6 +7789,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         target.finish_restore(&snapshot, Err(error)).unwrap();
         assert_eq!(target.watchdog_cutoffs(), 1);
@@ -7348,6 +7846,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..FaultSnapshot::default()
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
@@ -7392,6 +7891,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         for phase in ["run", "snapshot"] {
             for error in [
@@ -7462,6 +7962,7 @@ mod tests {
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(hash)),
             event_history: Some(history),
+            ..Default::default()
         };
         validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
         for previous in [
@@ -7916,6 +8417,7 @@ mod tests {
             failed: false,
             endpoint: None,
             event_history: None,
+            ..Default::default()
         };
         let error = target
             .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
@@ -8561,6 +9063,7 @@ mod tests {
                 branch_calls: 0,
                 sdk_offsets: Vec::new(),
                 sdk_event_count: 0,
+                scripted: None,
                 run_events: None,
                 abandon_on_hash: false,
                 history_failure: None,
@@ -8692,6 +9195,7 @@ mod tests {
                     branch_calls: 0,
                     sdk_offsets: Vec::new(),
                     sdk_event_count: 0,
+                    scripted: None,
                     run_events: None,
                     abandon_on_hash: false,
                     history_failure: history_hung.then_some(|| SessionError::Hung(WALL_LIMIT)),

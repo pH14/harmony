@@ -315,6 +315,10 @@ fn settle(
             record.outcome = "terminal";
             break;
         }
+        if target.rejected() {
+            record.outcome = "rejected";
+            break;
+        }
     }
     record.settle_ticks = target.execution_ticks().saturating_sub(began);
     if record.outcome != "compared" && record.actions.is_empty() {
