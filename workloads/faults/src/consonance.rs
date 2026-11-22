@@ -5150,6 +5150,33 @@ mod tests {
     }
 
     #[test]
+    fn a_detached_run_that_loses_the_held_endpoint_restores_it_by_rebuilding() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let (mut target, _) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&[1; 16])));
+        for _ in 0..3 {
+            target.apply_and_snapshot(action).unwrap().unwrap();
+        }
+        let endpoint = target.snapshot().unwrap().unwrap();
+        let before = thread_parent_rebuild_runs();
+        target
+            .run_detached(|target| {
+                target.apply(action);
+                LIVE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let live = slot.as_mut().unwrap();
+                    let dropped = live.chain.truncate(2);
+                    live.drop_snapshots(dropped).unwrap();
+                });
+            })
+            .unwrap();
+        let after = thread_parent_rebuild_runs();
+        assert_eq!(after.actions - before.actions, 2);
+        assert_eq!(target.history.receipt(), endpoint.history.receipt());
+        assert_eq!(*target.accumulator(), endpoint.accumulator);
+    }
+
+    #[test]
     fn replayed_rebuilt_and_settled_parents_fold_each_action_as_the_live_path_did() {
         let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let (mut target, keys) = keyed_target(FOLDING);
