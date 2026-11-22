@@ -5098,6 +5098,18 @@ mod tests {
 
     #[test]
     fn the_restore_after_a_detached_run_under_store_pressure_rebuilds_nothing() {
+        use consonance_client::cache::LocalIndex;
+        for index in [
+            LocalIndex::new(4096),
+            LocalIndex::new(4096).with_store_floor(4096),
+        ] {
+            restore_after_detached_run_under_pressure(&Arc::new(index));
+        }
+    }
+
+    fn restore_after_detached_run_under_pressure(
+        index: &Arc<consonance_client::cache::LocalIndex>,
+    ) {
         let _fixture = ResidencyFixture;
         RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
         let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
@@ -5109,7 +5121,7 @@ mod tests {
                 moment: 0,
             },
             Some(Shared {
-                index: Arc::new(consonance_client::cache::LocalIndex::new(4096)),
+                index: Arc::clone(index) as Arc<dyn CacheIndex>,
                 namespace: Namespace::exact(&[b"held-endpoint"]),
             }),
         );
@@ -5132,6 +5144,7 @@ mod tests {
         assert_eq!(links, 3);
         assert_eq!(after.actions - before.actions, 0);
         assert_eq!(target.history.receipt(), endpoint.history.receipt());
+        assert_eq!(index.stats().evictions, 0);
     }
 
     #[test]

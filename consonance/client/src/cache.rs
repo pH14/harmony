@@ -429,6 +429,7 @@ pub struct LocalIndex {
     headroom: Option<fn() -> Option<u64>>,
     workers: usize,
     transient: u64,
+    store_floor: usize,
 }
 
 impl LocalIndex {
@@ -438,8 +439,16 @@ impl LocalIndex {
     }
 
     #[must_use]
-    pub fn measured(budget: usize, workers: usize, transient: u64) -> Self {
-        Self::new(budget).with_headroom(headroom_bytes, workers, transient)
+    pub fn measured(budget: usize, workers: usize, transient: u64, store_floor: u64) -> Self {
+        Self::new(budget)
+            .with_headroom(headroom_bytes, workers, transient)
+            .with_store_floor(store_floor)
+    }
+
+    #[must_use]
+    pub fn with_store_floor(mut self, store_floor: u64) -> Self {
+        self.store_floor = usize::try_from(store_floor).unwrap_or(usize::MAX);
+        self
     }
 
     #[must_use]
@@ -470,6 +479,7 @@ impl LocalIndex {
             headroom: None,
             workers: 0,
             transient: 0,
+            store_floor: usize::MAX,
             state: Arc::new(Mutex::new(State {
                 owner: Arc::new(()),
                 planned: budget,
@@ -734,7 +744,11 @@ impl CacheIndex for LocalIndex {
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
         state.set_store(holder, Some(bytes));
         state.measure(headroom, self.workers, self.transient);
-        while state.over_budget() {
+        let floored = state
+            .stores
+            .values()
+            .all(|&store| store <= self.store_floor);
+        while floored && state.over_budget() {
             let Some(&(_, id)) = state.evictable.first() else {
                 break;
             };
@@ -753,7 +767,7 @@ impl CacheIndex for LocalIndex {
             .iter()
             .max_by_key(|&(&id, &bytes)| (bytes, std::cmp::Reverse(id)))
             .map(|(&id, _)| id);
-        let shrink = over && (grew || largest == Some(holder));
+        let shrink = over && (bytes > self.store_floor || grew || largest == Some(holder));
         if shrink {
             state.stats.shrinks += 1;
         }
@@ -1515,6 +1529,28 @@ mod tests {
         index.forget_store(1);
         assert!(!index.report_store(2, 2 * page));
         assert_eq!(index.stats().shrinks, 4);
+    }
+
+    #[test]
+    fn a_store_above_its_floor_shrinks_before_any_shared_entry_is_evicted() {
+        let page = PAGE as u64;
+        let index = LocalIndex::with_segment_bytes(4 * PAGE, PAGE).with_store_floor(page);
+        let space = ns("a");
+        let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let b = put(&index, space, b"b", None, &[(1, 1)], &[]).unwrap();
+        index.release(a);
+        index.release(b);
+        assert!(!index.report_store(1, page));
+        assert!(index.report_store(1, 3 * page));
+        assert!(index.report_store(1, 3 * page));
+        assert_eq!((index.stats().evictions, index.stats().shrinks), (0, 2));
+        assert!(!index.report_store(1, 2 * page));
+        assert!(!index.report_store(1, page));
+        assert!(index.report_store(2, 2 * page));
+        assert_eq!(index.stats().evictions, 0);
+        assert!(!index.report_store(2, page));
+        assert!(!index.report_store(3, page));
+        assert_eq!((index.stats().evictions, index.stats().shrinks), (1, 3));
     }
 
     #[test]

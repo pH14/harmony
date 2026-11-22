@@ -596,15 +596,20 @@ memory it does not count, such as the pages a snapshot import or export holds,
 grows past this plan, and rises back toward the plan when that memory is free
 (see the [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
-budget. When eviction cannot, the worker with the largest store drops its
+store's page, VM-state and index bytes to the cache. While any worker's store
+is larger than the guest RAM, a report over budget evicts no shared entry, and
+a reporting worker whose store is above the guest RAM drops its own prefix
+snapshots instead. Once every store is at or below the guest RAM, the cache
+evicts entries to keep the total in budget. When eviction
+cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. While a settle
 phase runs, the chain holds the job's endpoint: it drops the prefixes the phase
 appended, oldest first, before the endpoint and the prefixes older than it, and
 keeps setup, the endpoint and the phase's newest prefix even when the store is
 still over budget, so the store can exceed the budget by one prefix until the
-phase ends. While the total
+phase ends. The same holds while the store shrinks toward its guest RAM: a
+report only asks the worker to shrink, and the chain chooses which prefixes go. While the total
 is over budget, every other worker also drops prefix snapshots until its store
 is no larger than at its last report that fit the budget, so the stores stop
 growing while the largest store's worker is busy. The run prints the worker count and budget, and
