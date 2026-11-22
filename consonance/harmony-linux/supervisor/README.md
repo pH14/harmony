@@ -401,9 +401,12 @@ cuts the disk:
 5. It zeroes and discards the log, attaches new devices under the next
    generation's names, and remounts. ext4 replays its journal on mount.
 
-Once a second the supervisor reads the status of each disk's `dm-log-writes`
-device. When a disk with no error or stall window open has logged 64 MiB or
-more, the supervisor compacts its log:
+Every 100 poll ticks the supervisor reads the status of each disk's
+`dm-log-writes` device. A poll tick sleeps 10 ms of guest time and then does
+its work, so the checks are at least a guest second apart; with three database
+nodes they were about 4 guest seconds apart.
+When a disk with no error or stall window open has logged 64 MiB or more, the
+supervisor compacts its log:
 
 1. It suspends the disk device without flushing, so no write is in flight,
    waits for the drain mark as a cut does, and swaps a linear table onto the
@@ -425,7 +428,7 @@ more, the supervisor compacts its log:
 
 The supervisor checks the logs after it applies a tick's actions, so a cut
 never waits for a fold that started in the same tick. It logs a compaction at
-the first once-a-second check after the fold ends, or, when a cut waited for
+the first check after the fold ends, or, when a cut waited for
 the fold, at the first check after that cut; an execution that ends first does
 not log it. A fold that fails ends the execution with an infrastructure error
 when the supervisor collects it, at a check or at a cut.
@@ -456,10 +459,10 @@ supervisor's previous copy, and once in the new copy.
 
 The log holds what was logged since the last cut or compaction. The supervisor
 bounds one part of it: once it starts polling, it compacts a disk with no error
-or stall window open as soon as a poll finds 64 MiB or more allocated in the
+or stall window open as soon as a check finds 64 MiB or more allocated in the
 log. The rest depends on the workload, and the supervisor does not bound it:
 everything logged before polling starts (the setup command and node startup),
-what the kernel queues for the log between the last poll below 64 MiB and the
+what the kernel queues for the log between the last check below 64 MiB and the
 teardown (a flush queues every write held for it), the writes still waiting for
 a flush that the teardown logs, and everything logged while a stall window is
 open. Raise the guest RAM (`ram_mib`) to match.
