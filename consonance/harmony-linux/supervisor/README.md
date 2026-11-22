@@ -280,9 +280,10 @@ as a kill window does and keeps it down until a later restart window. It then
 cuts the disk:
 
 1. It suspends the log device without flushing or freezing the filesystem,
-   adds a `harmony-drain` mark to the log, and waits until the kernel has
-   written that mark, so no entry is still queued when the target is torn
-   down. It then swaps an `error` table under the log device and then under the
+   adds a `harmony-drain` mark to the log, and waits until the entry headers,
+   followed from the start of the log, end at that mark in the last allocated
+   sector. No entry is then still queued when the target is torn down. It
+   then swaps an `error` table under the log device and then under the
    disk device. Unwritten page cache never reaches the data disk, and the old
    `dm-log-writes` target writes its end mark.
 2. It detaches the mount and requests deferred device removals, so other
@@ -329,17 +330,24 @@ bytes of supervisor memory for each plain write applied by a compaction since
 the format mark or the last cut. The kernel holds the writes since the last
 flush; after a compaction the supervisor holds those that were waiting. While a
 compaction runs, each waiting write it keeps is held twice: once in the log or
-the supervisor's previous copy, and once in the new copy. The log holds what was logged since the last cut or compaction: everything the
-setup command and node startup write before the supervisor starts polling, then
-up to 64 MiB plus one second of writes, more while a stall window is open. Raise
-the guest RAM (`ram_mib`) to match. A guest
-that runs out of memory ends the execution: the supervisor reads the `oom_kill`
-counter in `/proc/vmstat` whenever a node exits and once a second, and reports
-the first kernel OOM kill as an infrastructure error. The guest kernels charge one
-execution tick for each page-allocation retry, so an allocation that reclaim
-cannot satisfy still lets timers fire and the OOM killer run. The OCI runtime
-allows the container every block device and `/dev/mapper/control`; the
-supervisor creates the device nodes itself.
+the supervisor's previous copy, and once in the new copy.
+
+The log holds what was logged since the last cut or compaction. The supervisor
+bounds one part of it: once it starts polling, it compacts a disk with no error
+or stall window open as soon as a poll finds 64 MiB or more allocated in the
+log. The rest depends on the workload, and the supervisor does not bound it:
+everything logged before polling starts (the setup command and node startup),
+what the kernel queues for the log between the last poll below 64 MiB and the
+teardown (a flush queues every write held for it), the writes still waiting for
+a flush that the teardown logs, and everything logged while a stall window is
+open. Raise the guest RAM (`ram_mib`) to match.
+A guest that runs out of memory ends the execution: the supervisor reads the
+`oom_kill` counter in `/proc/vmstat` whenever a node exits and once a second,
+and reports the first kernel OOM kill as an infrastructure error. The guest
+kernels charge one execution tick for each page-allocation retry, so an
+allocation that reclaim cannot satisfy still lets timers fire and the OOM
+killer run. The OCI runtime allows the container every block device and
+`/dev/mapper/control`; the supervisor creates the device nodes itself.
 
 ### Disk faults
 

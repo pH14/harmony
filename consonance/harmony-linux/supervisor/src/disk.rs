@@ -196,22 +196,39 @@ fn super_block(log: &mut impl Sectors) -> Result<(u64, u64), LogError> {
     ))
 }
 
-pub fn drain_logged(log: &mut impl Sectors, last_sector: u64) -> Result<bool, LogError> {
+pub fn drain_logged(
+    log: &mut impl Sectors,
+    logged_entries: u64,
+    last_sector: u64,
+) -> Result<bool, LogError> {
     let scale = match super_block(log) {
         Ok((_, scale)) => scale,
         Err(LogError::NoLog) => return Ok(false),
         Err(error) => return Err(error),
     };
-    let Some(at) = last_sector
-        .checked_add(1)
-        .and_then(|end| end.checked_sub(scale))
-        .filter(|&at| at >= scale)
-    else {
-        return Ok(false);
-    };
+    let end = last_sector.checked_add(1).map_or(0, |end| end / scale);
     let mut header = [0_u8; SECTOR_BYTES];
-    log.read_at(at, &mut header)?;
-    Ok(names(&header, DRAIN_MARK.as_bytes()))
+    if end < 2 || logged_entries == 0 {
+        return Ok(false);
+    }
+    log.read_at((end - 1) * scale, &mut header)?;
+    if !names(&header, DRAIN_MARK.as_bytes()) {
+        return Ok(false);
+    }
+    let mut at = 1_u64;
+    for _ in 1..logged_entries {
+        log.read_at(at * scale, &mut header)?;
+        let logged = if word(&header, 16) & DISCARD != 0 {
+            0
+        } else {
+            word(&header, 8)
+        };
+        at = at.saturating_add(1).saturating_add(logged);
+        if at >= end {
+            return Ok(false);
+        }
+    }
+    Ok(at + 1 == end)
 }
 
 pub fn read_log(log: &mut impl Sectors, log_sectors: u64) -> Result<Vec<LogEntry>, LogError> {
@@ -697,6 +714,11 @@ pub mod dm {
             .and_then(|tail| tail.split(|&byte| byte == 0).next())
             .ok_or("device-mapper status reply is truncated")?;
         std::str::from_utf8(line).map_err(|error| format!("device-mapper status: {error}"))
+    }
+
+    #[must_use]
+    pub fn logged_entries(line: &str) -> Option<u64> {
+        line.split(' ').next()?.parse().ok()
     }
 
     #[must_use]
@@ -1412,18 +1434,33 @@ mod tests {
         }
     }
 
+    fn mark_header(mark: &str) -> [u8; SECTOR_BYTES] {
+        let mut header = [0_u8; SECTOR_BYTES];
+        header[16..24].copy_from_slice(&MARK.to_le_bytes());
+        header[24..32].copy_from_slice(&(mark.len() as u64).to_le_bytes());
+        header[32..32 + mark.len()].copy_from_slice(mark.as_bytes());
+        header
+    }
+
     #[test]
     fn a_drain_mark_counts_as_logged_once_it_is_the_last_entry() {
         let mut recorder = Recorder::new();
+        let status = |recorder: &Recorder| (recorder.count, recorder.next - 1);
         recorder.apply(&Op::Write(0, 1, 1));
-        assert!(!drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
-        recorder.apply(&Op::Fua(4, 2, 1));
+        let (entries, last) = status(&recorder);
+        assert!(!drain_logged(&mut recorder.log, entries, last).unwrap());
+        recorder.entry(4, 1, FUA, &mark_header(DRAIN_MARK));
         recorder.super_block();
-        assert!(!drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
-        let before = recorder.next - 1;
+        let (entries, last) = status(&recorder);
+        assert!(
+            !drain_logged(&mut recorder.log, entries, last).unwrap(),
+            "a write whose data ends in the mark's bytes"
+        );
+        let before = status(&recorder);
         recorder.drain();
-        assert!(!drain_logged(&mut recorder.log, before).unwrap());
-        assert!(drain_logged(&mut recorder.log, recorder.next - 1).unwrap());
+        assert!(!drain_logged(&mut recorder.log, before.0, before.1).unwrap());
+        let (entries, last) = status(&recorder);
+        assert!(drain_logged(&mut recorder.log, entries, last).unwrap());
         recorder.teardown();
         let entries = read_log(&mut recorder.log, 256).unwrap();
         assert_eq!(shape(&entries), [(4, 1, FUA), (0, 1, 0), (0, 0, MARK)]);
@@ -1436,16 +1473,12 @@ mod tests {
         header[16..24].copy_from_slice(&1_u64.to_le_bytes());
         header[24..28].copy_from_slice(&4096_u32.to_le_bytes());
         log.write_at(0, &header).unwrap();
-        assert!(!drain_logged(&mut log, 7).unwrap());
+        assert!(!drain_logged(&mut log, 0, 7).unwrap());
         for (mark, logged) in [(FORMAT_MARK, false), (DRAIN_MARK, true)] {
-            let mut entry = [0_u8; SECTOR_BYTES];
-            entry[16..24].copy_from_slice(&MARK.to_le_bytes());
-            entry[24..32].copy_from_slice(&(mark.len() as u64).to_le_bytes());
-            entry[32..32 + mark.len()].copy_from_slice(mark.as_bytes());
-            log.write_at(8, &entry).unwrap();
-            assert_eq!(drain_logged(&mut log, 15).unwrap(), logged, "{mark}");
+            log.write_at(8, &mark_header(mark)).unwrap();
+            assert_eq!(drain_logged(&mut log, 1, 15).unwrap(), logged, "{mark}");
         }
-        assert!(!drain_logged(&mut log, u64::MAX).unwrap());
+        assert!(!drain_logged(&mut log, 1, u64::MAX).unwrap());
     }
 
     #[test]

@@ -398,6 +398,19 @@ impl Disk {
         mapper.send(&self.log_name(), &format!("mark {FORMAT_MARK}"))
     }
 
+    fn drained(&self, mapper: &Mapper, log: &mut RamDevice) -> Result<bool, String> {
+        let log_name = self.log_name();
+        let line = mapper.status(&log_name)?;
+        if dm::logging_disabled(&line) {
+            return Ok(true);
+        }
+        let (Some(entries), Some(last)) = (dm::logged_entries(&line), dm::logged_sectors(&line))
+        else {
+            return Err(format!("{log_name}: unexpected status {line:?}"));
+        };
+        disk::drain_logged(log, entries, last).map_err(|error| log_error(&self.spec, &error))
+    }
+
     fn retire_log(&self, mapper: &Mapper, target: &str, params: &str) -> Result<(), String> {
         let log_name = self.log_name();
         mapper.suspend(&log_name)?;
@@ -405,27 +418,17 @@ impl Disk {
         let device = self.first + 1;
         let mut log = RamDevice::reader(device)
             .map_err(|error| format!("{}: {error}", ram_path(device).display()))?;
-        let mut drained = false;
-        for _ in 0..DRAIN_POLLS {
-            let line = mapper.status(&log_name)?;
-            if dm::logging_disabled(&line) {
-                drained = true;
-                break;
+        let mut polls = 1;
+        while !self.drained(mapper, &mut log)? {
+            if polls == DRAIN_POLLS {
+                return Err(format!(
+                    "{log_name}: the write log did not log its drain mark"
+                ));
             }
-            let last = dm::logged_sectors(&line)
-                .ok_or_else(|| format!("{log_name}: unexpected status {line:?}"))?;
-            if disk::drain_logged(&mut log, last).map_err(|error| log_error(&self.spec, &error))? {
-                drained = true;
-                break;
-            }
+            polls += 1;
             std::thread::sleep(DRAIN_WAIT);
         }
         drop(log);
-        if !drained {
-            return Err(format!(
-                "{log_name}: the write log did not log its drain mark"
-            ));
-        }
         mapper.load(&log_name, self.sectors(), target, params)?;
         mapper.resume(&log_name)
     }
