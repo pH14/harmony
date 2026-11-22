@@ -119,7 +119,7 @@ fn run_application(spec: &ExecutionSpec) -> RunOutcome {
 ))]
 mod runtime {
     use harmony_sdk::{Point, Sdk};
-    use harmony_supervisor::blockdev::Disks;
+    use harmony_supervisor::blockdev::{COMPACT_POLL_TICKS, Disks};
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
@@ -1022,6 +1022,11 @@ mod runtime {
             let exits = reap_nodes(nodes)?;
             if !exits.is_empty() || tick.is_multiple_of(OOM_POLL_TICKS) {
                 oom.observe(&read_vmstat()?)?;
+            }
+            if tick.is_multiple_of(COMPACT_POLL_TICKS) {
+                for compacted in runtime.disks.compact()? {
+                    log(tick, &compacted);
+                }
             }
             let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
             for &node in &deaths {

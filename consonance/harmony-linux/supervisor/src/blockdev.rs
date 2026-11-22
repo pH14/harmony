@@ -12,7 +12,7 @@ use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
 
 use crate::bundle::DiskSpec;
 use crate::disk::{
-    self, DiskMode, FORMAT_MARK, Flip, LogEntry, LogError, Plan, RAM_DEVICE_BYTES,
+    self, DiskMode, FORMAT_MARK, Flip, Folded, LogEntry, LogError, Plan, RAM_DEVICE_BYTES,
     RAM_DEVICES_PER_DISK, SECTOR_BYTES, Sectors, dm,
 };
 
@@ -25,6 +25,9 @@ const BLKDISCARD: u64 = 0x1277;
 const MKFS: [&str; 7] = ["mkfs.ext4", "-F", "-q", "-b", "4096", "-m", "0"];
 const MKFS_EXTENDED: &str = "lazy_itable_init=1,lazy_journal_init=1,nodiscard";
 const MOUNT_DATA: &std::ffi::CStr = c"noinit_itable";
+const LOG_SECTORS: u64 = RAM_DEVICE_BYTES / SECTOR_BYTES as u64;
+pub const COMPACT_LOG_BYTES: u64 = 64 << 20;
+pub const COMPACT_POLL_TICKS: u64 = 100;
 
 #[repr(C, align(4096))]
 struct Chunk([u8; CHUNK_BYTES]);
@@ -221,6 +224,17 @@ impl Mapper {
         self.replace(name, sectors, "error", "")
     }
 
+    fn status(&self, name: &str) -> Result<String, String> {
+        let reply = self.call(
+            dm::TABLE_STATUS,
+            dm::status(name)?,
+            &format!("status {name}"),
+        )?;
+        dm::status_line(&reply)
+            .map(str::to_owned)
+            .map_err(|error| format!("{name}: {error}"))
+    }
+
     fn send(&self, name: &str, text: &str) -> Result<(), String> {
         self.call(
             dm::TARGET_MSG,
@@ -268,6 +282,7 @@ struct Disk {
     generation: u64,
     mode: DiskMode,
     log: String,
+    folded: Folded,
 }
 
 impl Disk {
@@ -383,29 +398,53 @@ impl Disk {
         mapper.remove(&name)?;
         mapper.remove(&log_name)?;
         let mut log = self.open(1)?;
-        disk::read_log(&mut log, RAM_DEVICE_BYTES / SECTOR_BYTES as u64)
-            .map_err(|error| log_error(&self.spec, &error))
+        let logged =
+            disk::read_log(&mut log, LOG_SECTORS).map_err(|error| log_error(&self.spec, &error))?;
+        Ok(self.folded.join(&logged))
     }
 
     fn rebuild(&mut self, plan: &Plan, flip: Option<Flip>) -> Result<(), String> {
         let mut data = self.open(0)?;
         let mut log = self.open(1)?;
         let mut base = self.open(2)?;
-        disk::rebuild(plan, &mut log, &mut base, &mut data, self.sectors())
+        self.folded
+            .rebuild(plan, &mut log, &mut base, &mut data, self.sectors())
             .map_err(|error| log_error(&self.spec, &error))?;
         if let Some(flip) = flip {
             flip.apply(&mut data).map_err(|error| data.context(error))?;
             flip.apply(&mut base).map_err(|error| base.context(error))?;
         }
-        log.write_at(0, &[0; 4096])
-            .map_err(|error| log.context(error))?;
-        match log.discard(RAM_DEVICE_BYTES) {
-            Ok(()) => {}
-            Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => {}
-            Err(error) => return Err(log.context(error)),
-        }
+        clear(&mut log)?;
+        self.folded = Folded::default();
         self.generation += 1;
         Ok(())
+    }
+
+    fn log_full(&self, mapper: &Mapper) -> Result<bool, String> {
+        let line = mapper.status(&self.log_name())?;
+        let sectors = dm::logged_sectors(&line)
+            .ok_or_else(|| format!("{}: unexpected status {line:?}", self.log_name()))?;
+        Ok(sectors >= COMPACT_LOG_BYTES / SECTOR_BYTES as u64)
+    }
+
+    fn compact(&mut self, mapper: &Mapper) -> Result<(), String> {
+        let name = self.name();
+        let log_name = self.log_name();
+        let (target, params) = DiskMode::Normal.table(&format!("{RAM_MAJOR}:{}", self.first));
+        mapper.suspend(&name)?;
+        mapper.replace(&log_name, self.sectors(), target, &params)?;
+        {
+            let mut log = self.open(1)?;
+            let mut base = self.open(2)?;
+            let logged = disk::read_log(&mut log, LOG_SECTORS)
+                .map_err(|error| log_error(&self.spec, &error))?;
+            self.folded
+                .fold(&logged, &mut log, &mut base, self.sectors())
+                .map_err(|error| log_error(&self.spec, &error))?;
+            clear(&mut log)?;
+        }
+        mapper.replace(&log_name, self.sectors(), "log-writes", &self.table())?;
+        mapper.resume(&name)
     }
 
     fn open(&self, offset: u32) -> Result<RamDevice, String> {
@@ -455,6 +494,7 @@ impl Disks {
                 generation: 0,
                 mode: DiskMode::Normal,
                 log: String::new(),
+                folded: Folded::default(),
             };
             let device = disk.attach(&mapper)?;
             disk.format(&mapper, &device, uid, gid)?;
@@ -479,7 +519,7 @@ impl Disks {
             return Ok(None);
         };
         let entries = disk.cut(mapper)?;
-        let plan = disk::plan(&entries, disk::node_choice(choice, node));
+        let plan = disk.folded.plan(&entries, disk::node_choice(choice, node));
         disk.rebuild(&plan, None)?;
         let device = disk.attach(mapper)?;
         disk.mount(&device)?;
@@ -496,8 +536,10 @@ impl Disks {
             let _ = disk.sync();
         }
         let entries = disk.cut(mapper)?;
-        let flip = disk::corruption(&entries, disk::node_choice(choice, node));
-        disk.rebuild(&disk::plan_all(&entries), flip)?;
+        let flip = disk
+            .folded
+            .corruption(&entries, disk::node_choice(choice, node));
+        disk.rebuild(&disk.folded.plan_all(&entries), flip)?;
         let device = disk.attach(mapper)?;
         let unmountable = match disk.mount(&device) {
             Ok(()) => None,
@@ -525,7 +567,7 @@ impl Disks {
             return Ok(None);
         };
         let entries = disk.cut(mapper)?;
-        let plan = disk::plan_all(&entries);
+        let plan = disk.folded.plan_all(&entries);
         disk.rebuild(&plan, None)?;
         let device = disk.attach(mapper)?;
         disk.mount(&device)?;
@@ -542,6 +584,25 @@ impl Disks {
         Ok(true)
     }
 
+    pub fn compact(&mut self) -> Result<Vec<String>, String> {
+        let Some(mapper) = self.mapper.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut compacted = Vec::new();
+        for disk in &mut self.disks {
+            if disk.mode != DiskMode::Normal || !disk.log_full(mapper)? {
+                continue;
+            }
+            disk.compact(mapper)?;
+            compacted.push(format!(
+                "node {} disk log compacted: {}",
+                disk.spec.node,
+                disk.folded.describe()
+            ));
+        }
+        Ok(compacted)
+    }
+
     pub fn release_stalled(&mut self, node: u16) -> Result<(), String> {
         let Some((mapper, disk)) = self.find(node) else {
             return Ok(());
@@ -551,6 +612,16 @@ impl Disks {
         }
         mapper.suspend(&disk.name())?;
         mapper.resume(&disk.name())
+    }
+}
+
+fn clear(log: &mut RamDevice) -> Result<(), String> {
+    log.write_at(0, &[0; 4096])
+        .map_err(|error| log.context(error))?;
+    match log.discard(RAM_DEVICE_BYTES) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EOPNOTSUPP) => Ok(()),
+        Err(error) => Err(log.context(error)),
     }
 }
 

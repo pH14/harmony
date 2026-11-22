@@ -349,22 +349,244 @@ impl Flip {
 
 #[must_use]
 pub fn corruption(entries: &[LogEntry], choice: u64) -> Option<Flip> {
+    flip(&[], entries, choice)
+}
+
+fn flip(folded: &[(u64, u64)], entries: &[LogEntry], choice: u64) -> Option<Flip> {
     let formatted = entries
         .len()
         .checked_sub(1)
-        .and_then(|last| entries[..last].iter().rposition(|entry| entry.marks()))
-        .map_or(0, |index| index + 1);
-    let written = entries[formatted..]
+        .and_then(|last| entries[..last].iter().rposition(|entry| entry.marks()));
+    let folded = if formatted.is_some() { &[] } else { folded };
+    let written = folded
         .iter()
-        .filter(|entry| entry.plain())
+        .copied()
+        .chain(
+            entries[formatted.map_or(0, |index| index + 1)..]
+                .iter()
+                .filter(|entry| entry.plain())
+                .map(|entry| (entry.sector, entry.sectors)),
+        )
         .collect::<Vec<_>>();
     let mut draw = Draw(choice);
-    let entry = written.get(usize::try_from(draw.below(written.len().max(1) as u64)).ok()?)?;
+    let &(sector, sectors) =
+        written.get(usize::try_from(draw.below(written.len().max(1) as u64)).ok()?)?;
     Some(Flip {
-        sector: entry.sector + draw.below(entry.sectors),
+        sector: sector + draw.below(sectors),
         byte: usize::try_from(draw.below(SECTOR_BYTES as u64)).ok()?,
         bit: u8::try_from(draw.below(8)).ok()?,
     })
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Folded {
+    entries: usize,
+    written: Vec<(u64, u64)>,
+    logged: Vec<LogEntry>,
+    waiting: Vec<LogEntry>,
+    held: Vec<u8>,
+}
+
+impl Folded {
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "{} log entries folded into the replay base, {} kept with {} bytes of data",
+            self.entries,
+            self.logged.len() + self.waiting.len(),
+            self.held.len()
+        )
+    }
+
+    fn held_sectors(&self) -> u64 {
+        (self.held.len() / SECTOR_BYTES) as u64
+    }
+
+    fn order(&self, logged: &[LogEntry]) -> Vec<LogEntry> {
+        let shift = self.held_sectors();
+        let released = logged
+            .iter()
+            .position(|entry| entry.flushes() || (entry.changes_data() && !entry.forced()))
+            .unwrap_or(logged.len());
+        let moved = |entry: &LogEntry| LogEntry {
+            data: entry.data + shift,
+            ..*entry
+        };
+        self.logged
+            .iter()
+            .copied()
+            .chain(logged[..released].iter().map(moved))
+            .chain(self.waiting.iter().copied())
+            .chain(logged[released..].iter().map(moved))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn join(&self, logged: &[LogEntry]) -> Vec<LogEntry> {
+        let Some((end, logged)) = logged.split_last() else {
+            return self.order(logged);
+        };
+        let mut entries = self.order(logged);
+        entries.push(LogEntry {
+            data: end.data + self.held_sectors(),
+            ..*end
+        });
+        entries
+    }
+
+    pub fn fold(
+        &mut self,
+        logged: &[LogEntry],
+        log: &mut impl Sectors,
+        base: &mut impl Sectors,
+        device_sectors: u64,
+    ) -> Result<(), LogError> {
+        let entries = self.order(logged.split_last().map_or(logged, |(_, logged)| logged));
+        let durable = durable(&entries);
+        let (folded, kept) = entries.split_at(durable);
+        in_device(folded.iter().chain(kept), device_sectors)?;
+        let mut source = Held {
+            held: &self.held,
+            log,
+        };
+        let mut buffer = vec![0_u8; COPY_SECTORS as usize * SECTOR_BYTES];
+        for entry in folded.iter().filter(|entry| entry.changes_data()) {
+            copy(entry, &mut source, base, &mut buffer)?;
+        }
+        for entry in folded {
+            if entry.marks() {
+                self.written.clear();
+            } else if entry.plain() {
+                self.written.push((entry.sector, entry.sectors));
+            }
+        }
+        let mut held = Vec::new();
+        let mut logged = Vec::new();
+        let mut waiting = Vec::new();
+        for &entry in kept {
+            let mut entry = entry;
+            if entry.changes_data() && !entry.discards() {
+                let start = held.len();
+                held.resize(start + entry.sectors as usize * SECTOR_BYTES, 0);
+                source.read_at(entry.data, &mut held[start..])?;
+                entry.data = (start / SECTOR_BYTES) as u64;
+            }
+            if entry.changes_data() && !entry.forced() {
+                waiting.push(entry);
+            } else {
+                logged.push(entry);
+            }
+        }
+        self.entries += durable;
+        self.held = held;
+        self.logged = logged;
+        self.waiting = waiting;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn plan(&self, entries: &[LogEntry], choice: u64) -> Plan {
+        self.counted(plan(entries, choice))
+    }
+
+    #[must_use]
+    pub fn plan_all(&self, entries: &[LogEntry]) -> Plan {
+        self.counted(plan_all(entries))
+    }
+
+    fn counted(&self, mut plan: Plan) -> Plan {
+        plan.entries += self.entries;
+        plan.durable += self.entries;
+        plan
+    }
+
+    #[must_use]
+    pub fn corruption(&self, entries: &[LogEntry], choice: u64) -> Option<Flip> {
+        flip(&self.written, entries, choice)
+    }
+
+    pub fn rebuild(
+        &self,
+        plan: &Plan,
+        log: &mut impl Sectors,
+        base: &mut impl Sectors,
+        data: &mut impl Sectors,
+        device_sectors: u64,
+    ) -> Result<(), LogError> {
+        rebuild(
+            plan,
+            &mut Held {
+                held: &self.held,
+                log,
+            },
+            base,
+            data,
+            device_sectors,
+        )
+    }
+}
+
+struct Held<'a, S> {
+    held: &'a [u8],
+    log: &'a mut S,
+}
+
+impl<S: Sectors> Sectors for Held<'_, S> {
+    fn read_at(&mut self, sector: u64, buffer: &mut [u8]) -> io::Result<()> {
+        let held = (self.held.len() / SECTOR_BYTES) as u64;
+        if sector >= held {
+            return self.log.read_at(sector - held, buffer);
+        }
+        let at = usize::try_from(sector).unwrap_or(usize::MAX) * SECTOR_BYTES;
+        let bytes = self
+            .held
+            .get(at..at + buffer.len())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+        buffer.copy_from_slice(bytes);
+        Ok(())
+    }
+
+    fn write_at(&mut self, _: u64, _: &[u8]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+}
+
+fn in_device<'a>(
+    entries: impl Iterator<Item = &'a LogEntry>,
+    device_sectors: u64,
+) -> Result<(), LogError> {
+    for (index, entry) in entries.enumerate() {
+        if entry.changes_data()
+            && entry
+                .sector
+                .checked_add(entry.sectors)
+                .is_none_or(|end| end > device_sectors)
+        {
+            return Err(LogError::OutOfRange(index));
+        }
+    }
+    Ok(())
+}
+
+fn copy(
+    entry: &LogEntry,
+    log: &mut impl Sectors,
+    base: &mut impl Sectors,
+    buffer: &mut [u8],
+) -> io::Result<()> {
+    let mut done = 0;
+    while done < entry.sectors {
+        let count = (entry.sectors - done).min(COPY_SECTORS);
+        let chunk = &mut buffer[..count as usize * SECTOR_BYTES];
+        if entry.discards() {
+            chunk.fill(0);
+        } else {
+            log.read_at(entry.data + done, chunk)?;
+        }
+        base.write_at(entry.sector + done, chunk)?;
+        done += count;
+    }
+    Ok(())
 }
 
 pub fn rebuild(
@@ -375,28 +597,9 @@ pub fn rebuild(
     device_sectors: u64,
 ) -> Result<(), LogError> {
     let mut buffer = vec![0_u8; COPY_SECTORS as usize * SECTOR_BYTES];
-    for (index, entry) in plan.apply.iter().chain(&plan.restore).enumerate() {
-        if entry
-            .sector
-            .checked_add(entry.sectors)
-            .is_none_or(|end| end > device_sectors)
-        {
-            return Err(LogError::OutOfRange(index));
-        }
-    }
+    in_device(plan.apply.iter().chain(&plan.restore), device_sectors)?;
     for entry in &plan.apply {
-        let mut done = 0;
-        while done < entry.sectors {
-            let count = (entry.sectors - done).min(COPY_SECTORS);
-            let chunk = &mut buffer[..count as usize * SECTOR_BYTES];
-            if entry.discards() {
-                chunk.fill(0);
-            } else {
-                log.read_at(entry.data + done, chunk)?;
-            }
-            base.write_at(entry.sector + done, chunk)?;
-            done += count;
-        }
+        copy(entry, log, base, &mut buffer)?;
     }
     for entry in &plan.restore {
         let mut done = 0;
@@ -422,9 +625,44 @@ pub mod dm {
     pub const SKIP_LOCKFS: u32 = 1 << 10;
     pub const NOFLUSH: u32 = 1 << 11;
     pub const DEFERRED_REMOVE: u32 = 1 << 17;
+    pub const TABLE_STATUS: u8 = 12;
+    pub const STATUS_BYTES: usize = IOCTL_BYTES + 512;
+    const BUFFER_FULL: u32 = 1 << 8;
     const NAME_BYTES: usize = 128;
     const SPEC_BYTES: usize = 40;
     const TYPE_BYTES: usize = 16;
+
+    pub fn status(name: &str) -> Result<Vec<u8>, String> {
+        let mut out = header(name, 0)?;
+        out.resize(STATUS_BYTES, 0);
+        set_u32(&mut out, 12, STATUS_BYTES as u32);
+        Ok(out)
+    }
+
+    pub fn status_line(reply: &[u8]) -> Result<&str, String> {
+        let word = |at: usize| {
+            reply
+                .get(at..at + 4)
+                .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+        if word(28).is_some_and(|flags| flags & BUFFER_FULL != 0) {
+            return Err("device-mapper status does not fit its buffer".to_owned());
+        }
+        if word(20) != Some(1) {
+            return Err("device-mapper status does not hold one target".to_owned());
+        }
+        let line = word(16)
+            .and_then(|start| usize::try_from(start).ok())
+            .and_then(|start| reply.get(start + SPEC_BYTES..))
+            .and_then(|tail| tail.split(|&byte| byte == 0).next())
+            .ok_or("device-mapper status reply is truncated")?;
+        std::str::from_utf8(line).map_err(|error| format!("device-mapper status: {error}"))
+    }
+
+    #[must_use]
+    pub fn logged_sectors(line: &str) -> Option<u64> {
+        line.split(' ').nth(1)?.parse().ok()
+    }
 
     #[must_use]
     pub fn request(command: u8) -> u64 {
@@ -528,6 +766,7 @@ mod tests {
         assert!(emergency_read_only(other, "/tmp/tarantool/n2"));
     }
 
+    #[derive(Clone)]
     struct Memory(Vec<u8>);
 
     impl Memory {
@@ -557,10 +796,12 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     enum Op {
         Write(u64, u8, u64),
         Fua(u64, u8, u64),
         Meta(u64, u8, u64),
+        Commit(u64, u8, u64),
         Discard(u64, u64),
         Flush,
         Mark,
@@ -571,6 +812,7 @@ mod tests {
         data: Memory,
         next: u64,
         count: u64,
+        unflushed: Vec<(u64, u64, u64, Vec<u8>)>,
     }
 
     impl Recorder {
@@ -580,7 +822,20 @@ mod tests {
                 data: Memory::sectors(64),
                 next: 1,
                 count: 0,
+                unflushed: Vec::new(),
             }
+        }
+
+        fn release(&mut self) {
+            for (sector, sectors, flags, payload) in std::mem::take(&mut self.unflushed) {
+                self.entry(sector, sectors, flags, &payload);
+            }
+        }
+
+        fn clear_log(&mut self) {
+            self.log = Memory::sectors(256);
+            self.next = 1;
+            self.count = 0;
         }
 
         fn entry(&mut self, sector: u64, sectors: u64, flags: u64, payload: &[u8]) {
@@ -605,28 +860,36 @@ mod tests {
             match *op {
                 Op::Write(sector, fill, sectors)
                 | Op::Fua(sector, fill, sectors)
-                | Op::Meta(sector, fill, sectors) => {
+                | Op::Meta(sector, fill, sectors)
+                | Op::Commit(sector, fill, sectors) => {
                     let payload = vec![fill; sectors as usize * SECTOR_BYTES];
                     self.data.write_at(sector, &payload).unwrap();
-                    let flags = match op {
-                        Op::Fua(..) => FUA,
-                        Op::Meta(..) => METADATA,
-                        _ => 0,
-                    };
-                    self.entry(sector, sectors, flags, &payload);
+                    match op {
+                        Op::Fua(..) => self.entry(sector, sectors, FUA, &payload),
+                        Op::Commit(..) => {
+                            self.release();
+                            self.entry(sector, sectors, FLUSH | FUA, &payload);
+                        }
+                        Op::Meta(..) => self.unflushed.push((sector, sectors, METADATA, payload)),
+                        _ => self.unflushed.push((sector, sectors, 0, payload)),
+                    }
                 }
                 Op::Discard(sector, sectors) => {
                     self.data
                         .write_at(sector, &vec![0; sectors as usize * SECTOR_BYTES])
                         .unwrap();
-                    self.entry(sector, sectors, DISCARD, &[]);
+                    self.unflushed.push((sector, sectors, DISCARD, Vec::new()));
                 }
-                Op::Flush => self.entry(0, 0, FLUSH, &[]),
+                Op::Flush => {
+                    self.release();
+                    self.entry(0, 0, FLUSH, &[]);
+                }
                 Op::Mark => self.entry(0, 0, MARK, FORMAT_MARK.as_bytes()),
             }
         }
 
         fn finish(&mut self) {
+            self.release();
             self.entry(0, 0, MARK, END_MARK);
             let mut header = [0_u8; SECTOR_BYTES];
             header[0..8].copy_from_slice(&LOG_MAGIC.to_le_bytes());
@@ -678,6 +941,116 @@ mod tests {
             Op::Discard(0, 2),
             Op::Write(30, 6, 1),
         ]
+    }
+
+    fn random_history(seed: u64, length: usize) -> Vec<Op> {
+        let mut draw = Draw(seed);
+        (0..length)
+            .map(|_| {
+                let sectors = 1 + draw.below(4);
+                let sector = draw.below(64 - sectors + 1);
+                let fill = 1 + draw.below(255) as u8;
+                match draw.below(16) {
+                    0..=6 => Op::Write(sector, fill, sectors),
+                    7..=8 => Op::Meta(sector, fill, sectors),
+                    9..=10 => Op::Fua(sector, fill, sectors),
+                    11 => Op::Commit(sector, fill, sectors),
+                    12 => Op::Discard(sector, sectors),
+                    13..=14 => Op::Flush,
+                    _ => Op::Mark,
+                }
+            })
+            .collect()
+    }
+
+    struct Compacted {
+        recorder: Recorder,
+        base: Memory,
+        folded: Folded,
+    }
+
+    fn compacted(ops: &[Op], points: &[usize]) -> (Compacted, Vec<LogEntry>) {
+        let mut disk = Compacted {
+            recorder: Recorder::new(),
+            base: Memory::sectors(64),
+            folded: Folded::default(),
+        };
+        for index in 0..=ops.len() {
+            for _ in points.iter().filter(|&&point| point == index) {
+                disk.recorder.finish();
+                let logged = read_log(&mut disk.recorder.log, 256).unwrap();
+                disk.folded
+                    .fold(&logged, &mut disk.recorder.log, &mut disk.base, 64)
+                    .unwrap();
+                disk.recorder.clear_log();
+            }
+            if let Some(op) = ops.get(index) {
+                disk.recorder.apply(op);
+            }
+        }
+        disk.recorder.finish();
+        let logged = read_log(&mut disk.recorder.log, 256).unwrap();
+        let entries = disk.folded.join(&logged);
+        (disk, entries)
+    }
+
+    fn shape(entries: &[LogEntry]) -> Vec<(u64, u64, u64)> {
+        entries
+            .iter()
+            .map(|entry| (entry.sector, entry.sectors, entry.flags))
+            .collect()
+    }
+
+    fn assert_compaction_changes_nothing(ops: &[Op], points: &[usize], choices: &[u64]) {
+        let context = format!("{ops:?} compacted before ops {points:?}");
+        let (mut whole, expected) = logged(ops);
+        let (mut disk, entries) = compacted(ops, points);
+        let folded = expected.len() - entries.len();
+        assert_eq!(disk.folded.entries, folded, "{context}");
+        assert_eq!(shape(&entries), shape(&expected[folded..]), "{context}");
+        for (entry, original) in entries.iter().zip(&expected[folded..]) {
+            if entry.changes_data() && !entry.discards() {
+                let mut kept = vec![0; entry.sectors as usize * SECTOR_BYTES];
+                let mut written = kept.clone();
+                Held {
+                    held: &disk.folded.held,
+                    log: &mut disk.recorder.log,
+                }
+                .read_at(entry.data, &mut kept)
+                .unwrap();
+                whole.log.read_at(original.data, &mut written).unwrap();
+                assert!(kept == written, "{context}: data of {entry:?}");
+            }
+        }
+        let plans = choices
+            .iter()
+            .map(|&choice| (plan(&expected, choice), disk.folded.plan(&entries, choice)))
+            .chain([(plan_all(&expected), disk.folded.plan_all(&entries))]);
+        for (want, plan) in plans {
+            assert_eq!(
+                (plan.entries, plan.durable, plan.kept),
+                (want.entries, want.durable, want.kept),
+                "{context}"
+            );
+            assert_eq!(shape(&plan.restore), shape(&want.restore), "{context}");
+            let mut want_base = Memory::sectors(64);
+            let mut want_data = whole.data.clone();
+            rebuild(&want, &mut whole.log, &mut want_base, &mut want_data, 64).unwrap();
+            let mut base = disk.base.clone();
+            let mut data = disk.recorder.data.clone();
+            disk.folded
+                .rebuild(&plan, &mut disk.recorder.log, &mut base, &mut data, 64)
+                .unwrap();
+            assert!(base.0 == want_base.0, "{context}: base after {plan:?}");
+            assert!(data.0 == want_data.0, "{context}: data after {plan:?}");
+        }
+        for &choice in choices {
+            assert_eq!(
+                disk.folded.corruption(&entries, choice),
+                corruption(&expected, choice),
+                "{context}: corruption choice {choice}"
+            );
+        }
     }
 
     #[test]
@@ -804,7 +1177,7 @@ mod tests {
     #[test]
     fn a_log_missing_its_end_mark_or_super_block_is_refused() {
         let mut recorder = Recorder::new();
-        recorder.apply(&Op::Write(0, 1, 1));
+        recorder.entry(0, 1, 0, &[1; SECTOR_BYTES]);
         assert!(matches!(
             read_log(&mut recorder.log, 256),
             Err(LogError::NoLog)
@@ -897,5 +1270,81 @@ mod tests {
         assert_eq!(&message[spec + 8..spec + 31], b"mark harmony-formatted\0");
         assert!(dm::message("d", "a\0b").is_err());
         assert_eq!(dm::request(dm::TARGET_MSG), 0xc138_fd0e);
+    }
+
+    #[test]
+    fn a_log_writes_status_reply_gives_the_logged_sectors() {
+        let request = dm::status("harmony-log-0-0").unwrap();
+        assert_eq!(request.len(), dm::STATUS_BYTES);
+        assert_eq!(
+            u32::from_le_bytes(request[12..16].try_into().unwrap()) as usize,
+            dm::STATUS_BYTES
+        );
+        assert_eq!(&request[48..63], b"harmony-log-0-0");
+        assert_eq!(dm::request(dm::TABLE_STATUS), 0xc138_fd0c);
+        let mut reply = request;
+        reply[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        let line = b"812 131073 logging_disabled\0";
+        let at = dm::IOCTL_BYTES + 40;
+        reply[at..at + line.len()].copy_from_slice(line);
+        let status = dm::status_line(&reply).unwrap();
+        assert_eq!(status, "812 131073 logging_disabled");
+        assert_eq!(dm::logged_sectors(status), Some(131_073));
+        assert_eq!(dm::logged_sectors("3 24"), Some(24));
+        assert_eq!(dm::logged_sectors("3"), None);
+        let mut full = reply.clone();
+        full[28..32].copy_from_slice(&(1_u32 << 8).to_le_bytes());
+        assert!(dm::status_line(&full).is_err());
+        let mut empty = reply.clone();
+        empty[20..24].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(dm::status_line(&empty).is_err());
+        let mut outside = reply;
+        outside[16..20].copy_from_slice(&(dm::STATUS_BYTES as u32).to_le_bytes());
+        assert!(dm::status_line(&outside).is_err());
+    }
+
+    #[test]
+    fn a_write_waiting_for_a_flush_at_compaction_stays_behind_later_forced_writes() {
+        let ops = [
+            Op::Write(0, 1, 2),
+            Op::Flush,
+            Op::Write(4, 2, 1),
+            Op::Mark,
+            Op::Fua(4, 3, 1),
+            Op::Write(8, 4, 1),
+            Op::Fua(12, 5, 1),
+            Op::Flush,
+            Op::Write(16, 6, 1),
+        ];
+        let (disk, entries) = compacted(&ops, &[4]);
+        assert_eq!(disk.folded.entries, 2);
+        let sectors = entries
+            .iter()
+            .filter(|entry| entry.changes_data())
+            .map(|entry| entry.sector)
+            .collect::<Vec<_>>();
+        assert_eq!(sectors, [4, 12, 4, 8, 16]);
+        assert_compaction_changes_nothing(&ops, &[4], &[0, 1]);
+    }
+
+    #[test]
+    fn compacting_the_log_leaves_power_loss_remount_and_corruption_unchanged() {
+        let (histories, length, schedules) = if cfg!(miri) { (1, 12, 1) } else { (48, 30, 12) };
+        let choices = [0, 1, 2, 3, 5, 0x9e37_79b9_7f4a_7c15, u64::MAX];
+        for seed in 0..histories {
+            let ops = random_history(seed, length);
+            for point in 0..=ops.len() {
+                assert_compaction_changes_nothing(&ops, &[point], &choices);
+            }
+            assert_compaction_changes_nothing(&ops, &(0..=ops.len()).collect::<Vec<_>>(), &choices);
+            let mut draw = Draw(!seed);
+            for _ in 0..schedules {
+                let mut points = (0..=ops.len())
+                    .filter(|_| draw.below(4) == 0)
+                    .collect::<Vec<_>>();
+                points.push(points.first().copied().unwrap_or(0));
+                assert_compaction_changes_nothing(&ops, &points, &choices);
+            }
+        }
     }
 }

@@ -262,7 +262,9 @@ supervisor builds each disk before the setup command runs:
    `CONFIG_BLK_DEV_RAM_COUNT=16` and `CONFIG_BLK_DEV_RAM_SIZE=1048576`.
 2. A `dm-log-writes` device named `harmony-log-<node>-<generation>` writes
    through to the data disk and logs every completed write, flush, FUA write and
-   discard, with the flags of each.
+   discard, with the flags of each. The kernel logs FUA writes and marks when
+   they complete, and holds a copy of every other write until the next flush,
+   which logs the held writes in completion order ahead of itself.
 3. A linear device named `harmony-disk-<node>-<generation>` maps the whole log
    device. The filesystem lives on this device, and disk fault windows swap its
    table.
@@ -289,14 +291,38 @@ cuts the disk:
 5. It zeroes and discards the log, attaches new devices under the next
    generation's names, and remounts. ext4 replays its journal on mount.
 
+Once a second the supervisor reads the status of each disk's `dm-log-writes`
+device. When a disk with no error or stall window open has logged 64 MiB or
+more, the supervisor compacts its log:
+
+1. It suspends the disk device without flushing, so no write is in flight, and
+   swaps a linear table onto the data disk under the log device. The old
+   `dm-log-writes` target logs the writes waiting for a flush and its end mark.
+2. It reads the log and applies every entry up to the last flush to the replay
+   base. It keeps the later entries and their data in its own memory, drops the
+   end mark, and keeps the extents of the applied plain writes after the format
+   mark for corruption draws.
+3. It zeroes and discards the log, loads a new `dm-log-writes` table and
+   resumes the disk.
+
+A later cut or compaction puts the kept entries in front of the new log. The
+kept writes that waited for a flush go after the new log's FUA writes and marks
+that come before its first flush or first other write, where the kernel would
+have logged them in one log. A power loss, a remount or a corruption draw then
+sees the entries one uncompacted log would hold, in the same order, and reaches
+the same disk bytes, kept prefix and flipped bit.
+
 A log that fills its RAM disk stops logging and has no end mark; the supervisor
 reports that as an infrastructure error. A power-loss window for a node without
-a disk acts as a kill. Every disk and log page lives in guest memory, so each
-disk can cost up to twice its size plus the writes since the last power loss;
-raise the guest RAM (`ram_mib`) to match. A guest that runs out of memory
-ends the execution: the supervisor reads the `oom_kill` counter in
-`/proc/vmstat` whenever a node exits and once a second, and reports the first
-kernel OOM kill as an infrastructure error. The guest kernels charge one
+a disk acts as a kill. Every disk and log page lives in guest memory. Each disk
+can cost its size for the data disk, its size for the replay base, the log up
+to 64 MiB plus one second of writes, the writes since the last flush (held by
+the kernel, or by the supervisor after a compaction), and 16 bytes of
+supervisor memory for each plain write applied by a compaction since the
+format mark or the last cut; raise the guest RAM (`ram_mib`) to match. A guest
+that runs out of memory ends the execution: the supervisor reads the `oom_kill`
+counter in `/proc/vmstat` whenever a node exits and once a second, and reports
+the first kernel OOM kill as an infrastructure error. The guest kernels charge one
 execution tick for each page-allocation retry, so an allocation that reclaim
 cannot satisfy still lets timers fire and the OOM killer run. The OCI runtime
 allows the container every block device and `/dev/mapper/control`; the
