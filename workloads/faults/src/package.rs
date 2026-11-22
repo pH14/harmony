@@ -747,16 +747,20 @@ mod live {
             &origin,
             &mut stream,
             Some(&mut progress),
-            Some(searcher::search::checkpoint::CheckpointPlan {
-                directory: options.output.join("checkpoints"),
-                every: std::num::NonZeroU64::new(100),
-                on_marks: false,
-                on_top_progress: false,
-                on_stall: false,
-                checkpoint_owner: options.checkpoint_owner.clone(),
-                max_image_bytes: 64 << 20,
-            }),
-            interrupt,
+            searcher::search::campaign::CampaignExecutionOptions {
+                checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
+                    directory: options.output.join("checkpoints"),
+                    every: std::num::NonZeroU64::new(100),
+                    on_marks: false,
+                    on_top_progress: false,
+                    on_stall: false,
+                    checkpoint_owner: options.checkpoint_owner.clone(),
+                    max_image_bytes: 64 << 20,
+                }),
+                interrupt,
+                job_host_path: Some(options.output.join("job-host.jsonl")),
+                ..Default::default()
+            },
         );
         if let Err(error) = stream.flush() {
             if cache.verify_integrity().is_ok() {

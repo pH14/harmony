@@ -519,6 +519,7 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
             checkpoints: None,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
     )
     .expect("adaptive campaign");
@@ -578,6 +579,7 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
             checkpoints: None,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
     )
     .expect("adaptive campaign");
@@ -719,6 +721,7 @@ fn failed_duration_actions_do_not_train_the_policy() {
             checkpoints: None,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
     )
     .expect("failed-duration campaign");
@@ -758,6 +761,7 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
             checkpoints: None,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
     )
     .expect("preparation-failure campaign");

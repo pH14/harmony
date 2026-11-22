@@ -1406,6 +1406,7 @@ pub fn run_scaled<K: Keying>(
             checkpoints: None,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
     )?;
     let elapsed = started.elapsed().as_secs_f64();

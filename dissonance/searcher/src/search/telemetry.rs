@@ -19,6 +19,22 @@ pub struct WorkerTelemetry {
     pub target: TargetCounters,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HostRuns {
+    pub actions: u64,
+    pub ns: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JobHostRecord {
+    pub sequence: u64,
+    pub reservation: u64,
+    pub wall_ns: u64,
+    pub parent_actions: u64,
+    pub parent_replay_actions: u64,
+    pub parent_rebuild: HostRuns,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AdmissionWaits {
     pub receive_all_running_ns: u64,
