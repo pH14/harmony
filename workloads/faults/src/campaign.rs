@@ -3327,4 +3327,67 @@ mod tests {
             assert_eq!(asked, 2);
         }
     }
+
+    #[test]
+    fn the_stall_report_counts_the_fault_node_row_of_a_parked_pause() {
+        use searcher::search::choice::{ChoicePolicy, ChoiceProfile};
+        let game = game();
+        let off = run(3, vec![1]);
+        let parked = FaultCampaignRun::any_bug(
+            off.vocabulary
+                .clone()
+                .with_untried_first_nodes(true)
+                .with_instrumented_events(true)
+                .with_resume_park(Some(vec![7]))
+                .unwrap(),
+        );
+        let plan = ChoicePlan::new(
+            &ChoicePolicy::default(),
+            ChoiceProfile::default(),
+            7,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let ticks = std::num::NonZeroU16::MIN;
+        let parked_pause = FaultAction::from(FaultOperation::PauseParked {
+            node: 2,
+            edges: 1,
+            hold_us: 10_000,
+            ticks,
+            target: fault_policy::ParkTarget::new(7, 8),
+        });
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let resolved = nodes::resolve(
+            &parked.vocabulary,
+            &[parked_pause, wait],
+            Some(&plan),
+            None,
+            0,
+        );
+        let executed = guest_suffix(&resolved.suffix, Some(&plan), None);
+        let records = game.choice_records(&parked, Some(&plan), 0, &executed[0], &[]);
+        let row = resolved.rows[0].as_ref().unwrap();
+        assert_eq!(
+            records,
+            [ChoiceRecord::new(
+                nodes::NODE_SITE_ID,
+                row.offered.clone(),
+                row.default,
+                row.taken,
+            )]
+        );
+        let ran_plain = FaultAction {
+            operation: FaultOperation::Pause(executed[0].operation.target_node().unwrap(), ticks),
+            ..executed[0]
+        };
+        assert_eq!(
+            game.choice_records(&parked, Some(&plan), 0, &ran_plain, &[]),
+            records
+        );
+        assert!(
+            game.choice_records(&parked, Some(&plan), 1, &executed[1], &[])
+                .is_empty()
+        );
+    }
 }
