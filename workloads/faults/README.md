@@ -628,10 +628,25 @@ memory it does not count, such as the pages a snapshot import or export holds,
 grows past this plan, and rises back toward the plan when that memory is free
 (see the [client README](../../consonance/client/README.md)).
 Before each execution and after each sealed prefix, a worker reports its
-store's page, VM-state and index bytes to the cache, which evicts entries to keep the total in
-budget. When eviction cannot, the worker with the largest store drops its
+store's page, VM-state and index bytes to the cache. While any worker's store
+is larger than the guest RAM, a report over budget evicts no shared entry, and
+a reporting worker whose store is above the guest RAM drops its own prefix
+snapshots instead. Once every store is at or below the guest RAM, the cache
+evicts entries to keep the total in budget. When eviction
+cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
-its newest prefix, and then drops back to the setup snapshot. While the total
+its newest prefix, and then drops back to the setup snapshot. While a settle
+phase runs, the chain holds the job's endpoint: it drops the prefixes after the
+endpoint, oldest first, then the prefixes before it. After a push it keeps
+setup, the endpoint and the newest prefix even when the store is still over
+budget, so the store can exceed the budget by one prefix until the phase ends;
+the restore at the end of the phase may also drop the newest prefix, but not
+the endpoint. The same holds while the store shrinks toward its guest RAM: a
+report only asks the worker to shrink, and the chain chooses which prefixes go.
+When the chain has nothing left to drop, the worker reports again, and the
+cache then counts its store as at the guest RAM, so shared entries go once no
+other store is above it. The hold keeps at most one link beyond what the chain
+keeps without it, and releasing it frees nothing until the next fit. While the total
 is over budget, every other worker also drops prefix snapshots until its store
 is no larger than at its last report that fit the budget, so the stores stop
 growing while the largest store's worker is busy. The run prints the worker count and budget, and
@@ -840,7 +855,11 @@ successfully. The phase also ends when the workload is not ready 3,000 ticks
 (the 30-second recovery limit) after the restarts and heal end, when no such
 check has finished 6,000 ticks after they end, or at a new violation, a terminal
 stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
-cancellation. The target then restores the snapshot and its
+cancellation. The target then restores the snapshot, which the chain held
+through the phase, so the restore runs no action again unless the session was
+replaced or the phase restored a prefix older than the endpoint. A restore that
+finds no held link rebuilds the endpoint as any other restore does, so the hold
+saves work and never decides a result. The target also restores the job's
 tick, horizon and last-action observation counters, so unless the phase found a
 violation, the job's result, its `execution_work` and every search decision are
 those of the run without the phase. The snapshots taken during the phase stay in

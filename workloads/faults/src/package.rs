@@ -688,10 +688,12 @@ mod live {
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
+        let needs = memory_needs(options.ram_mib);
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(
             resources.budget,
             resources.placement.workers.len(),
-            memory_needs(options.ram_mib).transient,
+            needs.transient,
+            needs.store_floor,
         ));
         let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
@@ -1022,12 +1024,14 @@ mod live {
             );
         }
         let config = config(options)?;
-        let memory = plan_memory(jobs.max(1), memory_needs(options.ram_mib))?;
+        let needs = memory_needs(options.ram_mib);
+        let memory = plan_memory(jobs.max(1), needs)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::measured(
             memory.budget,
             memory.workers,
-            memory_needs(options.ram_mib).transient,
+            needs.transient,
+            needs.store_floor,
         ));
         let keys = FaultKeys::requested(&options.key, run.vocabulary.nodes())?;
         let workload = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config, keys)?
