@@ -744,13 +744,16 @@ sets `HARNESS_RQLITE_CONNECTIONS=1` on the workload, so the drive appends each
 register process's drawn node to `/tmp/rqlite/connections` when the process
 connects. A process connects when it starts and again only after an operation
 outlives its deadline, so the last line for each process names the node it
-sends to. A failed append goes to the drive's standard error and the
-connection goes ahead, so the drive draws as it does without the record. The
-drive then removes the file and appends nothing more in that run, because the
-file could name a node a process has since left. A
-write sent to a follower cannot reach a leader cut off from it:
-with `redirect`, the follower asks the leader for its address before it
-answers. A missing file means no process has connected yet. When the hook
+sends to. The record is a sample: a hook that reads it while a process is
+between its connect draw and its append sees that process's previous node. A
+failed append goes to the drive's standard error and the connection goes
+ahead, so the drive draws as it does without the record. The drive then
+removes the file and appends nothing more in that run, because the file could
+name a node a process has since left. A write sent to a follower cannot reach
+a leader cut off from it: with `redirect`, the follower asks the leader for
+its address before it answers. A missing file means either that no process has
+connected yet, or that an append failed and the record was removed for the
+rest of the run. When the hook
 cannot read that file, or a line in it is not a process number and a node ID,
 `client_on_node` is false and the hook exits 1 after its request. A node that
 does not answer, or whose answer lacks a Raft state, term, commit index, last
