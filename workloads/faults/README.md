@@ -458,7 +458,7 @@ site is declared with `ChoiceSite::without_default`. The first ask of a job
 therefore takes the node at the plan's untried ordinal in its parent's
 permutation of the offer while one remains untried: the first such job at a
 parent takes a uniform node, as the draw does, and three at one parent whose
-first actions have the same offer take three nodes. Kinds with different
+first actions have the same offer of at least three nodes take three nodes. Kinds with different
 offers share the parent's count and each walks its own permutation, so a
 `Pause` and a `DiskError` can take the same node before either offer is
 exhausted. Every other ask answers the drawn node, so the draw's random word

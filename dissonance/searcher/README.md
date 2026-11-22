@@ -568,8 +568,11 @@ parent, at dispatch, so jobs in flight from one parent take different options.
 entry keeps one count per site, so jobs from one parent that start at another
 site do not advance the walk of the named one (ours). The count for site 0
 is stored with the entry; the counts for other sites are in a map keyed by
-the entry's stable id and the site, which holds nothing, and adds nothing to
-the archive's memory charge, until a job names another site. The default
+the entry's stable id and the site, which holds nothing until a job names
+another site. The map is outside the archive's memory charge: live search
+takes a count when it reserves the job, after the duplicate skips before it,
+and replay takes it when it rebuilds the reservation, before those skips, so
+a charge that grew with the map would evict differently on replay. The default
 names site 0 for every suffix, which keeps one count per entry; a workload
 names another site only when it knows, before the job runs, that the
 suffix's first choice is asked there. `Chooser::untried_taken` returns the
@@ -584,8 +587,8 @@ coordinator lists these sites once from `InputPolicy::choice_sites`, and each
 plan carries one seed per listed site (`ChoicePlan::permuted`), mixed from the
 campaign seed, the parent entry's id and the site. Every job from one parent
 therefore walks the same permutation of one offer, so n jobs whose first asks
-offer the same labels take n distinct labels, and the first job at a parent
-takes a uniform label. Asks with different offers share the site's count and
+offer the same labels take n distinct labels while n is at most the offer's
+size, and the first job at a parent takes a uniform label. Asks with different offers share the site's count and
 each permutes its own offer, so they can repeat a label. Replay rebuilds the
 plan from the same parent, so it recomputes the seed. A checkpoint keeps the
 counts, so a resume with another campaign seed continues each count over
@@ -677,11 +680,11 @@ each job record carries its plan (`choices`: profile, whether it was redrawn,
 the untried ordinal, and `untried_site`, the site whose count gave the
 ordinal). A cancelled job's record carries `untried_site` too. Both records
 leave `untried_site` out when it is 0, so a record without it counted at
-site 0.
+site 0 or took no ordinal.
 Replay rebuilds each plan at its reservation from the replayed archive, takes
 the ordinal from the recorded site's count, checks that the replayed suffix
-names that site and that a cancelled job names the site its rebuilt plan
-counted, and refuses a stream whose plan or policy differs, and a
+names that site, checks that a cancelled job whose rebuilt plan took no
+ordinal names no site, and refuses a stream whose plan or policy differs, and a
 checkpoint does not resume under another policy. A job without a plan, such
 as a continuation, gives the entries it keeps its parent's profile. The plan
 travels in `RolloutStop`, beside the ceiling, so a workload that overrides

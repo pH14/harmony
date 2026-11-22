@@ -3972,10 +3972,6 @@ where
         self.entry_memory_bytes(self.entries.len())
             .saturating_add(heap::btree_bytes::<u64, ()>(1, self.landed.len()))
             .saturating_add(heap::btree_bytes::<u64, u32>(1, self.metadata_pins.len()))
-            .saturating_add(heap::btree_bytes::<(u64, u16), u32>(
-                1,
-                self.site_jobs.len(),
-            ))
             .saturating_add(heap::btree_bytes::<u64, u32>(
                 1,
                 self.inflight_snapshot_pins.len(),
@@ -8820,7 +8816,7 @@ mod tests {
     }
 
     #[test]
-    fn only_counts_at_a_later_site_add_to_the_charge_and_they_follow_their_entry() {
+    fn untried_counts_leave_the_charge_unchanged_and_later_site_counts_follow_their_entry() {
         let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 0, 0, 0]]);
         archive.enable_choices();
         let charge = archive.entry_metadata_memory_bytes();
@@ -8830,7 +8826,7 @@ mod tests {
         assert_eq!(archive.take_choice_job(0, 1), Some(0));
         assert_eq!(archive.take_choice_job(1, 1), Some(0));
         assert_eq!(archive.take_choice_job(1, 1), Some(1));
-        assert!(archive.entry_metadata_memory_bytes() > charge);
+        assert_eq!(archive.entry_metadata_memory_bytes(), charge);
         let dropped = archive.stable_id(0).expect("stable id");
         let kept = archive.stable_id(1).expect("stable id");
         assert!(archive.deactivate(0));
