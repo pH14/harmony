@@ -34,8 +34,9 @@ use super::{
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath, StalledState,
 };
+use crate::search::assertion::Record;
 use crate::search::checkpoint::{CheckpointReader, publisher::CheckpointPublisher};
-use crate::search::choice::ChoicePlan;
+use crate::search::choice::{ChoicePlan, ChoiceRecord, ChoiceSite};
 use crate::search::cost::ShrinkCost;
 use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
@@ -197,6 +198,147 @@ struct StallWatch<P> {
     since_execution: u64,
     jobs: u64,
     draws: BTreeMap<String, u64>,
+    signals: Vec<String>,
+    sites: Vec<ChoiceSite>,
+    changes: BTreeMap<String, SignalChanges>,
+    asks: BTreeMap<u16, SiteAsks>,
+}
+
+struct StalledStep {
+    kind: String,
+    endpoint: Option<Record>,
+    choices: Vec<ChoiceRecord>,
+}
+
+impl<P> StallWatch<P> {
+    fn restart(&mut self, tier: (P, u64), sequence: u64) {
+        self.tier = Some(tier);
+        self.since_execution = sequence;
+        self.jobs = 0;
+        self.draws.clear();
+        self.changes.clear();
+        self.asks.clear();
+        self.reported = false;
+    }
+
+    fn count_job(&mut self, parent_id: u64, departure: Option<Record>, steps: Vec<StalledStep>) {
+        let signals = self.signals.len();
+        self.jobs = self.jobs.saturating_add(1);
+        let mut before = departure;
+        for (index, step) in steps.into_iter().enumerate() {
+            if signals > 0 {
+                if let (Some(before), Some(after)) = (&before, &step.endpoint) {
+                    self.changes
+                        .entry(step.kind.clone())
+                        .or_insert_with(|| SignalChanges::new(signals))
+                        .count(before.values(), after.values());
+                }
+                before = step.endpoint;
+            }
+            for record in step.choices {
+                let asks = self.asks.entry(record.site).or_default();
+                asks.asks = asks.asks.saturating_add(1);
+                for label in &record.offered {
+                    let count = asks.offered.entry(*label).or_default();
+                    *count = count.saturating_add(1);
+                }
+                let count = asks.resolved.entry(record.resolved).or_default();
+                *count = count.saturating_add(1);
+                if index == 0 {
+                    asks.states.insert(parent_id);
+                }
+            }
+            let count = self.draws.entry(step.kind).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+
+    fn site_table(&self, top: &BTreeSet<u64>) -> Vec<StalledSiteRecord> {
+        self.asks
+            .iter()
+            .map(|(site, asks)| {
+                let declared = self.sites.get(usize::from(*site));
+                let named = |counts: &BTreeMap<u16, u64>| {
+                    counts
+                        .iter()
+                        .map(|(option, count)| {
+                            let name = declared
+                                .and_then(|declared| declared.labels.get(usize::from(*option)))
+                                .filter(|name| !name.starts_with('#'))
+                                .cloned()
+                                .unwrap_or_else(|| format!("#{option}"));
+                            (name, *count)
+                        })
+                        .collect()
+                };
+                StalledSiteRecord {
+                    site: *site,
+                    name: declared
+                        .map_or_else(|| site.to_string(), |declared| declared.name.clone()),
+                    asks: asks.asks,
+                    top_states_at_site: asks.states.intersection(top).count(),
+                    offered: named(&asks.offered),
+                    resolved: named(&asks.resolved),
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+struct SignalChanges {
+    compared: u64,
+    unchanged: u64,
+    changed: Vec<u64>,
+}
+
+impl SignalChanges {
+    fn new(signals: usize) -> Self {
+        Self {
+            changed: vec![0; signals],
+            ..Self::default()
+        }
+    }
+
+    fn count(&mut self, before: &[i64], after: &[i64]) {
+        self.compared = self.compared.saturating_add(1);
+        let mut moved = false;
+        for ((before, after), changed) in before.iter().zip(after).zip(&mut self.changed) {
+            if before != after {
+                moved = true;
+                *changed = changed.saturating_add(1);
+            }
+        }
+        if !moved {
+            self.unchanged = self.unchanged.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Default)]
+struct SiteAsks {
+    asks: u64,
+    offered: BTreeMap<u16, u64>,
+    resolved: BTreeMap<u16, u64>,
+    states: BTreeSet<u64>,
+}
+
+#[derive(Serialize)]
+struct StalledStateRecord {
+    #[serde(flatten)]
+    state: StalledState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signals: Option<Option<Vec<i64>>>,
+}
+
+#[derive(Serialize)]
+struct StalledSiteRecord {
+    site: u16,
+    name: String,
+    asks: u64,
+    top_states_at_site: usize,
+    offered: BTreeMap<String, u64>,
+    resolved: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize)]
@@ -208,7 +350,10 @@ struct StallRecord<'a> {
     since_execution: u64,
     jobs: u64,
     draws_by_action: &'a BTreeMap<String, u64>,
-    states: Vec<StalledState>,
+    signal_changes_by_action: &'a BTreeMap<String, SignalChanges>,
+    signals: &'a [String],
+    states: Vec<StalledStateRecord>,
+    choice_sites: Vec<StalledSiteRecord>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -400,6 +545,10 @@ where
                 since_execution: core.sequence,
                 jobs: 0,
                 draws: BTreeMap::new(),
+                signals: workload.catalog_signals(&config.run),
+                sites: workload.choice_sites(&config.run),
+                changes: BTreeMap::new(),
+                asks: BTreeMap::new(),
             });
         let checkpoints = options
             .checkpoints
@@ -1083,38 +1232,59 @@ where
         };
         let tier = (leading.progress, leading.yields);
         if watch.tier != Some(tier) {
-            watch.tier = Some(tier);
-            watch.since_execution = self.core.sequence;
-            watch.jobs = 0;
-            watch.draws.clear();
-            watch.reported = false;
+            watch.restart(tier, self.core.sequence);
         }
         let stalled = leading.losing_weight && !watch.reported;
         watch.reported |= stalled;
         stalled
     }
 
-    fn count_stall_draws(&mut self, parent_id: u64, result: &CampaignJobResult<G>) {
+    fn count_stall_draws(
+        &mut self,
+        parent_id: u64,
+        plan: Option<&ChoicePlan>,
+        result: &CampaignJobResult<G>,
+    ) {
         let Some(watch) = self.stall.as_mut() else {
             return;
         };
-        let parent_progress = self
-            .core
-            .archive
-            .index_of_id(parent_id)
-            .map(|index| self.core.archive.entries[index].key.progress());
-        if parent_progress.is_none() || parent_progress != watch.tier.map(|(progress, _)| progress)
-        {
+        let archive = &self.core.archive;
+        let Some(parent_index) = archive.index_of_id(parent_id) else {
+            return;
+        };
+        let parent = &archive.entries[parent_index];
+        if Some(parent.key.progress()) != watch.tier.map(|(progress, _)| progress) {
             return;
         }
-        watch.jobs = watch.jobs.saturating_add(1);
-        for action in &result.actions {
-            let count = watch
-                .draws
-                .entry(format!("{:?}", action.action))
-                .or_default();
-            *count = count.saturating_add(1);
-        }
+        let workload = self.workload;
+        let run = &self.config.run;
+        let signals = !watch.signals.is_empty();
+        let departure = parent
+            .snapshot
+            .as_deref()
+            .filter(|_| signals)
+            .and_then(|snapshot| workload.state_record(run, snapshot));
+        let steps = result
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| StalledStep {
+                kind: format!("{:?}", action.action),
+                endpoint: action
+                    .observations
+                    .last()
+                    .filter(|_| signals)
+                    .and_then(|observation| workload.observation_record(run, observation)),
+                choices: workload.choice_records(
+                    run,
+                    plan,
+                    index,
+                    &action.action,
+                    &action.observations,
+                ),
+            })
+            .collect();
+        watch.count_job(parent_id, departure, steps);
     }
 
     fn write_stall_record(&self) -> Result<(), Box<dyn Error>> {
@@ -1124,6 +1294,23 @@ where
         let Some((progress, yields)) = watch.tier else {
             return Ok(());
         };
+        let archive = &self.core.archive;
+        let states: Vec<StalledStateRecord> = archive
+            .leading_tier_states(STALL_REPORT_STATES)
+            .into_iter()
+            .map(|state| {
+                let signals = (!watch.signals.is_empty()).then(|| {
+                    archive
+                        .index_of_id(state.id)
+                        .and_then(|index| archive.entries[index].snapshot.as_deref())
+                        .and_then(|snapshot| self.workload.state_record(&self.config.run, snapshot))
+                        .map(|record| record.values().to_vec())
+                });
+                StalledStateRecord { state, signals }
+            })
+            .collect();
+        let top: BTreeSet<u64> = states.iter().map(|state| state.state.id).collect();
+        let choice_sites = watch.site_table(&top);
         let record = StallRecord {
             executions: self.core.sequence,
             checkpoint: format!("{:012}-stall.ckpt", self.core.sequence),
@@ -1132,7 +1319,10 @@ where
             since_execution: watch.since_execution,
             jobs: watch.jobs,
             draws_by_action: &watch.draws,
-            states: self.core.archive.leading_tier_states(STALL_REPORT_STATES),
+            signal_changes_by_action: &watch.changes,
+            signals: &watch.signals,
+            states,
+            choice_sites,
         };
         let mut line = serde_json::to_vec(&record)?;
         line.push(b'\n');
@@ -1152,7 +1342,11 @@ where
         completed_job: CompletedJob<G>,
     ) -> Result<(), Box<dyn Error>> {
         if let Ok((result, ..)) = &completed_job.outcome {
-            self.count_stall_draws(completed_job.pending.parent_id, result);
+            self.count_stall_draws(
+                completed_job.pending.parent_id,
+                completed_job.pending.choices.as_ref(),
+                result,
+            );
         }
         let workload = self.workload;
         let config = self.config;
@@ -1844,5 +2038,157 @@ where
                 },
             )));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    use super::{SignalChanges, StallWatch, StalledStep};
+    use crate::search::assertion::Record;
+    use crate::search::choice::{Choice, ChoiceRecord, ChoiceSite};
+
+    fn watch(signals: usize, sites: Vec<ChoiceSite>) -> StallWatch<u8> {
+        StallWatch {
+            directory: PathBuf::new(),
+            tier: Some((0, 0)),
+            reported: false,
+            since_execution: 0,
+            jobs: 0,
+            draws: BTreeMap::new(),
+            signals: (0..signals).map(|signal| signal.to_string()).collect(),
+            sites,
+            changes: BTreeMap::new(),
+            asks: BTreeMap::new(),
+        }
+    }
+
+    fn step(kind: &str, endpoint: Option<&[i64]>, choices: Vec<ChoiceRecord>) -> StalledStep {
+        StalledStep {
+            kind: kind.to_owned(),
+            endpoint: endpoint.and_then(Record::from_values),
+            choices,
+        }
+    }
+
+    #[test]
+    fn a_job_compares_each_action_with_the_endpoint_before_it() {
+        let mut watch = watch(2, Vec::new());
+        watch.count_job(
+            1,
+            Record::from_values(&[0, 0]),
+            vec![
+                step("A", Some(&[1, 0]), Vec::new()),
+                step("A", Some(&[1, 0]), Vec::new()),
+                step("B", None, Vec::new()),
+                step("B", Some(&[1, 1]), Vec::new()),
+                step("A", Some(&[1, 2]), Vec::new()),
+            ],
+        );
+        watch.count_job(
+            2,
+            None,
+            vec![step(
+                "A",
+                Some(&[5, 5]),
+                vec![ChoiceRecord::new(0, vec![0, 1], 0, Choice::Default)],
+            )],
+        );
+        watch.reported = true;
+        assert_eq!(watch.asks.len(), 1);
+        assert_eq!(watch.jobs, 2);
+        assert_eq!(
+            watch.draws,
+            BTreeMap::from([("A".to_owned(), 4), ("B".to_owned(), 2)])
+        );
+        assert_eq!(
+            watch.changes,
+            BTreeMap::from([(
+                "A".to_owned(),
+                SignalChanges {
+                    compared: 3,
+                    unchanged: 1,
+                    changed: vec![1, 1],
+                }
+            )])
+        );
+        watch.restart((1, 0), 9);
+        assert_eq!(watch.tier, Some((1, 0)));
+        assert_eq!(watch.since_execution, 9);
+        assert_eq!(watch.jobs, 0);
+        assert!(!watch.reported);
+        assert!(watch.draws.is_empty() && watch.changes.is_empty() && watch.asks.is_empty());
+    }
+
+    #[test]
+    fn a_state_stands_at_a_site_its_job_asked_in_the_first_action() {
+        let sites = vec![
+            ChoiceSite::new("named", ["1".to_owned(), "#0".to_owned()]),
+            ChoiceSite::new("later", Vec::new()),
+        ];
+        let mut watch = watch(0, sites);
+        let ask = |site, taken| ChoiceRecord::new(site, vec![0, 1, 2], 0, taken);
+        watch.count_job(
+            7,
+            None,
+            vec![
+                step(
+                    "A",
+                    None,
+                    vec![ask(0, Choice::Default), ask(0, Choice::Option(2))],
+                ),
+                step("A", None, vec![ask(1, Choice::Option(1))]),
+            ],
+        );
+        watch.count_job(
+            8,
+            None,
+            vec![step("A", None, vec![ask(0, Choice::Option(1))])],
+        );
+        watch.count_job(
+            9,
+            None,
+            vec![step("A", None, vec![ask(0, Choice::Option(1))])],
+        );
+        let table = serde_json::to_value(watch.site_table(&BTreeSet::from([7, 8]))).unwrap();
+        assert_eq!(
+            table,
+            serde_json::json!([
+                {
+                    "site": 0,
+                    "name": "named",
+                    "asks": 4,
+                    "top_states_at_site": 2,
+                    "offered": {"1": 4, "#1": 4, "#2": 4},
+                    "resolved": {"1": 1, "#1": 2, "#2": 1},
+                },
+                {
+                    "site": 1,
+                    "name": "later",
+                    "asks": 1,
+                    "top_states_at_site": 0,
+                    "offered": {"#0": 1, "#1": 1, "#2": 1},
+                    "resolved": {"#1": 1},
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn signal_changes_count_each_signal_so_a_clock_does_not_hide_a_held_resource() {
+        let mut changes = SignalChanges::new(3);
+        changes.count(&[0, 4, 1], &[1, 4, 1]);
+        changes.count(&[1, 4, 1], &[2, 5, 1]);
+        changes.count(&[2, 5, 1], &[2, 5, 1]);
+        assert_eq!(
+            changes,
+            SignalChanges {
+                compared: 3,
+                unchanged: 1,
+                changed: vec![2, 1, 0],
+            }
+        );
     }
 }
