@@ -128,11 +128,19 @@ with the sealed file and measures the full file. Each recheck requires every
 live code and vDSO page to be unwritten, so a code write since admission fails
 the check even after its bytes are restored. `host-code-identity` describes
 this check. Session, cache, artifact and control boundaries run the full
-recheck, which also requires the same sealed file and executable mappings. The
-VMM's SDK response site runs only the page check on Linux and the full recheck
-on macOS, once per SDK exchange. Every recorded
-outcome is produced inside a control request, which full rechecks bracket, and
-a code write leaves a copied page that the next full recheck refuses. An
+recheck, which also requires the same sealed file and executable mappings. A
+session served by a worker child is the exception: the child's serving loop
+runs the full recheck after each request's handler, before its reply is sent,
+and again after the send, and the request's endpoint and control boundaries run
+none. The VMM's SDK response site runs only the page check on Linux and the full
+recheck on macOS, once per SDK exchange. Every recorded outcome is produced
+inside a control request or a served request, which full rechecks bracket, and
+a code write leaves a copied page that the next full recheck refuses, so a
+reply produced after a code write is refused before it is sent. The sealed
+file, the executable mappings and the loader environment can change and change
+back, code inside the process can discard a copied page as `host-code-identity`
+describes, and a full recheck detects such a change only while it is present.
+An
 ordinary GNU executable and a dynamic library whose constructor clears its
 loader variable are refused.
 
@@ -592,7 +600,10 @@ permits only one destination request. Its frames are bounded to 4096 bytes and
 reject trailing bytes, unexpected descriptors, repeated requests, and ordinary
 commands. A same-session nested call is rejected before any socket operation.
 Child serving checks once before its first receive, after each handler/status
-result before sending, and after every successful send. Within the allocator
+result before sending, and after every successful send. These checks bracket
+every served request, so the served session's endpoint and control boundaries
+run no full recheck; its SDK response checks remain. A served session has no
+boot cache. Within the allocator
 callback it also checks before NEED_EXTENT, after sending that request, and
 after receiving the allocation response. Each retained boundary performs fresh
 live-code validation. Test counters distinguish guard entries from actual strict

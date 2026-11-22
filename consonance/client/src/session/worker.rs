@@ -2411,6 +2411,7 @@ pub fn serve_inherited(
             init.setup_payloads,
         )?;
         session.set_service_factory(factory)?;
+        session.check_requests_in_serving_loop();
         Ok(Box::new(session) as Box<dyn ServedSession>)
     })
 }
@@ -2502,6 +2503,16 @@ mod tests {
         runs: u64,
         quarantine_on_import: Option<Arc<LocalIndex>>,
         sdk_history: Option<Vec<SdkEvent>>,
+        code_write: Option<CodeWrite>,
+        completed: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CodeWrite {
+        EndpointEntry,
+        Run,
+        EndpointExit,
+        ExportWrite,
     }
 
     impl Fake {
@@ -2524,6 +2535,35 @@ mod tests {
             };
             fake.states.insert(1, fake.current);
             Ok(Box::new(fake))
+        }
+
+        fn open_writing(
+            init: Init,
+            code_write: CodeWrite,
+            completed: Arc<std::sync::Mutex<Vec<&'static str>>>,
+        ) -> Result<Box<dyn ServedSession>, Box<dyn Error>> {
+            if init.service != "fake" {
+                return Err(format!("unknown session service {}", init.service).into());
+            }
+            let mut fake = Self {
+                next: 1,
+                current: init.kernel[0],
+                code_write: Some(code_write),
+                completed,
+                ..Self::default()
+            };
+            fake.states.insert(1, fake.current);
+            Ok(Box::new(fake))
+        }
+
+        fn write_code_at(&self, at: CodeWrite) {
+            if self.code_write == Some(at) {
+                crate::image_identity::write_code();
+            }
+        }
+
+        fn complete(&self, operation: &'static str) {
+            self.completed.lock().unwrap().push(operation);
         }
 
         fn state(&self, snapshot: SnapId) -> Result<u8, Box<dyn Error>> {
@@ -2594,9 +2634,12 @@ mod tests {
             &mut self,
             request: crate::endpoint::EndpointRequest,
         ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+            self.write_code_at(CodeWrite::EndpointEntry);
             let mut state = std::mem::take(&mut self.endpoint_state);
             let result = state.exchange(self, request);
             self.endpoint_state = state;
+            self.write_code_at(CodeWrite::EndpointExit);
+            self.complete("endpoint");
             result
         }
         fn abandon_execution_endpoint(&mut self) {
@@ -2684,6 +2727,7 @@ mod tests {
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+            self.write_code_at(CodeWrite::Run);
             if deadline == HANG {
                 return Err(SessionError::Hung(Duration::from_secs(3)).into());
             }
@@ -2705,6 +2749,7 @@ mod tests {
             }
             self.current = self.current.wrapping_add(1);
             self.runs += 1;
+            self.complete("run");
             Ok(StopReason::Deadline {
                 vtime: Moment(deadline),
             })
@@ -2794,8 +2839,10 @@ mod tests {
             let (hash, page) = ([fill; 32], [fill; 4096]);
             let encoded = encode(&[(0, &hash, &page)], &[], &sidecar)?;
             let mut out = allocate(encoded.len())?;
+            self.write_code_at(CodeWrite::ExportWrite);
             encoded.write(out.bytes_mut())?;
             drop(out);
+            self.complete("export");
             Ok(())
         }
 
@@ -5300,6 +5347,110 @@ mod tests {
             assert!(recv(&parent).is_err());
             server.join().unwrap();
         }
+    }
+
+    fn writing_worker(
+        code_write: CodeWrite,
+    ) -> (
+        WorkerSession,
+        FixtureThread,
+        Arc<std::sync::Mutex<Vec<&'static str>>>,
+    ) {
+        let completed = Arc::<std::sync::Mutex<Vec<&'static str>>>::default();
+        let (parent, child) = UnixStream::pair().unwrap();
+        let opened = Arc::clone(&completed);
+        let server = FixtureThread::spawn(move || {
+            let error = serve(
+                &child,
+                &mut |init| Fake::open_writing(init, code_write, Arc::clone(&opened)),
+                crate::image_identity::LoadedImageGuard::fixture(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("live code page was written"), "{error}");
+        });
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                owner: Some(Box::new(server.clone())),
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        (session, server, completed)
+    }
+
+    fn received_replies(session: &WorkerSession, group: &str) -> (u64, u64) {
+        let counters = session
+            .transport
+            .counters("fixture")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let counter = |name: &str| {
+            counters
+                .get(&format!("fixture.{group}.receive.{name}"))
+                .copied()
+                .unwrap_or(0)
+        };
+        (
+            counter("completed"),
+            counter("header_bytes") + counter("body_bytes"),
+        )
+    }
+
+    #[test]
+    fn served_code_write_runs_the_request_to_completion_and_sends_no_reply() {
+        use crate::endpoint::*;
+        for code_write in [
+            CodeWrite::EndpointEntry,
+            CodeWrite::Run,
+            CodeWrite::EndpointExit,
+        ] {
+            let (mut worker, server, completed) = writing_worker(code_write);
+            let (setup_replies, setup_bytes) = received_replies(&worker, "setup");
+            assert_eq!(setup_replies, 1);
+            assert!(setup_bytes > 0);
+            assert!(ExecutionEndpoint::execute(&mut worker, endpoint_request(20)).is_err());
+            assert_eq!(*completed.lock().unwrap(), ["run", "endpoint"]);
+            assert_eq!(received_replies(&worker, "endpoint"), (0, 0));
+            assert!(worker.abandoned());
+            assert!(worker.state_hash().is_err());
+            assert!(worker.snapshot().is_err());
+            drop(worker);
+            server.join().unwrap();
+        }
+        let (mut worker, server, completed) = writing_worker(CodeWrite::Run);
+        assert!(worker.run_until(20).is_err());
+        assert_eq!(*completed.lock().unwrap(), ["run"]);
+        assert_eq!(received_replies(&worker, "run"), (0, 0));
+        assert!(worker.state_hash().is_err());
+        drop(worker);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn served_code_write_during_export_publishes_no_extent() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut worker, server, completed) = writing_worker(CodeWrite::ExportWrite);
+        assert!(
+            worker
+                .publish_snapshot(&index, namespace(), b"written", None, SnapId(1), 1)
+                .is_err()
+        );
+        assert_eq!(*completed.lock().unwrap(), ["export"]);
+        assert!(index.lookup(namespace(), b"written").is_none());
+        let stats = index.stats();
+        assert_eq!((stats.entries, stats.leased, stats.publishes), (0, 0, 0));
+        assert!(worker.state_hash().is_err());
+        drop(worker);
+        server.join().unwrap();
     }
 
     #[derive(Debug)]
