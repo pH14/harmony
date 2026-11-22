@@ -473,18 +473,17 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             FaultOperation::EventKill { rarity, .. } if *rarity >= 64 => {
                 return Err("event rarity exceeds the runtime hash width".into());
             }
-            FaultOperation::EventPark { edges, .. }
-            | FaultOperation::EventParkFromArm { edges, .. }
+            FaultOperation::EventPark { edges, .. } | FaultOperation::PauseParked { edges, .. }
                 if *edges == 0 || *edges > fault_policy::EVENT_PARK_EDGE_LIMIT =>
             {
                 return Err("event park edge count is outside the runtime range".into());
             }
             FaultOperation::EventPark { hold_us: 0, .. }
-            | FaultOperation::EventParkFromArm { hold_us: 0, .. } => {
+            | FaultOperation::PauseParked { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
             }
             FaultOperation::EventPark { hold_us, ticks, .. }
-            | FaultOperation::EventParkFromArm { hold_us, ticks, .. }
+            | FaultOperation::PauseParked { hold_us, ticks, .. }
                 if u64::from(*hold_us)
                     > u64::from(ticks.get()) * crate::target::SUPERVISOR_TICK_MICROS =>
             {
@@ -877,6 +876,9 @@ mod live {
         });
         if !archive.stage_falls.is_empty() {
             summary["stage_falls"] = json!(archive.stage_falls);
+        }
+        if !archive.parked_pauses.is_empty() {
+            summary["parked_pauses"] = json!(archive.parked_pauses);
         }
         std::fs::write(
             options.output.join("campaign-summary.json"),
@@ -1656,8 +1658,8 @@ mod tests {
         assert!(parse_recorded_input(&park(20_000)).is_ok());
         assert!(parse_recorded_input(&park(20_001)).is_err());
         assert!(parse_recorded_input(&park(0)).is_err());
-        let from_arm = |edges, hold_us| {
-            serde_json::to_string(&[FaultAction::from(FaultOperation::EventParkFromArm {
+        let parked = |edges, hold_us| {
+            serde_json::to_string(&[FaultAction::from(FaultOperation::PauseParked {
                 node: 0,
                 edges,
                 hold_us,
@@ -1666,10 +1668,10 @@ mod tests {
             })])
             .expect("serialize")
         };
-        assert!(parse_recorded_input(&from_arm(1, 20_000)).is_ok());
-        assert!(parse_recorded_input(&from_arm(1, 20_001)).is_err());
-        assert!(parse_recorded_input(&from_arm(1, 0)).is_err());
-        assert!(parse_recorded_input(&from_arm(0, 1)).is_err());
+        assert!(parse_recorded_input(&parked(1, 20_000)).is_ok());
+        assert!(parse_recorded_input(&parked(1, 20_001)).is_err());
+        assert!(parse_recorded_input(&parked(1, 0)).is_err());
+        assert!(parse_recorded_input(&parked(0, 1)).is_err());
         let clock = |rate_ppm| {
             serde_json::to_string(&[FaultAction::from(FaultOperation::ClockAll {
                 offset_ms: 0,
