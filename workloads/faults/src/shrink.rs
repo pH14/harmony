@@ -6,19 +6,25 @@ use searcher::search::{cost::ShrinkCost, shrink::ShrinkPolicy};
 
 use crate::{
     campaign::FaultWorkload,
-    target::{FaultAction, FaultOperation},
+    target::{FaultAction, FaultOperation, action_ticks},
 };
 
 #[must_use]
 pub fn fault_cost(action: &FaultAction) -> ShrinkCost {
-    ShrinkCost::new(u64::from(action.is_fault()), action.ticks())
+    ShrinkCost::new(u64::from(action.is_fault()), action_ticks(action))
 }
 
 #[must_use]
 pub fn simpler_fault_actions(action: &FaultAction) -> Vec<FaultAction> {
-    let mut simpler = Vec::with_capacity(2);
+    let mut simpler = Vec::with_capacity(3);
     if action.is_fault() {
         simpler.push(action.as_wait());
+    }
+    if let FaultOperation::PauseParked { node, ticks, .. } = action.operation {
+        simpler.push(FaultAction {
+            operation: FaultOperation::Pause(node, ticks),
+            ..*action
+        });
     }
     if let Some(half) = u16::try_from(action.ticks() / 2)
         .ok()
@@ -103,6 +109,24 @@ mod tests {
         assert_eq!(
             simpler_fault_actions(&action(FaultOperation::KillAll(ticks(1)))),
             vec![action(FaultOperation::Wait(ticks(1)))]
+        );
+        let parked = |ticks| {
+            action(FaultOperation::PauseParked {
+                node: 2,
+                edges: 1,
+                hold_us: 10_000,
+                ticks,
+                target: None,
+            })
+        };
+        assert_eq!(fault_cost(&parked(ticks(64))), ShrinkCost::new(1, 128));
+        assert_eq!(
+            simpler_fault_actions(&parked(ticks(64))),
+            vec![
+                action(FaultOperation::Wait(ticks(128))),
+                action(FaultOperation::Pause(2, ticks(64))),
+                parked(ticks(32)),
+            ]
         );
     }
 

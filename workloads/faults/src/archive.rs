@@ -366,12 +366,12 @@ fn park_hold_us(rand: &mut RomuDuoJrRand, ticks: NonZeroU16) -> Result<u32, Box<
 
 const RESUME_PARK_EXPONENTS: usize = 11;
 
-pub fn resume_park(
+pub fn parked_pause(
     rand: &mut RomuDuoJrRand,
     node: u16,
     sites: &[u64],
     ticks: NonZeroU16,
-) -> Result<FaultAction, Box<dyn Error>> {
+) -> Result<FaultOperation, Box<dyn Error>> {
     let (edges, target) = if sites.is_empty() {
         let exponent = rand.below(
             NonZeroUsize::new(RESUME_PARK_EXPONENTS).ok_or("empty resume park exponent range")?,
@@ -387,21 +387,13 @@ pub fn resume_park(
             ),
         )
     };
-    let operation = FaultOperation::EventParkFromArm {
+    Ok(FaultOperation::PauseParked {
         node,
         edges,
         hold_us: park_hold_us(rand, ticks)?,
         ticks,
         target,
-    };
-    let quantum = searcher::search::duration::DurationPolicy::draw_without_history(
-        rand,
-        std::num::NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
-    );
-    Ok(
-        FaultAction::new(operation, NonZeroU16::new(u16::try_from(quantum)?).unwrap())
-            .with_choice(rand.next_u64()),
-    )
+    })
 }
 
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
@@ -611,7 +603,7 @@ mod tests {
             FaultOperation::Clock { .. } => 13,
             FaultOperation::ClockAll { .. } => 14,
             FaultOperation::EndFaults(_) => 15,
-            FaultOperation::EventParkFromArm { .. } => 16,
+            FaultOperation::PauseParked { .. } => 16,
         };
         for _ in 0..2_000 {
             let action =
@@ -659,8 +651,8 @@ mod tests {
                     panic!("a vocabulary without clock faults drew one")
                 }
                 FaultOperation::EndFaults(_) => panic!("a vocabulary drew the end of faults"),
-                FaultOperation::EventParkFromArm { .. } => {
-                    panic!("a vocabulary drew a park that counts from its arming")
+                FaultOperation::PauseParked { .. } => {
+                    panic!("a vocabulary drew a parked pause")
                 }
             }
         }
@@ -925,12 +917,12 @@ mod tests {
             .with_instrumented_events(true)
             .with_clock_faults(true);
         let kind = |operation: &FaultOperation| match operation {
-            FaultOperation::Wait(_)
-            | FaultOperation::EndFaults(_)
-            | FaultOperation::EventParkFromArm { .. } => None,
+            FaultOperation::Wait(_) | FaultOperation::EndFaults(_) => None,
             FaultOperation::Kill(..) => Some(FaultKind::Kill),
             FaultOperation::KillAll(_) => Some(FaultKind::KillAll),
-            FaultOperation::Pause(..) => Some(FaultKind::Pause),
+            FaultOperation::Pause(..) | FaultOperation::PauseParked { .. } => {
+                Some(FaultKind::Pause)
+            }
             FaultOperation::Restart(..) => Some(FaultKind::Restart),
             FaultOperation::Hook(..) => Some(FaultKind::Hook),
             FaultOperation::PowerLoss(..) => Some(FaultKind::PowerLoss),
