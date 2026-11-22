@@ -1373,6 +1373,9 @@ where
             incumbent,
             choices: pending_job.choices.as_ref().map(ChoicePlan::record),
         }))?;
+        coordinator_profile.stream_write_ns = coordinator_profile
+            .stream_write_ns
+            .saturating_add(profile_elapsed(stream_started));
         if let (Some(sink), Some(host)) = (job_host.as_mut(), host) {
             let mut line = serde_json::to_vec(&JobHostRecord {
                 sequence,
@@ -1380,11 +1383,11 @@ where
                 ..host
             })?;
             line.push(b'\n');
-            sink.write_all(&line)?;
+            if let Err(error) = sink.write_all(&line) {
+                eprintln!("job host records stopped at sequence {sequence}: {error}");
+                *job_host = None;
+            }
         }
-        coordinator_profile.stream_write_ns = coordinator_profile
-            .stream_write_ns
-            .saturating_add(profile_elapsed(stream_started));
         counters.job_execution_work = counters
             .job_execution_work
             .saturating_add(execution_work)

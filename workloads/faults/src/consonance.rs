@@ -2623,6 +2623,15 @@ impl Live {
             decoder,
             &mut stopped,
         );
+        if kind != RunKind::New {
+            let ns = u64::try_from(run_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            PARENT_REBUILD_RUNS.with(|total| {
+                let mut sum = total.get();
+                sum.actions = sum.actions.saturating_add(1);
+                sum.ns = sum.ns.saturating_add(ns);
+                total.set(sum);
+            });
+        }
         if let Some(stop) = stopped {
             if combined_branch {
                 self.telemetry.branches.count += 1;
@@ -2638,17 +2647,7 @@ impl Live {
                 RunKind::Rebuild => &mut self.telemetry.rebuild,
                 RunKind::Replay => &mut self.telemetry.replay,
             };
-            let spent = runs.host.nanos;
             runs.host.since(run_started);
-            if kind != RunKind::New {
-                let ns = runs.host.nanos.saturating_sub(spent);
-                PARENT_REBUILD_RUNS.with(|total| {
-                    let mut sum = total.get();
-                    sum.actions = sum.actions.saturating_add(1);
-                    sum.ns = sum.ns.saturating_add(ns);
-                    total.set(sum);
-                });
-            }
             runs.virtual_nanos = runs
                 .virtual_nanos
                 .saturating_add(stop_moment(&stop).saturating_sub(parent.moment));

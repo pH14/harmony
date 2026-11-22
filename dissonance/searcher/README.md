@@ -191,7 +191,9 @@ host nanoseconds during the job) are host measurements that differ between runs
 of the same search. `parent_actions` is the parent entry's input length and
 `parent_replay_actions` the length of the job's replay from its pinned
 snapshot. The records stay outside the stream, its digest,
-checkpoints and admission.
+checkpoints, coordinator profile and admission. A failed write to the file is
+reported on stderr with its sequence and stops further lines; the search
+continues.
 An execution panic produces a stable error reply carrying the dequeued job's
 schedule key. The worker discards its target and builds a fresh one before
 taking another job, so a queued earlier reservation can still complete. If

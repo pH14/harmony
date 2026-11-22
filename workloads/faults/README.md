@@ -1193,7 +1193,8 @@ time on its worker, from parent restore through the result digest.
 snapshot to the parent (0 when the parent's own snapshot was retained).
 `parent_rebuild` counts the actions the session re-executed during the job to
 reach a prefix it did not hold, as a prefix rebuild or a replayed archive
-action, with their host time in `ns`; 0 actions means the parent was restored
+action, with their host time in `ns`. An action cut off before it returned
+counts too. 0 actions means the parent was restored
 from a cached snapshot. A campaign records its first 64 bugs. After that
 it records a bug only when it violates a property that no recorded bug
 violates, so a campaign records at most 64 bugs plus one for each property
