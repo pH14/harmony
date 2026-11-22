@@ -18,6 +18,13 @@ pub struct PageRecord {
 }
 
 impl PageRecord {
+    pub const CLEAR: Self = Self {
+        edges: 0,
+        hold_nanos: 0,
+        target_start: 0,
+        target_end: 0,
+    };
+
     #[must_use]
     pub fn of(park: EventPark) -> Self {
         let (target_start, target_end) = park
@@ -91,6 +98,9 @@ mod mapping {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::ptr::NonNull;
 
+    pub(super) const SEALS: libc::c_int =
+        libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_FUTURE_WRITE | libc::F_SEAL_SEAL;
+
     #[derive(Debug)]
     pub struct PageMapping {
         file: OwnedFd,
@@ -99,10 +109,14 @@ mod mapping {
 
     impl PageMapping {
         pub fn create() -> io::Result<Self> {
-            // SAFETY: the name is a static NUL-terminated string and the flag is
-            // a constant; memfd_create reads only these arguments.
-            let fd =
-                unsafe { libc::memfd_create(c"harmony-event-page".as_ptr(), libc::MFD_CLOEXEC) };
+            // SAFETY: the name is a static NUL-terminated string and the flags are
+            // constants; memfd_create reads only these arguments.
+            let fd = unsafe {
+                libc::memfd_create(
+                    c"harmony-event-page".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -134,7 +148,13 @@ mod mapping {
             }
             let words = NonNull::new(mapped.cast::<PageWords>())
                 .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
-            Ok(Self { file, words })
+            let mapping = Self { file, words };
+            // SAFETY: `mapping.file` owns the open memfd for the duration of the
+            // call, and F_ADD_SEALS reads only the descriptor and the seal bits.
+            if unsafe { libc::fcntl(mapping.fd(), libc::F_ADD_SEALS, SEALS) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(mapping)
         }
 
         #[must_use]
@@ -142,8 +162,11 @@ mod mapping {
             // SAFETY: `words` is the page-aligned start of a live shared mapping
             // of `EVENT_PAGE_BYTES` zero-filled bytes, enough for the page words,
             // and `AtomicU64` has the size and alignment of `u64`; the mapping is
-            // removed only when `self` drops, after the borrow ends; and every
-            // access to the page, here and in the node's runtime, is atomic.
+            // removed only when `self` drops, after the borrow ends; the memfd is
+            // sealed against resizing and against writes through any later
+            // mapping or descriptor, so a node holding the descriptor can only
+            // read it; and every access to the page, here and in the node's
+            // runtime, is atomic.
             ParkPage::new(unsafe { self.words.as_ref() })
         }
 
@@ -283,5 +306,37 @@ mod tests {
         assert_eq!(word(EVENT_PAGE_GENERATION), 2);
         assert_eq!(word(EVENT_PAGE_EDGES), 5);
         assert_eq!(word(EVENT_PAGE_TARGET_END), 6);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg_attr(miri, ignore = "memfd_create and mmap are foreign calls")]
+    fn a_mapped_page_is_sealed_against_resizing_and_writes_through_its_descriptor() {
+        let mapping = PageMapping::create().unwrap();
+        let fd = mapping.fd();
+        // SAFETY: `fd` belongs to `mapping`, which stays alive across the
+        // synchronous query.
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GET_SEALS) },
+            mapping::SEALS
+        );
+        // SAFETY: `fd` belongs to `mapping`, which stays alive across the call,
+        // and ftruncate reads only the descriptor and the length.
+        assert_ne!(unsafe { libc::ftruncate(fd, 0) }, 0);
+        // SAFETY: a null hint lets the kernel choose a fresh address, so no Rust
+        // object is overlapped; `fd` belongs to `mapping`, and the call is
+        // expected to fail without creating a mapping.
+        let writable = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                process_proto::events::EVENT_PAGE_BYTES,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_eq!(writable, libc::MAP_FAILED);
+        assert_eq!(mapping.page().publish(record(5)), 2);
     }
 }

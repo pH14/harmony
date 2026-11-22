@@ -14,6 +14,7 @@ pub enum Action {
     Stop(u16),
     Cont(u16),
     ContParked(u16, EventPark),
+    ClearParked(u16),
     Start { node: u16, after_fault: bool },
     RunHook(u32),
     HealCuts,
@@ -43,6 +44,7 @@ impl Action {
             Action::ContParked(node, park) => {
                 format!("resume node {node} with event park{}", park_text(park))
             }
+            Action::ClearParked(node) => format!("clear event park page node {node}"),
             Action::Start { node, .. } => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::HealCuts => "heal closed cut windows".to_owned(),
@@ -342,10 +344,14 @@ impl ProcessSupervisor {
                     }
                 }
                 if was.event_park != now.event_park {
-                    if let Some(previous) = was.event_park
-                        && (!previous.at_resume || state.published_park == Some(previous))
-                    {
-                        actions.push(Action::DisarmEventPark(node));
+                    match was.event_park {
+                        Some(previous) if !previous.at_resume => {
+                            actions.push(Action::DisarmEventPark(node));
+                        }
+                        Some(previous) if state.published_park == Some(previous) => {
+                            actions.push(Action::ClearParked(node));
+                        }
+                        _ => {}
                     }
                     if state.published_park == was.event_park {
                         state.published_park = None;
@@ -1681,7 +1687,7 @@ mod tests {
         assert_eq!(sup.tick(&parked, &[]), []);
         assert_eq!(
             sup.tick(&ActiveWindows::new(), &[]),
-            [Action::DisarmEventPark(0)]
+            [Action::ClearParked(0)]
         );
         assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
     }
@@ -1699,7 +1705,7 @@ mod tests {
         );
         assert_eq!(
             sup.tick(&ActiveWindows::new(), &[]),
-            [Action::DisarmEventPark(0)]
+            [Action::ClearParked(0)]
         );
     }
 
@@ -1735,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_parked_pause_disarms_the_first_park_and_publishes_its_own() {
+    fn a_second_parked_pause_clears_the_first_park_and_publishes_its_own() {
         let mut sup = Supervisor::new(1);
         let mut first = ActiveWindows::new();
         first.insert(0, &ProcessAction::Pause(30), 0);
@@ -1754,7 +1760,7 @@ mod tests {
         );
         assert_eq!(
             sup.tick(&second, &[]),
-            [Action::Stop(0), Action::DisarmEventPark(0)]
+            [Action::Stop(0), Action::ClearParked(0)]
         );
         assert_eq!(
             sup.tick(&after, &[]),
@@ -1762,7 +1768,7 @@ mod tests {
         );
         assert_eq!(
             sup.tick(&ActiveWindows::new(), &[]),
-            [Action::DisarmEventPark(0)]
+            [Action::ClearParked(0)]
         );
     }
 
@@ -2398,6 +2404,10 @@ mod tests {
         assert_eq!(
             Action::DisarmEventPark(0).describe(),
             "disarm event park node 0"
+        );
+        assert_eq!(
+            Action::ClearParked(0).describe(),
+            "clear event park page node 0"
         );
         assert_eq!(
             Action::SetClock {

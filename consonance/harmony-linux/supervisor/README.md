@@ -258,14 +258,23 @@ closes. An at-resume park is never armed over the event channel, at its
 window's start or at a node restart. When a pause closes while an at-resume
 park window is open on that node, including one that opens at the same step,
 the supervisor emits `ContParked`: it writes the park record to the node's
-park page and then sends `SIGCONT`. At the park window's end it disarms the
-park over the channel only if it wrote that record; a restart drops it.
+park page and then sends `SIGCONT`. At the park window's end, if it wrote that
+record, it emits `ClearParked`, which writes a record with zero edges to the
+page; a restart drops the park with the process and its page. The page is the
+only way an at-resume park ends. A disarm on the event channel can sit unread
+in a stopped node's socket until after the next resume, by which time the page
+can hold the next parked pause's record, so the runtime ignores a channel
+disarm while its park came from the page.
 
 The page exists only when the bundle has a `park-page` line, which takes no
 words and appears at most once. With it, every node start creates a one-page
 `memfd` (`page::PageMapping`), passes it in `HARMONY_EVENT_PAGE_FD`, and keeps
-the mapping for the life of that process. A node without the line runs the
-event protocol alone, with no page. An at-resume park that reaches a node
+the mapping for the life of that process. Before the node starts, the
+supervisor seals the `memfd` against shrinking, growing, `write` calls, new
+writable mappings and further seals (`F_SEAL_FUTURE_WRITE` with the rest), so
+the node's copy of the descriptor can only map the page for reading, while the
+supervisor's own writable mapping, made before the seals, keeps working. A
+node without the line runs the event protocol alone, with no page. An at-resume park that reaches a node
 without a page fails the run. The write order (odd generation, fields, then the
 next even generation with release ordering) and the matching read live in
 `page::ParkPage` over plain atomics, so Miri runs a concurrent writer and
@@ -277,7 +286,9 @@ After the write the supervisor treats the park as in effect, as it does after a
 command arm. The park status reply carries the page generation the runtime has
 adopted, and the supervisor ignores a reply that shows the park neither armed
 nor holding until that generation reaches the one it wrote, so a status reply
-sent before the resume cannot end the park.
+sent before the resume cannot end the park. The same check applies to a clear:
+the park stays in effect until a reply has seen the clearing record and shows
+the park neither armed nor holding.
 
 ## Node disks
 

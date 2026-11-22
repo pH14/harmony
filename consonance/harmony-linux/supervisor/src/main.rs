@@ -340,6 +340,13 @@ mod runtime {
             self.page_published = generation;
         }
 
+        fn note_page_clear(&mut self, generation: u64) {
+            if self.failed || self.retired {
+                return;
+            }
+            self.page_published = generation;
+        }
+
         fn poll_status(&mut self) {
             if self.ready
                 && self.commands.is_empty()
@@ -1441,6 +1448,17 @@ mod runtime {
                     supervisor.note_process_transition();
                 }
             }
+            Action::ClearParked(node) => {
+                if let Some(entry) = nodes.get_mut(usize::from(node))
+                    && entry.child.is_some()
+                    && let Some(page) = entry.page.as_ref()
+                {
+                    let generation = page.page().publish(PageRecord::CLEAR);
+                    if let Some(events) = entry.events.as_mut() {
+                        events.note_page_clear(generation);
+                    }
+                }
+            }
             Action::Start { node, after_fault } => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
@@ -2277,6 +2295,54 @@ mod runtime {
             channel.drain_pending_on_death(0, &mut supervisor, 2);
             assert_eq!(supervisor.counters().event_park_held, 0);
             assert_eq!(supervisor.counters().event_park_fires, 1);
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn a_page_park_stays_armed_until_a_reply_has_seen_its_clear() {
+            let (control, child_control) = UnixStream::pair().expect("control pair");
+            let (report, _child_report) = UnixStream::pair().expect("report pair");
+            let mut channel = EventChannel::new(control, report).expect("event channel");
+            let mut supervisor = Supervisor::new(1);
+            channel.ready = true;
+            let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            let mut status =
+                |channel: &mut EventChannel, supervisor: &mut Supervisor, flags: u64, seen: u64| {
+                    channel.queue(EventCommand::ParkStatus);
+                    channel.drive(0, supervisor, 1);
+                    (&child_control)
+                        .read_exact(&mut request)
+                        .expect("park status request");
+                    let mut reply = request;
+                    reply[16..24].copy_from_slice(&flags.to_le_bytes());
+                    reply[24..32].copy_from_slice(&seen.to_le_bytes());
+                    (&child_control)
+                        .write_all(&reply)
+                        .expect("park status reply");
+                    channel.drive(0, supervisor, 1);
+                };
+            channel.note_page_park(2);
+            status(&mut channel, &mut supervisor, 0, 0);
+            assert!(channel.park_armed);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_ARMED,
+                2,
+            );
+            assert!(channel.park_armed);
+            channel.note_page_clear(4);
+            status(
+                &mut channel,
+                &mut supervisor,
+                events::EVENT_PARK_STATUS_ARMED,
+                2,
+            );
+            assert!(channel.park_armed);
+            assert!(channel.pending_faults() > 0);
+            status(&mut channel, &mut supervisor, 0, 4);
+            assert!(!channel.park_armed);
+            assert_eq!(channel.pending_faults(), 0);
         }
 
         #[test]
