@@ -1116,8 +1116,8 @@ semantic events. Snapshot and schedule IDs never enter that commitment. Missing
 KVM history cannot be replaced by an empty commitment. UML carries no ordered
 normalized-event commitment and remains uncertified for whole state.
 
-The VM stream/snapshot formats are v11/v10 and UML formats v8/v6. The action policy
-is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
+The VM stream/snapshot formats are v15/v11 and UML formats v12/v7. The action policy
+is `fault-action-duration-coverage-v6-guest-choices`; older contracts are refused.
 
 Restoring a source snapshot compares its independently captured receipt and
 reconstructs the SDK observation before using that saved observation, including

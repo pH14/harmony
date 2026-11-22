@@ -78,7 +78,7 @@ data it claims to cover. The case's fault surface therefore pairs the event kill
 
 ## Discovery contract
 
-The case has one locked execution profile, bounded by wall time alone. CI searches the pinned
+The case has one locked execution profile, bounded by 20,000 executions and 300 wall minutes. CI searches the pinned
 vulnerable image on demand or on schedule. The campaign must find the Always assertion `every etcd
 member holds each acknowledged write`, with the check's Reachable assertion `etcd oracle compared
 every member` as evidence, and reproduce it in the package's fresh deterministic self-replay. A search miss or replay

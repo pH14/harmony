@@ -197,11 +197,11 @@ ordered setup payloads. It therefore includes the loaded Harmony executable
 used by the session and fails closed when that executable cannot be identified.
 
 Native snapshots preserve their existing serialized emulator format. Consonance
-snapshots use the explicit `consonance-whole-vm-v2` shape owned by
+snapshots use the explicit `SparseSnapshot` shape owned by
 `consonance-client`: setup base, execution identity, sparse pages, and opaque
 sidecar bytes. Imports require the same execution identity; cross-backend
 comparisons reconstruct state through actions. The sidecar uses portable
-snapshot format 3, recorded separately in execution identity; older portable
+snapshot sparse version 15, recorded separately in execution identity; older portable
 formats are rejected explicitly.
 
 Cartridge work RAM is exposed at `$6000` for workloads that need it. The

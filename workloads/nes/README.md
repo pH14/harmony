@@ -352,8 +352,6 @@ The [Mega Man 2](src/mm2/README.md),
 [Metroid](src/metroid/README.md), [Castlevania](src/castlevania/README.md), [Punch-Out!!](src/punchout/README.md), [Zelda](src/zelda/README.md), [Donkey Kong](src/donkey_kong/README.md), [Ice Climber](src/ice_climbers/README.md), [Pac-Man](src/pac_man/README.md) and [Joust](src/joust/README.md) READMEs document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
-The `tools` directory contains NES movie conversion and trace utilities.
-
 [Super Tilt Bro](src/stb/README.md) has a separate pinned recipe in
 `scripts/build-stb-rom.sh`, `stb-versions.env`, and `STB-ARTIFACT-LICENSE.md`.
 [Twin Dragons](src/twin_dragons/README.md) has a pinned recipe in

@@ -619,7 +619,7 @@ family's and passive clock's reachability hold by construction.
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, and `fork` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, `fork`, `picks`, `ridge`, and `stairs` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
