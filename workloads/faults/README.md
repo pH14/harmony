@@ -819,12 +819,26 @@ comparison. The faults-in-force, recovery-pending and fault-free-check registers
 of the [supervisor](../../consonance/harmony-linux/supervisor/README.md) end it:
 the workload is ready once neither faults nor recovery are pending, and the
 outcome is `compared` when a check that started after that has exited
-successfully. The phase also ends when the workload is not ready 3,000 ticks
-(the 30-second recovery limit) after the restarts and heal end, when no such
-check has finished 6,000 ticks after they end, or at a new violation, a terminal
-stop, an endpoint the strategy rejects (ours; outcome `rejected`), a hang or a
-cancellation. The target then restores the snapshot, which the chain held
-through the phase, so the restore runs no action again unless the session was
+successfully. The phase also ends 6,000 ticks after the restarts and heal end,
+with outcome `not ready within the settle limit` when the workload never became
+ready and `no check without a fault in force finished` when no such check
+passed, or at a new violation, a terminal stop, an endpoint the strategy rejects
+(ours; outcome `rejected`), a hang or a cancellation. A workload that stays not
+ready violates one of the supervisor's two recovery properties,
+`workload becomes ready within 30 seconds after faults end` and its per-node
+form (ours),
+`every workload node answers a pinned check read within 30 seconds after faults end or is still applying entries`.
+Both count their 30 seconds from the end of the last fault in force, which for
+a cut is the heal hook's exit rather than the end of the heal action, and the
+per-node property fails only when a check that started after that end exits.
+The harness kit's check first retries its pinned reads to the 30 seconds and
+then reads a stalled node's applied index twice, 10 seconds apart. The limit
+must therefore outlast 30 seconds by the heal's run time plus one check. In
+replays of nine rqlite settles that stayed not ready, the ready property failed
+3,050 to 3,300 ticks after the heal action ended and the per-node property
+3,150 to 4,000. The 6,000-tick limit leaves 20 seconds past the latest of
+these, so such a settle ends at the violation. The target then restores the
+snapshot, which the chain held through the phase, so the restore runs no action again unless the session was
 replaced or the phase restored a prefix older than the endpoint. A restore that
 finds no held link rebuilds the endpoint as any other restore does, so the hold
 saves work and never decides a result. The target also restores the job's

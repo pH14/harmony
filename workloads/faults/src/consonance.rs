@@ -5022,10 +5022,14 @@ mod tests {
 
     const FOLDING: &str = "tier = \"min(highest(ticks), 15)\"\n";
 
-    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+    fn register_event(register: u32, value: u64) -> consonance_client::session::SdkEvent {
         let mut bytes = vec![0];
-        bytes.extend_from_slice(&ticks.to_le_bytes());
-        (0, (2 << 24) | process_proto::registers::TICKS, bytes)
+        bytes.extend_from_slice(&value.to_le_bytes());
+        (0, (2 << 24) | register, bytes)
+    }
+
+    fn ticks_event(ticks: u64) -> consonance_client::session::SdkEvent {
+        register_event(process_proto::registers::TICKS, ticks)
     }
 
     fn scripted_batches_live(batches: Vec<Vec<consonance_client::session::SdkEvent>>) -> Live {
@@ -5424,6 +5428,72 @@ mod tests {
             assert_eq!(record["outcome"], outcome);
             assert_eq!(record["settle_actions"], u64::from(!doomed));
         }
+    }
+
+    #[test]
+    fn a_settle_whose_recovery_stays_pending_reports_the_ready_property_after_its_window() {
+        use process_proto::registers::{ALIVE, FAULTS_IN_FORCE, RECOVERY_PENDING};
+        const READY: &str = "workload becomes ready within 30 seconds after faults end";
+        let waits = 65;
+        let mut batches: Vec<Vec<consonance_client::session::SdkEvent>> = (1..=waits + 2)
+            .map(|ticks| vec![ticks_event(ticks)])
+            .collect();
+        batches[0].extend([
+            register_event(ALIVE, 1),
+            register_event(FAULTS_IN_FORCE, 0),
+            register_event(RECOVERY_PENDING, 1),
+        ]);
+        batches.last_mut().unwrap().push((
+            0,
+            0,
+            format!(
+                r#"{{"antithesis_assert":{{"id":"{READY}","assert_type":"always","must_hit":false,"hit":true,"condition":false}}}}"#
+            )
+            .into_bytes(),
+        ));
+        let (mut target, _) = keyed_target(FOLDING);
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            scripted: Some(ScriptedRuns {
+                batches,
+                ..ScriptedRuns::default()
+            }),
+            run_hashes: Some(vec![[17; 32]; 4 * waits as usize]),
+            ..fixture_session()
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let policy = crate::campaign::settle::SettlePolicy {
+            record: directory.path().join("settle.jsonl"),
+            heal: None,
+        };
+        let result = crate::campaign::execute_job(
+            &crate::campaign::fixture_run(),
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
+            searcher::search::rollout::RolloutStop::new(false),
+            Some(&policy),
+        )
+        .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&policy.record).unwrap()).unwrap();
+        let end = u64::from(crate::campaign::settle::END_TICKS);
+        let wait = u64::from(crate::campaign::settle::WAIT_TICKS);
+        assert_eq!(record["outcome"], "bug");
+        assert_eq!(record["violations"], serde_json::json!([READY]));
+        assert_eq!(record["ready_after_ticks"], serde_json::Value::Null);
+        assert_eq!(record["recovery_pending_after_settle"], true);
+        assert_eq!(record["settle_actions"], waits + 1);
+        assert_eq!(record["settle_ticks"], end + waits * wait);
+        assert!(waits * wait > 3_000);
+        assert_eq!(result.actions.len(), 2 + waits as usize);
+        assert!(result.actions.last().unwrap().outcome.objective_reached);
     }
 
     #[test]
