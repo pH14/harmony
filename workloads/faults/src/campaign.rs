@@ -1666,9 +1666,7 @@ pub fn run_fault_campaign_with_plan(
     origin: &FaultCampaignOrigin,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
-    checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
-    interrupt: Option<&'static std::sync::atomic::AtomicBool>,
-    job_host_path: Option<std::path::PathBuf>,
+    options: CampaignExecutionOptions,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
@@ -1683,10 +1681,7 @@ pub fn run_fault_campaign_with_plan(
         progress,
         CampaignExecutionOptions {
             placement: config.placement.clone(),
-            checkpoints,
-            interrupt,
-            job_host_path,
-            ..CampaignExecutionOptions::default()
+            ..options
         },
     )?;
     Ok((FaultCampaignReport::new(report), snapshot))
