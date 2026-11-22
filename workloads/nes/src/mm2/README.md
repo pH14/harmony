@@ -89,18 +89,43 @@ than 256 pixels on a steady screen.
 
 The progress tier is the Robot Master clears, the castle clears, the Wily 5
 refights, whether the boss that clears the current castle is defeated, whether
-the Wily Machine's first form is broken, and the screen. A castle clear waits
+the Wily Machine's first form is broken, and the room. A castle clear waits
 for the stage-clear sequence after the kill, and a kill that left the tier
-unchanged would share its draws with every fight state in the room. The screen
-is the last tier item, so within the same clears a higher screen of a stage is
-a higher progress rank and draws favor the furthest screen reached. This relies
-on the screen byte not falling along a stage's route. The place is the stage,
-room, boss and enemy damage in steps of two, the 32-pixel position bucket,
+unchanged would share its draws with every fight state in the room. The room
+is the last tier item (ours), so within the same clears a further room of a
+stage is a higher progress rank and draws favor the furthest room reached.
+This relies on the room byte at `$20`, the camera's screen, keeping route
+order. On the winning routes through Crash, Flash, Metal, Air, Bubble, Quick
+and Wood Man's stages it rises by one at each room transition and falls only
+when Mega Man steps back across the camera's midpoint or drops down a vertical
+section. After a boss kill it resets to 0, by which time the Robot Master
+clears have risen. Heat Man's stage and the Wily castle were not checked. The
+player's screen byte at `$440` does not keep route order: in Crash Man's tower
+it reads 8 to 12 in states off the route while the route is still in room 7,
+so with the screen last those states outranked every state on the route.
+
+Whole-game runs from power-on compared the two last tier items over 12 seeds
+per arm, with a frame budget of 16,777,216 that every run reached. The count is
+the milestones whose witnesses replay:
+
+| Window | Last tier item | Median | Worst | Second worst |
+|---|---|---|---|---|
+| 4 | screen | 9 | 1 | 1 |
+| 4 | room | 10 | 2 | 7 |
+| 16 | screen | 10 | 1 | 1 |
+| 16 | room | 10 | 4 | 7 |
+
+With the screen last, 3 seeds at window 4 and 4 at window 16 never left Crash
+Man's stage; with the room last, none stayed in it at window 16 and one at
+window 4 ran out of budget in Crash Man's boss room.
+
+The place is the stage, room, boss and enemy damage in steps of two, the
+32-pixel position bucket,
 posture, platforms and whether the menu is open, plus the Wily 5 refights,
 the refight boss in play and the boss intro's 64-frame step. `min(stage, 13)`
 and `min(platforms, 7)` keep the place inside 64 bits. The holder identity is
 the 16-pixel position bucket, the weapon and the menu state. The tier without
-the screen is the preference scope, and each place keeps the best arrival under each of two
+the room is the preference scope, and each place keeps the best arrival under each of two
 preferences. The first ranks health, then summed weapon energy. The second
 ranks the three lowest weapon energies, lowest first, then health, so it keeps
 the arrival whose most-drained weapons hold the most. Random input fires
