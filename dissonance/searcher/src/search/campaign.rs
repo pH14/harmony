@@ -392,6 +392,10 @@ pub trait InputPolicy: CampaignTypes {
         let _ = run;
         ChoicePolicy::default()
     }
+    fn untried_site(&self, run: &Self::Run, suffix: &[Self::Action]) -> u16 {
+        let _ = (run, suffix);
+        0
+    }
 
     fn simpler_actions(&self, run: &Self::Run, action: &Self::Action) -> Vec<Self::Action> {
         let _ = (run, action);
@@ -1287,6 +1291,8 @@ pub struct CampaignCancelRecord {
     pub suffix_limit: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shrink: Option<ShrinkSelectionRecord>,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub untried_site: u16,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1458,6 +1464,10 @@ pub struct TreeImportCounts {
 }
 
 fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u16(value: &u16) -> bool {
     *value == 0
 }
 
@@ -1953,6 +1963,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     shrink: Option<minimize::ShrinkState>,
     choices: Option<ChoicePolicy>,
     declared: Vec<(u16, u32)>,
+    without_default: Vec<u16>,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -2009,6 +2020,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             shrink: None,
             choices,
             declared: ChoiceSite::declared_contrary(&sites),
+            without_default: ChoiceSite::sites_without_default(&sites),
         }
     }
 
@@ -2018,31 +2030,38 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         parent_index: usize,
         mutation_seed: u64,
         campaign_seed: u64,
-        untried: bool,
+        untried_site: Option<u16>,
     ) -> Option<ChoicePlan> {
         let policy = self.choices?;
         let parent = self
             .archive
             .choice_profile(parent_index)
             .unwrap_or_else(|| policy.root_profile(campaign_seed));
-        let untried = if policy.untried_first && untried {
-            self.archive.take_choice_job(parent_index)
-        } else {
-            None
-        };
+        let untried_site = untried_site.filter(|_| policy.untried_first);
+        let untried =
+            untried_site.and_then(|site| self.archive.take_choice_job(parent_index, site));
         let held = self
             .archive
             .last_action(parent_index)
             .map(|action| workload.action_choices(action))
             .unwrap_or_default();
-        Some(ChoicePlan::new(
+        let mut plan = ChoicePlan::new(
             &policy,
             parent,
             mutation_seed,
             untried,
             held,
             self.declared.clone(),
-        ))
+        )
+        .with_permuted_sites(
+            &self.without_default,
+            campaign_seed,
+            self.archive.entries[parent_index].id,
+        );
+        if untried.is_some() {
+            plan.untried_site = untried_site.unwrap_or(0);
+        }
+        Some(plan)
     }
 
     pub(crate) fn admit_choice_profile(
@@ -5782,6 +5801,7 @@ where
             SelectorPath,
             Option<CampaignSpliceRecord>,
             Option<ShrinkSelectionRecord>,
+            u16,
         ),
     >::new();
     let mut replay_cancelled = 0_u64;
@@ -5803,6 +5823,7 @@ where
                             cancel.selector.path,
                             cancel.splice.clone(),
                             cancel.shrink,
+                            cancel.untried_site,
                         ),
                     )
                     .is_some()
@@ -5823,6 +5844,7 @@ where
                             job.selector.path,
                             job.splice.clone(),
                             job.shrink.as_deref().copied(),
+                            job.choices.map_or(0, |choices| choices.untried_site),
                         ),
                     )
                     .is_some()
@@ -5862,9 +5884,13 @@ where
         .values()
         .map(|record| record.5)
         .collect::<Vec<_>>();
+    let replay_job_untried_sites = replay_job_reservations
+        .values()
+        .map(|record| record.6)
+        .collect::<Vec<_>>();
     let replay_job_splices = replay_job_reservations
         .into_values()
-        .map(|(_, _, seed, path, splice, _)| (seed, path, splice))
+        .map(|(_, _, seed, path, splice, _, _)| (seed, path, splice))
         .collect::<Vec<_>>();
     let replay_job_metadata = replay_job_parents
         .iter()
@@ -6216,7 +6242,8 @@ where
                 parent_index,
                 *mutation_seed,
                 header.campaign_seed,
-                !matches!(splice, Some(CampaignSpliceRecord::Tail { .. })),
+                (!matches!(splice, Some(CampaignSpliceRecord::Tail { .. })))
+                    .then_some(replay_job_untried_sites[job_slot]),
             )
         };
         replay_choice_plans.insert(job_slot, choices);
@@ -6690,6 +6717,15 @@ where
                     )
                     .into());
                 }
+                if let Some(plan) = job.choices.filter(|plan| plan.untried.is_some())
+                    && workload.untried_site(&replay_run, &suffix) != plan.untried_site
+                {
+                    return Err(format!(
+                        "replayed job {} asks its first choice at another untried site",
+                        job.sequence
+                    )
+                    .into());
+                }
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job_certified(
                     &replay_run,
@@ -7030,7 +7066,8 @@ where
                             parent_index,
                             *mutation_seed,
                             header.campaign_seed,
-                            !matches!(splice, Some(CampaignSpliceRecord::Tail { .. })),
+                            (!matches!(splice, Some(CampaignSpliceRecord::Tail { .. })))
+                                .then_some(replay_job_untried_sites[next_slot]),
                         )
                     };
                     replay_choice_plans.insert(next_slot, choices);

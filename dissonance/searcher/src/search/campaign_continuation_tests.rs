@@ -94,6 +94,7 @@ thread_local! {
     static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
     static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static TEST_CHOICE_POLICY: std::cell::Cell<Option<ChoicePolicy>> = const { std::cell::Cell::new(None) };
+    static TEST_UNTRIED_SITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const TEST_ASK: u8 = 200;
@@ -216,6 +217,9 @@ impl<const CHOICES: bool> InputPolicy for ChoiceTestWorkload<CHOICES> {
         TEST_CHOICE_POLICY
             .with(std::cell::Cell::get)
             .unwrap_or_default()
+    }
+    fn untried_site(&self, _run: &Self::Run, suffix: &[Self::Action]) -> u16 {
+        u16::from(TEST_UNTRIED_SITES.with(std::cell::Cell::get) && !suffix.len().is_multiple_of(2))
     }
     fn draw_table_parameters(&self, _run: &Self::Run) -> EmpiricalStepParameters {
         EmpiricalStepParameters {
@@ -2296,4 +2300,87 @@ fn a_search_checkpoint_does_not_resume_under_another_choice_policy() {
         "{error}"
     );
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn each_untried_site_counts_its_own_jobs_and_replay_checks_the_site() {
+    let site = |record: &serde_json::Value| {
+        record
+            .get("untried_site")
+            .map_or(0, |site| site.as_u64().unwrap())
+    };
+    let config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut plain = Vec::new();
+    run_campaign_checkpointed(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut plain,
+        None,
+    )
+    .unwrap();
+    assert!(
+        !std::str::from_utf8(&plain)
+            .unwrap()
+            .contains("untried_site")
+    );
+    TEST_UNTRIED_SITES.with(|sites| sites.set(true));
+    let mut bytes = Vec::new();
+    let live = run_campaign_checkpointed(
+        &ChoiceTestWorkload::<true>,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let records: Vec<serde_json::Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let cancels = records
+        .iter()
+        .filter(|record| record["event"] == "cancel")
+        .count() as u64;
+    let mut walks = BTreeMap::<(u64, u64), Vec<(u64, u64)>>::new();
+    for job in records
+        .iter()
+        .filter(|record| record["event"] == "job" && record.get("choices").is_some())
+    {
+        walks
+            .entry((job["parent_id"].as_u64().unwrap(), site(&job["choices"])))
+            .or_default()
+            .push((
+                job["reservation"].as_u64().unwrap(),
+                job["choices"]["untried"].as_u64().unwrap(),
+            ));
+    }
+    for walk in walks.values_mut() {
+        walk.sort_unstable();
+        for (position, (_, ordinal)) in walk.iter().enumerate() {
+            assert!(*ordinal >= position as u64 && *ordinal <= position as u64 + cancels);
+        }
+        assert!(walk.windows(2).all(|pair| pair[0].1 < pair[1].1));
+    }
+    assert!(
+        walks.iter().any(|((parent, site), walk)| *site == 1
+            && walk[0].1 == 0
+            && walks
+                .get(&(*parent, 0))
+                .is_some_and(|other| other[0].1 == 0)),
+        "no parent started a walk at both sites"
+    );
+    let (replayed, _) =
+        replay_campaign_checkpointed(&ChoiceTestWorkload::<true>, &bytes, None, None).unwrap();
+    assert_eq!(live.0, replayed);
+    TEST_UNTRIED_SITES.with(|sites| sites.set(false));
+    let error = replay_campaign_checkpointed(&ChoiceTestWorkload::<true>, &bytes, None, None)
+        .expect_err("a stream whose suffix asks at another untried site replayed")
+        .to_string();
+    assert!(
+        error.contains("asks its first choice at another untried site"),
+        "{error}"
+    );
 }

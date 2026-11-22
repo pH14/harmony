@@ -26,11 +26,15 @@ pub(crate) fn site(vocabulary: &FaultVocabulary) -> ChoiceSite {
         NODE_SITE,
         (0..vocabulary.nodes()).map(|node| node.to_string()),
     )
+    .without_default()
 }
 
 pub(crate) fn asks(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
-    vocabulary.untried_first_nodes()
-        && action.guest.is_none()
+    vocabulary.untried_first_nodes() && fresh(vocabulary, action)
+}
+
+fn fresh(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
+    action.guest.is_none()
         && action.operation.target_node().is_some()
         && !(vocabulary.resume_park().is_some()
             && matches!(action.operation, FaultOperation::Pause(..)))
@@ -80,13 +84,28 @@ pub(crate) fn resolve(
     untried: Option<u32>,
     depth: u64,
 ) -> Resolved {
-    let Some(plan) = plan.filter(|_| vocabulary.untried_first_nodes()) else {
+    let Some(plan) = plan else {
         return Resolved {
             suffix: suffix.to_vec(),
             rows: vec![None; suffix.len()],
             untried: None,
         };
     };
+    if !vocabulary.untried_first_nodes() {
+        return Resolved {
+            suffix: suffix.to_vec(),
+            rows: suffix
+                .iter()
+                .zip(1..)
+                .map(|(action, step)| {
+                    fresh(vocabulary, action)
+                        .then(|| row(vocabulary, depth + step, 0, &action.operation))
+                        .flatten()
+                })
+                .collect(),
+            untried: None,
+        };
+    }
     let mut chooser = Chooser::new(&ChoicePlan {
         profile: ChoiceProfile::new(0, 0),
         seed: plan.seed ^ SEED_MIX,
@@ -205,6 +224,10 @@ mod tests {
         )
     }
 
+    fn permuted(untried: Option<u32>, parent: u64) -> ChoicePlan {
+        plan(untried).with_permuted_sites(&[NODE_SITE_ID], 9, parent)
+    }
+
     fn action(operation: FaultOperation) -> FaultAction {
         FaultAction::from(operation).with_choice(5)
     }
@@ -225,26 +248,35 @@ mod tests {
     #[test]
     fn without_the_option_or_a_plan_the_drawn_nodes_stand() {
         let drawn = suffix();
-        for (vocabulary, plan) in [
-            (vocabulary(false), Some(plan(Some(1)))),
-            (vocabulary(true), None),
-        ] {
-            let resolved = resolve(&vocabulary, &drawn, plan.as_ref(), Some(1), 0);
-            assert_eq!(resolved.suffix, drawn);
-            assert!(resolved.rows.iter().all(Option::is_none));
+        let unplanned = resolve(&vocabulary(true), &drawn, None, Some(1), 0);
+        assert_eq!(unplanned.suffix, drawn);
+        assert!(unplanned.rows.iter().all(Option::is_none));
+        let off = vocabulary(false);
+        let resolved = resolve(&off, &drawn, Some(&plan(Some(1))), Some(1), 0);
+        assert_eq!(resolved.suffix, drawn);
+        assert_eq!(resolved.untried, None);
+        for ((action, asked), step) in drawn.iter().zip(&resolved.rows).zip(1..) {
+            assert_eq!(
+                asked.as_ref(),
+                fresh(&off, action)
+                    .then(|| row(&off, step, 0, &action.operation))
+                    .flatten()
+                    .as_ref()
+            );
         }
+        assert!(resolved.rows[0].is_some() && resolved.rows[1].is_none());
     }
 
     #[test]
     fn the_untried_ordinal_walks_the_first_ask_and_every_other_ask_keeps_its_draw() {
         let drawn = suffix();
         let vocabulary = vocabulary(true);
-        let firsts = (0..4)
+        let mut firsts = (0..4)
             .map(|ordinal| {
                 let resolved = resolve(
                     &vocabulary,
                     &drawn,
-                    Some(&plan(Some(ordinal))),
+                    Some(&permuted(Some(ordinal), 4)),
                     Some(ordinal),
                     4,
                 );
@@ -252,7 +284,9 @@ mod tests {
                 resolved.suffix[0].operation.target_node()
             })
             .collect::<Vec<_>>();
-        assert_eq!(firsts, [Some(0), Some(1), Some(2), Some(2)]);
+        assert_eq!(firsts[3], Some(2));
+        firsts[..3].sort_unstable();
+        assert_eq!(firsts[..3], [Some(0), Some(1), Some(2)]);
         let resolved = resolve(&vocabulary, &drawn, Some(&plan(None)), None, 4);
         assert_eq!(resolved.suffix, drawn);
         let rows = resolved.rows;
@@ -284,6 +318,27 @@ mod tests {
             (corrupt.offered.as_slice(), corrupt.taken),
             (&[2][..], Choice::Default)
         );
+    }
+
+    #[test]
+    fn one_parent_walks_three_distinct_nodes_and_every_node_starts_some_parent() {
+        let vocabulary = vocabulary(true);
+        let drawn = suffix();
+        let first = |parent: u64, ordinal: u32| {
+            let plan = permuted(Some(ordinal), parent);
+            resolve(&vocabulary, &drawn, Some(&plan), Some(ordinal), 0).suffix[0]
+                .operation
+                .target_node()
+                .unwrap()
+        };
+        let walked = (0..3)
+            .map(|ordinal| first(4, ordinal))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(walked.len(), 3);
+        let starts = (0..64)
+            .map(|parent| first(parent, 0))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(starts.into_iter().collect::<Vec<_>>(), [0, 1, 2]);
     }
 
     #[test]

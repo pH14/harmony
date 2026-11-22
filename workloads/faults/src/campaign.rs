@@ -698,18 +698,13 @@ pub(crate) fn execute_job(
         results: Vec::with_capacity(suffix.len()),
     };
     let depth = target.actions().len() as u64;
-    let untried = stop.choices().and_then(|plan| plan.untried);
-    let host_untried = untried.filter(|_| {
-        suffix
-            .first()
-            .is_some_and(|action| nodes::asks(&run.vocabulary, action))
-    });
+    let (host_untried, guest_untried) = match stop.choices() {
+        Some(plan) if plan.untried_site == nodes::NODE_SITE_ID => (plan.untried, None),
+        Some(plan) => (None, plan.untried),
+        None => (None, None),
+    };
     let mut resolved = nodes::resolve(&run.vocabulary, suffix, stop.choices(), host_untried, depth);
-    let suffix = guest_suffix(
-        &resolved.suffix,
-        stop.choices(),
-        untried.filter(|_| host_untried.is_none()),
-    );
+    let suffix = guest_suffix(&resolved.suffix, stop.choices(), guest_untried);
     for (index, action) in suffix.iter().enumerate() {
         if let Some(mut row) = resolved.rows[index].take() {
             row.moment = target.observation().moment;
@@ -936,6 +931,16 @@ impl InputPolicy for FaultWorkload {
             sites.push(nodes::site(&run.vocabulary));
         }
         sites
+    }
+    fn untried_site(&self, run: &FaultCampaignRun, suffix: &[FaultAction]) -> u16 {
+        if suffix
+            .first()
+            .is_some_and(|action| nodes::asks(&run.vocabulary, action))
+        {
+            nodes::NODE_SITE_ID
+        } else {
+            0
+        }
     }
     fn goal_tail(&self, _run: &FaultCampaignRun, last: Option<&FaultAction>) -> Vec<FaultAction> {
         settle_tail(last)
@@ -2993,5 +2998,29 @@ mod tests {
             guest_suffix(&[copied, fresh], None, None),
             vec![copied, fresh]
         );
+    }
+
+    #[test]
+    fn a_suffix_names_the_node_site_only_when_its_first_action_asks_it() {
+        let game = game();
+        let ticks = std::num::NonZeroU16::MIN;
+        let pause = FaultAction::from(FaultOperation::Pause(1, ticks)).with_choice(5);
+        let wait = FaultAction::from(FaultOperation::Wait(ticks)).with_choice(5);
+        let off = run(3, vec![1]);
+        let on = FaultCampaignRun::any_bug(off.vocabulary.clone().with_untried_first_nodes(true));
+        assert_eq!(game.choice_sites(&off).len(), 1);
+        assert_eq!(
+            game.choice_sites(&on).len(),
+            usize::from(nodes::NODE_SITE_ID) + 1
+        );
+        assert_eq!(
+            ChoiceSite::sites_without_default(&game.choice_sites(&on)),
+            [nodes::NODE_SITE_ID]
+        );
+        assert!(ChoiceSite::sites_without_default(&game.choice_sites(&off)).is_empty());
+        assert_eq!(game.untried_site(&off, &[pause, wait]), 0);
+        assert_eq!(game.untried_site(&on, &[pause, wait]), nodes::NODE_SITE_ID);
+        assert_eq!(game.untried_site(&on, &[wait, pause]), 0);
+        assert_eq!(game.untried_site(&on, &[]), 0);
     }
 }

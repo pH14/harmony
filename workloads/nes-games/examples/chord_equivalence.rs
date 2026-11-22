@@ -150,8 +150,10 @@ fn branch_side(
                 redrawn: false,
                 seed: seeds.next_u64(),
                 untried: Some((chain % UNTRIED_ORDINALS) as u32),
+                untried_site: 0,
                 held: vec![(CHORD_SITES + WAIT_SITE, Choice::Option(1))],
                 declared: declared.clone(),
+                permuted: Vec::new(),
             }
         } else {
             ChoicePlan {
@@ -159,8 +161,10 @@ fn branch_side(
                 redrawn: false,
                 seed: seeds.next_u64(),
                 untried: None,
+                untried_site: 0,
                 held: Vec::new(),
                 declared: declared.clone(),
+                permuted: Vec::new(),
             }
         });
         let mut record = Chain::default();

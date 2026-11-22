@@ -746,10 +746,10 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EntryChoices {
     profile: Option<ChoiceProfile>,
-    jobs: u32,
+    jobs: Vec<u32>,
 }
 
 pub(crate) struct CampaignSpliceTail<A> {
@@ -4057,10 +4057,14 @@ where
         }
     }
 
-    pub(crate) fn take_choice_job(&mut self, id: usize) -> Option<u32> {
+    pub(crate) fn take_choice_job(&mut self, id: usize, site: u16) -> Option<u32> {
         let entry = self.choices.as_mut()?.get_mut(id)?;
-        let ordinal = entry.jobs;
-        entry.jobs = entry.jobs.saturating_add(1);
+        let site = usize::from(site);
+        if entry.jobs.len() <= site {
+            entry.jobs.resize(site + 1, 0);
+        }
+        let ordinal = entry.jobs[site];
+        entry.jobs[site] = ordinal.saturating_add(1);
         Some(ordinal)
     }
 

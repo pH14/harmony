@@ -1836,7 +1836,7 @@ fn catalog_choice_sites_round_trip_and_reject_duplicates() {
     let declared = catalog()
         .with_choices(vec![
             site("buttons", &["right", "right_b"]),
-            site("count", &["1", "2"]),
+            site("count", &["1", "2"]).without_default(),
         ])
         .unwrap();
     let json = serde_json::to_string(&declared).unwrap();

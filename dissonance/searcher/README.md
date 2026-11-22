@@ -552,6 +552,22 @@ choice takes the option at position `ordinal` of the default followed by the
 other offered labels in label order, while the ordinal is below the offered
 count. The ordinal counts the jobs dispatched with a plan from the job's
 parent, at dispatch, so jobs in flight from one parent take different options.
+`InputPolicy::untried_site` names the site a drawn suffix asks first, and each
+entry keeps one count per site, so jobs from one parent that start at another
+site do not advance the walk of the named one (ours). The default names site
+0 for every suffix, which keeps one count per entry; a workload names another
+site only when it knows, before the job runs, that the suffix's first choice
+is asked there. A site declared with `ChoiceSite::without_default` (ours) has
+no answer that the behavior without choices prefers, as when its labels are
+drawn uniformly and the default is only the lowest label, so walking from the
+default would send every parent's first job to that label. Its walk follows a
+permutation of the offered labels in place of the default-first order. The
+coordinator lists these sites once from `InputPolicy::choice_sites`, and each
+plan carries one seed per listed site (`ChoicePlan::permuted`), mixed from the
+campaign seed, the parent entry's id and the site. Every job from one parent
+therefore walks the same permutation, so n jobs take n distinct labels, and
+the first job at a parent takes a uniform label. Replay rebuilds the plan from
+the same parent, so it recomputes the seed.
 Hold: with the profile's `hold` probability the site repeats its previous
 answer, when that answer is still offered. CONTRARY: with the profile's
 `contrary` probability the answer is a uniform offered label other than the
@@ -635,8 +651,13 @@ archive report are unchanged. Its checkpoint still carries the empty choice
 column of the archive and of each saved in-flight job. With sites, the stream
 header and the checkpoint's policies name the policy (`choice_policy`), and
 each job record carries its plan (`choices`: profile, whether it was redrawn,
-and the untried ordinal). Replay rebuilds each plan at its reservation from
-the replayed archive and refuses a stream whose plan or policy differs, and a
+the untried ordinal, and `untried_site`, the site whose count gave the
+ordinal). A cancelled job's record carries `untried_site` too. Both records
+leave `untried_site` out when it is 0, so a record without it counted at
+site 0.
+Replay rebuilds each plan at its reservation from the replayed archive, takes
+the ordinal from the recorded site's count, checks that the replayed suffix
+names that site, and refuses a stream whose plan or policy differs, and a
 checkpoint does not resume under another policy. A job without a plan, such
 as a continuation, gives the entries it keeps its parent's profile. The plan
 travels in `RolloutStop`, beside the ceiling, so a workload that overrides
@@ -718,7 +739,7 @@ where the action is kept. The target writes the decided flag into each recorded
 frame and into the genesis record of the records header. The header also
 lists the memory windows, as address and length pairs, that the workload read
 beside work RAM to decode each frame, empty for a game that reads work RAM
-alone. The assertion records format is `assertion-records-v9`, a records file
+alone. The assertion records format is `assertion-records-v10`, a records file
 of an earlier format is refused by its format string, and `Rekeying` reads the
 recorded flags instead of deciding them again. A latched stage whose goal
 includes `action_end` passes only on a kept state, as the hand plans latch
@@ -811,7 +832,7 @@ strategy's accumulator from before the genesis record, so observing the genesis 
 the genesis key and accumulator the live search had. For a rooted run it is the
 accumulator folded over the root's frames up to its last one, and for an
 unrooted run it is the default accumulator. The format is
-`assertion-records-v9`. Each entry is one job: its sequence number,
+`assertion-records-v10`. Each entry is one job: its sequence number,
 which joins it to the stream's `CampaignJobRecord`, and for each action the
 action, whether it failed, its cost in frames (including frames the front end
 ran for it outside the tape), the record of every frame it decoded, stored
@@ -1587,7 +1608,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v22`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v23`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same

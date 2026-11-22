@@ -452,12 +452,19 @@ its park is drawn for that node. `execute_job` resolves each such action
 before it stamps `GuestChoices`, with one host `Chooser` per job built from
 the plan with hold zero. It calls `Chooser::draw` over the offer with the
 lowest offered node as the default and weight one on the node the draw
-picked and zero on the others. The first ask of a job therefore takes the
-node at the plan's untried ordinal while one remains untried, and every other
-ask answers the drawn node, so the draw's random word and arithmetic decide
-it as they do with the site off. The untried ordinal goes to the host when
-the suffix's first action asks this site and to the guest's first stamped
-action otherwise. The stored action holds the answer, so replay asks nothing.
+picked and zero on the others. The draw is uniform over the offer, so the
+lowest node is the default only because `Chooser::draw` takes one, and the
+site is declared with `ChoiceSite::without_default`. The first ask of a job
+therefore takes the node at the plan's untried ordinal in its parent's
+permutation of the offer while one remains untried: the first such job at a
+parent takes a uniform node, as the draw does, and three at one parent take
+three nodes. Every other ask answers the drawn node, so the draw's random word and arithmetic decide
+it as they do with the site off. When the suffix's first action asks this
+site, `InputPolicy::untried_site` names `fault.node`, so the job's untried
+ordinal counts only the parent's jobs that started at `fault.node` and the
+host takes it. Otherwise it names site 0, and the ordinal comes from the
+parent's shared count and goes to the guest's first stamped action, as with
+the site off. The stored action holds the answer, so replay asks nothing.
 The offer depends only on the kind and the vocabulary. At resolve time the
 host also has the parent's `alive` mask from the supervisor, so `Kill` and
 `Pause` could offer running nodes and `Restart` stopped ones; the offer does
@@ -489,9 +496,11 @@ action for every node fault it applies, whether or not a `Chooser` picked
 the node. Pins address guest rows only, and a host answer changes when the
 input's action names another node. A search writes no per-choice records
 unless the environment variable `HARMONY_FAULTS_CHOICE_RECORD` names a file:
-each host ask in a job then appends its row there, with the parent's path
-length (`depth`) and, on the ask that took it, the untried ordinal, like the
-settle record below. An action served from the snapshot cache has no guest
+each node fault that a job with a plan stamps then appends its host row
+there, with the parent's path length (`depth`) and, on the ask that took it,
+the untried ordinal, like the settle record below. With `untried_first_nodes`
+off the row holds the drawn node, so both arms of a comparison write the same
+rows. An action served from the snapshot cache has no guest
 rows.
 
 Unrecorded standing-service questions stop at an explicit decision. The fault

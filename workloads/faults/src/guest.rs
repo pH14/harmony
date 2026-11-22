@@ -39,8 +39,10 @@ impl GuestChoices {
             redrawn: false,
             seed: self.seed,
             untried: self.untried,
+            untried_site: 0,
             held: Vec::new(),
             declared: Vec::new(),
+            permuted: Vec::new(),
         }
     }
 }
