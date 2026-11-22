@@ -2345,10 +2345,12 @@ fn each_untried_site_counts_its_own_jobs_and_replay_checks_the_site() {
         .filter(|record| record["event"] == "cancel")
         .count() as u64;
     let mut walks = BTreeMap::<(u64, u64), Vec<(u64, u64)>>::new();
-    for job in records
-        .iter()
-        .filter(|record| record["event"] == "job" && record.get("choices").is_some())
-    {
+    for job in records.iter().filter(|record| {
+        record["event"] == "job"
+            && record
+                .get("choices")
+                .is_some_and(|choices| choices.get("untried").is_some())
+    }) {
         walks
             .entry((job["parent_id"].as_u64().unwrap(), site(&job["choices"])))
             .or_default()

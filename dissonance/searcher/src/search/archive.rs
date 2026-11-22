@@ -746,10 +746,10 @@ pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
     pub(crate) snapshot: Option<Arc<S>>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EntryChoices {
     profile: Option<ChoiceProfile>,
-    jobs: Vec<u32>,
+    jobs: u32,
 }
 
 pub(crate) struct CampaignSpliceTail<A> {
@@ -825,6 +825,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     keyframe_dependents: Vec<usize>,
     referenced: Vec<bool>,
     choices: Option<Vec<EntryChoices>>,
+    site_jobs: BTreeMap<(u64, u16), u32>,
     drop_hand: usize,
     entry_drops: u64,
     unselected_entry_drops: u64,
@@ -1468,6 +1469,7 @@ where
             keyframe_dependents: Vec::new(),
             referenced: Vec::new(),
             choices: None,
+            site_jobs: BTreeMap::new(),
             drop_hand: 0,
             entry_drops: 0,
             unselected_entry_drops: 0,
@@ -2011,6 +2013,8 @@ where
         }
         self.cells.retain(|_, state| state.active > 0);
         self.retain_indexed_landings();
+        let kept = &self.id_to_index;
+        self.site_jobs.retain(|(id, _), _| kept.contains_key(id));
 
         if let Some(bank) = &mut self.continuations {
             let live = self
@@ -3968,6 +3972,10 @@ where
         self.entry_memory_bytes(self.entries.len())
             .saturating_add(heap::btree_bytes::<u64, ()>(1, self.landed.len()))
             .saturating_add(heap::btree_bytes::<u64, u32>(1, self.metadata_pins.len()))
+            .saturating_add(heap::btree_bytes::<(u64, u16), u32>(
+                1,
+                self.site_jobs.len(),
+            ))
             .saturating_add(heap::btree_bytes::<u64, u32>(
                 1,
                 self.inflight_snapshot_pins.len(),
@@ -4059,12 +4067,15 @@ where
 
     pub(crate) fn take_choice_job(&mut self, id: usize, site: u16) -> Option<u32> {
         let entry = self.choices.as_mut()?.get_mut(id)?;
-        let site = usize::from(site);
-        if entry.jobs.len() <= site {
-            entry.jobs.resize(site + 1, 0);
-        }
-        let ordinal = entry.jobs[site];
-        entry.jobs[site] = ordinal.saturating_add(1);
+        let jobs = if site == 0 {
+            &mut entry.jobs
+        } else {
+            self.site_jobs
+                .entry((self.entries[id].id, site))
+                .or_default()
+        };
+        let ordinal = *jobs;
+        *jobs = ordinal.saturating_add(1);
         Some(ordinal)
     }
 
@@ -8806,6 +8817,29 @@ mod tests {
         assert_eq!(archive.metadata_pins.get(&stable_id), Some(&1));
         archive.unpin_metadata(stable_id);
         assert!(!archive.metadata_pins.contains_key(&stable_id));
+    }
+
+    #[test]
+    fn only_counts_at_a_later_site_add_to_the_charge_and_they_follow_their_entry() {
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 0, 0, 0]]);
+        archive.enable_choices();
+        let charge = archive.entry_metadata_memory_bytes();
+        assert_eq!(archive.take_choice_job(1, 0), Some(0));
+        assert_eq!(archive.take_choice_job(1, 0), Some(1));
+        assert_eq!(archive.entry_metadata_memory_bytes(), charge);
+        assert_eq!(archive.take_choice_job(0, 1), Some(0));
+        assert_eq!(archive.take_choice_job(1, 1), Some(0));
+        assert_eq!(archive.take_choice_job(1, 1), Some(1));
+        assert!(archive.entry_metadata_memory_bytes() > charge);
+        let dropped = archive.stable_id(0).expect("stable id");
+        let kept = archive.stable_id(1).expect("stable id");
+        assert!(archive.deactivate(0));
+        archive.compact_history(true).expect("compact");
+        assert_eq!(archive.index_of_id(dropped), None);
+        let index = archive.index_of_id(kept).expect("kept entry");
+        assert_eq!(archive.site_jobs.keys().collect::<Vec<_>>(), [&(kept, 1)]);
+        assert_eq!(archive.take_choice_job(index, 0), Some(2));
+        assert_eq!(archive.take_choice_job(index, 1), Some(2));
     }
 
     #[test]

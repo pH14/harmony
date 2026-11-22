@@ -324,6 +324,7 @@ pub struct Chooser {
     rand: RomuDuoJrRand,
     untried: Option<u32>,
     asked: bool,
+    took_untried: bool,
     held: Vec<(u16, Choice)>,
     declared: Vec<(u16, u32)>,
     permuted: Vec<(u16, u64)>,
@@ -337,10 +338,16 @@ impl Chooser {
             rand: RomuDuoJrRand::with_seed(plan.seed),
             untried: plan.untried,
             asked: false,
+            took_untried: false,
             held: plan.held.clone(),
             declared: plan.declared.clone(),
             permuted: plan.permuted.clone(),
         }
+    }
+
+    #[must_use]
+    pub fn untried_taken(&self) -> Option<u32> {
+        self.untried.filter(|_| self.took_untried)
     }
 
     #[must_use]
@@ -397,6 +404,7 @@ impl Chooser {
             && let Some(ordinal) = self.untried
             && let Some(label) = self.untried_label(site, offered, default, ordinal as usize)
         {
+            self.took_untried = true;
             return normal(label);
         }
         if let Some(previous) = self

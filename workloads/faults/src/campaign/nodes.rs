@@ -30,14 +30,14 @@ pub(crate) fn site(vocabulary: &FaultVocabulary) -> ChoiceSite {
 }
 
 pub(crate) fn asks(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
-    vocabulary.untried_first_nodes() && fresh(vocabulary, action)
-}
-
-fn fresh(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
-    action.guest.is_none()
-        && action.operation.target_node().is_some()
+    vocabulary.untried_first_nodes()
+        && fresh(action)
         && !(vocabulary.resume_park().is_some()
             && matches!(action.operation, FaultOperation::Pause(..)))
+}
+
+fn fresh(action: &FaultAction) -> bool {
+    action.guest.is_none() && action.operation.target_node().is_some()
 }
 
 #[must_use]
@@ -62,7 +62,7 @@ pub fn row(
         moment,
         clock: 0,
         site: NODE_SITE.to_owned(),
-        options: vocabulary.nodes(),
+        options: u16::try_from(offered.len()).unwrap_or(u16::MAX),
         offered,
         default,
         taken,
@@ -98,7 +98,7 @@ pub(crate) fn resolve(
                 .iter()
                 .zip(1..)
                 .map(|(action, step)| {
-                    fresh(vocabulary, action)
+                    fresh(action)
                         .then(|| row(vocabulary, depth + step, 0, &action.operation))
                         .flatten()
                 })
@@ -125,7 +125,11 @@ pub(crate) fn resolve(
                 .filter(|_| asks(vocabulary, action));
             let offered = action.operation.target_offer(vocabulary);
             let (Some(drawn), Some(&default)) = (drawn, offered.first()) else {
-                rows.push(None);
+                rows.push(
+                    fresh(action)
+                        .then(|| row(vocabulary, depth + step, 0, &action.operation))
+                        .flatten(),
+                );
                 return *action;
             };
             let weights = offered
@@ -146,7 +150,7 @@ pub(crate) fn resolve(
     Resolved {
         suffix,
         rows,
-        untried,
+        untried: chooser.untried_taken(),
     }
 }
 
@@ -258,7 +262,7 @@ mod tests {
         for ((action, asked), step) in drawn.iter().zip(&resolved.rows).zip(1..) {
             assert_eq!(
                 asked.as_ref(),
-                fresh(&off, action)
+                fresh(action)
                     .then(|| row(&off, step, 0, &action.operation))
                     .flatten()
                     .as_ref()
@@ -281,6 +285,7 @@ mod tests {
                     4,
                 );
                 assert_eq!(resolved.suffix[1..], drawn[1..]);
+                assert_eq!(resolved.untried, (ordinal < 3).then_some(ordinal));
                 resolved.suffix[0].operation.target_node()
             })
             .collect::<Vec<_>>();
@@ -296,8 +301,8 @@ mod tests {
         );
         let pause = rows[0].as_ref().unwrap();
         assert_eq!(
-            (pause.step, pause.asker, pause.choice),
-            (5, Asker::Action, None)
+            (pause.step, pause.asker, pause.choice, pause.options),
+            (5, Asker::Action, None, 3)
         );
         assert_eq!(
             (
@@ -310,13 +315,18 @@ mod tests {
         );
         let disk = rows[3].as_ref().unwrap();
         assert_eq!(
-            (disk.offered.as_slice(), disk.default, disk.taken),
-            (&[1, 2][..], 1, Choice::Option(2))
+            (
+                disk.options,
+                disk.offered.as_slice(),
+                disk.default,
+                disk.taken
+            ),
+            (2, &[1, 2][..], 1, Choice::Option(2))
         );
         let corrupt = rows[4].as_ref().unwrap();
         assert_eq!(
-            (corrupt.offered.as_slice(), corrupt.taken),
-            (&[2][..], Choice::Default)
+            (corrupt.options, corrupt.offered.as_slice(), corrupt.taken),
+            (1, &[2][..], Choice::Default)
         );
     }
 
@@ -349,6 +359,18 @@ mod tests {
         assert!(!asks(&vocabulary, &stamped));
         assert!(asks(&vocabulary, &action(FaultOperation::Pause(2, TICKS))));
         assert!(!asks(&vocabulary, &action(FaultOperation::KillAll(TICKS))));
+        let parked = vocabulary
+            .with_instrumented_events(true)
+            .with_resume_park(Some(vec![7]))
+            .unwrap();
+        let pause = action(FaultOperation::Pause(2, TICKS));
+        assert!(!asks(&parked, &pause));
+        assert!(asks(&parked, &action(FaultOperation::Kill(2, TICKS))));
+        let resolved = resolve(&parked, &[pause], Some(&permuted(Some(0), 4)), Some(0), 6);
+        assert_eq!(resolved.suffix, [pause]);
+        assert_eq!(resolved.untried, None);
+        assert_eq!(resolved.rows, [row(&parked, 7, 0, &pause.operation)]);
+        assert!(resolved.rows[0].is_some());
     }
 
     #[test]

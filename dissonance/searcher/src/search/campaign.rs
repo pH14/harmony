@@ -7129,7 +7129,17 @@ where
                 verify_selector_preference(&cancel.selector, workload.key_shape())?;
                 replay_selections.remove(&slot);
                 replay_ceilings.remove(&slot);
-                replay_choice_plans.remove(&slot);
+                if replay_choice_plans
+                    .remove(&slot)
+                    .flatten()
+                    .map_or(0, |plan| plan.untried_site)
+                    != cancel.untried_site
+                {
+                    return Err(
+                        "recorded cancelled job names an untried site its rebuilt plan does not count"
+                            .into(),
+                    );
+                }
                 replay_continuations.remove(&slot);
                 replay_chain_jobs.remove(&slot);
                 core.finish_suffix_job(cancel.parent_id, replay_job_suffix_limits[slot]);
@@ -12393,6 +12403,27 @@ mod tests {
                 .expect_err("replay certified a cancelled selector outside the selection history")
                 .to_string();
         assert!(error.contains("tier rank"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_a_cancel_naming_an_untried_site_its_plan_does_not_count() {
+        let (_, stream) = objective_stop_run();
+        let text = String::from_utf8(stream).unwrap();
+        let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let cancel = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "cancel"
+            })
+            .expect("a cancel record");
+        let mut record: serde_json::Value = serde_json::from_str(&lines[cancel]).unwrap();
+        record["untried_site"] = serde_json::json!(1);
+        lines[cancel] = serde_json::to_string(&record).unwrap();
+        let error =
+            replay_campaign_checkpointed(&replaying(1), lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay accepted a cancel whose plan counts no untried ordinal")
+                .to_string();
+        assert!(error.contains("untried site"), "{error}");
     }
 
     #[test]

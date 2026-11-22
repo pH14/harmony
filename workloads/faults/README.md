@@ -457,9 +457,12 @@ lowest node is the default only because `Chooser::draw` takes one, and the
 site is declared with `ChoiceSite::without_default`. The first ask of a job
 therefore takes the node at the plan's untried ordinal in its parent's
 permutation of the offer while one remains untried: the first such job at a
-parent takes a uniform node, as the draw does, and three at one parent take
-three nodes. Every other ask answers the drawn node, so the draw's random word and arithmetic decide
-it as they do with the site off. When the suffix's first action asks this
+parent takes a uniform node, as the draw does, and three at one parent whose
+first actions have the same offer take three nodes. Kinds with different
+offers share the parent's count and each walks its own permutation, so a
+`Pause` and a `DiskError` can take the same node before either offer is
+exhausted. Every other ask answers the drawn node, so the draw's random word
+and arithmetic decide it as they do with the site off. When the suffix's first action asks this
 site, `InputPolicy::untried_site` names `fault.node`, so the job's untried
 ordinal counts only the parent's jobs that started at `fault.node` and the
 host takes it. Otherwise it names site 0, and the ordinal comes from the
@@ -483,22 +486,25 @@ part of the target identity, `branch` moves them onto its continuation,
 `search --from` keeps those within its prefix, its `bug-N.json`, `hang-N.json`,
 `failure-N.json` and `first-bug-input.json` carry the answers within their
 actions, and `shrink` refuses a run that has them. Each replay step counts its guest
-choices (`choices`, absent when zero), and `debug run`, `replay` and `branch`
-write every choice to `choices.jsonl` beside `report.json`: the run, step,
+choices (`choices`, absent when zero), and `debug run` and `replay` write every
+choice of the run, and `branch` every choice of its continuation, to
+`choices.jsonl` beside `report.json`: the run, step,
 who asked (`asker`), choice ordinal, decision moment, guest clock, site,
 option count, default, what the `Chooser` took, the label applied, and
 `answered` when an input answer replaced it. Host and guest choices share
 this row. `asker` is `action` for a host site and `{"process": pid}` for a
 guest draw, the pid being the upper half of the guest's request id. A host
-row has no choice ordinal, lists its `offered` labels, has guest clock zero,
-and comes first among its step's rows; the run writes one from the stored
-action for every node fault it applies, whether or not a `Chooser` picked
-the node. Pins address guest rows only, and a host answer changes when the
+row has no choice ordinal, lists its `offered` labels and counts them as its
+options, has guest clock zero, and comes first among its step's rows; the
+run writes one from the stored action for every applied action of a kind
+with a `fault.node` offer, whether or not a `Chooser` picked the node. Event
+kinds have no offer and no row. Pins address guest rows only, and a host answer changes when the
 input's action names another node. A search writes no per-choice records
 unless the environment variable `HARMONY_FAULTS_CHOICE_RECORD` names a file:
-each node fault that a job with a plan stamps then appends its host row
-there, with the parent's path length (`depth`) and, on the ask that took it,
-the untried ordinal, like the settle record below. With `untried_first_nodes`
+each freshly drawn node fault of a job with a plan, a `Pause` under
+`resume_park` included, then appends its host row there, with the parent's
+path length (`depth`) and, when the first ask took the untried node, the
+untried ordinal, like the settle record below. With `untried_first_nodes`
 off the row holds the drawn node, so both arms of a comparison write the same
 rows. An action served from the snapshot cache has no guest
 rows.

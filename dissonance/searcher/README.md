@@ -566,20 +566,31 @@ count. The ordinal counts the jobs dispatched with a plan from the job's
 parent, at dispatch, so jobs in flight from one parent take different options.
 `InputPolicy::untried_site` names the site a drawn suffix asks first, and each
 entry keeps one count per site, so jobs from one parent that start at another
-site do not advance the walk of the named one (ours). The default names site
-0 for every suffix, which keeps one count per entry; a workload names another
-site only when it knows, before the job runs, that the suffix's first choice
-is asked there. A site declared with `ChoiceSite::without_default` (ours) has
-no answer that the behavior without choices prefers, as when its labels are
+site do not advance the walk of the named one (ours). The count for site 0
+is stored with the entry; the counts for other sites are in a map keyed by
+the entry's stable id and the site, which holds nothing, and adds nothing to
+the archive's memory charge, until a job names another site. The default
+names site 0 for every suffix, which keeps one count per entry; a workload
+names another site only when it knows, before the job runs, that the
+suffix's first choice is asked there. `Chooser::untried_taken` returns the
+ordinal when the first ask took the untried option, and nothing when the
+offer had fewer than two labels or the ordinal was past its end. A site
+declared with `ChoiceSite::without_default` (ours) has no answer that the
+behavior without choices prefers, as when its labels are
 drawn uniformly and the default is only the lowest label, so walking from the
 default would send every parent's first job to that label. Its walk follows a
 permutation of the offered labels in place of the default-first order. The
 coordinator lists these sites once from `InputPolicy::choice_sites`, and each
 plan carries one seed per listed site (`ChoicePlan::permuted`), mixed from the
 campaign seed, the parent entry's id and the site. Every job from one parent
-therefore walks the same permutation, so n jobs take n distinct labels, and
-the first job at a parent takes a uniform label. Replay rebuilds the plan from
-the same parent, so it recomputes the seed.
+therefore walks the same permutation of one offer, so n jobs whose first asks
+offer the same labels take n distinct labels, and the first job at a parent
+takes a uniform label. Asks with different offers share the site's count and
+each permutes its own offer, so they can repeat a label. Replay rebuilds the
+plan from the same parent, so it recomputes the seed. A checkpoint keeps the
+counts, so a resume with another campaign seed continues each count over
+permutations drawn from the new seed, and a parent's later jobs can repeat
+a label its earlier jobs took.
 Hold: with the profile's `hold` probability the site repeats its previous
 answer, when that answer is still offered. CONTRARY: with the profile's
 `contrary` probability the answer is a uniform offered label other than the
@@ -669,7 +680,8 @@ leave `untried_site` out when it is 0, so a record without it counted at
 site 0.
 Replay rebuilds each plan at its reservation from the replayed archive, takes
 the ordinal from the recorded site's count, checks that the replayed suffix
-names that site, and refuses a stream whose plan or policy differs, and a
+names that site and that a cancelled job names the site its rebuilt plan
+counted, and refuses a stream whose plan or policy differs, and a
 checkpoint does not resume under another policy. A job without a plan, such
 as a continuation, gives the entries it keeps its parent's profile. The plan
 travels in `RolloutStop`, beside the ceiling, so a workload that overrides
@@ -1634,7 +1646,8 @@ comparison from rooted inputs or a fresh power-on run. Accepted runtime
 policy changes appear in the origin record and stream header as
 `checkpoint_policy_changes`. The same seed
 repeats the original progress lines; another seed derives a new selection random
-state and keeps everything else. The draw tables continue their table hash
+state, and new walk permutations at sites without a default, and keeps
+everything else. The draw tables continue their table hash
 from the recorded one, so stream draw-table hashes after a resume differ from an
 uninterrupted run. A resumed stream cannot be replayed. The checkpoint stores
 every reservation between the next admission and the last reservation, whether
