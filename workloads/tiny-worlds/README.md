@@ -378,7 +378,10 @@ values (`chain.stage`, `chain.charge`, `chain.family`, `chain.ranked`,
 `chain.carry`) and the resource, route, delayed and trap values of the current
 stage, with the other families' values zero. Families without a strategy (maze,
 actions, deadline, deadline actions, graph, targets, picks, and chains holding
-them) reject `key: strategy`.
+them) reject `key: strategy`. The searcher's stall report reads the same
+records under either key: each family a strategy lowers gives its catalog and
+the record of a snapshot or an action's endpoint state, and the others give
+none.
 
 A strategy with `highest` or a latched stage keys a state from its path. Each
 keying keeps a lane in the target: `Keying::arrive` advances it at genesis, at
@@ -580,7 +583,9 @@ held answer from one depth says nothing about the next. Each action asks
 is the searcher's
 `ChoicePolicy` (`profiles` `inherited` or `{"fixed": {"contrary": c, "hold":
 h}}`, and `untried_first`). The action byte holds the answer: a label, 254 for
-the default or 255 for an unresolved slot.
+the default or 255 for an unresolved slot. For the searcher's stall report,
+`Reporting::choice_records` rebuilds an action's choice record from the depth it
+departed and its answer byte.
 
 `root_jobs`, an optional request field, replaces the campaign with random jobs
 from the start state: jobs of 64, 256 and 1,024 actions in turn until the goal

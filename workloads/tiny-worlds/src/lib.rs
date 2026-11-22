@@ -140,7 +140,8 @@ use searcher::search::{
         SelectorPath, entries_by_suffix,
     },
     assertion::{
-        Accumulator, AssertionKey, Compiled, ShadowCursor, ShadowReport, ShadowTable, Strategy,
+        Accumulator, AssertionKey, Compiled, Record, ShadowCursor, ShadowReport, ShadowTable,
+        Strategy,
     },
     campaign::{
         ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
@@ -149,7 +150,7 @@ use searcher::search::{
         InputPolicy, Reporting, TargetExecution, WorkloadPolicies, postcard_value_sha256,
         replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
     },
-    choice::{ChoicePlan, ChoicePolicy, ChoiceSite, Chooser},
+    choice::{ChoicePlan, ChoicePolicy, ChoiceRecord, ChoiceSite, Chooser},
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
@@ -721,6 +722,48 @@ impl<K: Keying> Reporting for Workload<K> {
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Evidence, Box<dyn Error>> {
         Ok(serde_json::from_slice(bytes)?)
+    }
+    fn catalog_signals(&self, _: &()) -> Vec<String> {
+        assertions::catalog(&self.config, self.broken).map_or_else(
+            |_| Vec::new(),
+            |catalog| {
+                catalog
+                    .signals()
+                    .iter()
+                    .map(|signal| signal.name.clone())
+                    .collect()
+            },
+        )
+    }
+    fn state_record(&self, _: &(), snapshot: &Snapshot<K::Lane>) -> Option<Record> {
+        assertions::lowers(&self.config)
+            .then(|| assertions::record(&self.config, snapshot.state, self.broken))
+    }
+    fn observation_record(&self, _: &(), observation: &Observation) -> Option<Record> {
+        assertions::lowers(&self.config)
+            .then(|| assertions::record(&self.config, observation.after, self.broken))
+    }
+    fn choice_records(
+        &self,
+        _: &(),
+        action: &u8,
+        observations: &[Observation],
+    ) -> Vec<ChoiceRecord> {
+        match (&self.config, observations.first().map(|seen| seen.before)) {
+            (World::Picks(w), Some(State::Picks(s)))
+                if w.choices().is_some() && *action != picks::ASK =>
+            {
+                let depth = s.depth.min(w.depth - 1);
+                let pick = w.pick(depth);
+                vec![ChoiceRecord::new(
+                    u16::from(depth),
+                    pick.offered,
+                    pick.default,
+                    picks::Config::decode(*action),
+                )]
+            }
+            _ => Vec::new(),
+        }
     }
     fn workload_identity_sha256(&self) -> String {
         postcard_value_sha256(&(
@@ -2068,23 +2111,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_stall_report_leaves_the_stream_unchanged_and_names_the_stalled_tier() {
-        let w: Workload = Workload {
-            keying: crate::Hand::<false>,
-            config: World::Maze(maze::Config {
-                length: 4,
-                pattern: 10,
-                reverse_actions: false,
-            }),
-            broken: false,
-            scale: None,
-        };
-        let mut config = campaign_config(&w, crate::test_seed(), 2_000, 1);
-        config.stop_campaign_on_objective = false;
+    fn stall_records<K: Keying>(
+        w: &Workload<K>,
+        config: &CampaignConfig<Workload<K>>,
+        world: &str,
+    ) -> Vec<serde_json::Value> {
         let run = |label: &str, on_stall: bool| {
             let directory = std::env::temp_dir().join(format!(
-                "tiny-world-stall-{label}-{}-{}",
+                "tiny-world-stall-{world}-{label}-{}-{}",
                 std::process::id(),
                 config.campaign_seed
             ));
@@ -2092,8 +2126,8 @@ mod tests {
             let mut stream = BoundedStream(Vec::new());
             let mut progress = Vec::new();
             run_campaign_checkpointed_with_options(
-                &w,
-                &config,
+                w,
+                config,
                 &CampaignOrigin::Genesis,
                 &mut stream,
                 Some(&mut progress),
@@ -2123,10 +2157,13 @@ mod tests {
         let (reported, stalls, checkpoints) = run("on", true);
         assert_eq!(plain, reported);
         assert!(no_stalls.is_none());
-        let stalls = stalls.expect("the maze run stalls in its leading tier");
+        let stalls = stalls.expect("the run stalls in its leading tier");
         let mut watches = std::collections::BTreeSet::new();
-        for line in stalls.lines() {
-            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        let records: Vec<serde_json::Value> = stalls
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for record in &records {
             assert!(watches.insert((
                 record["tier"].to_string(),
                 record["tier_yields"].to_string()
@@ -2134,16 +2171,163 @@ mod tests {
             let checkpoint = record["checkpoint"].as_str().unwrap();
             assert!(checkpoints.iter().any(|name| name == checkpoint));
             assert!(
-                record["tier"]
-                    .as_str()
-                    .is_some_and(|tier| tier.starts_with('('))
-            );
-            assert!(
                 record["states"]
                     .as_array()
                     .is_some_and(|states| !states.is_empty())
             );
         }
+        records
+    }
+
+    #[test]
+    fn a_stall_report_leaves_the_stream_unchanged_and_names_the_stalled_tier() {
+        let w: Workload = Workload {
+            keying: crate::Hand::<false>,
+            config: World::Maze(maze::Config {
+                length: 4,
+                pattern: 10,
+                reverse_actions: false,
+            }),
+            broken: false,
+            scale: None,
+        };
+        let mut config = campaign_config(&w, crate::test_seed(), 2_000, 1);
+        config.stop_campaign_on_objective = false;
+        for record in stall_records(&w, &config, "maze") {
+            assert!(
+                record["tier"]
+                    .as_str()
+                    .is_some_and(|tier| tier.starts_with('('))
+            );
+            assert_eq!(record["signals"], serde_json::json!([]));
+            assert_eq!(record["signal_changes_by_action"], serde_json::json!({}));
+            assert_eq!(record["choice_sites"], serde_json::json!([]));
+            assert!(
+                record["states"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|state| state.get("signals").is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn a_stall_report_gives_the_signals_of_states_stalled_for_want_of_charge() {
+        let config = resource::Config {
+            initial_charge: 0,
+            initial_health: 3,
+            barrier_charge: 15,
+            route_cost: 0,
+            health_cost: 0,
+            refill_amount: 1,
+            max_charge: 15,
+            corridor_len: 2,
+            refill_health_cost: 0,
+        };
+        let world = World::Resource(config);
+        let w = Workload {
+            keying: Strategic::new(
+                &world,
+                false,
+                "capacity = 1\ntier = \"resource.place\"\nspread = \"resource.charge\"\nprefer = [[\"resource.health: more\"]]\n",
+            )
+            .unwrap(),
+            config: world,
+            broken: false,
+            scale: None,
+        };
+        let mut campaign = campaign_config(&w, crate::test_seed(), 2_000, 1);
+        campaign.stop_campaign_on_objective = false;
+        let records = stall_records(&w, &campaign, "resource");
+        let mut stalled_short = false;
+        let mut unchanged = 0;
+        for record in &records {
+            let signals: Vec<&str> = record["signals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap())
+                .collect();
+            let charge = signals
+                .iter()
+                .position(|name| *name == "resource.charge")
+                .unwrap();
+            let broken = signals.iter().position(|name| *name == "broken").unwrap();
+            for state in record["states"].as_array().unwrap() {
+                let values = state["signals"].as_array().unwrap();
+                assert_eq!(values.len(), signals.len());
+                stalled_short |=
+                    values[charge].as_i64().unwrap() < i64::from(config.barrier_charge);
+            }
+            let changes = record["signal_changes_by_action"].as_object().unwrap();
+            for (action, counts) in changes {
+                let compared = counts["compared"].as_u64().unwrap();
+                let held = counts["unchanged"].as_u64().unwrap();
+                assert!(held <= compared);
+                assert!(compared <= record["draws_by_action"][action].as_u64().unwrap());
+                let changed = counts["changed"].as_array().unwrap();
+                assert_eq!(changed.len(), signals.len());
+                assert_eq!(changed[broken], 0);
+                let changed: Vec<u64> = changed
+                    .iter()
+                    .map(|count| count.as_u64().unwrap())
+                    .collect();
+                assert!(changed.iter().all(|count| *count <= compared - held));
+                assert!(changed.iter().sum::<u64>() >= compared - held);
+                unchanged += held;
+            }
+        }
+        assert!(stalled_short);
+        assert!(unchanged > 0);
+    }
+
+    #[test]
+    fn a_stall_report_counts_the_options_offered_and_taken_at_each_choice_site() {
+        let w: Workload = Workload {
+            keying: crate::Hand::<false>,
+            config: World::Picks(picks::Config {
+                depth: 6,
+                seed: 7,
+                default_right: 3,
+                draw: picks::Draw::Choices(ChoicePolicy::default()),
+            }),
+            broken: false,
+            scale: None,
+        };
+        let mut config = campaign_config(&w, crate::test_seed(), 2_000, 1);
+        config.stop_campaign_on_objective = false;
+        let records = stall_records(&w, &config, "picks");
+        let mut at_site = false;
+        for record in &records {
+            assert_eq!(record["signals"], serde_json::json!([]));
+            let sites = record["choice_sites"].as_array().unwrap();
+            assert!(!sites.is_empty());
+            for site in sites {
+                let World::Picks(layout) = &w.config else {
+                    unreachable!()
+                };
+                let index = u8::try_from(site["site"].as_u64().unwrap()).unwrap();
+                assert_eq!(site["name"], format!("pick-{index}"));
+                let asks = site["asks"].as_u64().unwrap();
+                let offered = site["offered"].as_object().unwrap();
+                let pick = layout.pick(index);
+                assert_eq!(offered.len(), pick.offered.len());
+                assert!(offered.values().all(|count| count.as_u64() == Some(asks)));
+                let resolved: u64 = site["resolved"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(label, count)| {
+                        assert!(offered.contains_key(label));
+                        count.as_u64().unwrap()
+                    })
+                    .sum();
+                assert_eq!(resolved, asks);
+                at_site |= site["top_states_at_site"].as_u64().unwrap() > 0;
+            }
+        }
+        assert!(at_site);
     }
 
     #[test]
