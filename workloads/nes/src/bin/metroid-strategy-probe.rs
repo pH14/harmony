@@ -2,7 +2,10 @@
 
 use std::{env, error::Error, fs, path::PathBuf, sync::Arc};
 
-use machine::{nes::ButtonChord, quicknes::QuickNesMachine};
+use machine::{
+    nes::{ButtonChord, SAVE_RAM_SIZE},
+    quicknes::QuickNesMachine,
+};
 use nes_games::{
     metroid::game::Metroid,
     workload::{Game, Lowered, NativeMemory, NesTarget},
@@ -45,10 +48,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--cartridge" => {
                 let value = args.next().ok_or(USAGE)?;
                 let (start, len) = value.split_once(':').ok_or(USAGE)?;
-                cartridge = Some((
-                    usize::from_str_radix(start.trim_start_matches("0x"), 16)?,
-                    len.parse::<u32>()?,
-                ));
+                let start = usize::from_str_radix(start.trim_start_matches("0x"), 16)?;
+                let len = len.parse::<u32>()?;
+                let end = u64::try_from(start)?.checked_add(u64::from(len));
+                if end.is_none_or(|end| end > SAVE_RAM_SIZE) {
+                    return Err(format!(
+                        "--cartridge {value} runs past the {SAVE_RAM_SIZE:#x} bytes of cartridge RAM"
+                    )
+                    .into());
+                }
+                cartridge = Some((start, len));
             }
             "--frames" => {
                 let value = args.next().ok_or(USAGE)?;
@@ -78,6 +87,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         QuickNesMachine::from_rom_bytes_with_identity(&rom, &core, &core_sha256, &execution)?;
     let lowered = Arc::new(Lowered::new(Metroid, &strategy)?);
     let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(&root_path)?)?;
+    if root.actions.is_empty() {
+        return Err(format!("{} holds no actions", root_path.display()).into());
+    }
     let mut target =
         NesTarget::from_power_on(Arc::clone(&lowered), machine, &[], Some(NativeMemory::of()))?;
     println!(

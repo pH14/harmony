@@ -608,7 +608,15 @@ mod tests {
     }
 
     #[test]
-    fn full_energy_before_the_tourian_elevator_is_reachable_with_full_missiles() {
+    fn missiles_then_energy_refill_before_the_tourian_elevator() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(
+            at("missiles_before_tourian") + 1,
+            at("energy_before_tourian")
+        );
+        assert_eq!(at("energy_before_tourian") + 1, at("tourian_elevator"));
         let full = MetroidMechanicalState {
             area: 0x10,
             map_x: 20,
@@ -627,12 +635,17 @@ mod tests {
             kraid_defeated: true,
             ..MetroidMechanicalState::default()
         };
+        let least = MetroidMechanicalState {
+            health: 3900,
+            ..full
+        };
         let short = MetroidMechanicalState {
-            health: 2999,
+            health: 3899,
             ..full
         };
         let goal = stage_goal("energy_before_tourian");
         assert!(goal_holds(goal, &full), "{goal}");
+        assert!(goal_holds(goal, &least), "{goal}");
         assert!(!goal_holds(goal, &short), "{goal}");
         assert!(goal_holds(stage_goal("missiles_before_tourian"), &full));
     }

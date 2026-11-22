@@ -520,7 +520,8 @@ Norfair elevator, energy (80), the route to the Ridley elevator, energy (96),
 the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
 damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
 Ridley come energy (96), the route out of the hideout, energy (80), the route
-back through Norfair, energy (96), full missiles, the route to the Tourian
+back through Norfair, full missiles, energy of at least
+`100 * energy_tanks + 90`, the route to the Tourian
 elevator and the route to the Zebetite door. The norfair_return objective is
 the last `to_ending` index a kept state stood on, Ridley's area included, so
 the climb out of the hideout earns credit room by room; with no credit in
@@ -554,8 +555,9 @@ observes interior frames between kept states. Boss damage is the drop from
 the energy cap among every such ratio, so the second preference line is
 (items, tanks, balance) and ends in `"above"`, which breaks its ties by missiles
 then health as the hand balance preference does. The first line reads health
-below 8192, since health of 8000 and above is the BCD-underflow terminal. A dead
-Metroid state reads health of 9,700 or more, and a goal record stays a goal
+below 8192, since health of 8000 and above is the BCD-underflow terminal. The default
+terminal rule marks a Metroid state dead at health 0 or at 8,000 or more (a
+death's decimal borrow reads 9,700 or more), and a goal record stays a goal
 when a reject line matches it, so every Metroid goal requires `not dead`; a
 test in `metroid/game.rs` checks that no goal of a shipped Metroid strategy
 holds on a state the default terminal rule marks dead.

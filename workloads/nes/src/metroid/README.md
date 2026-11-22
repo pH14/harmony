@@ -147,7 +147,8 @@ Each stage climbs one integer:
   rather than the disassembly's room labels. The Ridley stage is done on
   Ridley's defeat bit at `$687C`. Back in Brinstar before the Tourian
   elevator, the strategy refills missiles to capacity first and then energy to
-  full for the energy tanks held (`100 * energy_tanks + 90`), in that order
+  within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
+  390 of 399.9 with three tanks), in that order
   because farming missiles costs energy and an energy stage stays done after
   the loss. The `tanks` term counts missile tanks as well as energy tanks, so
   energy goals use `energy_tanks`; the preferences below use `tanks` on
@@ -203,7 +204,9 @@ different place from one that has not. Without it, a state that fired a
 missile into a column shares a slot with the state that did not fire, and the
 preferences keep the one with more missiles. A column healing or respawning
 moves the state to another place without ranking it above or below the rest of
-Tourian. The game keeps five Zebetite slots at
+Tourian. A cleared column does rank: the zebetites and mother_brain objectives
+count the slots reading 3, so a slot the game reuses for a new column lowers
+the objective by that column. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
 alive, 2 on the frames the column breaks, 3 once its tiles are cleared) and
 its missile hit count at offset 3; a column dies at eight hits while healing
@@ -329,8 +332,12 @@ RAM first and then the cartridge window, and `--cartridge START:LEN` any span
 of cartridge RAM, such as the room's tiles from offset 0; `--frames FIRST:LAST`
 prints every frame's record of the `--terms` it names, by default missiles,
 health, x, y and boss health, for the actions in that range). It ends with the frame's sha256 and
-the `rooted_genesis` verdict, so it shows whether a tape roots a
-`metroid-strategy` run and which stages the root earns on the way.
+the game's `rooted_genesis` verdict, so it shows whether the tape ends in
+live play and which stages it earns on the way; the workload's other root
+checks (a goal, a reject or an overrun on the way, a missing endpoint key) are
+not applied, and a tape with no actions is refused. `--cartridge` reads the
+emulator after the action, so on an action that the target cut short at a goal
+or a reject it shows the state after the whole chord, not at the printed frame.
 
 ## Shared target
 
