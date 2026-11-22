@@ -95,6 +95,7 @@ thread_local! {
     static TEST_GENESIS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static TEST_CHOICE_POLICY: std::cell::Cell<Option<ChoicePolicy>> = const { std::cell::Cell::new(None) };
     static TEST_UNTRIED_SITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_PERMUTED_SITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const TEST_ASK: u8 = 200;
@@ -205,10 +206,12 @@ impl<const CHOICES: bool> InputPolicy for ChoiceTestWorkload<CHOICES> {
     }
     fn choice_sites(&self, _run: &Self::Run) -> Vec<ChoiceSite> {
         if CHOICES {
-            vec![ChoiceSite::new(
-                "step",
-                (1..=4).map(|label: u8| label.to_string()),
-            )]
+            let site = ChoiceSite::new("step", (1..=4).map(|label: u8| label.to_string()));
+            vec![if TEST_PERMUTED_SITE.with(std::cell::Cell::get) {
+                site.without_default()
+            } else {
+                site
+            }]
         } else {
             Vec::new()
         }
@@ -2059,7 +2062,7 @@ fn run_choices_with_checkpoints(
     config: &CampaignConfig<ChoiceTestWorkload<true>>,
     origin: &CampaignOrigin<ChoiceTestWorkload<true>>,
     checkpoints: Option<CheckpointPlan>,
-) -> (CampaignOutcome<ChoiceTestWorkload<true>>, Vec<u8>) {
+) -> (CampaignOutcome<ChoiceTestWorkload<true>>, Vec<u8>, Vec<u8>) {
     let mut stream = Vec::new();
     let mut progress = Vec::new();
     let outcome = run_campaign_checkpointed_with_options(
@@ -2074,7 +2077,7 @@ fn run_choices_with_checkpoints(
         },
     )
     .unwrap();
-    (outcome, progress)
+    (outcome, progress, stream)
 }
 
 #[test]
@@ -2136,7 +2139,7 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
     let directory = checkpoint_directory(label);
     let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     config.stop_campaign_on_objective = false;
-    let (original, original_progress) = run_choices_with_checkpoints(
+    let (original, original_progress, _) = run_choices_with_checkpoints(
         &config,
         &CampaignOrigin::Genesis,
         Some(CheckpointPlan {
@@ -2164,7 +2167,7 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
         let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
             .parse()
             .unwrap();
-        let (resumed, resumed_progress) = run_choices_with_checkpoints(
+        let (resumed, resumed_progress, _) = run_choices_with_checkpoints(
             &config,
             &CampaignOrigin::SearchCheckpoint {
                 path,
@@ -2179,6 +2182,101 @@ fn choice_plans_replay_and_resume_through_continuations_splices_and_snapshot_pre
         );
         assert_eq!(resumed.0.archive, original.0.archive);
     }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+fn job_walks(stream: &[u8], after: u64) -> Vec<serde_json::Value> {
+    std::str::from_utf8(stream)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["event"] == "job" && record["sequence"].as_u64().unwrap() > after)
+        .map(|job| {
+            serde_json::json!([
+                job["sequence"],
+                job["reservation"],
+                job["parent_id"],
+                job["mutation_seed"],
+                job["choices"],
+            ])
+        })
+        .collect()
+}
+
+#[test]
+fn a_resumed_search_continues_each_site_walk_and_permutation_where_it_stopped() {
+    TEST_UNTRIED_SITES.with(|sites| sites.set(true));
+    TEST_PERMUTED_SITE.with(|permuted| permuted.set(true));
+    let label = "choices-site-resume";
+    let directory = checkpoint_directory(label);
+    let mut config = choice_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let (original, original_progress, original_stream) = run_choices_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(300),
+            on_marks: true,
+            on_top_progress: true,
+            on_stall: false,
+            checkpoint_owner: None,
+            max_image_bytes: 64 << 20,
+            before_write: None,
+        }),
+    );
+    let mut kept = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ckpt")
+        })
+        .collect::<Vec<_>>();
+    kept.sort();
+    assert!(kept.len() >= 2, "{label} kept {kept:?}");
+    let all = job_walks(&original_stream, 0);
+    let mut spanning = 0;
+    for path in kept {
+        let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
+            .parse()
+            .unwrap();
+        let (resumed, resumed_progress, resumed_stream) = run_choices_with_checkpoints(
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256: None,
+            },
+            None,
+        );
+        let after = job_walks(&resumed_stream, resume_at);
+        assert_eq!(
+            after,
+            job_walks(&original_stream, resume_at),
+            "resumed at {resume_at} walked otherwise"
+        );
+        assert_eq!(
+            progress_lines_after(&resumed_progress, resume_at),
+            progress_lines_after(&original_progress, resume_at),
+            "resumed at {resume_at} diverged"
+        );
+        assert_eq!(resumed.0.archive, original.0.archive);
+        spanning += after
+            .iter()
+            .filter(|job| {
+                job[4]["untried_site"] == 1
+                    && all.iter().any(|before| {
+                        before[0].as_u64() <= Some(resume_at)
+                            && before[2] == job[2]
+                            && before[4]["untried_site"] == 1
+                    })
+            })
+            .count();
+    }
+    assert!(spanning > 0, "no site 1 walk continued across a resume");
+    TEST_UNTRIED_SITES.with(|sites| sites.set(false));
+    TEST_PERMUTED_SITE.with(|permuted| permuted.set(false));
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
