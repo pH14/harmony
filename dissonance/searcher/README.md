@@ -182,6 +182,16 @@ the coordinator can record every earlier successful job and its checkpoint
 before returning a failure identified by reservation. Checkpointed coordinator
 profile timings are observational telemetry, so checkpoint hashes may differ
 across host schedules even when their search state and resumptions agree.
+A workload whose `TargetExecution::parent_rebuild_runs` returns a cumulative
+count gets one host record per admitted job, written to
+`CampaignExecutionOptions::job_host_path` in admission order and joined to the
+job row on `sequence` and `reservation`. `wall_ns` (the host wall time of
+`run_job`) and `parent_rebuild` (the workload's re-executed actions and their
+host nanoseconds during the job) are host measurements that differ between runs
+of the same search. `parent_actions` is the parent entry's input length and
+`parent_replay_actions` the length of the job's replay from its pinned
+snapshot. The records stay outside the stream, its digest,
+checkpoints and admission.
 An execution panic produces a stable error reply carrying the dequeued job's
 schedule key. The worker discards its target and builds a fresh one before
 taking another job, so a queued earlier reservation can still complete. If

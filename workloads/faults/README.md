@@ -1183,9 +1183,18 @@ its replay returned an error, is replayed again, and so is every inherited bug
 when the earlier report is missing or does not parse.
 
 Search also writes
-`campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
+`campaign-summary.json`, `stream.jsonl`, `progress.jsonl`, `job-host.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
-([`report`](src/report.rs)). A campaign records its first 64 bugs. After that
+([`report`](src/report.rs)). `job-host.jsonl` holds host measurements, which
+differ between runs of the same search: one line per job row of `stream.jsonl`,
+joined to it on `sequence` and `reservation`. `wall_ns` is the job's host wall
+time on its worker, from parent restore through the result digest.
+`parent_actions` is the parent's depth in actions. `parent_replay_actions` is the archive path replayed from a retained keyframe
+snapshot to the parent (0 when the parent's own snapshot was retained).
+`parent_rebuild` counts the actions the session re-executed during the job to
+reach a prefix it did not hold, as a prefix rebuild or a replayed archive
+action, with their host time in `ns`; 0 actions means the parent was restored
+from a cached snapshot. A campaign records its first 64 bugs. After that
 it records a bug only when it violates a property that no recorded bug
 violates, so a campaign records at most 64 bugs plus one for each property
 first violated after the 64th, and a long campaign whose first bugs share one

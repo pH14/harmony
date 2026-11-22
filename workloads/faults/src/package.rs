@@ -757,6 +757,7 @@ mod live {
                 max_image_bytes: 64 << 20,
             }),
             interrupt,
+            Some(options.output.join("job-host.jsonl")),
         );
         if let Err(error) = stream.flush() {
             if cache.verify_integrity().is_ok() {
