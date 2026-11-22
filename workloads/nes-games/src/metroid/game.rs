@@ -46,7 +46,8 @@ pub fn volley_offer(state: MetroidMechanicalState) -> u64 {
     if !state.in_play() || state.is_dead() || !state.missile_target() {
         return 0;
     }
-    let largest = usize::from(state.missiles).min(MAX_OFFER_OPTIONS - 1);
+    let largest =
+        usize::from(state.missiles.min(state.missiles_needed())).min(MAX_OFFER_OPTIONS - 1);
     (1..=largest).fold(0, |offered, count| offered | 1 << count)
 }
 
@@ -233,6 +234,7 @@ impl Game for Metroid {
         ));
         out.declare(byte("tanks", state.collectibles()));
         out.declare(byte("zebetite_hits_left", state.zebetite_hits_left));
+        out.declare(byte("zebetites_destroyed", state.zebetites_destroyed));
         out.declare(value("health", i64::from(state.health), 0, MAX_HEALTH));
         out.declare(value("balance", balance(state), 0, balance_max()));
         out.declare(value(
@@ -260,6 +262,14 @@ impl Game for Metroid {
             state.area == KRAID && (state.map_x, state.map_y) == KRAID_DOOR,
         ));
         out.declare(sometimes("kraid_defeated", state.kraid_defeated));
+        out.declare(sometimes(
+            "ridley_defeated",
+            state.bosses > u8::from(state.kraid_defeated),
+        ));
+        out.declare(sometimes(
+            "mother_brain_defeated",
+            state.mother_brain_defeated,
+        ));
         out.declare(sometimes("ending", state.ending));
     }
 
@@ -307,11 +317,17 @@ impl Game for Metroid {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::{
         metroid::{
+            keying::POSITION_STRATEGY,
             plan::{self, PLAN},
-            target::{JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED},
+            target::{
+                BCD_BORROW_HEALTH, JOYPAD_B, JOYPAD_SELECT, MISSILE_DOOR, MISSILES_ARMED,
+                TEN_MISSILE_DOOR,
+            },
         },
         search::{assertion::Accumulator, plan::StageProgress, rand::RomuDuoJrRand},
         workload::{Lowered, target::windowed},
@@ -334,7 +350,8 @@ mod tests {
     }
 
     fn step(lowered: &Lowered<Metroid>, path: &mut Path) -> StageProgress {
-        let hand = plan::locate(path.state, 0, path.hand);
+        let parent = path.hand;
+        let hand = plan::locate(path.state, 0, parent);
         let (mut record, _) = lowered.record(&path.state);
         record.set_action_end(true);
         let key = lowered
@@ -343,6 +360,16 @@ mod tests {
             .key
             .unwrap();
         let view = lowered.compiled.view(key);
+        path.hand = Some(hand);
+        if usize::from(hand.0) + 1 == PLAN.len() {
+            let stage = view.stage.as_deref().unwrap();
+            assert!(
+                PLAN[..PLAN.len() - 1].iter().all(|kept| kept.name != stage),
+                "{stage} after Kraid's defeat in {:?}",
+                path.state
+            );
+            return hand;
+        }
         assert_eq!(
             view.stage.as_deref(),
             Some(plan::stage_name(hand.0)),
@@ -354,9 +381,8 @@ mod tests {
             [i64::from(hand.1)],
             "{:?} after {:?}",
             path.state,
-            path.hand
+            parent
         );
-        path.hand = Some(hand);
         hand
     }
 
@@ -471,6 +497,159 @@ mod tests {
         }
     }
 
+    fn stage_goal(name: &str) -> &'static str {
+        let stage = Metroid::STRATEGY
+            .split("[[stage]]")
+            .find(|stage| stage.contains(&format!("name = \"{name}\"")))
+            .unwrap();
+        let line = stage
+            .lines()
+            .find_map(|line| line.strip_prefix("goal = "))
+            .unwrap();
+        line.trim_matches('"')
+    }
+
+    fn goal_holds(goal: &str, state: &MetroidMechanicalState) -> bool {
+        let lowered = Lowered::new(Metroid, &format!("goal = \"{goal}\"\n")).unwrap();
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(true);
+        lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal
+    }
+
+    fn deaths(strategy: &str) -> Vec<MetroidMechanicalState> {
+        let mut cells = vec![0_u32];
+        cells.extend(
+            strategy
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|token| token.parse::<u32>().ok())
+                .filter(|cell| (160_000..210_000).contains(cell)),
+        );
+        cells.sort_unstable();
+        cells.dedup();
+        let mut deaths = Vec::new();
+        for cell in cells {
+            for health in [0, BCD_BORROW_HEALTH, 9_700, 9_999] {
+                for energy_tanks in 0..=6 {
+                    for won in [false, true] {
+                        let full = if won { u8::MAX } else { 0 };
+                        deaths.push(MetroidMechanicalState {
+                            area: u8::try_from(cell / 10_000).unwrap(),
+                            map_x: u8::try_from(cell / 100 % 100).unwrap(),
+                            map_y: u8::try_from(cell % 100).unwrap(),
+                            mode: 3,
+                            health,
+                            equipment: full,
+                            missiles: full,
+                            missile_capacity: full,
+                            energy_tanks,
+                            zebetites_destroyed: if won { 5 } else { 0 },
+                            bosses: if won { 2 } else { 0 },
+                            statues: if won { 2 } else { 0 },
+                            mother_brain_defeated: won,
+                            ending: won,
+                            kraid_defeated: won,
+                            ..MetroidMechanicalState::default()
+                        });
+                    }
+                }
+            }
+        }
+        deaths
+    }
+
+    fn goals(
+        lowered: &Lowered<Metroid>,
+        state: &MetroidMechanicalState,
+        action_end: bool,
+    ) -> (bool, Vec<bool>) {
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(action_end);
+        let header = lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal;
+        let stages = lowered
+            .compiled
+            .stage_goals(&record, &Accumulator::default());
+        (header, stages)
+    }
+
+    #[test]
+    fn no_metroid_goal_holds_on_a_dead_state() {
+        let mut holding = BTreeSet::new();
+        for (file, strategy) in [
+            ("metroid.toml", Metroid::STRATEGY),
+            ("position.toml", POSITION_STRATEGY),
+        ] {
+            let lowered = Lowered::new(Metroid, strategy).unwrap();
+            let names = lowered.compiled.stage_names();
+            for death in deaths(strategy) {
+                assert!(MetroidTerminalPolicy::default().is_dead(death), "{death:?}");
+                for action_end in [false, true] {
+                    let (header, stages) = goals(&lowered, &death, action_end);
+                    if header {
+                        holding.insert(format!("{file} header goal"));
+                    }
+                    for (name, holds) in names.iter().zip(stages) {
+                        if holds {
+                            holding.insert(format!("{file} stage {name}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            holding.is_empty(),
+            "goals that hold on a dead state: {holding:?}"
+        );
+    }
+
+    #[test]
+    fn missiles_then_energy_refill_before_the_tourian_elevator() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(
+            at("missiles_before_tourian") + 1,
+            at("energy_before_tourian")
+        );
+        assert_eq!(at("energy_before_tourian") + 1, at("tourian_elevator"));
+        let full = MetroidMechanicalState {
+            area: 0x10,
+            map_x: 20,
+            map_y: 11,
+            x: 68,
+            y: 155,
+            pose: 1,
+            mode: 3,
+            health: 3999,
+            equipment: 151,
+            missiles: 180,
+            missile_capacity: 180,
+            energy_tanks: 3,
+            bosses: 2,
+            statues: 1,
+            kraid_defeated: true,
+            ..MetroidMechanicalState::default()
+        };
+        let least = MetroidMechanicalState {
+            health: 3900,
+            ..full
+        };
+        let short = MetroidMechanicalState {
+            health: 3899,
+            ..full
+        };
+        let goal = stage_goal("energy_before_tourian");
+        assert!(goal_holds(goal, &full), "{goal}");
+        assert!(goal_holds(goal, &least), "{goal}");
+        assert!(!goal_holds(goal, &short), "{goal}");
+        assert!(goal_holds(stage_goal("missiles_before_tourian"), &full));
+    }
+
     #[test]
     fn the_volley_offer_needs_play_missiles_and_a_missile_target() {
         let door = MetroidMechanicalState {
@@ -495,7 +674,7 @@ mod tests {
             boss_health: 10,
             ..door
         };
-        assert_eq!(volley_offer(boss), 0b11_1110);
+        assert_eq!(volley_offer(boss), 0b1110);
         for state in [
             MetroidMechanicalState {
                 missile_flags: 0,
@@ -515,6 +694,65 @@ mod tests {
         assert_eq!(offer.labels(), [0, 1, 2, 3, 4, 5]);
         assert_eq!(Metroid.move_sites()[0].labels.len(), VOLLEYS.len());
         assert_eq!(CHORDS.tap, None);
+    }
+
+    #[test]
+    fn the_volley_offers_no_more_missiles_than_the_room_target_takes() {
+        let stocked = MetroidMechanicalState {
+            area: 0x13,
+            health: 300,
+            mode: 3,
+            missiles: 150,
+            missile_capacity: 155,
+            ..MetroidMechanicalState::default()
+        };
+        let largest = |state| 63 - u64::leading_zeros(volley_offer(state));
+        let red = MetroidMechanicalState {
+            missile_flags: MISSILE_DOOR,
+            ..stocked
+        };
+        assert_eq!(largest(red), 5);
+        let orange = MetroidMechanicalState {
+            missile_flags: MISSILE_DOOR | TEN_MISSILE_DOOR,
+            ..stocked
+        };
+        assert_eq!(largest(orange), 10);
+        let columns = MetroidMechanicalState {
+            zebetite_hits_left: 13,
+            ..stocked
+        };
+        assert_eq!(largest(columns), 8);
+        let damaged = MetroidMechanicalState {
+            zebetite_hits_left: 3,
+            ..stocked
+        };
+        assert_eq!(largest(damaged), 3);
+        let mother_brain = MetroidMechanicalState {
+            boss_health: 128,
+            ..stocked
+        };
+        assert_eq!(largest(mother_brain), 1);
+        assert_eq!(
+            largest(MetroidMechanicalState {
+                zebetite_hits_left: 5,
+                ..mother_brain
+            }),
+            5
+        );
+        let ridley = MetroidMechanicalState {
+            area: 0x14,
+            boss_health: 28,
+            ..stocked
+        };
+        assert_eq!(largest(ridley), 7);
+        assert_eq!(
+            largest(MetroidMechanicalState {
+                missiles: 3,
+                ..ridley
+            }),
+            3
+        );
+        assert_eq!(volley_offer(stocked), 0);
     }
 
     #[test]
