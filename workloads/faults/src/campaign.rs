@@ -2806,6 +2806,122 @@ mod tests {
     }
 
     #[test]
+    fn default_draws_match_their_recorded_digests() {
+        use sha2::{Digest, Sha256};
+        const DIGESTS: [&str; 36] = [
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "9b209cfc9a715251524b9db65d4a304c7f8e90e1b4544f28c4fd67b121bba396",
+            "be708b25e5216ec6c754f496c5648d825812b53119c2cd9af46ba32b638dd753",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "d949bdc09f664f7599c67c6833d9d20d3e13ab6bdcaade568f3a243dd016ea94",
+            "905f3184a2d72a5665368471a058593ad8a6230d19e8ef2d5f35e4684be73306",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "a80acebf03ab88908fab4344286ddd84d57b2593473ad488921c059658dc52d2",
+            "ad57e5ffcd5ed7fd943eba313b6d503705607480a67b975580eb3e9b2b847168",
+            "8298c2c8d07413710397f2eea761a5458603a3e3be5845d3fa259df3899a5fbb",
+            "9b209cfc9a715251524b9db65d4a304c7f8e90e1b4544f28c4fd67b121bba396",
+            "be708b25e5216ec6c754f496c5648d825812b53119c2cd9af46ba32b638dd753",
+            "11bbfb83a9e710346a3a27a01098937eff45600c84398d59915405bb34c158b8",
+            "355da7fe7dacd4ad485d397fdd35fb1292b244b6bc14b8dc13ce83663359e512",
+            "a3c1ce73004e1bbc8f45d4003e33fecc8f38a846ff65ba7d23441ae5ec94dd4b",
+            "11bbfb83a9e710346a3a27a01098937eff45600c84398d59915405bb34c158b8",
+            "40743fba2644319ce6db0d276e1f6f6c23692d2c771cca208ac624491a9d3fbe",
+            "c1114d6506347002ce4ec2bade7cf68f7f1a791d8a8b854b1d39b8df2ee527c3",
+            "7d4b2200879e87aed23379062c6f4229bba23ea3a0d3790a35436c9d6eba4e70",
+            "becae5cdea55cdc80cf873b722cf4cb97a1ff869b4df183c01476895432a96e1",
+            "c832e1fd2fc4d1f79b92514e2ead1bdecdffbb130c2270e48f424a9ace64f581",
+            "7d4b2200879e87aed23379062c6f4229bba23ea3a0d3790a35436c9d6eba4e70",
+            "dd37ce131dffa509919605e2aa3a91e947552f26616a8a219f9dea3c9cc61104",
+            "b0ef66c59c160cdbb177d1c800d07ffcfd10db4445a90c1ce7e159b10514bd35",
+            "35b8b9ec83bbdfb9319e071c9aa8b0042770095ac6a413fd2364bf1a7d91648b",
+            "27fdb01b9ac3e35a0c97acb52c11ce4590173e6f2ca956897267bec68becdec7",
+            "0e4d4ca5a28c91ffd2b83057e3b51c059592c5d287238384ad9fe6dcc8620fe2",
+            "35b8b9ec83bbdfb9319e071c9aa8b0042770095ac6a413fd2364bf1a7d91648b",
+            "3d89b8b48ddde5b273e45d5bcb1b84d6a037399508e5b1908a8da3bc8466911a",
+            "f1f39b8efc5a84290815f397ccd14c48d744bd1b577d070d798a6e7958ab00df",
+        ];
+        let game = game();
+        let plain = FaultVocabulary::new(3, vec![]).unwrap();
+        let instrumented = plain.clone().with_instrumented_events(true);
+        let hooked = FaultVocabulary::new(3, vec![1, 2])
+            .unwrap()
+            .with_instrumented_events(true);
+        let draw = |event_ready| DurationDraw {
+            context: game.keys().context(
+                game.key_of(&FaultObservations {
+                    event_ready,
+                    ..FaultObservations::default()
+                })
+                .unwrap(),
+            ),
+            max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
+            duration: NonZeroU64::new(256).unwrap(),
+        };
+        let alphabet = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        let empty = DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).unwrap();
+        let mut folded = DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).unwrap();
+        let source = FaultCampaignRun::any_bug(instrumented.clone());
+        for seed in 1000..1016 {
+            let suffix = game
+                .expand_suffix_duration(&source, &empty, alphabet, seed, None, draw(0b111))
+                .unwrap();
+            folded.fold_source(&suffix).unwrap();
+        }
+        folded.flush().unwrap();
+        let mixtures = [
+            alphabet,
+            MixtureDraw {
+                mixture: DrawMixture::BiasedHalf,
+                weight: 0,
+                splice_weight: 0,
+            },
+            MixtureDraw {
+                mixture: DrawMixture::Energy { scale: 4 },
+                weight: 200,
+                splice_weight: 0,
+            },
+        ];
+        let mut digests = Vec::new();
+        for vocabulary in [plain, instrumented, hooked] {
+            let run = FaultCampaignRun::any_bug(vocabulary);
+            for ready in [0_u64, 0b111] {
+                for tables in [&empty, &folded] {
+                    for mixture in mixtures {
+                        let mut digest = Sha256::new();
+                        for seed in 0..64 {
+                            let suffix = game
+                                .expand_suffix_duration(
+                                    &run,
+                                    tables,
+                                    mixture,
+                                    seed,
+                                    None,
+                                    draw(ready),
+                                )
+                                .unwrap();
+                            assert_eq!(suffix.len(), 64);
+                            digest.update(serde_json::to_string(&suffix).unwrap().as_bytes());
+                            digest.update(b"\n");
+                        }
+                        digests.push(format!("{:x}", digest.finalize()));
+                    }
+                }
+            }
+        }
+        assert_eq!(digests, DIGESTS);
+    }
+
+    #[test]
     fn the_recorded_policy_set_is_exact_and_adapter_owned() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));

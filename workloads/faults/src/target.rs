@@ -2067,6 +2067,22 @@ mod tests {
     }
 
     #[test]
+    fn a_pause_keeps_its_key_text_and_binary() {
+        let pause = FaultAction::from(FaultOperation::Pause(1, ticks(9))).with_choice(7);
+        let mut key = [0_u8; OPERATION_KEY_WIDTH];
+        key[..4].copy_from_slice(&[4, 1, 0, 9]);
+        assert_eq!(pause.operation.key_bytes(), key);
+        assert_eq!(
+            serde_json::to_string(&pause).unwrap(),
+            r#"{"operation":{"Pause":[1,9]},"coverage_quantum":1024,"choice":7}"#
+        );
+        assert_eq!(
+            postcard::to_allocvec(&pause).unwrap(),
+            [10, 1, 9, 128, 8, 7, 0]
+        );
+    }
+
+    #[test]
     fn a_choice_changes_the_action_key_and_entropy_seed() {
         let action = FaultAction::from(FaultOperation::Wait(ticks(4)));
         assert_eq!(action.entropy_seed(11), 11);
