@@ -61,6 +61,8 @@ RUN sha256="${ETCD_SOURCE_SHA256}" \
             v3.5.5) sha256=1a16ab899c2381f3ed68f7c38ab878edd391397f7ff987b22a9cd50aab092b79 ;; \
             v3.5.27) sha256=aa0cd1baf203f6ccb3c56ac4d0c61ed2b0cca4995c2541b884b383d330176ff7 ;; \
             v3.5.28) sha256=c1e873c174c44de5fb148024d3ad741cae11548b5b6d2ac36a003289e55024be ;; \
+            v3.6.8) sha256=703f43b7e26c761d9bee1f7d1377c2d671bac8879285b9868b6205ebde0f8eda ;; \
+            v3.6.9) sha256=17d01cb6075a50cbc795ded0f4caf2bcf5b8005fc4c4631ce8df711dfbd118ed ;; \
             *) echo "pass ETCD_SOURCE_SHA256 for ${ETCD_VERSION}" >&2; exit 1 ;; \
         esac; \
     fi \
