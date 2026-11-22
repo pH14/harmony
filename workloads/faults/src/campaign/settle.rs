@@ -22,8 +22,7 @@ pub(crate) const RECORD_ENV: &str = "HARMONY_FAULTS_SETTLE_RECORD";
 pub(crate) const HEAL_ENV: &str = "HARMONY_FAULTS_SETTLE_HEAL";
 pub(crate) const END_TICKS: u16 = 16;
 pub(crate) const WAIT_TICKS: u16 = 50;
-pub(crate) const RECOVERY_LIMIT_TICKS: u64 = 3_000;
-pub(crate) const CHECK_LIMIT_TICKS: u64 = 6_000;
+pub(crate) const SETTLE_LIMIT_TICKS: u64 = 6_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SettlePolicy {
@@ -124,10 +123,12 @@ impl SettleClock {
             self.compared_after = Some(since_end);
             return Step::Compared;
         }
-        match self.ready_after {
-            None if since_end >= RECOVERY_LIMIT_TICKS => Step::NotReady,
-            Some(_) if since_end >= CHECK_LIMIT_TICKS => Step::NoFaultFreeCheck,
-            _ => Step::Continue,
+        if since_end < SETTLE_LIMIT_TICKS {
+            Step::Continue
+        } else if self.ready_after.is_some() {
+            Step::NoFaultFreeCheck
+        } else {
+            Step::NotReady
         }
     }
 }
@@ -271,7 +272,7 @@ fn settle(
         record.compared_after_ticks = clock.compared_after;
         let ended = match step {
             Step::Compared => Some("compared"),
-            Step::NotReady => Some("not ready within the recovery limit"),
+            Step::NotReady => Some("not ready within the settle limit"),
             Step::NoFaultFreeCheck => Some("no check without a fault in force finished"),
             Step::Continue if stop.cancelled() => Some("cancelled"),
             Step::Continue => None,
@@ -430,30 +431,31 @@ mod tests {
     }
 
     #[test]
-    fn readiness_is_bounded_by_the_recovery_limit() {
+    fn an_unready_workload_settles_past_the_recovery_window_to_the_settle_limit() {
         let mut clock = SettleClock::default();
         let unready = seen(false, true, 0, 0);
+        assert_eq!(clock.observe(Some(4_000), &unready), Step::Continue);
         assert_eq!(
-            clock.observe(Some(RECOVERY_LIMIT_TICKS - 1), &unready),
+            clock.observe(Some(SETTLE_LIMIT_TICKS - 1), &unready),
             Step::Continue
         );
         assert_eq!(
-            clock.observe(Some(RECOVERY_LIMIT_TICKS), &unready),
+            clock.observe(Some(SETTLE_LIMIT_TICKS), &unready),
             Step::NotReady
         );
     }
 
     #[test]
-    fn the_comparison_is_bounded_by_the_check_limit() {
+    fn the_comparison_is_bounded_by_the_settle_limit() {
         let mut clock = SettleClock::default();
         let running = seen(false, false, 1, 0);
         assert_eq!(clock.observe(Some(0), &running), Step::Continue);
         assert_eq!(
-            clock.observe(Some(CHECK_LIMIT_TICKS - 1), &running),
+            clock.observe(Some(SETTLE_LIMIT_TICKS - 1), &running),
             Step::Continue
         );
         assert_eq!(
-            clock.observe(Some(CHECK_LIMIT_TICKS), &running),
+            clock.observe(Some(SETTLE_LIMIT_TICKS), &running),
             Step::NoFaultFreeCheck
         );
     }
