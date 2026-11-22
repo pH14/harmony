@@ -631,6 +631,9 @@ thread_local! {
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
     static JOB_CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    static PARENT_REBUILD_RUNS: std::cell::Cell<searcher::search::telemetry::HostRuns> = const {
+        std::cell::Cell::new(searcher::search::telemetry::HostRuns { actions: 0, ns: 0 })
+    };
 }
 
 pub(crate) struct JobCancel;
@@ -671,6 +674,11 @@ impl Drop for Live {
             .unwrap_or_else(|| self.work_counters());
         let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
     }
+}
+
+#[must_use]
+pub fn thread_parent_rebuild_runs() -> searcher::search::telemetry::HostRuns {
+    PARENT_REBUILD_RUNS.with(std::cell::Cell::get)
 }
 
 #[must_use]
@@ -2616,6 +2624,15 @@ impl Live {
             decoder,
             &mut stopped,
         );
+        if kind != RunKind::New {
+            let ns = u64::try_from(run_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            PARENT_REBUILD_RUNS.with(|total| {
+                let mut sum = total.get();
+                sum.actions = sum.actions.saturating_add(1);
+                sum.ns = sum.ns.saturating_add(ns);
+                total.set(sum);
+            });
+        }
         if let Some(stop) = stopped {
             if combined_branch {
                 self.telemetry.branches.count += 1;

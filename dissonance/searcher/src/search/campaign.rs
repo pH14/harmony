@@ -51,7 +51,7 @@ const PARENT_DRAW_LIMIT: usize = 64;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
+    CampaignTelemetry, CompletedBufferTelemetry, HostRuns, HostTimes, Moment, TargetCounters, now,
     unix_seconds,
 };
 
@@ -157,6 +157,7 @@ pub struct CampaignExecutionOptions {
     pub checkpoints: Option<CheckpointPlan>,
     pub placement: Option<ThreadPlacement>,
     pub interrupt: Option<&'static std::sync::atomic::AtomicBool>,
+    pub job_host_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -596,6 +597,9 @@ pub trait TargetExecution: CampaignTypes {
     fn execution_work(&self, target: &Self::Target) -> u64;
     fn telemetry(&self, _target: &Self::Target) -> TargetCounters {
         TargetCounters::new()
+    }
+    fn parent_rebuild_runs(&self, _target: &Self::Target) -> Option<HostRuns> {
+        None
     }
     fn planned_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
@@ -7327,6 +7331,7 @@ mod tests {
         selections: std::sync::atomic::AtomicUsize,
         hang_divisor: std::sync::atomic::AtomicU8,
         suffix_actions: Option<usize>,
+        host_runs: bool,
     }
 
     #[derive(Default)]
@@ -7792,6 +7797,18 @@ mod tests {
                 "work".to_owned(),
                 target.execution_work,
             )])
+        }
+        fn parent_rebuild_runs(
+            &self,
+            target: &Self::Target,
+        ) -> Option<crate::search::telemetry::HostRuns> {
+            self.targets
+                .as_ref()
+                .filter(|targets| targets.host_runs)
+                .map(|_| crate::search::telemetry::HostRuns {
+                    actions: target.execution_work,
+                    ns: target.execution_work,
+                })
         }
         fn apply_action(
             &self,
@@ -11394,6 +11411,83 @@ mod tests {
         assert_eq!(round_trip, job);
     }
     #[test]
+    fn job_host_records_leave_the_stream_unchanged() {
+        let config = CampaignConfig {
+            campaign_seed: 53,
+            workers: 2,
+            execution_budget: 400,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            window: 4,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::EnergySplice { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+            minimize: None,
+        };
+        let path =
+            std::env::temp_dir().join(format!("dissonance-job-host-{}.jsonl", std::process::id()));
+        let run = |host: bool| {
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(LiveTargets {
+                    host_runs: host,
+                    ..LiveTargets::default()
+                })),
+            };
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed_with_options(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions {
+                    job_host_path: Some(path.clone()),
+                    ..CampaignExecutionOptions::default()
+                },
+            )
+            .expect("campaign runs");
+            let lines = std::fs::read_to_string(&path).expect("host file is written");
+            (outcome, stream, lines)
+        };
+        let (plain, plain_stream, plain_lines) = run(false);
+        let (hosted, hosted_stream, hosted_lines) = run(true);
+        let _ = std::fs::remove_file(&path);
+        assert!(plain_lines.is_empty());
+        assert_eq!(plain_stream, hosted_stream);
+        assert_eq!(plain, hosted);
+        let jobs = job_lines(&hosted_stream);
+        let records = hosted_lines
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<crate::search::telemetry::JobHostRecord>(line)
+                    .expect("host record parses")
+            })
+            .collect::<Vec<_>>();
+        assert!(!jobs.is_empty());
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| (record.sequence, record.reservation))
+                .collect::<Vec<_>>(),
+            jobs.iter()
+                .map(|(_, job)| (job.sequence, job.reservation))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            records
+                .iter()
+                .zip(&jobs)
+                .all(|(record, (_, job))| record.parent_rebuild.actions == job.execution_work)
+        );
+    }
+    #[test]
     fn cell_interval_accounting_leaves_the_draws_unchanged() {
         let config = CampaignConfig {
             campaign_seed: 47,
@@ -11560,6 +11654,7 @@ mod tests {
                 },
                 0,
                 String::new(),
+                None,
             ))
         };
         let mut buffer =

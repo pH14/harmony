@@ -118,11 +118,17 @@ func newClient(base string) *client {
 
 func (adapter) Nodes() []string { return nodeNames }
 
-func (a adapter) Connect(_ context.Context, _ int) (runner.Client, error) {
+func (a adapter) Connect(_ context.Context, process int) (runner.Client, error) {
 	if a.forward {
 		return forwardClient{}, nil
 	}
-	return newClient(nodes[sdk.Below("rqlite.connect", uint64(len(nodes)))]), nil
+	at := int(sdk.Below("rqlite.connect", uint64(len(nodes))))
+	if connections != nil {
+		if err := connections.record(process, at); err != nil {
+			fmt.Fprintf(os.Stderr, "connection record: %v\n", err)
+		}
+	}
+	return newClient(nodes[at]), nil
 }
 
 type forwardClient struct{}
@@ -446,12 +452,7 @@ func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 type raftStat uint64
 
 func (r *raftStat) UnmarshalJSON(data []byte) error {
-	text := strings.Trim(string(data), `"`)
-	if text == "null" {
-		*r = 0
-		return nil
-	}
-	value, err := strconv.ParseUint(text, 10, 64)
+	value, err := strconv.ParseUint(strings.Trim(string(data), `"`), 10, 64)
 	if err != nil {
 		return fmt.Errorf("raft stat %s: %w", data, err)
 	}
@@ -909,19 +910,29 @@ func runSnapshot() error {
 		return err
 	}
 	defer out.Close()
-	return recordSnapshot(out, nodes)
+	return recordSnapshot(out, nodes, newSnapshotFacts())
 }
 
-func recordSnapshot(out io.Writer, bases []string) error {
+func recordSnapshot(out io.Writer, bases []string, facts *snapshotFacts) error {
 	via := sdk.Below("rqlite.snapshot.node", uint64(len(bases)))
 	trailing, set := snapshotTrailing()
 	named := "default"
 	if set {
 		named = strconv.FormatUint(trailing, 10)
 	}
+	ctx := context.Background()
+	if facts != nil {
+		facts.start(ctx, bases, int(via), trailing, set)
+	}
 	c := newClient(bases[via])
 	defer c.Close()
-	_, err := fmt.Fprintf(out, "%s node=%s trailing_logs=%s %s\n", uptime(), nodeNames[via], named, c.snapshot(context.Background(), trailing, set))
+	sent := uptime()
+	answer := c.snapshot(ctx, trailing, set)
+	_, err := fmt.Fprintf(out, "%s node=%s trailing_logs=%s %s\n", sent, nodeNames[via], named, answer)
+	if facts != nil {
+		facts.end(ctx)
+		err = errors.Join(err, facts.err)
+	}
 	return err
 }
 
@@ -967,6 +978,7 @@ func main() {
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
 		writes = newWriteFacts()
+		connections = newConnectionLog()
 		declareStatusProperties()
 		runner.Main(adapter{})
 	case "forward":

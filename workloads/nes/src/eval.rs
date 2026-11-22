@@ -392,6 +392,7 @@ where
             checkpoints,
             placement: None,
             interrupt: None,
+            job_host_path: None,
         },
         watch,
     )?;

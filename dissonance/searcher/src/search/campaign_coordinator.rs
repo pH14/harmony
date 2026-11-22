@@ -45,8 +45,8 @@ use crate::search::rand::RomuDuoJrRand;
 use crate::search::rollout::{JobCeiling, RolloutStop};
 use crate::search::shrink::JobKind;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, HostRuns, HostTimes, IdleClock, IdleReason, JobHostRecord, Moment,
+    WorkerTelemetry, nanos_since, now, thread_schedstat,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -71,6 +71,7 @@ pub struct JobOutcome<G: CampaignTypes + ?Sized> {
     pub result: CampaignJobResult<G>,
     pub execution_work: u64,
     pub result_sha256: String,
+    pub host: Option<JobHostRecord>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -100,6 +101,8 @@ pub fn run_job<G: Workload>(
         .with_ceiling(job.ceiling)
         .with_candidates(job.candidates)
         .with_choices(job.choices.clone());
+    let started = now();
+    let rebuild_before = workload.parent_rebuild_runs(target);
     let work_before = workload.execution_work(target);
     let result = workload.execute_job_certified(
         &config.run,
@@ -116,15 +119,31 @@ pub fn run_job<G: Workload>(
     let result_sha256 = workload.certified_result_sha256(&result, target)?;
     let execution_work =
         execution_work_delta(work_before, workload.execution_work(target), "worker")?;
+    let host = rebuild_before.map(|before| {
+        let after = workload.parent_rebuild_runs(target).unwrap_or(before);
+        JobHostRecord {
+            sequence: 0,
+            reservation: u64::try_from(job.reservation).unwrap_or(u64::MAX),
+            wall_ns: nanos_since(started),
+            parent_actions: 0,
+            parent_replay_actions: u64::try_from(job.replay.len()).unwrap_or(u64::MAX),
+            parent_rebuild: HostRuns {
+                actions: after.actions.saturating_sub(before.actions),
+                ns: after.ns.saturating_sub(before.ns),
+            },
+        }
+    });
     Ok(JobOutcome {
         reservation: job.reservation,
         result,
         execution_work,
         result_sha256,
+        host,
     })
 }
 
-pub(crate) type WorkerResult<G> = Result<(CampaignJobResult<G>, u64, String), String>;
+pub(crate) type WorkerResult<G> =
+    Result<(CampaignJobResult<G>, u64, String, Option<JobHostRecord>), String>;
 
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
@@ -134,6 +153,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     origin_record: CampaignOriginRecord,
     writer: StreamWriter<'a>,
     progress: Option<&'a mut dyn Write>,
+    job_host: Option<std::fs::File>,
     core: CoordinatorCore<G>,
     counters: CampaignCounters,
     rand: RomuDuoJrRand,
@@ -208,6 +228,11 @@ where
         let executable_identity = workload.executable_identity()?;
         let work_budget = options.work_budget;
         let interrupt = options.interrupt;
+        let job_host = options
+            .job_host_path
+            .as_ref()
+            .map(std::fs::File::create)
+            .transpose()?;
         let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
         if work_budget == Some(0) {
             return Err("work budget must be nonzero".into());
@@ -405,6 +430,7 @@ where
             origin_record,
             writer,
             progress,
+            job_host,
             core,
             counters,
             rand,
@@ -596,8 +622,12 @@ where
             result,
             execution_work,
             result_sha256,
+            host,
         } = outcome;
-        self.receive(reservation, Ok((result, execution_work, result_sha256)))
+        self.receive(
+            reservation,
+            Ok((result, execution_work, result_sha256, host)),
+        )
     }
 
     pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
@@ -1121,7 +1151,7 @@ where
         reservation: usize,
         completed_job: CompletedJob<G>,
     ) -> Result<(), Box<dyn Error>> {
-        if let Ok((result, _, _)) = &completed_job.outcome {
+        if let Ok((result, ..)) = &completed_job.outcome {
             self.count_stall_draws(completed_job.pending.parent_id, result);
         }
         let workload = self.workload;
@@ -1134,6 +1164,7 @@ where
             duration_policies,
             writer,
             progress,
+            job_host,
             planned_clock,
             admitted,
             spec_records,
@@ -1153,7 +1184,7 @@ where
         *planned_clock = finish;
         spec_records.remove(&reservation);
         let pending_job = completed_job.pending;
-        let (result, execution_work, result_sha256) =
+        let (result, execution_work, result_sha256, host) =
             completed_job.outcome.map_err(|error| -> Box<dyn Error> {
                 format!("campaign reservation {reservation} failed: {error}").into()
             })?;
@@ -1220,6 +1251,7 @@ where
             .archive
             .index_of_id(pending_job.parent_id)
             .ok_or("completed job parent is no longer resident")?;
+        let parent_actions = u64::try_from(core.archive.entries[parent_index].input_len)?;
         let isolated_continuation = pending_job.selector.path == SelectorPath::Continuation;
         let shrink_job = pending_job.selector.path == SelectorPath::Shrink;
         if isolated_continuation {
@@ -1345,6 +1377,18 @@ where
         coordinator_profile.stream_write_ns = coordinator_profile
             .stream_write_ns
             .saturating_add(profile_elapsed(stream_started));
+        if let (Some(sink), Some(host)) = (job_host.as_mut(), host) {
+            let mut line = serde_json::to_vec(&JobHostRecord {
+                sequence,
+                parent_actions,
+                ..host
+            })?;
+            line.push(b'\n');
+            if let Err(error) = sink.write_all(&line) {
+                eprintln!("job host records stopped at sequence {sequence}: {error}");
+                *job_host = None;
+            }
+        }
         counters.job_execution_work = counters
             .job_execution_work
             .saturating_add(execution_work)

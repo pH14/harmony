@@ -10,17 +10,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"harmony.local/harness/kit/family"
+	"harmony.local/harness/kit/sdk"
 )
 
 type fact struct {
@@ -384,13 +388,13 @@ func (w writerFunc) Write(line []byte) (int, error) { return w(line) }
 
 func TestTheVariableTurnsTheFactsOn(t *testing.T) {
 	t.Setenv(factsEnv, "")
-	if newStepdownFacts() != nil || newWriteFacts() != nil {
+	if newStepdownFacts() != nil || newWriteFacts() != nil || newSnapshotFacts() != nil {
 		t.Fatal("facts without the variable")
 	}
 	t.Setenv(factsEnv, "1")
-	facts, w := newStepdownFacts(), newWriteFacts()
-	if facts == nil || facts.path != transferTimeouts || facts.sample == nil || w == nil || w.pending == nil {
-		t.Fatalf("stepdown facts %+v, write facts %+v", facts, w)
+	facts, w, s := newStepdownFacts(), newWriteFacts(), newSnapshotFacts()
+	if facts == nil || facts.path != transferTimeouts || facts.sample == nil || w == nil || w.pending == nil || s == nil || s.sample == nil {
+		t.Fatalf("stepdown facts %+v, write facts %+v, snapshot facts %+v", facts, w, s)
 	}
 }
 
@@ -524,4 +528,395 @@ func TestWriteFactsAreSilentWithoutTheVariable(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectFacts(t, read)
+}
+
+var snapshotFactIDs = []string{"snapshot_on_deposed_leader", "stale_tail", "trailing_within_tail", "client_on_node", "snapshot_at_commit_with_tail", "leader_snapshot_below", "follower_compacted_ahead"}
+
+func snapshotConditions(t *testing.T, read func() []fact) []bool {
+	t.Helper()
+	got := read()
+	if len(got) != len(snapshotFactIDs) {
+		t.Fatalf("facts %v", got)
+	}
+	conds := make([]bool, len(got))
+	for i, f := range got {
+		if f.id != snapshotFactIDs[i] {
+			t.Fatalf("fact %d is %s, want %s", i, f.id, snapshotFactIDs[i])
+		}
+		conds[i] = f.cond
+	}
+	return conds
+}
+
+func runSnapshotFacts(via int, trailing uint64, set bool, before, after []raftView) *snapshotFacts {
+	return runSnapshotFactsWith("", via, trailing, set, before, after)
+}
+
+func runSnapshotFactsWith(connections string, via int, trailing uint64, set bool, before, after []raftView) *snapshotFacts {
+	bases := []string{"b1", "b2", "b3"}
+	at := func(views []raftView) func(context.Context, string) raftView {
+		return func(_ context.Context, base string) raftView { return views[slices.Index(bases, base)] }
+	}
+	f := &snapshotFacts{sample: at(before), connections: connections}
+	f.start(context.Background(), bases, via, trailing, set)
+	f.sample = at(after)
+	f.end(context.Background())
+	return f
+}
+
+func view(state, leader string, term, commit, last, snapshot uint64) raftView {
+	return raftView{answered: true, state: state, leader: leader, term: term, commit: commit, last: last, snapshot: snapshot}
+}
+
+func expectConditions(t *testing.T, got []bool, want ...bool) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("conditions %v, want %v for %v", got, want, snapshotFactIDs)
+	}
+}
+
+func TestSnapshotFactsSeeADeposedLeaderSnapshotAtCommitWithATail(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	follower := view("Follower", "n2", 3, 600, 600, 405)
+	runSnapshotFacts(0, 1, true,
+		[]raftView{view("Candidate", "", 2, 482, 484, 0), leader, follower},
+		[]raftView{view("Candidate", "", 2, 482, 484, 482), leader, follower})
+	expectConditions(t, snapshotConditions(t, read), true, true, true, false, true, true, false)
+}
+
+func TestSnapshotFactsSeeAFollowerCompactAheadOfTheLeader(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n1", 6, 1889, 1889, 1777)
+	runSnapshotFacts(2, 1, true,
+		[]raftView{leader, view("Follower", "n1", 6, 1814, 1815, 0), view("Follower", "n1", 6, 1814, 1814, 0)},
+		[]raftView{leader, view("Follower", "n1", 6, 1815, 1815, 0), view("Follower", "n1", 6, 1814, 1814, 1814)})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, true, true)
+}
+
+func TestEitherALowerTermOrNoLeaderMakesADeposedLeader(t *testing.T) {
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	for _, c := range []struct {
+		x       raftView
+		deposed bool
+	}{
+		{view("Follower", "n2", 2, 600, 600, 0), true},
+		{view("Follower", "", 3, 600, 600, 0), true},
+		{view("Follower", "n2", 3, 600, 600, 0), false},
+	} {
+		read := factSink(t)
+		runSnapshotFacts(0, 1, true, []raftView{c.x, leader, {}}, []raftView{c.x, leader, {}})
+		expectConditions(t, snapshotConditions(t, read), c.deposed, false, false, false, false, false, false)
+	}
+}
+
+func TestAFollowerAlreadyAheadHasNotCompactedAhead(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n1", 6, 1889, 1889, 1777)
+	x := view("Follower", "n1", 6, 1814, 1814, 1800)
+	runSnapshotFacts(2, 1, true, []raftView{leader, {}, x}, []raftView{leader, {}, x})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, true, false)
+}
+
+func TestALeaderSnapshotEqualToTheNodesIsNotBelow(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n1", 6, 1889, 1889, 1777)
+	runSnapshotFacts(2, 1, true,
+		[]raftView{leader, {}, view("Follower", "n1", 6, 1777, 1777, 0)},
+		[]raftView{leader, {}, view("Follower", "n1", 6, 1777, 1777, 1777)})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
+func TestSnapshotFactsNeedTrailingLogsWithinTheTail(t *testing.T) {
+	for _, c := range []struct {
+		trailing uint64
+		set      bool
+		within   bool
+	}{{2, true, true}, {3, true, false}, {0, false, false}} {
+		read := factSink(t)
+		x := view("Leader", "n1", 2, 480, 482, 0)
+		runSnapshotFacts(0, c.trailing, c.set, []raftView{x, {}, {}}, []raftView{x, {}, {}})
+		expectConditions(t, snapshotConditions(t, read), false, true, c.within, false, false, false, false)
+	}
+}
+
+func TestSnapshotFactsAreFalseWhenTheNodeDoesNotAnswer(t *testing.T) {
+	read := factSink(t)
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	runSnapshotFacts(0, 1, true, []raftView{{}, leader, {}}, []raftView{{}, leader, {}})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
+func TestClientOnNodeReadsEachProcessLatestConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connections")
+	log := &connectionLog{path: path}
+	for _, c := range []struct{ process, at int }{{0, 2}, {1, 1}, {2, 0}, {0, 1}} {
+		if err := log.record(c.process, c.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x := view("Leader", "n3", 2, 480, 482, 0)
+	for via, want := range []bool{true, true, false} {
+		read := factSink(t)
+		views := []raftView{{}, {}, {}}
+		views[via] = x
+		f := runSnapshotFactsWith(path, via, 1, true, views, views)
+		if f.err != nil {
+			t.Fatal(f.err)
+		}
+		if got := snapshotConditions(t, read)[3]; got != want {
+			t.Fatalf("client_on_node for %s is %v", nodeNames[via], got)
+		}
+	}
+}
+
+func TestAnUnreadableConnectionRecordFailsTheHook(t *testing.T) {
+	read := factSink(t)
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.WriteFile(path, []byte("0 n9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	x := view("Leader", "n1", 2, 480, 482, 0)
+	f := runSnapshotFactsWith(path, 0, 1, true, []raftView{x, {}, {}}, []raftView{x, {}, {}})
+	if f.err == nil {
+		t.Fatal("no error for a bad connection record")
+	}
+	if snapshotConditions(t, read)[3] {
+		t.Fatal("client_on_node held without a record")
+	}
+}
+
+func TestAConnectionRecordThatFailsPartwayCountsNoClient(t *testing.T) {
+	read := factSink(t)
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.WriteFile(path, []byte("0 n1\n"+strings.Repeat("x", 70000)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	x := view("Leader", "n1", 2, 480, 482, 0)
+	f := runSnapshotFactsWith(path, 0, 1, true, []raftView{x, {}, {}}, []raftView{x, {}, {}})
+	if f.err == nil {
+		t.Fatal("no error for an unreadable connection record")
+	}
+	if snapshotConditions(t, read)[3] {
+		t.Fatal("client_on_node held from part of a record")
+	}
+}
+
+func TestClientOnNodeIsFalseWhenTheNodeDoesNotAnswer(t *testing.T) {
+	read := factSink(t)
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.WriteFile(path, []byte("0 n1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leader := view("Leader", "n2", 3, 600, 600, 333)
+	f := runSnapshotFactsWith(path, 0, 1, true, []raftView{{}, leader, {}}, []raftView{{}, leader, {}})
+	if f.err != nil {
+		t.Fatal(f.err)
+	}
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
+func TestTheDriveRecordsEachConnectionOnlyWithTheVariable(t *testing.T) {
+	dir := t.TempDir()
+	saved := connections
+	t.Cleanup(func() { connections = saved })
+	t.Setenv(connectionsEnv, "")
+	if newConnectionLog() != nil {
+		t.Fatal("a connection record without the variable")
+	}
+	t.Setenv(connectionsEnv, "1")
+	if got := newConnectionLog(); got == nil || got.path != clientConnections {
+		t.Fatalf("connection record %+v", got)
+	}
+	connections = &connectionLog{path: filepath.Join(dir, "connections")}
+	want := map[int]string{}
+	for process := range 3 {
+		c, err := adapter{}.Connect(context.Background(), process)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[process] = nodeName(slices.Index(nodes, c.(*client).base))
+		c.Close()
+	}
+	current, err := readConnections(connections.path)
+	if err != nil || !maps.Equal(current, want) {
+		t.Fatalf("connections %v, want %v, error %v", current, want, err)
+	}
+}
+
+func TestAFailedConnectionRecordStillConnects(t *testing.T) {
+	saved := connections
+	t.Cleanup(func() { connections = saved })
+	connections = &connectionLog{path: filepath.Join(t.TempDir(), "missing", "connections")}
+	c, err := adapter{}.Connect(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+}
+
+func TestAFailedAppendRemovesTheRecordAndEndsIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "connections")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := &connectionLog{path: path}
+	if err := log.record(0, 1); err == nil {
+		t.Fatal("no error for an append that failed")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("record still present after a failed append: %v", err)
+	}
+	if err := log.record(0, 2); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readConnections(path)
+	if err != nil || len(current) != 0 {
+		t.Fatalf("connections %v, error %v after the record ended", current, err)
+	}
+}
+
+func drawTrace(t *testing.T, facts bool) string {
+	t.Helper()
+	bases := make([]string, len(nodeNames))
+	for i := range nodeNames {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/status" {
+				fmt.Fprint(w, `{"store":{"raft":{"state":"Follower","term":"2","commit_index":"480","last_log_index":"482","last_snapshot_index":"0"},"leader":{"node_id":""}}}`)
+			}
+		}))
+		t.Cleanup(server.Close)
+		bases[i] = server.URL
+	}
+	saved := connections
+	t.Cleanup(func() { connections = saved })
+	connections = nil
+	var hook *snapshotFacts
+	if facts {
+		path := filepath.Join(t.TempDir(), "connections")
+		connections = &connectionLog{path: path}
+		hook = &snapshotFacts{sample: raftViewOf, connections: path}
+	}
+	var trace []string
+	for process := range 3 {
+		c, err := adapter{}.Connect(context.Background(), process)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trace = append(trace, c.(*client).base)
+		c.Close()
+	}
+	var out bytes.Buffer
+	if err := recordSnapshot(&out, bases, hook); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(out.String())
+	return strings.Join(append(trace, fields[1], fields[2], strconv.FormatUint(sdk.Random(), 10)), " ")
+}
+
+const drawModeEnv = "RQLITE_DRAW_MODE"
+
+func TestDrawTraceChild(t *testing.T) {
+	mode := os.Getenv(drawModeEnv)
+	if mode == "" {
+		t.Skip("run by TestTheFactsAddNoDraw")
+	}
+	fmt.Println("trace", drawTrace(t, mode == "facts"))
+}
+
+func TestTheFactsAddNoDraw(t *testing.T) {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, drawModeEnv+"=") })
+	traces := map[string]string{}
+	for _, mode := range []string{"plain", "facts"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestDrawTraceChild$")
+		cmd.Env = append(slices.Clone(env), drawModeEnv+"="+mode, "HARNESS_SEED=7", "ANTITHESIS_OUTPUT_DIR="+t.TempDir())
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", mode, err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "trace ") {
+				traces[mode] = line
+			}
+		}
+	}
+	if traces["plain"] == "" || traces["plain"] != traces["facts"] {
+		t.Fatalf("plain %q, facts %q", traces["plain"], traces["facts"])
+	}
+}
+
+func TestSnapshotFactsCompareWithTheLeaderInTheHighestTerm(t *testing.T) {
+	read := factSink(t)
+	x := view("Follower", "n3", 4, 700, 700, 0)
+	stale := view("Leader", "", 3, 600, 602, 100)
+	current := view("Leader", "n3", 4, 700, 700, 650)
+	runSnapshotFacts(0, 1, true,
+		[]raftView{x, stale, current},
+		[]raftView{view("Follower", "n3", 4, 700, 700, 640), stale, current})
+	expectConditions(t, snapshotConditions(t, read), false, false, false, false, false, false, false)
+}
+
+func TestRaftViewDecodesNumbersAndStrings(t *testing.T) {
+	server, _ := leaderServer(t,
+		answer(http.StatusOK, `{"store":{"raft":{"state":"Follower","term":"6","commit_index":1814,"last_log_index":"1815","last_snapshot_index":"1777"},"leader":{"node_id":"n1"}}}`),
+		answer(http.StatusOK, `{"store":{"open":false}}`),
+		answer(http.StatusServiceUnavailable, ""),
+		answer(http.StatusOK, `{"store":{"raft":{"state":"Follower","term":"6","commit_index":"null","last_log_index":"1815","last_snapshot_index":"1777"},"leader":{"node_id":"n1"}}}`))
+	want := view("Follower", "n1", 6, 1814, 1815, 1777)
+	if got := raftViewOf(context.Background(), server.URL); got != want {
+		t.Fatalf("view %+v, want %+v", got, want)
+	}
+	for range 3 {
+		if got := raftViewOf(context.Background(), server.URL); got.answered {
+			t.Fatalf("view %+v from a node without Raft statistics", got)
+		}
+	}
+}
+
+func TestTheSnapshotHookReadsEveryNodeBeforeAndAfterItsRequest(t *testing.T) {
+	read := factSink(t)
+	var mu sync.Mutex
+	var order []string
+	var bases []string
+	snapped := -1
+	for i := range nodeNames {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			order = append(order, fmt.Sprintf("%s %s %s", nodeNames[i], r.Method, r.URL.Path))
+			switch r.URL.Path {
+			case "/snapshot":
+				snapped = i
+			case "/status":
+				snapshot := 0
+				if snapped == i {
+					snapshot = 480
+				}
+				fmt.Fprintf(w, `{"store":{"raft":{"state":"Follower","term":"2","commit_index":"480","last_log_index":"482","last_snapshot_index":"%d"},"leader":{"node_id":""}}}`, snapshot)
+			}
+		}))
+		t.Cleanup(server.Close)
+		bases = append(bases, server.URL)
+	}
+	var out bytes.Buffer
+	if err := recordSnapshot(&out, bases, &snapshotFacts{sample: raftViewOf}); err != nil {
+		t.Fatal(err)
+	}
+	if snapped < 0 || !strings.Contains(out.String(), "node="+nodeNames[snapped]+" ") || !strings.HasSuffix(out.String(), " status 200 \"\"\n") {
+		t.Fatalf("line %q for node %d", out.String(), snapped)
+	}
+	post := slices.Index(order, nodeNames[snapped]+" POST /snapshot")
+	for _, name := range nodeNames {
+		if at := slices.Index(order, name+" GET /status"); at < 0 || at > post {
+			t.Fatalf("order %v", order)
+		}
+		if last := slices.Index(order[post+1:], name+" GET /status"); last < 0 {
+			t.Fatalf("order %v", order)
+		}
+	}
+	if len(order) != 7 {
+		t.Fatalf("order %v", order)
+	}
+	within := slices.Contains([]string{"trailing_logs=1", "trailing_logs=2"}, strings.Fields(out.String())[2])
+	expectConditions(t, snapshotConditions(t, read), false, true, within, false, true, false, false)
 }
