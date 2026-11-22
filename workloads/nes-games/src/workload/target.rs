@@ -1721,7 +1721,7 @@ mod moves {
         search::{
             archive::RetentionPolicy,
             assertion::{Assertion, Declarations, Number},
-            campaign::TargetExecution,
+            campaign::{Reporting, TargetExecution},
             choice::{CERTAIN, Choice, ChoicePlan, ChoiceSite},
             rollout::RolloutStop,
         },
@@ -2647,6 +2647,78 @@ mod moves {
         let taken: u32 = moves.values().sum();
         assert!((60..140).contains(&taken), "{moves:?}");
         assert_eq!(moves.keys().copied().collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn the_stall_report_reads_an_action_endpoint_record_and_its_choice_records() {
+        let workload = NesWorkload::with_machines(
+            Walk,
+            Walk::STRATEGY,
+            &[],
+            "walk",
+            "0",
+            Arc::new(|| Ok(Walker::default())),
+        )
+        .expect("a walk workload");
+        let lowered = workload.lowered();
+        let names: Vec<String> = lowered
+            .catalog
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect();
+        assert!(!names.is_empty());
+        assert_eq!(workload.catalog_signals(&NesRun), names);
+        let mut target = workload.new_target().expect("a walk target");
+        let origin = target.snapshot().expect("a genesis snapshot");
+        let plan = ChoicePlan {
+            profile: Walk::CHORDS.reproducing_profile(),
+            redrawn: false,
+            seed: 11,
+            untried: None,
+            untried_site: 0,
+            held: Vec::new(),
+            declared: ChoiceSite::declared_contrary(&lowered.choice_sites()),
+            permuted: Vec::new(),
+        };
+        let suffix = vec![chord::ask(None); 40];
+        let result = workload
+            .execute_job(
+                &NesRun,
+                &mut target,
+                &origin,
+                &[],
+                Satisfied::default(),
+                &suffix,
+                RetentionPolicy::Unprobed,
+                RolloutStop::new(false).with_choices(Some(plan)),
+            )
+            .expect("a job");
+        let mut before = workload
+            .state_record(&NesRun, &origin)
+            .expect("a genesis record");
+        assert_eq!(before, lowered.record(&origin.observation.state).0);
+        let mut moved = 0;
+        for (index, action) in result.actions.iter().enumerate() {
+            let last = action.observations.last().expect("an arrival");
+            let after = workload
+                .observation_record(&NesRun, last)
+                .expect("an endpoint record");
+            assert_eq!(after, lowered.record(&last.observation.state).0);
+            assert_eq!(after.values().len(), names.len());
+            moved += usize::from(after.values() != before.values());
+            before = after;
+            let records =
+                workload.choice_records(&NesRun, None, index, &action.action, &action.observations);
+            let expected: Vec<_> = action
+                .observations
+                .iter()
+                .flat_map(|observation| observation.choices.iter().cloned())
+                .collect();
+            assert!(!records.is_empty());
+            assert_eq!(records, expected);
+        }
+        assert!(moved > 0);
     }
 
     fn plain_job<G: Game<State = u8>>(game: G, suffix: &[ButtonChord]) -> Vec<(ButtonChord, u8)> {

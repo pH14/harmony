@@ -512,6 +512,17 @@ off the row holds the drawn node, so both arms of a comparison write the same
 rows. An action served from the snapshot cache has no guest
 rows.
 
+For the searcher's stall report, `Reporting::state_record` and
+`Reporting::observation_record` give a snapshot's or an action's record
+through `FaultKeys::record`, and `Reporting::choice_records` rebuilds the host
+`fault.node` row the job wrote for an action, from the stored action. A job
+writes that row only with a choice plan and only for an action that targets a
+node and had no guest choices when drawn. The job stamps every such action
+with `GuestChoices::from_plan` for its plan and index, so an action whose
+guest seed matches that stamp is one the job asked; an action copied with its
+earlier guest choices is not. Guest rows stay in the target: a guest site's index is the
+order of its first ask inside one action, so it names no declared site.
+
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
 recorded resolution before the guest sees it. Worker and UML sessions carry

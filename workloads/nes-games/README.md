@@ -431,7 +431,11 @@ target keeps the record of every frame it decodes while recording, each
 interior observation carries the records of the frames since the one before,
 and `merge_action_evidence` passes them per action with the job's sequence
 number. `Reporting::direct_records` closes the file or starts another one, so a
-replay of the stream writes its own copy. The snapshot identity hashes the
+replay of the stream writes its own copy. For the searcher's stall report,
+`Reporting::state_record` and `Reporting::observation_record` decode the record
+of a snapshot's or an action endpoint's game state with `Lowered::record`, and
+`Reporting::choice_records` returns the choices an action's observations carry,
+whether or not the run records. The snapshot identity hashes the
 policy identifier with the snapshot, so saved states taken under one strategy
 are rebuilt by replay when a run resumes from them under another.
 
