@@ -2087,7 +2087,17 @@ mod tests {
                 step("A", Some(&[1, 2]), Vec::new()),
             ],
         );
-        watch.count_job(2, None, vec![step("A", Some(&[5, 5]), Vec::new())]);
+        watch.count_job(
+            2,
+            None,
+            vec![step(
+                "A",
+                Some(&[5, 5]),
+                vec![ChoiceRecord::new(0, vec![0, 1], 0, Choice::Default)],
+            )],
+        );
+        watch.reported = true;
+        assert_eq!(watch.asks.len(), 1);
         assert_eq!(watch.jobs, 2);
         assert_eq!(
             watch.draws,
@@ -2108,6 +2118,7 @@ mod tests {
         assert_eq!(watch.tier, Some((1, 0)));
         assert_eq!(watch.since_execution, 9);
         assert_eq!(watch.jobs, 0);
+        assert!(!watch.reported);
         assert!(watch.draws.is_empty() && watch.changes.is_empty() && watch.asks.is_empty());
     }
 
