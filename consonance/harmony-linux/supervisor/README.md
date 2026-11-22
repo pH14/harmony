@@ -128,7 +128,7 @@ check timeout and the time left to 30 seconds by the quiet time passed at
 spawn. An answer can therefore count up to one check timeout plus the check's
 setup time after the 30 seconds. The
 harness kit writes it only for an adapter that reports applied
-indexes, today rqlite's, retrying each pinned read until the bound has passed
+indexes, retrying each pinned read until the bound has passed
 and leaving out a node whose applied index still rises
 (see `workloads/harness/README.md`).
 
@@ -288,7 +288,8 @@ that pid, so a node whose instrumented process is not the spawned process, such
 as a wrapper that forks the server instead of `exec`ing it, never adopts a
 record, and its parked pauses run as plain pauses. The runtime compares bare
 pid numbers, so a server in its own pid namespace whose pid there equals the
-spawned pid does adopt the record. rqlite's node chain `exec`s through to `rqlited` and keeps the pid.
+spawned pid does adopt the record. A node chain that `exec`s through to its
+server keeps the pid.
 
 `ContParked` writes the record only once the node has stopped. A
 process-directed `SIGSTOP` marks one thread, and the node's other threads can
