@@ -512,6 +512,10 @@ off the row holds the drawn node, so both arms of a comparison write the same
 rows. An action served from the snapshot cache has no guest
 rows.
 
+For the searcher's stall report, `Reporting::state_record` and
+`Reporting::observation_record` give a snapshot's or an action's record
+through `FaultKeys::record`.
+
 Unrecorded standing-service questions stop at an explicit decision. The fault
 client derives an answer from the action's configuration and resumes through a
 recorded resolution before the guest sees it. Worker and UML sessions carry

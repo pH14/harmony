@@ -807,6 +807,31 @@ impl Reporting for FaultWorkload {
         Ok(serde_json::from_slice(bytes)?)
     }
 
+    fn catalog_signals(&self, _run: &FaultCampaignRun) -> Vec<String> {
+        self.keys
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect()
+    }
+
+    fn state_record(
+        &self,
+        _run: &FaultCampaignRun,
+        snapshot: &FaultSnapshot,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(&snapshot.observation))
+    }
+
+    fn observation_record(
+        &self,
+        _run: &FaultCampaignRun,
+        observation: &FaultObservations,
+    ) -> Option<searcher::search::assertion::Record> {
+        Some(self.keys.record(observation))
+    }
+
     fn stream_format(&self) -> &'static str {
         if self.config.uml().is_some() {
             UML_CAMPAIGN_STREAM_FORMAT
@@ -3026,5 +3051,36 @@ mod tests {
         assert_eq!(game.untried_site(&on, &[pause, wait]), nodes::NODE_SITE_ID);
         assert_eq!(game.untried_site(&on, &[wait, pause]), 0);
         assert_eq!(game.untried_site(&on, &[]), 0);
+    }
+
+    #[test]
+    fn the_stall_report_reads_fault_records() {
+        let game = game();
+        let off = run(3, vec![1]);
+        let names: Vec<String> = game
+            .keys()
+            .catalog()
+            .signals()
+            .iter()
+            .map(|signal| signal.name.clone())
+            .collect();
+        assert!(!names.is_empty());
+        assert_eq!(game.catalog_signals(&off), names);
+        let observation = FaultObservations {
+            restarts: 2,
+            ..FaultObservations::default()
+        };
+        assert_eq!(
+            game.observation_record(&off, &observation),
+            Some(game.keys().record(&observation))
+        );
+        let snapshot = FaultSnapshot {
+            observation: observation.clone(),
+            ..FaultSnapshot::default()
+        };
+        assert_eq!(
+            game.state_record(&off, &snapshot),
+            Some(game.keys().record(&observation))
+        );
     }
 }
