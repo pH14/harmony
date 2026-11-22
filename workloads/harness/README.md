@@ -731,6 +731,46 @@ operation would keep requesting such snapshots, so a stall could end before the
 check 30 seconds after faults end could see it. Build with
 `--build-arg HARNESS_BUNDLE=bundle-admin`.
 
+`bundle-admin-facts` is `bundle-admin` with `HARNESS_RQLITE_FACTS=1` on the
+snapshot hook, which then writes seven `Sometimes` assertions of ours through
+the JSON record, each with its condition, true or false, once per hook run. The
+hook reads every node's `/status` at once just before its request and again
+after the answer, each read with a 1 second deadline. Those reads are the only
+requests `bundle-admin` does not send, and they add no draw. The bundle also
+sets `HARNESS_RQLITE_CONNECTIONS=1` on the workload, so the drive appends each
+register process's drawn node to `/tmp/rqlite/connections` when the process
+connects. A process connects when it starts and again only after an operation
+outlives its deadline, so the last line for each process names the node it
+sends to. A write sent to a follower cannot reach a leader cut off from it:
+with `redirect`, the follower asks the leader for its address before it
+answers. When the hook cannot read that file, or a line in it is not a process
+number and a node ID, `client_on_node` is false and the hook exits 1 after its
+request. A node that does
+not answer, or whose answer lacks a Raft state, term, commit index, last log
+index or last snapshot index, makes every fact about it false. X is the node
+the hook drew. The leader is another node that reports itself leader, the one
+in the highest term when two do; when none does, the facts that need a leader
+are false. The facts mark the steps by which a leader cut off with entries past
+its commit index can compact past the index it shares with the new leader, so
+that the new leader later sends it an older snapshot.
+
+- `snapshot_on_deposed_leader` (ours): before the request, X reports a term
+  below the leader's or names no leader.
+- `stale_tail` (ours): before the request, X's last log index is above its
+  commit index.
+- `trailing_within_tail` (ours): the hook passed `trailing_logs` N, and before
+  the request X holds at least N entries past its commit index.
+- `client_on_node` (ours): before the request, at least one register process
+  is connected to X.
+- `snapshot_at_commit_with_tail` (ours): after the answer, X's last snapshot index equals its
+  commit index and its last log index is above both.
+- `leader_snapshot_below` (ours): after the answer, the leader's last snapshot
+  index is below X's.
+- `follower_compacted_ahead` (ours): `leader_snapshot_below` holds, X reports
+  itself a follower, and X's last snapshot index rose across the request.
+
+Build with `--build-arg HARNESS_BUNDLE=bundle-admin-facts`.
+
 A read pinned to node `nI` in every bundle first runs
 `UPDATE ready SET n = n + 1 WHERE k = 1` with `raft_index` through a random
 node. It polls `nI`'s `/status` until `store.db_applied_index` reaches that

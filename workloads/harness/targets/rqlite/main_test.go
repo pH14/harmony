@@ -392,7 +392,7 @@ func TestSnapshotGoesToTheDrawnNodeAloneAndRecordsItsAnswer(t *testing.T) {
 			requests = append(requests, recorded)
 		}
 		var out bytes.Buffer
-		if err := recordSnapshot(&out, bases); err != nil {
+		if err := recordSnapshot(&out, bases, nil); err != nil {
 			t.Fatal(err)
 		}
 		fields := strings.Fields(out.String())
