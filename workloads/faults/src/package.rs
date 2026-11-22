@@ -24,6 +24,7 @@ pub struct Options {
     pub key: crate::key::KeyRequest,
     pub answers: Vec<GuestAnswer>,
     pub hold_hooks: bool,
+    pub vocabulary: Option<crate::bundle::FaultVocabulary>,
 }
 
 impl Options {
@@ -548,7 +549,8 @@ mod live {
     use crate::{
         bundle::FaultVocabulary,
         campaign::{
-            FaultCampaignConfig, FaultCampaignRun, FaultWorkload, run_fault_campaign_with_plan,
+            FaultCampaignConfig, FaultCampaignRun, FaultWorkload, nodes::row as node_row,
+            run_fault_campaign_with_plan,
         },
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         key::FaultKeys,
@@ -890,7 +892,16 @@ mod live {
             previous,
             &report,
             config.uml().is_some(),
-            |actions| replay_once(artifacts, &config, actions, true, &mut |_, _| Ok(())),
+            |actions| {
+                replay_once(
+                    artifacts,
+                    &config,
+                    Some(vocabulary),
+                    actions,
+                    true,
+                    &mut |_, _| Ok(()),
+                )
+            },
         );
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
@@ -942,7 +953,14 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions, settle, &mut |_, _| Ok(()))?;
+            let mut summary = replay_once(
+                artifacts,
+                &config,
+                options.vocabulary.as_ref(),
+                actions,
+                settle,
+                &mut |_, _| Ok(()),
+            )?;
             summary.run = run;
             report.execution_ticks = report
                 .execution_ticks
@@ -964,7 +982,14 @@ mod live {
         settle: bool,
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
-        let mut summary = replay_once(artifacts, &config(options)?, actions, settle, visit)?;
+        let mut summary = replay_once(
+            artifacts,
+            &config(options)?,
+            options.vocabulary.as_ref(),
+            actions,
+            settle,
+            visit,
+        )?;
         summary.run = 1;
         Ok(summary)
     }
@@ -1033,17 +1058,26 @@ mod live {
     fn replay_once(
         artifacts: &Artifacts,
         config: &FaultConfig,
+        vocabulary: Option<&FaultVocabulary>,
         actions: &[FaultAction],
         settle: bool,
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
-        replay_on(&mut target, config.uml().is_some(), actions, settle, visit)
+        replay_on(
+            &mut target,
+            config.uml().is_some(),
+            vocabulary,
+            actions,
+            settle,
+            visit,
+        )
     }
 
     fn replay_on(
         target: &mut FaultTarget,
         uml: bool,
+        vocabulary: Option<&FaultVocabulary>,
         actions: &[FaultAction],
         settle: bool,
         visit: &mut Visit<'_>,
@@ -1059,10 +1093,16 @@ mod live {
         let mut choices = Vec::new();
         visit(0, target)?;
         for (index, action) in actions.iter().enumerate() {
+            let step = index as u64 + 1;
+            let moment = target.observation().moment;
             target.apply_replayed(*action);
+            let host = vocabulary
+                .filter(|_| target.actions().len() == index + 1)
+                .and_then(|vocabulary| node_row(vocabulary, step, moment, &action.operation));
+            choices.extend(host);
             choices.extend_from_slice(target.last_action_choices());
             timeline.push(super::ReplayStep {
-                step: index as u64 + 1,
+                step,
                 action: Some(*action),
                 observation: target.observation().clone(),
                 console: target.console_evidence()?,
@@ -1426,6 +1466,7 @@ mod tests {
             key: crate::key::KeyRequest::default(),
             answers: Vec::new(),
             hold_hooks: false,
+            vocabulary: None,
         }
     }
 

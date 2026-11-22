@@ -483,8 +483,10 @@ option count, default, what the `Chooser` took, the label applied, and
 `answered` when an input answer replaced it. Host and guest choices share
 this row. `asker` is `action` for a host site and `{"process": pid}` for a
 guest draw, the pid being the upper half of the guest's request id. A host
-row has no choice ordinal, lists its `offered` labels and has guest clock
-zero. Pins address guest rows only, and a host answer changes when the
+row has no choice ordinal, lists its `offered` labels, has guest clock zero,
+and comes first among its step's rows; the run writes one from the stored
+action for every node fault it applies, whether or not a `Chooser` picked
+the node. Pins address guest rows only, and a host answer changes when the
 input's action names another node. A search writes no per-choice records
 unless the environment variable `HARMONY_FAULTS_CHOICE_RECORD` names a file:
 each host ask in a job then appends its row there, with the parent's path

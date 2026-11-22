@@ -321,15 +321,9 @@ fn resume_start(
 }
 
 pub(super) fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
-    let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
-    let expected = manifest
-        .artifacts
-        .get("vocabulary.json")
-        .ok_or("recorded vocabulary.json artifact is missing")?;
-    if crate::runtime::digest(&bytes) != *expected {
-        return Err("recorded artifact vocabulary.json changed during load".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
+    Ok(manifest
+        .vocabulary(out)?
+        .ok_or("recorded vocabulary.json artifact is missing")?)
 }
 
 fn search_faults(
