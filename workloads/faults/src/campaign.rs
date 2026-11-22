@@ -704,7 +704,11 @@ pub(crate) fn execute_job(
         None => (None, None),
     };
     let mut resolved = nodes::resolve(&run.vocabulary, suffix, stop.choices(), host_untried, depth);
-    let suffix = guest_suffix(&resolved.suffix, stop.choices(), guest_untried);
+    let suffix = guest_suffix(
+        &ready_parked_pauses(&resolved.suffix, target.observation().event_ready),
+        stop.choices(),
+        guest_untried,
+    );
     for (index, action) in suffix.iter().enumerate() {
         if let Some(mut row) = resolved.rows[index].take() {
             row.moment = target.observation().moment;
@@ -1133,6 +1137,25 @@ fn node_is_ready(node: u16, event_ready: u64) -> bool {
         .is_some_and(|bit| event_ready & bit != 0)
 }
 
+fn unparked_unless_ready(operation: FaultOperation, event_ready: u64) -> FaultOperation {
+    match operation {
+        FaultOperation::PauseParked { node, ticks, .. } if !node_is_ready(node, event_ready) => {
+            FaultOperation::Pause(node, ticks)
+        }
+        operation => operation,
+    }
+}
+
+fn ready_parked_pauses(suffix: &[FaultAction], event_ready: u64) -> Vec<FaultAction> {
+    suffix
+        .iter()
+        .map(|action| FaultAction {
+            operation: unparked_unless_ready(action.operation, event_ready),
+            ..*action
+        })
+        .collect()
+}
+
 const PROFILE_SEED_MIX: u64 = 0x5157_4152_4d5f_6b31;
 
 const RESUME_PARK_SEED_MIX: u64 = 0x7265_7375_6d65_7061;
@@ -1152,12 +1175,7 @@ fn with_parked_pauses(
                 FaultOperation::Pause(node, _) if node_is_ready(node, event_ready) => {
                     parked_pause(&mut rand, node, sites, ticks)?
                 }
-                FaultOperation::PauseParked { node, ticks, .. }
-                    if !node_is_ready(node, event_ready) =>
-                {
-                    FaultOperation::Pause(node, ticks)
-                }
-                operation => operation,
+                operation => unparked_unless_ready(operation, event_ready),
             };
             Ok(FaultAction {
                 operation,
@@ -2777,7 +2795,7 @@ mod tests {
     }
 
     #[test]
-    fn a_retained_parked_pause_keeps_its_park_only_on_a_ready_node() {
+    fn a_retained_or_executed_parked_pause_keeps_its_park_only_on_a_ready_node() {
         let ticks = std::num::NonZeroU16::new(256).unwrap();
         let parked = |node| {
             FaultAction::from(FaultOperation::PauseParked {
@@ -2795,14 +2813,17 @@ mod tests {
             with_parked_pauses(suffix.clone(), &[], 0b011, ticks, 7).unwrap(),
             suffix
         );
+        let unready_first = vec![
+            FaultAction::from(FaultOperation::Pause(0, ticks)).with_choice(9),
+            wait,
+            parked(1),
+        ];
         assert_eq!(
-            with_parked_pauses(suffix, &[], 0b010, ticks, 7).unwrap(),
-            vec![
-                FaultAction::from(FaultOperation::Pause(0, ticks)).with_choice(9),
-                wait,
-                parked(1)
-            ]
+            with_parked_pauses(suffix.clone(), &[], 0b010, ticks, 7).unwrap(),
+            unready_first
         );
+        assert_eq!(ready_parked_pauses(&suffix, 0b011), suffix);
+        assert_eq!(ready_parked_pauses(&suffix, 0b010), unready_first);
     }
 
     #[test]

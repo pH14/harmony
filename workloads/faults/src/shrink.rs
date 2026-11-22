@@ -17,8 +17,10 @@ pub fn fault_cost(action: &FaultAction) -> ShrinkCost {
 #[must_use]
 pub fn simpler_fault_actions(action: &FaultAction) -> Vec<FaultAction> {
     let mut simpler = Vec::with_capacity(3);
-    if action.is_fault() {
-        simpler.push(action.as_wait());
+    if action.is_fault()
+        && let Some(wait) = action.as_wait()
+    {
+        simpler.push(wait);
     }
     if let FaultOperation::PauseParked { node, ticks, .. } = action.operation {
         simpler.push(FaultAction {
@@ -126,6 +128,13 @@ mod tests {
                 action(FaultOperation::Wait(ticks(128))),
                 action(FaultOperation::Pause(2, ticks(64))),
                 parked(ticks(32)),
+            ]
+        );
+        assert_eq!(
+            simpler_fault_actions(&parked(ticks(32_768))),
+            vec![
+                action(FaultOperation::Pause(2, ticks(32_768))),
+                parked(ticks(16_384)),
             ]
         );
     }

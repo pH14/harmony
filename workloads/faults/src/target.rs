@@ -501,15 +501,14 @@ impl FaultAction {
     }
 
     #[must_use]
-    pub fn as_wait(self) -> Self {
+    pub fn as_wait(self) -> Option<Self> {
         let ticks = u16::try_from(action_ticks(&self))
             .ok()
-            .and_then(NonZeroU16::new)
-            .unwrap_or(NonZeroU16::MIN);
-        Self {
+            .and_then(NonZeroU16::new)?;
+        Some(Self {
             operation: FaultOperation::Wait(ticks),
             ..self
-        }
+        })
     }
 
     pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
@@ -1782,7 +1781,18 @@ mod tests {
         .with_ticks(ticks(12));
         assert_eq!(parked.ticks(), 12);
         assert_eq!(action_ticks(&parked), 24);
-        assert_eq!(parked.as_wait().operation, FaultOperation::Wait(ticks(24)));
+        assert_eq!(
+            parked.as_wait().map(|wait| wait.operation),
+            Some(FaultOperation::Wait(ticks(24)))
+        );
+        assert_eq!(
+            parked
+                .with_ticks(ticks(32_767))
+                .as_wait()
+                .map(|wait| wait.ticks()),
+            Some(65_534)
+        );
+        assert_eq!(parked.with_ticks(ticks(32_768)).as_wait(), None);
     }
 
     #[test]

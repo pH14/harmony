@@ -422,6 +422,7 @@ pub fn run_prepared(
                 answers: Vec::new(),
             },
         };
+        faults_workload::prepare::check_parked_pauses(&bundle, &recorded.actions)?;
         let out = destination.create()?;
         let mut manifest = Manifest::new(c, "run", Some(bundle), true)?;
         manifest.actions = recorded.actions;

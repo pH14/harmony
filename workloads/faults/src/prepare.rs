@@ -4,6 +4,7 @@ use std::error::Error;
 
 use crate::admission::ExecutionMode;
 use crate::bundle::FaultVocabulary;
+use crate::target::{FaultAction, FaultOperation};
 use oci_support::bundle::LaunchRequest;
 use oci_support::image::StagedImage;
 
@@ -37,7 +38,30 @@ pub fn prepare_oci_with_bundle(
 }
 
 #[must_use]
+pub fn declares_park_page(bundle: &str) -> bool {
+    bundle
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some(PARK_PAGE))
+}
+
+pub fn check_parked_pauses(bundle: &str, actions: &[FaultAction]) -> Result<(), Box<dyn Error>> {
+    if !declares_park_page(bundle)
+        && actions
+            .iter()
+            .any(|action| matches!(action.operation, FaultOperation::PauseParked { .. }))
+    {
+        return Err(
+            "a parked pause needs a bundle with the park-page line; set resume_park".into(),
+        );
+    }
+    Ok(())
+}
+
+#[must_use]
 pub fn with_park_page(bundle: &str) -> String {
+    if declares_park_page(bundle) {
+        return bundle.to_owned();
+    }
     let mut text = bundle.to_owned();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
@@ -403,6 +427,30 @@ ready /usr/bin/servicectl endpoint health
         .unwrap();
         assert!(admit_prepared(&unpaged, None, true, ExecutionMode::Vm).is_err());
         assert_eq!(with_park_page(""), "park-page\n");
+        let declared = "node a /bin/a\n  park-page\n";
+        assert_eq!(with_park_page(declared), declared);
+        let redeclared =
+            prepare_staged(&staged, b"base", Some(declared), true, ExecutionMode::Vm).unwrap();
+        assert_eq!(redeclared.bundle, declared);
+        assert!(!declares_park_page("node a /bin/a\n# park-page\n"));
+    }
+
+    #[test]
+    fn a_parked_pause_input_needs_a_park_page_bundle() {
+        let parked = [FaultAction::from(FaultOperation::PauseParked {
+            node: 0,
+            edges: 1,
+            hold_us: 1,
+            ticks: std::num::NonZeroU16::new(4).unwrap(),
+            target: None,
+        })];
+        let pause = [FaultAction::from(FaultOperation::Pause(
+            0,
+            std::num::NonZeroU16::new(4).unwrap(),
+        ))];
+        assert!(check_parked_pauses("node a /bin/a\n", &pause).is_ok());
+        assert!(check_parked_pauses("node a /bin/a\n", &parked).is_err());
+        assert!(check_parked_pauses("node a /bin/a\npark-page\n", &parked).is_ok());
     }
 
     #[test]

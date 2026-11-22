@@ -394,14 +394,19 @@ draw and the search's suffix limit counts it once: no limit can separate the
 pause from its park. Its standing windows are the pause for the first half of
 its window and an event park with the at-resume flag for the second half.
 Under `resume_park` the host adds a `park-page` line to the supervisor bundle
-at preparation, to the bundle it was given or to a copy of the image's own, so
-every node process gets the park page. The supervisor writes the park to the
-page while the node is stopped and continues it after the write, so the first
-instrumented visit after the resume counts toward the park
+at preparation, unless the bundle already has one, so every node process gets
+the park page. The line goes into the bundle the host was given or, when it was
+given none, into a copy of the image's own, which costs one more preparation
+pass; without `resume_park` preparation is unchanged. A `run` or `branch`
+whose action input holds a `PauseParked` is refused unless its bundle has the
+line. The supervisor writes the park to the page while the node is stopped and
+continues it after the write, so the first instrumented visit after the resume
+counts toward the park
 ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#parked-pause),
 [runtime README](runtime/README.md#park-page)). A replay repeats it. Shrinking
-offers the plain `Pause` as a simpler form of a `PauseParked`, and the
-shrink cost counts a parked pause's whole window.
+offers three simpler forms of a `PauseParked(t)`: a `Wait(2t)` over its whole
+window when `2t` fits a wait's tick count, the plain `Pause(node, t)`, and a
+`PauseParked(t/2)`. The shrink cost counts a parked pause's whole window, `2t`.
 
 Every action also records a 64-bit `choice`, drawn when the search draws the
 action and kept when a retained action is reused. Each action starts with a
@@ -454,7 +459,9 @@ the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`, `PauseParke
 `DiskStall` offer the nodes with a disk, and `DiskCorrupt` offers the
 checksummed ones. An event kind keeps its drawn node, because the node comes
 from runtime readiness. A `PauseParked` offers every node, and its park moves
-with the answer. `execute_job` resolves each such action
+with the answer; after the node is resolved, a `PauseParked` on a node whose
+runtime had not announced readiness at the parent runs as a plain `Pause`, as
+does one a splice brings to such a node. `execute_job` resolves each such action
 before it stamps `GuestChoices`, with one host `Chooser` per job built from
 the plan with hold zero. It calls `Chooser::draw` over the offer with the
 lowest offered node as the default and weight one on the node the draw

@@ -5206,6 +5206,56 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_pause_runs_as_a_plain_pause_on_a_node_not_ready_at_its_parent() {
+        let ticks = std::num::NonZeroU16::new(4).unwrap();
+        let parked = FaultAction::from(FaultOperation::PauseParked {
+            node: 0,
+            edges: 1,
+            hold_us: 1,
+            ticks,
+            target: None,
+        });
+        let wait: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let readying = || {
+            let mut ready = vec![0];
+            ready.extend_from_slice(&1_u64.to_le_bytes());
+            vec![
+                ticks_event(1),
+                (0, (2 << 24) | process_proto::registers::EVENT_READY, ready),
+            ]
+        };
+        let (mut target, _) = keyed_target(FOLDING);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(vec![readying()])));
+        let root = target.snapshot().unwrap().unwrap();
+        let readied = target.apply_and_snapshot(wait).unwrap().unwrap();
+        assert_eq!(root.observation.event_ready, 0);
+        assert_eq!(readied.observation.event_ready, 1);
+        let certificates = readied.history.certificates();
+        let unparked = FaultAction::from(FaultOperation::Pause(0, ticks));
+        for (replay, expected) in [(&[][..], unparked), (&[wait][..], parked)] {
+            let mut batches: Vec<_> = replay.iter().map(|_| readying()).collect();
+            batches.push(vec![ticks_event(2)]);
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_batches_live(batches)));
+            let result = crate::campaign::execute_job(
+                &crate::campaign::fixture_run(),
+                &mut target,
+                &root,
+                replay,
+                &certificates[certificates.len() - replay.len()..],
+                crate::archive::FaultMilestones::default(),
+                &[parked],
+                searcher::search::rollout::RolloutStop::new(false),
+                None,
+            )
+            .unwrap();
+            let executed: Vec<_> = result.actions.iter().map(|action| action.action).collect();
+            assert_eq!(executed, [expected]);
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
     fn a_rejected_endpoint_is_a_doomed_terminal_whose_coverage_and_findings_still_count() {
         use searcher::search::rollout::ExecutionDisposition;
         let request = crate::key::KeyRequest {

@@ -268,9 +268,9 @@ pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved
     let source = saved.path;
     let original = Manifest::from_record(saved.manifest)?;
     original.verify(&source)?;
-    if original.bundle.is_none() {
+    let Some(bundle) = original.bundle.as_deref() else {
         return Err("branching requires a supervised application scenario".into());
-    }
+    };
     let (actions, boundaries, anchor) = if selection.finding.is_none()
         && request.point.step == Some(0)
         && original.mode == "search"
@@ -300,6 +300,7 @@ pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved
     let mut answers = Vec::new();
     if let Some(path) = request.actions {
         let recorded = faults_workload::parse_recorded_input(&fs::read_to_string(path)?)?;
+        faults_workload::prepare::check_parked_pauses(bundle, &recorded.actions)?;
         continuation.extend(recorded.actions);
         answers.extend(recorded.answers);
     }
