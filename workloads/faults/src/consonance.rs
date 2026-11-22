@@ -8608,7 +8608,7 @@ mod tests {
                     edges: 13,
                     hold: Span(7_000_000),
                     target: ParkTarget::new(8, 16),
-                    from_arm: false,
+                    at_resume: false,
                 },
                 moment(6),
                 moment(10),

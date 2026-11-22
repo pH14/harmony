@@ -9,6 +9,8 @@ use oci_support::image::StagedImage;
 
 pub const BUNDLE_PATH: &str = "etc/harmony/bundle";
 pub const SUPERVISOR_BUNDLE: &str = "/etc/harmony/bundle";
+pub const SUPPLIED_BUNDLE: &str = "/etc/harmony/cli.bundle";
+pub const PARK_PAGE: &str = "park-page";
 
 pub struct Prepared {
     pub vocabulary: FaultVocabulary,
@@ -19,53 +21,95 @@ pub struct Prepared {
 pub fn prepare_oci(image: &str, base: &[u8]) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    prepare_staged(&staged, base, None, ExecutionMode::Vm)
+    prepare_staged(&staged, base, None, false, ExecutionMode::Vm)
 }
 
 pub fn prepare_oci_with_bundle(
     image: &str,
     base: &[u8],
     bundle: Option<&str>,
+    park_page: bool,
     mode: ExecutionMode,
 ) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    prepare_staged(&staged, base, bundle, mode)
+    prepare_staged(&staged, base, bundle, park_page, mode)
+}
+
+#[must_use]
+pub fn with_park_page(bundle: &str) -> String {
+    let mut text = bundle.to_owned();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(PARK_PAGE);
+    text.push('\n');
+    text
+}
+
+pub fn supervisor_launch(
+    staged: &StagedImage,
+    supplied: Option<&str>,
+    park_page: bool,
+) -> Result<LaunchRequest, Box<dyn Error>> {
+    let text = match (supplied, park_page) {
+        (supplied, false) => supplied.map(str::to_owned),
+        (Some(text), true) => Some(with_park_page(text)),
+        (None, true) => {
+            let execution = oci_support::bundle::prepare(
+                staged,
+                &LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE),
+            )?;
+            Some(with_park_page(&image_bundle(
+                &execution.archived_rootfs()?,
+            )?))
+        }
+    };
+    Ok(match text {
+        Some(text) => LaunchRequest::new(Vec::new())
+            .with_bundle(SUPPLIED_BUNDLE)
+            .with_external_inputs(vec![oci_support::bundle::ExternalInput::new(
+                SUPPLIED_BUNDLE,
+                text.into_bytes(),
+            )]),
+        None => LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE),
+    })
+}
+
+fn image_bundle(archive: &oci_support::bundle::ArchivedRootfs) -> Result<String, Box<dyn Error>> {
+    Ok(String::from_utf8(
+        crate::admission::ArchivedImage::new(archive)
+            .file(BUNDLE_PATH)
+            .ok_or("the bundle must reside inside the staged image")?
+            .to_vec(),
+    )?)
 }
 
 fn prepare_staged(
     staged: &StagedImage,
     base: &[u8],
     supplied: Option<&str>,
+    park_page: bool,
     mode: ExecutionMode,
 ) -> Result<Prepared, Box<dyn Error>> {
-    prepare_staged_with(staged, base, supplied, mode, || {})
+    prepare_staged_with(staged, base, supplied, park_page, mode, || {})
 }
 
 fn prepare_staged_with(
     staged: &StagedImage,
     base: &[u8],
     supplied: Option<&str>,
+    park_page: bool,
     mode: ExecutionMode,
     after_archive: impl FnOnce(),
 ) -> Result<Prepared, Box<dyn Error>> {
     if base.is_empty() {
         return Err("fault search requires a guest base image".into());
     }
-    let request = if let Some(bundle) = supplied {
-        let path = "/etc/harmony/cli.bundle";
-        LaunchRequest::new(Vec::new())
-            .with_bundle(path)
-            .with_external_inputs(vec![oci_support::bundle::ExternalInput::new(
-                path,
-                bundle.as_bytes().to_vec(),
-            )])
-    } else {
-        LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE)
-    };
+    let request = supervisor_launch(staged, supplied, park_page)?;
     let execution = oci_support::bundle::prepare(staged, &request)?;
     after_archive();
-    let (bundle, vocabulary) = admit_prepared(&execution, supplied, mode)?;
+    let (bundle, vocabulary) = admit_prepared(&execution, supplied, park_page, mode)?;
     Ok(Prepared {
         vocabulary,
         bundle,
@@ -76,39 +120,40 @@ fn prepare_staged_with(
 pub fn admit_prepared(
     execution: &oci_support::PreparedExecution,
     supplied: Option<&str>,
+    park_page: bool,
     mode: ExecutionMode,
 ) -> Result<(String, FaultVocabulary), Box<dyn Error>> {
     if execution.exposes_kvm() {
         return Err("fault execution cannot expose host KVM".into());
     }
+    let archive = execution.archived_rootfs()?;
+    let image = crate::admission::ArchivedImage::new(&archive);
+    let expected = match (supplied, park_page) {
+        (supplied, false) => supplied.map(str::to_owned),
+        (Some(text), true) => Some(with_park_page(text)),
+        (None, true) => Some(with_park_page(&image_bundle(&archive)?)),
+    };
     let inputs = execution.external_inputs();
-    let expected = if supplied.is_some() {
-        "/etc/harmony/cli.bundle"
+    let path = if expected.is_some() {
+        SUPPLIED_BUNDLE
     } else {
         SUPERVISOR_BUNDLE
     };
-    if execution.execution().bundle.as_deref() != Some(expected)
-        || (supplied.is_none() && !inputs.is_empty())
-        || supplied.is_some_and(|text| {
+    if execution.execution().bundle.as_deref() != Some(path)
+        || (expected.is_none() && !inputs.is_empty())
+        || expected.as_ref().is_some_and(|text| {
             inputs.len() != 1
-                || inputs[0].destination != std::path::Path::new(expected)
+                || inputs[0].destination != std::path::Path::new(path)
                 || inputs[0].data != text.as_bytes()
         })
     {
         return Err("prepared supervisor bundle differs from its request".into());
     }
-    let archive = execution.archived_rootfs()?;
-    let image = crate::admission::ArchivedImage::new(&archive);
     let admission = image.inspect()?;
     admission.require_for(mode)?;
-    let bundle = match supplied {
-        Some(text) => text.to_owned(),
-        None => String::from_utf8(
-            image
-                .file(BUNDLE_PATH)
-                .ok_or("the bundle must reside inside the staged image")?
-                .to_vec(),
-        )?,
+    let bundle = match expected {
+        Some(text) => text,
+        None => image_bundle(&archive)?,
     };
     let vocabulary = FaultVocabulary::parse(&bundle)?
         .with_instrumented_events(admission.instrumented_events())
@@ -150,20 +195,22 @@ ready /usr/bin/servicectl endpoint health
         let staged = image(root.path());
         let launch = LaunchRequest::default().with_bundle(SUPERVISOR_BUNDLE);
         let prepared = oci_support::bundle::prepare(&staged, &launch).unwrap();
-        let (bundle, vocabulary) = admit_prepared(&prepared, None, ExecutionMode::Vm).unwrap();
+        let (bundle, vocabulary) =
+            admit_prepared(&prepared, None, false, ExecutionMode::Vm).unwrap();
         assert_eq!(bundle, BUNDLE);
         assert_eq!(vocabulary.nodes(), 1);
         assert!(
             admit_prepared(
                 &prepared,
                 Some("node changed /bin/other\n"),
+                false,
                 ExecutionMode::Vm
             )
             .is_err()
         );
         let changed = oci_support::bundle::prepare(&staged, &launch.with_kvm()).unwrap();
         assert!(
-            admit_prepared(&changed, None, ExecutionMode::Vm)
+            admit_prepared(&changed, None, false, ExecutionMode::Vm)
                 .unwrap_err()
                 .to_string()
                 .contains("host KVM")
@@ -173,9 +220,10 @@ ready /usr/bin/servicectl endpoint health
     #[test]
     fn preparation_uses_the_canonical_supervisor_and_keeps_the_bundle_alphabet() {
         let root = tempfile::tempdir().unwrap();
-        let first = prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
+        let first =
+            prepare_staged(&image(root.path()), b"base", None, false, ExecutionMode::Vm).unwrap();
         let repeated =
-            prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
+            prepare_staged(&image(root.path()), b"base", None, false, ExecutionMode::Vm).unwrap();
         assert_eq!(first.vocabulary.nodes(), 1);
         assert_eq!(first.vocabulary.hooks(), [1, 2]);
         assert_eq!(first.bundle, BUNDLE);
@@ -187,7 +235,7 @@ ready /usr/bin/servicectl endpoint health
     fn preparation_marks_the_existing_bundle_for_structured_supervision() {
         let root = tempfile::tempdir().unwrap();
         let prepared =
-            prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
+            prepare_staged(&image(root.path()), b"base", None, false, ExecutionMode::Vm).unwrap();
         let request = LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE);
         let execution = oci_support::bundle::prepare(&image(root.path()), &request).unwrap();
         assert_eq!(
@@ -219,12 +267,12 @@ ready /usr/bin/servicectl endpoint health
             b"f05c4a6fcf5bba49af1a80cf4015c096f55a4869c7df89cb85fa8737e993c995  /opt/service/node\n",
         )
         .unwrap();
-        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm).unwrap();
         assert!(prepared.vocabulary.instrumented_events());
 
         std::fs::remove_file(root.path().join("symbols/service.sym.tsv")).unwrap();
         assert!(
-            !prepare_staged(&staged, b"base", None, ExecutionMode::Vm)
+            !prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm)
                 .unwrap()
                 .vocabulary
                 .instrumented_events()
@@ -241,7 +289,7 @@ ready /usr/bin/servicectl endpoint health
         )
         .unwrap();
         assert!(
-            prepare_staged(&staged, b"base", None, ExecutionMode::Vm)
+            prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm)
                 .err()
                 .unwrap()
                 .to_string()
@@ -252,7 +300,7 @@ ready /usr/bin/servicectl endpoint health
     #[test]
     fn an_empty_base_image_is_rejected_before_control_assembly() {
         let root = tempfile::tempdir().unwrap();
-        let error = prepare_staged(&image(root.path()), &[], None, ExecutionMode::Vm)
+        let error = prepare_staged(&image(root.path()), &[], None, false, ExecutionMode::Vm)
             .err()
             .unwrap();
         assert!(error.to_string().contains("guest base image"));
@@ -270,7 +318,7 @@ ready /usr/bin/servicectl endpoint health
             std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
                 .unwrap();
         }
-        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm).unwrap();
         assert_eq!(prepared.bundle, BUNDLE);
         for path in ["secret", "etc/harmony"] {
             let mode = std::fs::symlink_metadata(root.path().join(path))
@@ -304,6 +352,7 @@ ready /usr/bin/servicectl endpoint health
             &staged(root.path().to_path_buf()),
             b"base",
             None,
+            false,
             ExecutionMode::Vm,
         )
         .err()
@@ -322,8 +371,38 @@ ready /usr/bin/servicectl endpoint health
         )
         .unwrap();
         std::os::unix::fs::symlink("document", root.path().join(BUNDLE_PATH)).unwrap();
-        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm).unwrap();
         assert_eq!(prepared.bundle, BUNDLE);
+    }
+
+    #[test]
+    fn a_park_page_request_supplies_the_bundle_with_its_park_page_line() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        let plain = prepare_staged(&staged, b"base", None, false, ExecutionMode::Vm).unwrap();
+        let paged = prepare_staged(&staged, b"base", None, true, ExecutionMode::Vm).unwrap();
+        assert_eq!(paged.bundle, format!("{BUNDLE}{PARK_PAGE}\n"));
+        assert_eq!(paged.vocabulary, plain.vocabulary);
+        assert_ne!(paged.initramfs, plain.initramfs);
+        let supplied = "node a /bin/a";
+        let given =
+            prepare_staged(&staged, b"base", Some(supplied), true, ExecutionMode::Vm).unwrap();
+        assert_eq!(given.bundle, "node a /bin/a\npark-page\n");
+        let request = supervisor_launch(&staged, None, true).unwrap();
+        let execution = oci_support::bundle::prepare(&staged, &request).unwrap();
+        assert_eq!(
+            execution.execution().bundle.as_deref(),
+            Some(SUPPLIED_BUNDLE)
+        );
+        assert!(admit_prepared(&execution, None, true, ExecutionMode::Vm).is_ok());
+        assert!(admit_prepared(&execution, None, false, ExecutionMode::Vm).is_err());
+        let unpaged = oci_support::bundle::prepare(
+            &staged,
+            &supervisor_launch(&staged, None, false).unwrap(),
+        )
+        .unwrap();
+        assert!(admit_prepared(&unpaged, None, true, ExecutionMode::Vm).is_err());
+        assert_eq!(with_park_page(""), "park-page\n");
     }
 
     #[test]
@@ -335,10 +414,11 @@ ready /usr/bin/servicectl endpoint health
             .unwrap()
             .initramfs(b"base");
         let changed = BUNDLE.replace("node service", "node changed");
-        let prepared = prepare_staged_with(&staged, b"base", None, ExecutionMode::Vm, || {
-            std::fs::write(root.path().join(BUNDLE_PATH), changed).unwrap();
-        })
-        .unwrap();
+        let prepared =
+            prepare_staged_with(&staged, b"base", None, false, ExecutionMode::Vm, || {
+                std::fs::write(root.path().join(BUNDLE_PATH), changed).unwrap();
+            })
+            .unwrap();
         assert_eq!(prepared.bundle, BUNDLE);
         assert_eq!(prepared.initramfs, expected);
     }

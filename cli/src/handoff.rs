@@ -463,6 +463,7 @@ impl Record {
                         let (text, admitted) = faults_workload::prepare::admit_prepared(
                             execution,
                             generated.as_deref(),
+                            config.resume_park.is_some(),
                             mode,
                         )?;
                         bundle = Some(text);

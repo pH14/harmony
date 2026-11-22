@@ -76,7 +76,7 @@ def sample(mode):
                     if not chunk:
                         raise RuntimeError('etcd exited before event runtime readiness')
                     data += chunk
-                assert struct.unpack('<2Q', data) == (0x4841524d4f4e5945, 5)
+                assert struct.unpack('<2Q', data) == (0x4841524d4f4e5945, 6)
                 report.close()
                 parent.settimeout(30)
                 controls.append(parent)

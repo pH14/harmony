@@ -229,6 +229,7 @@ impl FaultVocabulary {
         let mut hooks = Vec::new();
         let mut heal = None;
         let mut lifecycle = std::collections::BTreeSet::new();
+        let mut park_page = false;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -298,6 +299,16 @@ impl FaultVocabulary {
                         ));
                     };
                     log_names.push((line_number, node.to_owned()));
+                }
+                "park-page" => {
+                    if fields.next().is_some() {
+                        return Err(format!(
+                            "bundle line {line_number}: park-page takes no words"
+                        ));
+                    }
+                    if std::mem::replace(&mut park_page, true) {
+                        return Err(format!("bundle line {line_number}: duplicate park-page"));
+                    }
                 }
                 "ready" | "setup" | "workload" | "check" => {
                     if fields.next().is_none() {
@@ -642,6 +653,21 @@ hook 3 /hooks/amcheck
 hook 4 /hooks/vacuum
 ready /usr/local/pgsql/bin/pg_isready
 ";
+
+    #[test]
+    fn a_park_page_line_leaves_the_vocabulary_unchanged_and_is_declared_once() {
+        let plain = FaultVocabulary::parse("node a /a\n").unwrap();
+        assert_eq!(
+            FaultVocabulary::parse("node a /a\npark-page\n").unwrap(),
+            plain
+        );
+        for bad in [
+            "node a /a\npark-page 1\n",
+            "node a /a\npark-page\npark-page\n",
+        ] {
+            assert!(FaultVocabulary::parse(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn workload_and_check_commands_are_lifecycle_not_search_actions() {

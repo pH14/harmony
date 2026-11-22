@@ -123,6 +123,7 @@ mod runtime {
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
+    use harmony_supervisor::page::{PageMapping, PageRecord};
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{HookFaults, RecoveryReadiness, RecoveryWatch};
@@ -214,11 +215,13 @@ mod runtime {
         spec: NodeSpec,
         child: Option<Child>,
         events: Option<EventChannel>,
+        page: Option<PageMapping>,
     }
 
     struct SpawnedNode {
         child: Child,
         events: EventChannel,
+        page: Option<PageMapping>,
     }
 
     struct Hook {
@@ -252,6 +255,7 @@ mod runtime {
         kill_arm_start: Option<u64>,
         park_armed: bool,
         park_seen: u64,
+        page_published: u64,
         coverage_seen: (u64, u64),
         reported_kill_pending: bool,
         ready: bool,
@@ -283,6 +287,7 @@ mod runtime {
                 kill_arm_start: None,
                 park_armed: false,
                 park_seen: 0,
+                page_published: 0,
                 coverage_seen: (0, 0),
                 reported_kill_pending: false,
                 ready: false,
@@ -325,6 +330,14 @@ mod runtime {
             } else {
                 self.deferred.push_back(command);
             }
+        }
+
+        fn note_page_park(&mut self, generation: u64) {
+            if self.failed || self.retired {
+                return;
+            }
+            self.park_armed = true;
+            self.page_published = generation;
         }
 
         fn poll_status(&mut self) {
@@ -558,7 +571,12 @@ mod runtime {
                     self.park_armed = true;
                 }
                 Ok(EventReply::Echo(EventCommand::DisarmPark)) => {}
-                Ok(EventReply::ParkStatus { fires, armed, held }) => {
+                Ok(EventReply::ParkStatus {
+                    fires,
+                    armed,
+                    held,
+                    page_generation,
+                }) => {
                     let was_armed = self.park_armed;
                     if fires >= self.park_seen {
                         let delta = fires - self.park_seen;
@@ -568,7 +586,7 @@ mod runtime {
                         self.park_seen = fires;
                     }
                     supervisor.note_event_park_held(node, held && !process_dead);
-                    if !armed && !held {
+                    if !armed && !held && page_generation >= self.page_published {
                         self.park_armed = false;
                         if was_armed {
                             supervisor.note_process_transition();
@@ -756,12 +774,14 @@ mod runtime {
                 spec: node.clone(),
                 child: None,
                 events: None,
+                page: None,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            let spawned = spawn_node(spec, &node.spec, 0)?;
+            let spawned = spawn_node(spec, &node.spec, bundle.park_page, 0)?;
             node.child = Some(spawned.child);
             node.events = Some(spawned.events);
+            node.page = spawned.page;
             log(0, &format!("start node {id}"));
         }
 
@@ -1403,6 +1423,24 @@ mod runtime {
                     supervisor.note_process_transition();
                 }
             }
+            Action::ContParked(node, park) => {
+                if let Some(entry) = nodes.get_mut(usize::from(node))
+                    && entry.child.is_some()
+                {
+                    let page = entry.page.as_ref().ok_or_else(|| {
+                        format!(
+                            "resume node {node} with an event park: the bundle has no park-page"
+                        )
+                    })?;
+                    let generation = page.page().publish(PageRecord::of(park));
+                    if let Some(events) = entry.events.as_mut() {
+                        events.note_page_park(generation);
+                    }
+                }
+                if signal_node(nodes, node, libc::SIGCONT)? {
+                    supervisor.note_process_transition();
+                }
+            }
             Action::Start { node, after_fault } => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
@@ -1423,10 +1461,16 @@ mod runtime {
                         &mut runtime.assertion_output,
                     )?;
                 }
-                let spawned = spawn_node(spec, &entry.spec, supervisor.take_start_clock(node))?;
+                let spawned = spawn_node(
+                    spec,
+                    &entry.spec,
+                    bundle.park_page,
+                    supervisor.take_start_clock(node),
+                )?;
                 supervisor.note_event_ready(node, false);
                 entry.child = Some(spawned.child);
                 entry.events = Some(spawned.events);
+                entry.page = spawned.page;
                 supervisor.note_process_transition();
                 if bundle.ready.is_some() {
                     if let Some(probe) = runtime.recovery_probe.take() {
@@ -1460,7 +1504,6 @@ mod runtime {
                         edges: park.edges,
                         hold_nanos: park.hold_nanos,
                         target: park.target,
-                        from_arm: park.from_arm,
                     });
                 }
             }
@@ -1665,6 +1708,7 @@ mod runtime {
     fn spawn_node(
         execution: &execution_proto::ExecutionSpec,
         node: &NodeSpec,
+        park_page: bool,
         clock_offset_nanos: i64,
     ) -> Result<SpawnedNode, String> {
         let clock = if time_namespaces() {
@@ -1688,21 +1732,38 @@ mod runtime {
             .map_err(|error| format!("node {:?} event report inheritance: {error}", node.name))?;
         let control_fd = inherited_control.as_raw_fd();
         let report_fd = inherited_report.as_raw_fd();
+        let page = park_page
+            .then(PageMapping::create)
+            .transpose()
+            .map_err(|error| format!("node {:?} event page: {error}", node.name))?;
+        let inherited_page = page
+            .as_ref()
+            .map(|page| inherit_event_fd(page.fd()))
+            .transpose()
+            .map_err(|error| format!("node {:?} event page inheritance: {error}", node.name))?;
         let mut command = process::node_command(execution, &node.argv, clock)
             .map_err(|error| format!("node {:?}: {error}", node.name))?;
         command
             .env("HARMONY_EVENT_KILL_FD", control_fd.to_string())
             .env("HARMONY_EVENT_REPORT_FD", report_fd.to_string());
+        if let Some(inherited) = inherited_page.as_ref() {
+            command.env("HARMONY_EVENT_PAGE_FD", inherited.as_raw_fd().to_string());
+        }
         let child = command
             .spawn()
             .map_err(|error| format!("node {:?}: {error}", node.name))?;
         drop(inherited_control);
         drop(inherited_report);
-        Ok(SpawnedNode { child, events })
+        drop(inherited_page);
+        Ok(SpawnedNode {
+            child,
+            events,
+            page,
+        })
     }
 
     fn inherit_event_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
-        // SAFETY: `fd` originates from one of the socket pairs created by
+        // SAFETY: `fd` originates from a socket pair or event page created by
         // `spawn_node` and remains open while `dup` makes an owned copy.
         let duplicate = unsafe { libc::dup(fd) };
         if duplicate < 0 {

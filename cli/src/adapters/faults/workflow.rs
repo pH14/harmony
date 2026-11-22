@@ -130,6 +130,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
         c.image.as_deref().ok_or("application image missing")?,
         &base,
         generated.as_deref(),
+        c.resume_park.is_some(),
         super::execution_mode(c.backend),
     )?;
     Ok((

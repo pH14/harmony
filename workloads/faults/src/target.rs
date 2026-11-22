@@ -684,7 +684,7 @@ fn event_park_delta(
     edges: u32,
     hold_us: u32,
     target: Option<ParkTarget>,
-    from_arm: bool,
+    at_resume: bool,
     window: (u64, u64),
 ) -> ActionDelta {
     ActionDelta {
@@ -695,7 +695,7 @@ fn event_park_delta(
                     edges,
                     hold: Span(u64::from(hold_us).saturating_mul(1_000)),
                     target,
-                    from_arm,
+                    at_resume,
                 },
             ),
             window,
@@ -1889,7 +1889,7 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: None,
-                    from_arm: false,
+                    at_resume: false,
                 }
             ))
         );
@@ -1914,7 +1914,7 @@ mod tests {
                     edges: 4_096,
                     hold: Span(2_000_000_000),
                     target: ParkTarget::new(0x1000, 0x1004),
-                    from_arm: false,
+                    at_resume: false,
                 }
             ))
         );
@@ -1939,7 +1939,7 @@ mod tests {
                     edges: 1,
                     hold: Span(2_000_000_000),
                     target: ParkTarget::new(0x1000, 0x1001),
-                    from_arm: true,
+                    at_resume: true,
                 }
             ))
         );
