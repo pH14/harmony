@@ -458,8 +458,9 @@ section). The two are exclusive, and neither allows campaign verification.
 `checkpoint_on_stall` writes a checkpoint and a `stalls.jsonl` line under
 `checkpoints/` each time the leading tier starts to lose draw weight
 (`CheckpointPlan::on_stall`). The newest two tier, stall and interval checkpoints
-stay on disk with every milestone checkpoint, which bounds `snapshots.store` on a
-long run.
+stay on disk with every milestone checkpoint. On Linux, the snapshots of deleted
+checkpoints become holes in `snapshots.store`, so its allocated size stays
+bounded on a long run while its length still grows.
 `nes-eval` keeps the existing game dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
 

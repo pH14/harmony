@@ -1501,10 +1501,15 @@ new workload milestone (`Reporting::checkpoint_marks`), and at each new top
 archive tier. A final checkpoint is also written after the reservation queue drains,
 including for runs shorter than the periodic interval. Milestone and final
 checkpoints are kept for the whole run. Interval, tier (`top_progress`) and
-`stall` checkpoints rotate: the writer keeps the newest two of each reason and
-deletes older ones, so a long run's store holds the snapshots of at most six
-rotated checkpoints plus its milestone and final ones. A resume can start from
-any kept checkpoint.
+`stall` checkpoints rotate: the writer keeps the newest two files of each of
+those reasons and deletes older ones, so the live snapshots in a long run's
+store are those of at most six rotated checkpoints plus its milestone and final
+ones. The store's length still grows; on Linux the freed ranges become holes,
+so its allocated size stays bounded. A resume can start from any kept
+checkpoint. A resume from the directory of a run that is still writing can
+lose its checkpoint to rotation before its snapshots are read, and then fails
+the snapshot check; copy the checkpoint and the store first, or resume after
+the run ends.
 
 `checkpoint_archive_entries::<G>` reads a checkpoint's archive without the
 snapshot store and returns each entry's `ArchiveEntryReport`, with its full
@@ -1524,8 +1529,9 @@ drawn from the tier since then with the count of each action those jobs ran,
 and the tier's 16 most-selected states with their place, identity, selection
 counts and input length. A stall at the admission that also reaches a new
 milestone writes the milestone checkpoint instead, and its line names that
-file, so rotation never deletes it. Lines older than the newest two stalls name
-checkpoints that rotation has deleted. The watch resets when the leading tier changes or
+file, so rotation never deletes it. A line that names a file with reason
+`stall` older than the newest two such files names a checkpoint that rotation
+has deleted. The watch resets when the leading tier changes or
 yields again, so one stall writes one report. It reads the archive and changes
 nothing in selection. A run whose budgets count executions or work records the
 same stream with the report as without it. Under a wall-clock budget no run

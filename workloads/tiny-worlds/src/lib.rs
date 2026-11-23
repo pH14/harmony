@@ -2147,7 +2147,7 @@ mod tests {
                     checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
                         directory: directory.clone(),
                         every: None,
-                        on_marks: false,
+                        on_marks: on_stall,
                         on_top_progress: false,
                         on_stall,
                         checkpoint_owner: None,
@@ -2198,9 +2198,24 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        for record in records.iter().rev().take(2) {
+        let stall_files = records
+            .iter()
+            .filter_map(|record| record["checkpoint"].as_str())
+            .filter(|name| name.ends_with("-stall.ckpt"))
+            .collect::<Vec<_>>();
+        for (index, name) in stall_files.iter().enumerate() {
+            assert_eq!(
+                checkpoints.iter().any(|kept| kept == name),
+                index + 2 >= stall_files.len(),
+                "{name}"
+            );
+        }
+        for record in &records {
             let checkpoint = record["checkpoint"].as_str().unwrap();
-            assert!(checkpoints.iter().any(|name| name == checkpoint));
+            assert!(checkpoint.ends_with("-stall.ckpt") || checkpoint.ends_with("-milestone.ckpt"));
+            if checkpoint.ends_with("-milestone.ckpt") {
+                assert!(checkpoints.iter().any(|name| name == checkpoint));
+            }
         }
         assert!(
             checkpoints
@@ -2284,6 +2299,7 @@ mod tests {
         let mut campaign = campaign_config(&w, crate::test_seed(), 2_000, 1);
         campaign.stop_campaign_on_objective = false;
         let records = stall_records(&w, &campaign, "resource");
+        assert!(records.len() > 2);
         let mut stalled_short = false;
         let mut unchanged = 0;
         for record in &records {
