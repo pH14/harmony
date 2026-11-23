@@ -132,3 +132,53 @@ func TestRegisterGeneratorDrawsWatchStarts(t *testing.T) {
 		}
 	}
 }
+
+func from(start uint64, events ...Event) []Event {
+	for index := range events {
+		events[index].Start = start
+	}
+	return events
+}
+
+func TestWatchResumedSegmentBelowItsOwnStart(t *testing.T) {
+	b := watchHistory(t)
+	events := append(from(2, ev(2, "k0", "a"), ev(3, "k1", "b")), from(4, ev(3, "k1", "b"), ev(4, "k0", "c"))...)
+	b.watch(2, 2, 2, events...)
+	b.history(10, "n1", 20, reference...)
+	expectKinds(t, Register{Watch: 4}.Check(b.build()), RegisterWatchFloor, RegisterWatchOrder)
+}
+
+func TestWatchEventsAtOneRevisionInAnyKeyOrder(t *testing.T) {
+	b := newBuilder(t)
+	b.watch(2, 7, 2, ev(7, "k1", "x"), ev(7, "k0", "y"))
+	at7 := []Event{ev(7, "k0", "y"), ev(7, "k1", "x")}
+	b.history(10, "n1", 20, at7...)
+	b.history(11, "n2", 20, ev(7, "k1", "x"), ev(7, "k0", "y"))
+	expectKinds(t, Register{Watch: 4}.Check(b.build()))
+}
+
+func TestWatchRepeatedKeyAtOneRevision(t *testing.T) {
+	b := newBuilder(t)
+	b.watch(2, 7, 2, ev(7, "k0", "y"), ev(7, "k1", "x"), ev(7, "k0", "y"))
+	b.history(10, "n1", 20, ev(7, "k0", "y"), ev(7, "k1", "x"))
+	expectKinds(t, Register{Watch: 4}.Check(b.build()), RegisterWatchOrder)
+}
+
+func TestWatchDeleteBeyondTheReferenceIsNotAMismatch(t *testing.T) {
+	b := watchHistory(t)
+	b.watch(2, 5, 2, ev(5, "k1", "d"), Event{Revision: 6, Key: "k1"})
+	b.history(10, "n1", 20, reference...)
+	expectKinds(t, Register{Watch: 4}.Check(b.build()))
+}
+
+func TestOneMemberDecidesNoHistoryAgreement(t *testing.T) {
+	b := watchHistory(t)
+	b.history(10, "n1", 20, reference...)
+	b.history(11, "n1", 30, reference[:2]...)
+	b.history(12, "n1", 40, ev(2, "k0", "a"), ev(3, "k1", "z"))
+	report := Register{Watch: 4}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Undecided[RegisterHistoryAgrees] {
+		t.Fatalf("agreement decided by one member: %v", report.Undecided)
+	}
+}

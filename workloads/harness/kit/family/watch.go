@@ -4,6 +4,7 @@ package family
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 
 	"harmony.local/harness/kit/history"
@@ -33,6 +34,7 @@ type Event struct {
 	Key      string  `json:"key"`
 	Value    *string `json:"value"`
 	Node     string  `json:"node,omitempty"`
+	Start    uint64  `json:"start,omitempty"`
 }
 
 type Changefeed interface {
@@ -115,6 +117,7 @@ func newFeedHistory(op *history.Op, events []Event) feedHistory {
 	var last uint64
 	for _, event := range events {
 		event.Node = ""
+		event.Start = 0
 		byRevision[event.Revision] = append(byRevision[event.Revision], event)
 		last = max(last, event.Revision)
 	}
@@ -182,11 +185,15 @@ func (r Register) checkWatches(h *history.History, report *Report, found *collec
 			delete(report.Undecided, kind)
 		}
 	}
-	if len(feeds) >= 2 {
+	sort.SliceStable(feeds, func(i, j int) bool { return feeds[i].last > feeds[j].last })
+	nodes := map[string]bool{}
+	for _, feed := range feeds {
+		nodes[feed.op.Node] = true
+	}
+	if len(nodes) >= 2 {
 		report.Decided = true
 		delete(report.Undecided, RegisterHistoryAgrees)
 	}
-	sort.SliceStable(feeds, func(i, j int) bool { return feeds[i].last > feeds[j].last })
 	var reference *feedHistory
 	if len(feeds) > 0 {
 		reference = &feeds[0]
@@ -216,12 +223,13 @@ func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevi
 	delivered := map[uint64][]Event{}
 	var last uint64
 	for at, event := range watch.events {
-		if event.Revision < watch.from {
+		if event.Revision < max(watch.from, event.Start) {
 			found.add(RegisterWatchFloor, evidence(map[string]any{"event": event, "position": at}))
 		}
 		if at > 0 {
 			previous := watch.events[at-1]
-			if event.Revision < previous.Revision || (event.Revision == previous.Revision && event.Key <= previous.Key) {
+			repeated := slices.ContainsFunc(delivered[event.Revision], func(held Event) bool { return held.Key == event.Key })
+			if event.Revision < previous.Revision || (event.Revision == previous.Revision && repeated) {
 				found.add(RegisterWatchOrder, evidence(map[string]any{"event": event, "previous": previous, "position": at}))
 			}
 		}
@@ -238,7 +246,7 @@ func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevi
 			}
 			continue
 		}
-		if !matchesWrite(event, writes) {
+		if event.Value != nil && !matchesWrite(event, writes) {
 			found.add(RegisterWatchMatches, evidence(map[string]any{"event": event}))
 		}
 	}
@@ -268,9 +276,6 @@ func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevi
 }
 
 func matchesWrite(event Event, writes map[string]map[string]acknowledged) bool {
-	if event.Value == nil {
-		return false
-	}
 	write, ok := writes[event.Key][*event.Value]
 	if !ok || write.op.Type == history.Fail {
 		return false
@@ -281,6 +286,9 @@ func matchesWrite(event Event, writes map[string]map[string]acknowledged) bool {
 func checkFeedsAgree(feeds []feedHistory, found *collector) {
 	for i := 1; i < len(feeds); i++ {
 		a, b := feeds[0], feeds[i]
+		if a.op.Node == b.op.Node {
+			continue
+		}
 		limit := min(a.last, b.last)
 		revisions := map[uint64]bool{}
 		for revision := range a.events {

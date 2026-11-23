@@ -313,23 +313,29 @@ answering nodes found no unexplained disagreement.
 N. A watch's input is a start revision, drawn from the highest revision the
 client has seen: up to 100 revisions in the past, the next revision, or up to
 100 revisions in the future. Its output is the list of events it delivered,
-each with a revision, key and value (no value for a delete). Writes and `cas`
+each with a revision, key and value (no value for a delete) and the start
+revision of the stream that delivered it, which a watch that resumes on
+another node raises. Writes and `cas`
 operations then return the revision the store assigned them. With watches on,
 the check also reads each pinned node's full change history (the `history`
 operation), and the longest history is the reference. These assertions check
 every successful watch:
 
-- `register: a watch never delivers an event below its start revision`;
+- `register: a watch never delivers an event below its start revision`, or
+  below the start of the stream that delivered it;
 - `register: a watch delivers events in revision order, each once`, where
-  events at one revision are ordered by key;
+  events at one revision may come in any key order but no key twice;
 - `register: a watch delivers every event from its start revision to its last delivered revision`,
   against the reference history where it reaches that far and against the
   acknowledged writes' revisions beyond it;
 - `register: every delivered event matches the reference history`, or, beyond
   the reference, an acknowledged write of that key and value at that revision;
-- `register: every member's history agrees`, which compares each node's
+  the family issues no deletes, so a delete beyond the reference is not
+  checked;
+- `register: every member's history agrees`, which compares each other node's
   history with the reference up to the shorter one's last revision and names
-  the node that differs.
+  the node that differs; it is decided only when histories from two nodes
+  answered.
 
 The five checks and the history read belong to the kit, not to one adapter.
 A family that implements `Changefeed` (`Feed() (Op, bool)`) tells the check
@@ -635,7 +641,9 @@ data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
 host_history = "harness-check -family register -reads monotonic @/tmp/harness/journal"
 ```
 
-Pass `-reads monotonic` to check the history the way the nats-kv adapter does.
+Pass `-reads monotonic` to check the history the way the nats-kv adapter does. Pass
+`-watches` to add the register watch and member history checks, as a target
+with `Register.Watch` set does.
 `harness-check` checks the clients' operations without the check's final read.
 It prints the journal files, the operation count, the facts and the violations
 as JSON, and exits 3 when it finds violations.
@@ -935,12 +943,16 @@ put succeeds through any member.
 over the keys from `k` to `l`. A watch streams `/v3/watch` from its start
 revision and splits its time into one to three segments drawn from the SDK
 stream. Each segment after the first goes to a newly drawn member and resumes
-from the revision after the last delivered event, so a watch fails over the
-way a client does after its member restarts or is cut off. Events delivered
-before an error are kept. Writes and `cas` operations return the response
+from the revision after the highest delivered event, so a watch fails over the
+way a client does after its member restarts or is cut off. A segment that
+breaks hands over to the next, and events delivered before an error are kept.
+A watch that delivered nothing fails definitely, since it changes no key. A
+frame with an event that has no key or revision ends its segment with an
+error. Writes and `cas` operations return the response
 header's revision. The `history` read on `mI` finds the highest
 `mod_revision` with a serializable range on `mI`, then streams a watch from
-revision 1 on `mI` until it delivers that revision. `bundle-watch` is the
+revision 1 on `mI` until a frame delivers that revision, keeping every event
+of the frame. `bundle-watch` is the
 three-member bundle with `--snapshot-count 10 --snapshot-catchup-entries 10`
 on each member, so a follower that falls behind is sent a snapshot, and
 `HARNESS_ETCD_WATCH=4` on its drive and check lines.

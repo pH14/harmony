@@ -272,9 +272,11 @@ func (a adapter) Ready(ctx context.Context) error {
 
 // A watch runs until shortly before the operation deadline, in up to three
 // segments on drawn members. Each later segment resumes from the revision after
-// the last event delivered, as a client does when it fails over to another
-// endpoint. Events delivered before a stream breaks are kept, because the
-// checks bound completeness by the last delivered revision.
+// the highest event delivered, as a client does when it fails over to another
+// endpoint, and a segment that breaks hands over to the next. Events delivered
+// before a stream breaks are kept, because the checks bound completeness by the
+// last delivered revision. Each event carries its segment's start revision. A
+// watch changes no key, so one that delivered nothing fails definitely.
 func (c client) watch(ctx context.Context, base string, from uint64) ([]family.Event, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -284,6 +286,7 @@ func (c client) watch(ctx context.Context, base string, from uint64) ([]family.E
 	segments := 1 + int(sdk.Below("etcd.watch.segments", 3))
 	events := []family.Event{}
 	next := from
+	var failed error
 	for segment := range segments {
 		if segment > 0 {
 			base = c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
@@ -291,15 +294,18 @@ func (c client) watch(ctx context.Context, base string, from uint64) ([]family.E
 		stop := time.Now().Add(time.Until(end) / time.Duration(segments-segment))
 		got, err := c.stream(ctx, base, next, stop, 0)
 		events = append(events, got...)
-		if len(got) > 0 {
-			next = got[len(got)-1].Revision + 1
+		for _, event := range got {
+			next = max(next, event.Revision+1)
 		}
 		if err != nil {
-			if len(events) == 0 {
-				return nil, runner.Definite(err)
-			}
+			failed = err
+		}
+		if ctx.Err() != nil {
 			break
 		}
+	}
+	if len(events) == 0 && failed != nil {
+		return nil, runner.Definite(failed)
 	}
 	return events, nil
 }
@@ -400,7 +406,10 @@ func (c client) stream(ctx context.Context, base string, from uint64, stop time.
 			if err != nil {
 				return events, err
 			}
-			delivered := family.Event{Revision: uint64(raw.Kv.ModRevision), Key: string(name), Node: node}
+			if raw.Kv.ModRevision == 0 || len(name) == 0 {
+				return events, errors.New("/v3/watch: event without a key or revision")
+			}
+			delivered := family.Event{Revision: uint64(raw.Kv.ModRevision), Key: string(name), Node: node, Start: from}
 			if raw.Type != "DELETE" {
 				value, err := base64.StdEncoding.DecodeString(raw.Kv.Value)
 				if err != nil {
@@ -410,9 +419,9 @@ func (c client) stream(ctx context.Context, base string, from uint64, stop time.
 				delivered.Value = &text
 			}
 			events = append(events, delivered)
-			if through > 0 && delivered.Revision >= through {
-				return events, nil
-			}
+		}
+		if through > 0 && len(events) > 0 && events[len(events)-1].Revision >= through {
+			return events, nil
 		}
 	}
 }
