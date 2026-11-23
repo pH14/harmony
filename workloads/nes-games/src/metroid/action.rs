@@ -403,10 +403,22 @@ mod tests {
     fn fire_waits_for_a_toggle_shown_a_frame_late_before_pressing_again() {
         let mut late = game(6);
         late.lagged = true;
+        late.dropped_presses = vec![1];
         let (_, after) = run(2, late);
         assert_eq!(after.missiles, 3);
         assert!(!after.armed);
-        assert_eq!(after.select_presses, 2);
+        assert_eq!(after.select_presses, 3);
+    }
+
+    #[test]
+    fn fire_toggles_on_the_last_press_its_limit_allows() {
+        let mut slow = game(6);
+        slow.lagged = true;
+        slow.dropped_presses = vec![1, 2, 3, 5, 6, 7];
+        let (_, after) = run(1, slow);
+        assert_eq!(after.missiles, 4);
+        assert!(!after.armed);
+        assert_eq!(after.select_presses, 8);
     }
 
     #[test]
