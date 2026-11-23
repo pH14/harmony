@@ -23,11 +23,15 @@ import (
 	"harmony.local/harness/kit/sdk"
 )
 
-const membersEnv = "HARNESS_ETCD_MEMBERS"
+const (
+	membersEnv    = "HARNESS_ETCD_MEMBERS"
+	defragmentEnv = "HARNESS_ETCD_DEFRAGMENT"
+)
 
 type adapter struct {
-	members []string
-	names   []string
+	members    []string
+	names      []string
+	defragment uint64
 }
 
 func (adapter) Family() family.Family { return family.Register{} }
@@ -35,13 +39,14 @@ func (adapter) Family() family.Family { return family.Register{} }
 func (a adapter) Nodes() []string { return a.names }
 
 func (a adapter) Connect(context.Context, int) (runner.Client, error) {
-	return client{members: a.members, names: a.names, http: newHTTP()}, nil
+	return client{members: a.members, names: a.names, defragment: a.defragment, http: newHTTP()}, nil
 }
 
 type client struct {
-	members []string
-	names   []string
-	http    *http.Client
+	members    []string
+	names      []string
+	defragment uint64
+	http       *http.Client
 }
 
 func newHTTP() *http.Client {
@@ -83,9 +88,14 @@ type reply struct {
 func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 // Each operation goes to one member drawn from the SDK stream, so reads and
-// writes reach followers as well as the leader.
+// writes reach followers as well as the leader. With defragment set to N, one
+// operation in N first defragments that member's backend; the result is not
+// recorded because a defragment changes no key.
 func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	base := c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
+	if c.defragment > 0 && sdk.Below("etcd.defragment", c.defragment) == 0 {
+		_, _ = c.post(ctx, base, "/v3/maintenance/defragment", map[string]any{})
+	}
 	key := enc(op.K)
 	switch op.F {
 	case family.RegisterWrite:
@@ -261,5 +271,14 @@ func main() {
 	for i := range names {
 		names[i] = fmt.Sprintf("m%d", i+1)
 	}
-	runner.Main(adapter{members: members, names: names})
+	var defragment uint64
+	if text := os.Getenv(defragmentEnv); text != "" {
+		n, err := strconv.ParseUint(text, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad %s %q\n", defragmentEnv, text)
+			os.Exit(2)
+		}
+		defragment = n
+	}
+	runner.Main(adapter{members: members, names: names, defragment: defragment})
 }

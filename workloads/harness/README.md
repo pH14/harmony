@@ -882,7 +882,12 @@ runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
 Data lives under `/tmp/etcd/<member>` and logs in `/tmp/etcd/<member>.log`,
 which both bundles declare with `log` lines. `bundle-single` also makes the
 member's data directory a 256 MiB node disk: etcd preallocates a 64 MiB WAL
-file. Members use etcd's default flags.
+file. Members use etcd's default flags unless the bundle adds more: `node.sh`
+passes every argument after the member index and count to etcd.
+`bundle-snapshot` runs three members with `--snapshot-count 10` and
+`--snapshot-catchup-entries 10`, so a member that falls behind by a few
+writes is sent a snapshot rather than log entries, and sets
+`HARNESS_ETCD_DEFRAGMENT=20` for the driver.
 
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
@@ -901,10 +906,16 @@ failure. A write is a definite failure only when the dial fails; every other
 write error is indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
+With `HARNESS_ETCD_DEFRAGMENT` set to N, one operation in N, drawn at the
+`etcd.defragment` site, first sends `/v3/maintenance/defragment` to the
+operation's member. The defragment changes no key, so it is not journaled and
+its error is ignored; a defragment that loses data shows up in the pinned
+reads and the replica comparison.
+
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
-(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.8` and `v3.6.9`; pass
-`ETCD_SOURCE_SHA256` for other versions. Build the single-member image with
-`--build-arg HARNESS_BUNDLE=bundle-single`.
+(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.4`, `v3.6.5`, `v3.6.8` and
+`v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions. Choose another bundle
+with `--build-arg HARNESS_BUNDLE=bundle-single` or `bundle-snapshot`.
 
 ## Redis-Raft
 
