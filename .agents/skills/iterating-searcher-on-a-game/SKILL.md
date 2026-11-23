@@ -149,7 +149,8 @@ repeating ways:
 ### Step 2: Power-on baseline with checkpoints
 
 Run the current searcher from power-on on at least three seeds, keeping a
-checkpoint at each new milestone and each new top tier. The checkpoint at the
+checkpoint at each new milestone. Tier and stall checkpoints are written as the
+run goes, and only the newest two of each stay on disk. The checkpoint at the
 milestone that opens each hard part is the start point for later same-build
 slices.
 Film the witness and the milestone tapes, and note where each seed spent its

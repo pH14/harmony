@@ -1504,12 +1504,13 @@ checkpoints are kept for the whole run. Interval, tier (`top_progress`) and
 `stall` checkpoints rotate: the writer keeps the newest two files of each of
 those reasons and deletes older ones, so the live snapshots in a long run's
 store are those of at most six rotated checkpoints plus its milestone and final
-ones. The store's length still grows; on Linux the freed ranges become holes,
-so its allocated size stays bounded. A resume can start from any kept
-checkpoint. A resume from the directory of a run that is still writing can
-lose its checkpoint to rotation before its snapshots are read, and then fails
-the snapshot check; copy the checkpoint and the store first, or resume after
-the run ends.
+ones. The store's length still grows. How much disk the freed ranges return
+depends on the filesystem: hole punching frees only whole blocks, and a
+filesystem without it frees nothing. A resume can start from any kept
+checkpoint. A resume from the directory of a run that is still writing, or a
+copy of that directory, can lose its checkpoint to rotation before its
+snapshots are read, and then fails the snapshot check; resume after the run
+ends, or from a filesystem snapshot of the directory.
 
 `checkpoint_archive_entries::<G>` reads a checkpoint's archive without the
 snapshot store and returns each entry's `ArchiveEntryReport`, with its full
@@ -1527,9 +1528,10 @@ tier (the progress value, which for a staged plan is the stage and its
 objective), the tier's yield count, the execution of its last yield, the jobs
 drawn from the tier since then with the count of each action those jobs ran,
 and the tier's 16 most-selected states with their place, identity, selection
-counts and input length. A stall at the admission that also reaches a new
-milestone writes the milestone checkpoint instead, and its line names that
-file, so rotation never deletes it. A line that names a file with reason
+counts and input length. When a milestone checkpoint is due at the stall's
+admission (`CheckpointPlan::on_marks` and a new milestone), the writer writes
+the milestone checkpoint instead, and the line names that file, so rotation
+never deletes it. A line that names a file with reason
 `stall` older than the newest two such files names a checkpoint that rotation
 has deleted. The watch resets when the leading tier changes or
 yields again, so one stall writes one report. It reads the archive and changes

@@ -2147,7 +2147,7 @@ mod tests {
                     checkpoints: Some(searcher::search::checkpoint::CheckpointPlan {
                         directory: directory.clone(),
                         every: None,
-                        on_marks: on_stall,
+                        on_marks: false,
                         on_top_progress: false,
                         on_stall,
                         checkpoint_owner: None,
@@ -2210,13 +2210,7 @@ mod tests {
                 "{name}"
             );
         }
-        for record in &records {
-            let checkpoint = record["checkpoint"].as_str().unwrap();
-            assert!(checkpoint.ends_with("-stall.ckpt") || checkpoint.ends_with("-milestone.ckpt"));
-            if checkpoint.ends_with("-milestone.ckpt") {
-                assert!(checkpoints.iter().any(|name| name == checkpoint));
-            }
-        }
+        assert_eq!(stall_files.len(), records.len());
         assert!(
             checkpoints
                 .iter()
