@@ -350,6 +350,35 @@ The faults host keeps these lines with the observation in which they arrived
 and counts them by outcome in the archive report's `parked_pauses` map
 (`workloads/faults/README.md`).
 
+## Role pause
+
+A bundle line `role <command...>` names a command that prints the name of one
+node, such as the node that leads. It appears at most once. A standing pause
+window whose target is the reserved node id `ROLE_NODE` (`u16::MAX - 1`) is a
+role pause (ours): the node is resolved inside the guest when the window
+opens, by running that command, and the pause goes to the node it names.
+`role::RoleWindows` holds each role pause's answer, keyed by the pause
+window's start and end, and rewrites the standing answer before
+`Supervisor::poll` sees it, so the reconciler only ever sees node indices.
+An at-resume park window on `ROLE_NODE` follows the pause that ends where it
+starts, so a parked pause parks the node it paused even after leadership has
+moved.
+
+The command starts in the first poll whose moment has reached the pause
+window's start, with its stdout piped, and is polled each tick. While it runs,
+the window is left out of the standing answer, so the node is paused from the
+poll in which the command exits until the window's end; the resolution time
+shortens the pause. The command's first line, trimmed, must be a node name the
+bundle declares. When the command exits nonzero, prints no declared name, is
+still running when the pause window ends (it is then killed), exits after the
+window ends, or the bundle has no `role` line, the role pause is unresolved:
+its pause and park windows are dropped, so the action runs as a wait of the
+same length. Each role pause writes one SDK line when it resolves,
+`{"harmony_role_pause":{"node":N}}`, or `{"harmony_role_pause":{"node":null}}`
+when it is unresolved. The command runs in the deterministic guest, so a
+replay asks the same nodes at the same virtual times, gets the same answers,
+and resolves the same node or the same no-op.
+
 ## Node disks
 
 A bundle line `disk <node> <path> <size> [checksummed]` gives the named node

@@ -418,6 +418,22 @@ the observation it arrived in, trimmed to the action like park landings, and
 `parked_pauses` in `campaign-summary.json` and the archive report counts them
 by outcome; the map is absent when no parked pause ran.
 
+A bundle with a `role` line draws role pauses (ours) in place of node-indexed
+ones. Every drawn `Pause`, and so every `PauseParked` made from one under
+`resume_park`, targets the reserved node id `ROLE_NODE` (`u16::MAX - 1`, shown
+as `Pause[65534, …]`) instead of the node the draw picked; the draw still
+consumes the same random words, so every other action of the suffix, and the
+pause's length, park and hold, are the ones a bundle without the line draws.
+The supervisor resolves the node in the guest when the pause window opens, by
+running the line's command, and a pause it cannot resolve runs as a wait of the
+same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+A role `Pause` becomes a `PauseParked` only when every node's runtime has
+announced readiness, because the host cannot know which node the guest will
+name. Kills, restarts, disk and clock faults keep their node index. The
+vocabulary identifier records the line as the option `role_pauses`. Each
+resolution's SDK line is kept with its observation as `role_pauses`, the
+resolved node or none, trimmed to the action like parked-pause outcomes.
+
 Without `resume_park` the host draws what it drew before the parked pause:
 the draw-path tests pin the default draw path's suffix digests and a pause's
 key and encodings, and a default search with this host on a given guest and
@@ -476,7 +492,8 @@ Its labels are node ids, as in the action text form `Pause[1, …]`, because
 the vocabulary keeps no node names. A freshly drawn `Kill`, `Pause`, `PauseParked`,
 `Restart` or `Clock` action offers every node, `PowerLoss`, `DiskError` and
 `DiskStall` offer the nodes with a disk, and `DiskCorrupt` offers the
-checksummed ones. An event kind keeps its drawn node, because the node comes
+checksummed ones. A role pause offers no node, so it is never asked and writes
+no row. An event kind keeps its drawn node, because the node comes
 from runtime readiness. A `PauseParked` offers every node, and its park moves
 with the answer; after the node is resolved, a `PauseParked` on a node whose
 runtime had not announced readiness at the parent runs as a plain `Pause`, as

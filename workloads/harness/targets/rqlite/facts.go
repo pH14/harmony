@@ -121,6 +121,19 @@ func leaderOf(ctx context.Context, via int) (int, uint64) {
 	return at, uint64(status.Store.Raft.Term)
 }
 
+// The first node that reports a leader, asked in node order, names it. The
+// whole search shares one status timeout so a role pause resolves within it.
+func leaderName(ctx context.Context) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+	for via := range nodes {
+		if at, _ := leaderOf(ctx, via); at >= 0 {
+			return nodeNames[at], true
+		}
+	}
+	return "", false
+}
+
 func (a stepdownAnswer) transferTimedOut() bool {
 	if a.err != nil || a.status != http.StatusInternalServerError {
 		return false

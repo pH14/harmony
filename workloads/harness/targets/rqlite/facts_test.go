@@ -920,3 +920,23 @@ func TestTheSnapshotHookReadsEveryNodeBeforeAndAfterItsRequest(t *testing.T) {
 	within := slices.Contains([]string{"trailing_logs=1", "trailing_logs=2"}, strings.Fields(out.String())[2])
 	expectConditions(t, snapshotConditions(t, read), false, true, within, false, true, false, false)
 }
+
+func TestTheLeaderIsTheFirstLeaderANodeInOrderReports(t *testing.T) {
+	n := fakeNodes(t)
+	n[0].handle("/status", hangUp(t))
+	n[1].handle("/status", raft("Follower", "4", "n3"))
+	n[2].handle("/status", raft("Leader", "4", "n3"))
+	if name, ok := leaderName(context.Background()); !ok || name != "n3" {
+		t.Fatalf("leader %q %v", name, ok)
+	}
+}
+
+func TestNoLeaderWhenEveryNodeIsCampaigningOrSilent(t *testing.T) {
+	n := fakeNodes(t)
+	n[0].handle("/status", raft("Candidate", "5", ""))
+	n[1].handle("/status", hangUp(t))
+	n[2].handle("/status", raft("Follower", "5", "n1"))
+	if name, ok := leaderName(context.Background()); ok {
+		t.Fatalf("leader %q", name)
+	}
+}

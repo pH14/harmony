@@ -143,6 +143,7 @@ impl ProcessAction {
 }
 
 pub const EVERY_NODE: u16 = u16::MAX;
+pub const ROLE_NODE: u16 = u16::MAX - 1;
 
 #[must_use]
 pub fn encode_target(node: u16, action: &ProcessAction) -> Vec<u8> {

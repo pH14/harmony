@@ -8,6 +8,7 @@ pub const CHECKSUMMED: &str = "checksummed";
 pub const HOOKS_REPLACE_WAITS: &str = "hooks_replace_waits";
 pub const HOLD_HOOKS: &str = "hold_hooks";
 pub const UNTRIED_FIRST_NODES: &str = "untried_first_nodes";
+pub const ROLE_PAUSES: &str = "role_pauses";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +98,8 @@ pub struct FaultVocabulary {
     hold_hooks: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     untried_first_nodes: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    role_pauses: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resume_park: Option<Vec<u64>>,
 }
@@ -128,6 +131,7 @@ impl FaultVocabulary {
             hooks_replace_waits: false,
             hold_hooks: false,
             untried_first_nodes: false,
+            role_pauses: false,
             resume_park: None,
         })
     }
@@ -210,6 +214,12 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn with_role_pauses(mut self, enabled: bool) -> Self {
+        self.role_pauses = enabled;
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_instrumented_events(mut self, enabled: bool) -> Self {
         self.instrumented_events = enabled;
         self
@@ -230,6 +240,7 @@ impl FaultVocabulary {
         let mut heal = None;
         let mut lifecycle = std::collections::BTreeSet::new();
         let mut park_page = false;
+        let mut role = false;
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -310,6 +321,14 @@ impl FaultVocabulary {
                         return Err(format!("bundle line {line_number}: duplicate park-page"));
                     }
                 }
+                "role" => {
+                    if fields.next().is_none() {
+                        return Err(format!("bundle line {line_number}: role has no command"));
+                    }
+                    if std::mem::replace(&mut role, true) {
+                        return Err(format!("bundle line {line_number}: duplicate role"));
+                    }
+                }
                 "ready" | "setup" | "workload" | "check" => {
                     if fields.next().is_none() {
                         return Err(format!(
@@ -360,9 +379,10 @@ impl FaultVocabulary {
             .filter(|(_, checksummed)| *checksummed)
             .map(|(node, _)| *node)
             .collect();
-        Self::new(nodes, hooks)?
+        Ok(Self::new(nodes, hooks)?
             .with_disks(disks.into_iter().map(|(node, _)| node).collect())?
-            .with_checksummed(checksummed)
+            .with_checksummed(checksummed)?
+            .with_role_pauses(role))
     }
 
     #[must_use]
@@ -425,11 +445,17 @@ impl FaultVocabulary {
         self.untried_first_nodes
     }
 
+    #[must_use]
+    pub fn role_pauses(&self) -> bool {
+        self.role_pauses
+    }
+
     fn options(&self) -> Option<String> {
         let names = [
             (self.hooks_replace_waits, HOOKS_REPLACE_WAITS),
             (self.hold_hooks, HOLD_HOOKS),
             (self.untried_first_nodes, UNTRIED_FIRST_NODES),
+            (self.role_pauses, ROLE_PAUSES),
         ]
         .into_iter()
         .filter_map(|(enabled, name)| enabled.then_some(name))
@@ -567,13 +593,14 @@ impl FaultVocabulary {
         if fields.next().is_some() {
             return Err("fault vocabulary has trailing fields".to_owned());
         }
-        let (mut hooks_replace_waits, mut hold_hooks, mut untried_first_nodes) =
-            (false, false, false);
+        let (mut hooks_replace_waits, mut hold_hooks, mut untried_first_nodes, mut role_pauses) =
+            (false, false, false, false);
         for name in options.into_iter().flat_map(|options| options.split(',')) {
             match name {
                 HOOKS_REPLACE_WAITS => hooks_replace_waits = true,
                 HOLD_HOOKS => hold_hooks = true,
                 UNTRIED_FIRST_NODES => untried_first_nodes = true,
+                ROLE_PAUSES => role_pauses = true,
                 _ => return Err(format!("fault vocabulary has an unknown option {name:?}")),
             }
         }
@@ -617,6 +644,7 @@ impl FaultVocabulary {
             .with_hooks_replace_waits(hooks_replace_waits)
             .with_hold_hooks(hold_hooks)
             .with_untried_first_nodes(untried_first_nodes)
+            .with_role_pauses(role_pauses)
             .with_resume_park(resume_park.clone())?;
         if vocabulary.excluded != excluded {
             return Err("fault vocabulary lists excluded fault kinds out of order".to_owned());
@@ -766,6 +794,23 @@ ready /usr/local/pgsql/bin/pg_isready
             );
         }
         assert!(FaultKind::from_name("wait").is_err());
+    }
+
+    #[test]
+    fn a_role_line_aims_pauses_by_role_and_is_pinned_in_the_identifier() {
+        let indexed = FaultVocabulary::parse("node a /a\nnode b /b\n").expect("parse");
+        assert!(!indexed.role_pauses());
+        let role = FaultVocabulary::parse("node a /a\nnode b /b\nrole /leader\n").expect("parse");
+        assert!(role.role_pauses());
+        assert_eq!(role.nodes(), 2);
+        let identifier = role.identifier();
+        assert!(identifier.ends_with(";options=role_pauses"), "{identifier}");
+        assert_eq!(
+            FaultVocabulary::from_identifier(&identifier).expect("resolve"),
+            role
+        );
+        assert!(FaultVocabulary::parse("node a /a\nrole\n").is_err());
+        assert!(FaultVocabulary::parse("node a /a\nrole /x\nrole /y\n").is_err());
     }
 
     #[test]

@@ -214,7 +214,14 @@ pub fn sample_profiled_action(
     let action = match alternative {
         0 => FaultOperation::Wait(ticks),
         1 => FaultOperation::Kill(node, ticks),
-        2 => FaultOperation::Pause(node, ticks),
+        2 => FaultOperation::Pause(
+            if vocabulary.role_pauses() {
+                process_proto::ROLE_NODE
+            } else {
+                node
+            },
+            ticks,
+        ),
         3 => FaultOperation::Restart(node, ticks),
         HOOK_ALTERNATIVE => FaultOperation::Hook(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
@@ -659,6 +666,35 @@ mod tests {
             }
         }
         assert_eq!(kinds.len(), 5, "every available action kind is reachable");
+    }
+
+    #[test]
+    fn a_role_vocabulary_aims_every_pause_at_the_role_and_draws_the_rest_alike() {
+        let indexed = FaultVocabulary::new(3, vec![1]).unwrap();
+        let role = indexed.clone().with_role_pauses(true);
+        let mut by_index = RomuDuoJrRand::with_seed(23);
+        let mut by_role = RomuDuoJrRand::with_seed(23);
+        let mut pauses = 0;
+        for _ in 0..500 {
+            let plain = sample_action(&mut by_index, &indexed, 0, TICKS, None).unwrap();
+            let aimed = sample_action(&mut by_role, &role, 0, TICKS, None).unwrap();
+            match (plain.operation, aimed.operation) {
+                (
+                    FaultOperation::Pause(node, ticks),
+                    FaultOperation::Pause(target, aimed_ticks),
+                ) => {
+                    assert!(node < 3);
+                    assert_eq!(target, process_proto::ROLE_NODE);
+                    assert_eq!(ticks, aimed_ticks);
+                    pauses += 1;
+                }
+                (plain_operation, aimed_operation) => {
+                    assert_eq!(plain_operation, aimed_operation);
+                }
+            }
+            assert_eq!(plain.choice, aimed.choice);
+        }
+        assert!(pauses > 0);
     }
 
     #[test]

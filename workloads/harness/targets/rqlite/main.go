@@ -853,6 +853,15 @@ func runStepdown() error {
 	return errors.Join(stepdownFrom(via, target, retries, wait, out, newStepdownFacts()), out.Close())
 }
 
+func runLeader() error {
+	name, ok := leaderName(context.Background())
+	if !ok {
+		return errors.New("no node reports a leader")
+	}
+	_, err := fmt.Println(name)
+	return err
+}
+
 func stepdownFrom(via int, target string, retries int, wait func() time.Duration, out io.Writer, facts *stepdownFacts) error {
 	named := target
 	if named == "" {
@@ -966,6 +975,8 @@ func main() {
 			run = runStepdown
 		case "snapshot":
 			run = runSnapshot
+		case "leader":
+			run = runLeader
 		}
 		if run != nil {
 			if err := run(); err != nil {

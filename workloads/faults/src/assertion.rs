@@ -174,6 +174,7 @@ pub struct JsonEvent {
     pub park: Option<ParkReport>,
     pub park_read: Option<ParkReport>,
     pub parked_pause: Option<ParkedPauseReport>,
+    pub role_pause: Option<RolePauseReport>,
     pub undecided_keys: Option<u64>,
 }
 
@@ -188,6 +189,11 @@ pub struct ParkedPauseReport {
     pub node: u16,
     #[serde(with = "parked_outcome_name")]
     pub outcome: ParkedOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RolePauseReport {
+    pub node: Option<u16>,
 }
 
 pub mod parked_outcome_name {
@@ -218,6 +224,7 @@ struct RawEvent {
     harmony_park: Option<ParkReport>,
     harmony_park_read: Option<ParkReport>,
     harmony_parked_pause: Option<ParkedPauseReport>,
+    harmony_role_pause: Option<RolePauseReport>,
     harmony_check: Option<RawCheck>,
 }
 
@@ -315,6 +322,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
         park: raw.harmony_park,
         park_read: raw.harmony_park_read,
         parked_pause: raw.harmony_parked_pause,
+        role_pause: raw.harmony_role_pause,
         undecided_keys: raw.harmony_check.map(|check| check.undecided_keys),
     })
 }
@@ -407,6 +415,22 @@ mod tests {
         }
         assert!(
             decode_json_event(br#"{"harmony_parked_pause":{"node":2,"outcome":"fire"}}"#).is_none()
+        );
+    }
+
+    #[test]
+    fn a_role_pause_line_carries_its_node_or_null() {
+        assert_eq!(
+            decode_json_event(br#"{"harmony_role_pause":{"node":1}}"#)
+                .unwrap()
+                .role_pause,
+            Some(RolePauseReport { node: Some(1) })
+        );
+        assert_eq!(
+            decode_json_event(br#"{"harmony_role_pause":{"node":null}}"#)
+                .unwrap()
+                .role_pause,
+            Some(RolePauseReport { node: None })
         );
     }
 

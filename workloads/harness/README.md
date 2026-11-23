@@ -662,6 +662,20 @@ until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
 first. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
 
+`bundle-leader` is `bundle` with a `role` line,
+`role /opt/harmony/rqlite-harness leader`, so every pause the search draws,
+and every parked pause made from one under `resume_park`, goes to the node
+that leads when the pause starts instead of a node the draw picks. The search
+still draws each pause's length and park. `rqlite-harness leader` asks each
+node in order with `leaderOf`, the stepdown facts' leader read, and prints the
+first leader's name; the whole search shares one 1-second status timeout, and
+it exits 1 when no node reports a leader, which makes the pause a wait of the
+same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+Kills, restarts, disk and clock faults keep their drawn node. `bundle`,
+`bundle-forward`, `bundle-stepdown`, `bundle-stepdown-facts`, `bundle-admin`
+and `bundle-admin-facts` draw node-indexed pauses. Build the image with
+`--build-arg HARNESS_BUNDLE=bundle-leader` to select it.
+
 `bundle-stepdown-facts` is `bundle-stepdown` with `HARNESS_RQLITE_FACTS=1` on
 the stepdown hook and the workload, which then write four `Sometimes`
 assertions of ours through the JSON record, each evaluated with its condition,

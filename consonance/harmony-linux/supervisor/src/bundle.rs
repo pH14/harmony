@@ -39,6 +39,7 @@ pub struct Bundle {
     pub check: Option<Vec<String>>,
     pub heal: Option<u32>,
     pub park_page: bool,
+    pub role: Option<Vec<String>>,
 }
 
 impl Bundle {
@@ -53,6 +54,14 @@ impl Bundle {
     #[must_use]
     pub fn disk(&self, node: u16) -> Option<&DiskSpec> {
         self.disks.iter().find(|disk| disk.node == node)
+    }
+
+    #[must_use]
+    pub fn node_named(&self, name: &str) -> Option<u16> {
+        self.nodes
+            .iter()
+            .position(|node| node.name == name)
+            .and_then(|index| u16::try_from(index).ok())
     }
 }
 
@@ -80,6 +89,8 @@ pub enum BundleError {
     DuplicateWorkload { line: usize },
     #[error("line {line}: a second check command")]
     DuplicateCheck { line: usize },
+    #[error("line {line}: a second role command")]
+    DuplicateRole { line: usize },
     #[error("line {line}: a second heal hook")]
     DuplicateHeal { line: usize },
     #[error("line {line}: heal names undeclared hook {id}")]
@@ -240,6 +251,21 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                 }
                 heal = Some((line, id));
             }
+            "role" => {
+                let argv: Vec<String> = words.collect();
+                validate_words(line, &argv)?;
+                if argv.is_empty() {
+                    return Err(BundleError::Incomplete {
+                        line,
+                        item: "role",
+                        need: 1,
+                    });
+                }
+                if bundle.role.is_some() {
+                    return Err(BundleError::DuplicateRole { line });
+                }
+                bundle.role = Some(argv);
+            }
             "park-page" => {
                 if words.next().is_some() {
                     return Err(BundleError::ParkPageWords { line });
@@ -265,12 +291,7 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
         parse_disk(&mut bundle, line, name, path, size)?;
     }
     for (line, name, path) in logs {
-        let Some(node) = bundle
-            .nodes
-            .iter()
-            .position(|node| node.name == name)
-            .and_then(|index| u16::try_from(index).ok())
-        else {
+        let Some(node) = bundle.node_named(&name) else {
             return Err(BundleError::LogNode { line, name });
         };
         if !path.starts_with('/') || path.contains('\0') {
@@ -289,12 +310,7 @@ fn parse_disk(
     path: String,
     size: String,
 ) -> Result<(), BundleError> {
-    let Some(node) = bundle
-        .nodes
-        .iter()
-        .position(|node| node.name == name)
-        .and_then(|index| u16::try_from(index).ok())
-    else {
+    let Some(node) = bundle.node_named(&name) else {
         return Err(BundleError::DiskNode { line, name });
     };
     if bundle.disk(node).is_some() {
@@ -480,6 +496,26 @@ ready /usr/bin/servicectl endpoint health
             parse_bundle("node a /a\nhook 4 /heal\nheal 4 5\n"),
             Err(BundleError::Incomplete { line: 3, .. })
         ));
+    }
+
+    #[test]
+    fn a_role_line_keeps_its_command_and_is_declared_once() {
+        let bundle = parse_bundle("node n1 /a\nnode n2 /b\nrole /leader --of kv\n").unwrap();
+        assert_eq!(
+            bundle.role,
+            Some(vec!["/leader".to_owned(), "--of".to_owned(), "kv".to_owned()])
+        );
+        assert_eq!(bundle.node_named("n2"), Some(1));
+        assert_eq!(bundle.node_named("n3"), None);
+        assert_eq!(parse_bundle("node a /a\n").unwrap().role, None);
+        assert!(matches!(
+            parse_bundle("node a /a\nrole\n"),
+            Err(BundleError::Incomplete { line: 2, .. })
+        ));
+        assert_eq!(
+            parse_bundle("node a /a\nrole /x\nrole /y\n"),
+            Err(BundleError::DuplicateRole { line: 3 })
+        );
     }
 
     #[test]

@@ -127,6 +127,7 @@ mod runtime {
     use harmony_supervisor::process::{self, ChildStop};
     use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{HookFaults, RecoveryReadiness, RecoveryWatch};
+    use harmony_supervisor::role::{RolePause, RoleWindows};
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
@@ -231,6 +232,92 @@ mod runtime {
         id: u32,
         launch: u64,
         child: Child,
+    }
+
+    #[derive(Default)]
+    struct RoleResolver {
+        windows: RoleWindows,
+        asking: Option<(RolePause, Child)>,
+    }
+
+    impl RoleResolver {
+        fn step(
+            &mut self,
+            spec: &execution_proto::ExecutionSpec,
+            bundle: &Bundle,
+            standing: &mut Standing,
+            output: &mut File,
+            tick: u64,
+        ) -> Result<(), String> {
+            if let Some((pause, child)) = self.asking.as_mut() {
+                let pause = *pause;
+                let exited = child
+                    .try_wait()
+                    .map_err(|error| format!("role command: {error}"))?;
+                if exited.is_some() || standing.moment >= pause.end {
+                    let (_, mut child) = self.asking.take().ok_or("role command vanished")?;
+                    let named = match exited {
+                        Some(status) if status.success() => {
+                            let mut text = String::new();
+                            if let Some(mut stdout) = child.stdout.take() {
+                                stdout
+                                    .read_to_string(&mut text)
+                                    .map_err(|error| format!("role command output: {error}"))?;
+                            }
+                            bundle.node_named(text.trim())
+                        }
+                        Some(_) => None,
+                        None => {
+                            let _ = child.kill();
+                            child
+                                .wait()
+                                .map_err(|error| format!("role command: {error}"))?;
+                            None
+                        }
+                    };
+                    self.settle(pause, named, standing.moment, output, tick)?;
+                }
+            }
+            if let Some(pause) = self.windows.bind(standing)
+                && self.asking.is_none()
+            {
+                match bundle.role.as_deref() {
+                    Some(argv) => {
+                        let child = process::command(spec, argv)
+                            .and_then(|mut command| command.stdout(Stdio::piped()).spawn())
+                            .map_err(|error| format!("role command: {error}"))?;
+                        log(tick, "run the role command for a role pause");
+                        self.asking = Some((pause, child));
+                    }
+                    None => self.settle(pause, None, standing.moment, output, tick)?,
+                }
+            }
+            Ok(())
+        }
+
+        fn settle(
+            &mut self,
+            pause: RolePause,
+            named: Option<u16>,
+            moment: u64,
+            output: &mut File,
+            tick: u64,
+        ) -> Result<(), String> {
+            let node = self.windows.resolve(pause, named, moment);
+            log(
+                tick,
+                &node.map_or_else(
+                    || "role pause unresolved; it waits out its window".to_owned(),
+                    |node| format!("role pause aims at node {node}"),
+                ),
+            );
+            process::write_record(output, &process::role_pause_record(node))
+                .map_err(|error| format!("role pause record: {error}"))
+        }
+
+        fn child_id(&self) -> Option<u32> {
+            self.asking.as_ref().map(|(_, child)| child.id())
+        }
     }
 
     struct Check {
@@ -802,6 +889,7 @@ mod runtime {
         workload_started: bool,
         check: Option<Check>,
         check_runs: u64,
+        roles: RoleResolver,
     }
 
     impl HookRuntime {
@@ -819,6 +907,7 @@ mod runtime {
                 workload_started: false,
                 check: None,
                 check_runs: 0,
+                roles: RoleResolver::default(),
             }
         }
     }
@@ -1085,11 +1174,18 @@ mod runtime {
             thread::sleep(Duration::from_nanos(harmony_supervisor::TICK_NANOS));
             sdk.state_set(REG_PENDING_FAULTS, u64::MAX)
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
-            let standing = poll_standing(
+            let mut standing = poll_standing(
                 sdk,
                 supervisor.counters().ticks,
                 supervisor.moment(),
                 &mut buffer,
+            )?;
+            runtime.roles.step(
+                spec,
+                bundle,
+                &mut standing,
+                &mut runtime.assertion_output,
+                supervisor.counters().ticks + 1,
             )?;
             let answered = sdk
                 .client_mut()
@@ -1262,6 +1358,7 @@ mod runtime {
                 .chain(runtime.retired_probes.iter().map(Child::id))
                 .chain(runtime.workload.iter().map(Child::id))
                 .chain(runtime.check.iter().map(|check| check.child.id()))
+                .chain(runtime.roles.child_id())
                 .collect();
             process::reap_available_except(&tracked)
                 .map_err(|error| format!("reap descendants: {error}"))?;

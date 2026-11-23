@@ -5,9 +5,9 @@ use std::num::NonZeroU16;
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, ParkTarget, Span, StandingWindow, process_target};
-use process_proto::EVERY_NODE;
 use process_proto::events::ParkedOutcome;
 use process_proto::registers as reg;
+use process_proto::{EVERY_NODE, ROLE_NODE};
 use searcher::search::assertion::{Accumulator, Observed};
 use searcher::target::ExitKind;
 use serde::ser::SerializeStruct;
@@ -116,6 +116,10 @@ impl FaultOperation {
     #[must_use]
     pub fn target_offer(&self, vocabulary: &FaultVocabulary) -> Vec<u16> {
         match self {
+            Self::Pause(ROLE_NODE, _)
+            | Self::PauseParked {
+                node: ROLE_NODE, ..
+            } => Vec::new(),
             Self::Kill(..)
             | Self::Pause(..)
             | Self::PauseParked { .. }
@@ -922,6 +926,8 @@ pub struct SdkCapture {
     pub park_reads: Vec<ParkRead>,
     #[serde(default)]
     pub parked_pauses: Vec<ParkedPause>,
+    #[serde(default)]
+    pub role_pauses: Vec<RolePause>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -936,6 +942,12 @@ pub struct ParkRead {
     pub moment: u64,
     pub site: u64,
     pub edges: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RolePause {
+    pub moment: u64,
+    pub node: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -959,6 +971,7 @@ impl SdkCapture {
         self.parks.retain(|park| park.moment > moment);
         self.park_reads.retain(|read| read.moment > moment);
         self.parked_pauses.retain(|pause| pause.moment > moment);
+        self.role_pauses.retain(|pause| pause.moment > moment);
     }
 
     fn note_completed_check(
@@ -1080,6 +1093,7 @@ impl SdkDecoder {
         bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
         bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
         bytes += capture.parked_pauses.capacity() * std::mem::size_of::<ParkedPause>();
+        bytes += capture.role_pauses.capacity() * std::mem::size_of::<RolePause>();
         if let Some(check) = &capture.completed_check {
             bytes += check.points.capacity() * std::mem::size_of::<String>();
             bytes += check.points.iter().map(String::capacity).sum::<usize>();
@@ -1128,6 +1142,12 @@ impl SdkDecoder {
                             moment: *moment,
                             node: pause.node,
                             outcome: pause.outcome,
+                        });
+                    }
+                    if let Some(pause) = event.role_pause {
+                        capture.role_pauses.push(RolePause {
+                            moment: *moment,
+                            node: pause.node,
                         });
                     }
                     if let Some((id, outcome)) = event.assertion {
@@ -1346,6 +1366,12 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                         outcome: pause.outcome,
                     });
                 }
+                if let Some(pause) = event.role_pause {
+                    capture.role_pauses.push(RolePause {
+                        moment: *moment,
+                        node: pause.node,
+                    });
+                }
                 if let Some((id, outcome)) = event.assertion {
                     if let Some(pid) = event.pid
                         && outcome.feeds_the_key()
@@ -1469,6 +1495,8 @@ pub struct FaultObservations {
     #[serde(default)]
     pub parked_pauses: Vec<ParkedPause>,
     #[serde(default)]
+    pub role_pauses: Vec<RolePause>,
+    #[serde(default)]
     pub fault_free_checks_started: u64,
     #[serde(default)]
     pub fault_free_checks_finished: u64,
@@ -1525,6 +1553,7 @@ impl FaultObservations {
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
             parked_pauses: capture.parked_pauses.clone(),
+            role_pauses: capture.role_pauses.clone(),
             fault_free_checks_started: value(reg::FAULT_FREE_CHECKS_STARTED),
             fault_free_checks_finished: value(reg::FAULT_FREE_CHECKS_FINISHED),
             faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
@@ -1538,12 +1567,14 @@ impl FaultObservations {
         self.parks.retain(|park| park.moment > moment);
         self.park_reads.retain(|read| read.moment > moment);
         self.parked_pauses.retain(|pause| pause.moment > moment);
+        self.role_pauses.retain(|pause| pause.moment > moment);
     }
 
     pub fn clear_parks(&mut self) {
         self.parks.clear();
         self.park_reads.clear();
         self.parked_pauses.clear();
+        self.role_pauses.clear();
     }
 
     #[must_use]
@@ -2968,9 +2999,21 @@ mod tests {
         };
         let events = [
             (3, JSON_EVENT_ID, line(1, ParkedOutcome::Fired)),
+            (
+                5,
+                JSON_EVENT_ID,
+                b"{\"harmony_role_pause\":{\"node\":null}}\n".to_vec(),
+            ),
             (9, JSON_EVENT_ID, line(2, ParkedOutcome::NotStopped)),
         ];
         let capture = decode_sdk_events(&events).unwrap();
+        assert_eq!(
+            capture.role_pauses,
+            [RolePause {
+                moment: 5,
+                node: None
+            }]
+        );
         assert_eq!(capture, decode_sdk_events_reference(&events).unwrap());
         assert_eq!(
             capture.parked_pauses,
@@ -3002,6 +3045,7 @@ mod tests {
         );
         observation.clear_parks();
         assert!(observation.parked_pauses.is_empty());
+        assert!(observation.role_pauses.is_empty());
         let empty = (&observation, SdkCapture::default(), 0x55_u8);
         assert_eq!(
             postcard::from_bytes::<(FaultObservations, SdkCapture, u8)>(
