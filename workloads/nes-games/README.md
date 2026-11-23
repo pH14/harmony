@@ -516,7 +516,8 @@ from the same bytes. It still runs in its own `target` and `campaign`.
 `metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
 `metroid/plan.rs` with the same goals and latches (an energy stage's goal reads
 `action_end`, because the plan latches from the parent key at the action's
-end), the place (area, map cell,
+end, except that the stage before Kraid is also done on `kraid_defeated` at any
+frame, as the plan's stage is once Kraid is defeated), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
 and the two hand preferences. Past Kraid's defeat the strategy continues where
 the hand plan stops: energy for the hideout shaft (120), the route to the

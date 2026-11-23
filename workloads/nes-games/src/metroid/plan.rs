@@ -453,6 +453,18 @@ mod tests {
     }
 
     #[test]
+    fn a_kraid_win_short_of_the_energy_target_ends_the_energy_stage() {
+        let mut state = at(KRAID, 9, 29);
+        state.equipment = MARU_MARI | BOMBS;
+        state.missile_capacity = 5;
+        state.energy_tanks = 1;
+        state.health = 795;
+        state.bosses = 1;
+        state.kraid_defeated = true;
+        assert_eq!(locate(state, 0, Some((7, 79))), (9, 0));
+    }
+
+    #[test]
     fn the_targets_are_eight_brinstar_touches_and_four_hideout_touches() {
         assert_eq!(BRINSTAR_TOUCH * TOUCHES_BEFORE_BRINSTAR_ROUTE, 64);
         assert_eq!(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID, 80);
@@ -466,7 +478,22 @@ mod tests {
     }
 
     #[test]
-    fn every_route_holds_the_cell_where_the_previous_stage_ends() {
+    fn the_kraid_door_route_walks_from_row_11_to_column_13_past_the_bombs_room_loop() {
+        let adjacent = |from: Cell, to: Cell| {
+            from.0 == to.0 && from.1.abs_diff(to.1) + from.2.abs_diff(to.2) == 1
+        };
+        let index = |cell: Cell| TO_KRAID_DOOR.iter().position(|kept| *kept == cell).unwrap();
+        assert_eq!(TO_KRAID_DOOR[0], b(20, 11));
+        for pair in TO_KRAID_DOOR[..11].windows(2) {
+            assert!(adjacent(pair[0], pair[1]), "{pair:?}");
+        }
+        assert!(adjacent(TO_KRAID_DOOR[10], b(13, 7)));
+        assert_eq!(index(b(25, 5)), 11);
+        assert!(index(b(13, 7)) > index(b(25, 7)));
+    }
+
+    #[test]
+    fn every_route_holds_the_last_cell_of_the_route_before_it() {
         let routes: Vec<&[Cell]> = PLAN
             .iter()
             .filter_map(|stage| match stage.objective {
