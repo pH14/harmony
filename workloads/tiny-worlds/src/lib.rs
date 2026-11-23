@@ -2175,13 +2175,22 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        for record in records.iter().rev().take(2) {
+            let checkpoint = record["checkpoint"].as_str().unwrap();
+            assert!(checkpoints.iter().any(|name| name == checkpoint));
+        }
+        assert!(
+            checkpoints
+                .iter()
+                .filter(|name| name.ends_with("-stall.ckpt"))
+                .count()
+                <= 2
+        );
         for record in &records {
             assert!(watches.insert((
                 record["tier"].to_string(),
                 record["tier_yields"].to_string()
             )));
-            let checkpoint = record["checkpoint"].as_str().unwrap();
-            assert!(checkpoints.iter().any(|name| name == checkpoint));
             assert!(
                 record["states"]
                     .as_array()

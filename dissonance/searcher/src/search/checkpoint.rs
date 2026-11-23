@@ -26,7 +26,8 @@ pub struct PinnedCheckpoint {
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
-const INTERVAL_CHECKPOINTS_KEPT: usize = 2;
+const RECENT_CHECKPOINTS_KEPT: usize = 2;
+const ROTATED_REASONS: [&str; 3] = ["interval", "top_progress", "stall"];
 
 pub(crate) mod json_bytes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
@@ -184,7 +185,7 @@ struct CheckpointHeaderRef<'a> {
 pub(crate) struct CheckpointStoreWriter {
     plan: CheckpointPlan,
     frames: super::snapshot_store::StoreFrames,
-    intervals: VecDeque<(PathBuf, Vec<u64>)>,
+    recent: BTreeMap<String, VecDeque<(PathBuf, Vec<u64>)>>,
     #[cfg(test)]
     io: PublicationIoTest,
 }
@@ -245,7 +246,7 @@ impl CheckpointStoreWriter {
         Ok(Self {
             plan,
             frames: super::snapshot_store::StoreFrames::new(store),
-            intervals: VecDeque::new(),
+            recent: BTreeMap::new(),
             #[cfg(test)]
             io: PublicationIoTest::default(),
         })
@@ -344,15 +345,15 @@ impl CheckpointStoreWriter {
         self.sync_directory(PublicationIo::PublicationDirectorySync)?;
         self.frames.publish(stage);
         let mut freed = (0_usize, 0_u64);
-        if header.reason == "interval" {
-            self.intervals
-                .push_back((path, index.iter().map(|stored| stored.id).collect()));
+        if ROTATED_REASONS.contains(&header.reason.as_str()) {
+            let recent = self.recent.entry(header.reason.clone()).or_default();
+            recent.push_back((path, index.iter().map(|stored| stored.id).collect()));
+            let excess = recent.len().saturating_sub(RECENT_CHECKPOINTS_KEPT);
+            let oldest: Vec<_> = recent.drain(..excess).collect();
             let mut pruned = Vec::new();
-            while self.intervals.len() > INTERVAL_CHECKPOINTS_KEPT {
-                if let Some((oldest, ids)) = self.intervals.pop_front() {
-                    self.publication_io(PublicationIo::Prune, || fs::remove_file(oldest))?;
-                    pruned.push(ids);
-                }
+            for (path, ids) in oldest {
+                self.publication_io(PublicationIo::Prune, || fs::remove_file(path))?;
+                pruned.push(ids);
             }
             if !pruned.is_empty() {
                 self.sync_directory(PublicationIo::PruneDirectorySync)?;
@@ -989,6 +990,75 @@ mod tests {
                     .join(format!("{executions:012}-interval.ckpt"))
                     .exists()
             );
+        }
+        fs::remove_dir_all(&directory).expect("remove the directory");
+    }
+
+    #[test]
+    fn tier_and_stall_checkpoints_rotate_so_a_long_run_store_stops_growing() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-rotation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer = CheckpointStoreWriter::create(plan(directory.clone())).expect("create");
+        write_snapshots(&mut writer, 1, "milestone", &[1]);
+        let mut live = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut allocated = Vec::new();
+        for round in 0..24_u64 {
+            let base = 10 + round * 10;
+            let id = 2 + round * 3;
+            write_snapshots(&mut writer, base, "top_progress", &[1, id]);
+            write_snapshots(&mut writer, base + 1, "stall", &[1, id, id + 1]);
+            write_snapshots(&mut writer, base + 2, "interval", &[1, id + 1, id + 2]);
+            live.push(writer.frames.live_bytes);
+            #[cfg(target_os = "linux")]
+            allocated.push(allocated_bytes(&directory.join(SNAPSHOT_STORE)));
+        }
+        let snapshot_len = writer.frames.snapshot_len(1);
+        assert!(live[3..].iter().all(|&bytes| bytes == live[3]));
+        assert_eq!(live[3], 7 * snapshot_len);
+        assert!(writer.frames.len > 60 * snapshot_len);
+        #[cfg(target_os = "linux")]
+        if punches_holes(&directory) {
+            assert!(
+                allocated[23] < allocated[3] + 4 * snapshot_len,
+                "the store kept growing: {allocated:?}"
+            );
+        }
+        let mut kept: Vec<String> = fs::read_dir(&directory)
+            .expect("list the directory")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .filter(|name| name.ends_with(".ckpt"))
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            [
+                "000000000001-milestone.ckpt",
+                "000000000230-top_progress.ckpt",
+                "000000000231-stall.ckpt",
+                "000000000232-interval.ckpt",
+                "000000000240-top_progress.ckpt",
+                "000000000241-stall.ckpt",
+                "000000000242-interval.ckpt",
+            ]
+        );
+        for name in kept {
+            let mut reader = CheckpointReader::open(&directory.join(&name)).expect("open");
+            let executions = reader.header.executions;
+            assert_eq!(reader.next::<u64>().expect("body"), executions);
+            for (id, bytes) in reader.snapshots::<Vec<u8>>().expect("read the snapshots") {
+                assert_eq!(bytes, snapshot(id));
+            }
+            reader.finish().expect("no trailing bytes");
         }
         fs::remove_dir_all(&directory).expect("remove the directory");
     }

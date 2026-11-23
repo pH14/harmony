@@ -25,8 +25,9 @@ game adds them in step 1.
 
 ## Checkpoints and resumes
 
-- `checkpoint_on_progress` keeps a checkpoint at each new milestone and top
-  tier; `checkpoint_every` adds interval checkpoints. They go to
+- `checkpoint_on_progress` keeps a checkpoint at each new milestone and writes
+  one at each new top tier; `checkpoint_every` adds interval checkpoints. Only
+  the newest two tier, stall and interval checkpoints stay on disk. They go to
   `campaign/checkpoints/` with one shared `snapshots.store`, so keep the whole
   directory. The checkpoint that opens a hard part is the first
   `-milestone.ckpt` at or after the first try of its opening milestone.
