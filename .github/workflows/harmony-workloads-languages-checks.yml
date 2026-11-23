@@ -367,12 +367,12 @@ jobs:
         with:
           go-version: "1.26.3"
           cache: false
-      - name: Vet and test the kit and build every target
+      - name: Vet and test the kit and every target
         working-directory: workloads/harness
         run: |
           (cd kit && go vet ./... && go test ./...)
           for target in targets/*/; do
-            (cd "$target" && go vet ./... && go build -o "$RUNNER_TEMP/harness-build/" ./...)
+            (cd "$target" && go vet ./... && go build -o "$RUNNER_TEMP/harness-build/" ./... && go test ./...)
           done
       - name: Build the etcd image and check it without faults
         run: |
