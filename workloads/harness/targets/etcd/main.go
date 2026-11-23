@@ -88,10 +88,13 @@ type header struct {
 
 const revisionNeverFalls = "etcd: a linearizable request's response revision is never below a revision acknowledged before the request was sent"
 
-// A put, a transaction and a range without "serializable" go through the raft
-// log or a read index, so the member answers from a store that holds every
-// write acknowledged before the request was sent. Serializable ranges answer
-// from the member's own store and are exempt.
+// A put, the compare-and-swap transaction and a range without "serializable"
+// go through the raft log or a read index, so the member answers from a store
+// that holds every write acknowledged before the request was sent.
+// Serializable ranges answer from the member's own store and are exempt. The
+// floor is the highest revision this process has seen acknowledged when it
+// starts the request; each harness process (ready, drive, check) starts from
+// zero.
 type revisions struct {
 	mu     sync.Mutex
 	high   uint64
@@ -102,7 +105,8 @@ type revisions struct {
 var acknowledged = &revisions{assert: sdk.Always}
 
 func linearizable(path string, body any) bool {
-	if fields, ok := body.(map[string]any); ok && fields["serializable"] == true {
+	fields, ok := body.(map[string]any)
+	if !ok || fields["serializable"] != nil {
 		return false
 	}
 	return path == "/v3/kv/put" || path == "/v3/kv/txn" || path == "/v3/kv/range"

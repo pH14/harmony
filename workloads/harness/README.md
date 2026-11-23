@@ -903,13 +903,17 @@ put succeeds through any member.
 
 The adapter also asserts an always property of its own: a linearizable
 request's response revision is never below a revision acknowledged before the
-request was sent. Puts, transactions and ranges without `serializable` are
-linearizable; each successful answer's header revision is compared with the
-highest revision any member had acknowledged when the request left, and then
-raises that highest revision. Serializable ranges, including pinned and
-`replicas` reads, answer from one member's store, which may lag, so they are
-exempt. The property catches a stale linearizable read even when the key's
-value has not changed since, which the register check cannot see.
+request was sent. Puts, the compare-and-swap transaction and ranges without
+`serializable` are linearizable. Before each such request the adapter samples
+the highest header revision this process has seen in a successful answer;
+when the answer arrives, its header revision is compared with that sample and
+then raises the highest revision. A request that fails leaves the highest
+revision unchanged. Serializable ranges, including pinned and `replicas`
+reads, answer from one member's store, which may lag, so they are exempt. The
+highest revision belongs to one harness process, so `ready`, `drive` and each
+`check` start from zero. The property catches a stale linearizable read even
+when the key's value has not changed since, which the register check cannot
+see; it cannot see a stale value returned under a current header revision.
 
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.8` and `v3.6.9`; pass
