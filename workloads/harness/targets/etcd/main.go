@@ -106,7 +106,10 @@ var acknowledged = &revisions{assert: sdk.Always}
 
 func linearizable(path string, body any) bool {
 	fields, ok := body.(map[string]any)
-	if !ok || fields["serializable"] != nil {
+	if !ok {
+		return false
+	}
+	if _, set := fields["serializable"]; set {
 		return false
 	}
 	return path == "/v3/kv/put" || path == "/v3/kv/txn" || path == "/v3/kv/range"

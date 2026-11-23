@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 type assertion struct {
@@ -33,11 +34,11 @@ func recording(t *testing.T) *[]assertion {
 	return &got
 }
 
-func member(t *testing.T, revision *int, status *int) string {
+func member(t *testing.T, revision, status int) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(*status)
-		fmt.Fprintf(w, `{"header":{"revision":"%d"}}`, *revision)
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"header":{"revision":"%d"}}`, revision)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
@@ -53,17 +54,31 @@ func failed(got []assertion) []assertion {
 	return out
 }
 
+func high() uint64 {
+	h, _ := acknowledged.floor()
+	return h
+}
+
+func put() map[string]any    { return map[string]any{"key": enc("k"), "value": enc("v")} }
+func ranged() map[string]any { return map[string]any{"key": enc("k")} }
+
+func cas() map[string]any {
+	return map[string]any{
+		"compare": []any{map[string]any{"key": enc("k"), "result": "EQUAL", "target": "VALUE", "value": enc("old")}},
+		"success": []any{map[string]any{"request_put": map[string]any{"key": enc("k"), "value": enc("new")}}},
+	}
+}
+
 func TestALinearizableRangeBelowAnAcknowledgedPutFails(t *testing.T) {
 	got := recording(t)
-	ahead, behind, ok := 155, 3, http.StatusOK
 	c := client{http: newHTTP()}
 	ctx := context.Background()
-	fresh, stale := member(t, &ahead, &ok), member(t, &behind, &ok)
+	fresh, stale := member(t, 155, http.StatusOK), member(t, 3, http.StatusOK)
 
-	if _, err := c.post(ctx, fresh, "/v3/kv/put", map[string]any{"key": enc("k"), "value": enc("v")}); err != nil {
+	if _, err := c.post(ctx, fresh, "/v3/kv/put", put()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.post(ctx, stale, "/v3/kv/range", map[string]any{"key": enc("k")}); err != nil {
+	if _, err := c.post(ctx, stale, "/v3/kv/range", ranged()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,49 +92,116 @@ func TestALinearizableRangeBelowAnAcknowledgedPutFails(t *testing.T) {
 	}
 }
 
-func TestSerializableRangesAndFailedAnswersAreNotChecked(t *testing.T) {
+func TestSerializableRangesAndFailedAnswersNeitherAreCheckedNorRaiseTheFloor(t *testing.T) {
 	got := recording(t)
-	ahead, behind, ok, unavailable := 155, 3, http.StatusOK, http.StatusServiceUnavailable
 	c := client{http: newHTTP()}
 	ctx := context.Background()
-	fresh, stale, down := member(t, &ahead, &ok), member(t, &behind, &ok), member(t, &behind, &unavailable)
+	fresh := member(t, 155, http.StatusOK)
+	ahead, down := member(t, 900, http.StatusOK), member(t, 900, http.StatusServiceUnavailable)
 
-	if _, err := c.post(ctx, fresh, "/v3/kv/put", map[string]any{"key": enc("k"), "value": enc("v")}); err != nil {
+	if _, err := c.post(ctx, fresh, "/v3/kv/put", put()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.post(ctx, stale, "/v3/kv/range", map[string]any{"key": enc("k"), "serializable": true}); err != nil {
+	serializable := ranged()
+	serializable["serializable"] = true
+	if _, err := c.post(ctx, ahead, "/v3/kv/range", serializable); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.post(ctx, down, "/v3/kv/range", map[string]any{"key": enc("k")}); err == nil {
+	if _, err := c.post(ctx, down, "/v3/kv/range", ranged()); err == nil {
 		t.Fatal("a 503 answer was accepted")
 	}
 
 	if len(*got) != 1 || len(failed(*got)) != 0 {
 		t.Fatalf("assertions %v", *got)
 	}
+	if high() != 155 {
+		t.Fatalf("floor %d", high())
+	}
+}
+
+func TestEachCheckedAnswerRaisesTheFloor(t *testing.T) {
+	for _, first := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/v3/kv/put", put()},
+		{"/v3/kv/range", ranged()},
+		{"/v3/kv/txn", cas()},
+	} {
+		t.Run(first.path, func(t *testing.T) {
+			got := recording(t)
+			c := client{http: newHTTP()}
+			ctx := context.Background()
+			fresh, stale := member(t, 155, http.StatusOK), member(t, 154, http.StatusOK)
+
+			r, err := c.post(ctx, fresh, first.path, first.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Succeeded {
+				t.Fatal("a reply without succeeded decoded as succeeded")
+			}
+			if _, err := c.post(ctx, stale, "/v3/kv/range", ranged()); err != nil {
+				t.Fatal(err)
+			}
+			if bad := failed(*got); len(*got) != 2 || len(bad) != 1 || bad[0].details["acknowledged"] != uint64(155) {
+				t.Fatalf("assertions %v", *got)
+			}
+		})
+	}
+}
+
+func TestAnAnswerAtTheFloorPasses(t *testing.T) {
+	got := recording(t)
+	c := client{http: newHTTP()}
+	ctx := context.Background()
+	m := member(t, 155, http.StatusOK)
+
+	for _, step := range []struct {
+		path string
+		body map[string]any
+	}{{"/v3/kv/put", put()}, {"/v3/kv/range", ranged()}, {"/v3/kv/txn", cas()}} {
+		if _, err := c.post(ctx, m, step.path, step.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*got) != 3 || len(failed(*got)) != 0 {
+		t.Fatalf("assertions %v", *got)
+	}
 }
 
 func TestARevisionAcknowledgedAfterTheRequestWasSentIsNotAFloor(t *testing.T) {
 	got := recording(t)
-	ahead, behind, ok := 155, 3, http.StatusOK
 	c := client{http: newHTTP()}
-	ctx := context.Background()
-	arrived, release := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	arrived, release := make(chan struct{}, 1), make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		arrived <- struct{}{}
-		<-release
-		fmt.Fprintf(w, `{"header":{"revision":"%d"}}`, behind)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, `{"header":{"revision":"3"}}`)
 	}))
-	t.Cleanup(slow.Close)
-	fresh, stale := member(t, &ahead, &ok), member(t, &behind, &ok)
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		slow.Close()
+	})
+	fresh, stale := member(t, 155, http.StatusOK), member(t, 3, http.StatusOK)
 
-	done := make(chan error)
 	go func() {
-		_, err := c.post(ctx, slow.URL, "/v3/kv/range", map[string]any{"key": enc("k")})
+		_, err := c.post(ctx, slow.URL, "/v3/kv/range", ranged())
 		done <- err
 	}()
-	<-arrived
-	if _, err := c.post(ctx, fresh, "/v3/kv/put", map[string]any{"key": enc("k"), "value": enc("v")}); err != nil {
+	select {
+	case <-arrived:
+	case err := <-done:
+		t.Fatalf("the slow range ended before its handler ran: %v", err)
+	}
+	if _, err := c.post(ctx, fresh, "/v3/kv/put", put()); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
@@ -129,46 +211,14 @@ func TestARevisionAcknowledgedAfterTheRequestWasSentIsNotAFloor(t *testing.T) {
 	if len(*got) != 2 || len(failed(*got)) != 0 {
 		t.Fatalf("assertions %v", *got)
 	}
-	if high, _ := acknowledged.floor(); high != 155 {
-		t.Fatalf("floor %d after a lower late answer", high)
+	if high() != 155 {
+		t.Fatalf("floor %d after a lower late answer", high())
 	}
 
-	if _, err := c.post(ctx, stale, "/v3/kv/range", map[string]any{"key": enc("k")}); err != nil {
+	if _, err := c.post(ctx, stale, "/v3/kv/range", ranged()); err != nil {
 		t.Fatal(err)
 	}
 	if bad := failed(*got); len(*got) != 3 || len(bad) != 1 || bad[0].details["acknowledged"] != uint64(155) {
-		t.Fatalf("assertions %v", *got)
-	}
-}
-
-func TestAnAnswerAtTheFloorAndAFailedCompareAreChecked(t *testing.T) {
-	got := recording(t)
-	revision, ok := 155, http.StatusOK
-	c := client{http: newHTTP()}
-	ctx := context.Background()
-	m := member(t, &revision, &ok)
-
-	if _, err := c.post(ctx, m, "/v3/kv/put", map[string]any{"key": enc("k"), "value": enc("v")}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.post(ctx, m, "/v3/kv/range", map[string]any{"key": enc("k")}); err != nil {
-		t.Fatal(err)
-	}
-	r, err := c.post(ctx, m, "/v3/kv/txn", map[string]any{"compare": []any{}, "success": []any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Succeeded {
-		t.Fatal("a reply without succeeded decoded as succeeded")
-	}
-	if len(*got) != 3 || len(failed(*got)) != 0 {
-		t.Fatalf("assertions %v", *got)
-	}
-	revision = 154
-	if _, err := c.post(ctx, m, "/v3/kv/txn", map[string]any{"compare": []any{}, "success": []any{}}); err != nil {
-		t.Fatal(err)
-	}
-	if len(*got) != 4 || len(failed(*got)) != 1 {
 		t.Fatalf("assertions %v", *got)
 	}
 }
@@ -182,6 +232,7 @@ func TestOnlyMapBodiesWithoutSerializableAreChecked(t *testing.T) {
 		{"/v3/kv/range", map[string]any{"key": "k"}, true},
 		{"/v3/kv/range", map[string]any{"key": "k", "serializable": true}, false},
 		{"/v3/kv/range", map[string]any{"key": "k", "serializable": false}, false},
+		{"/v3/kv/range", map[string]any{"key": "k", "serializable": nil}, false},
 		{"/v3/kv/range", struct{ Serializable bool }{true}, false},
 		{"/v3/kv/put", map[string]any{"key": "k"}, true},
 		{"/v3/kv/txn", map[string]any{}, true},
