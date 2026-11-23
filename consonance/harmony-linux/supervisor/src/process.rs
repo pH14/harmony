@@ -25,7 +25,8 @@ pub fn restore_oom_score(command: &mut Command) {
         return;
     }
     // SAFETY: the closure captures nothing, and the child runs only open,
-    // write and close, which are async-signal-safe.
+    // write and close, which are async-signal-safe, and reads errno through
+    // `io::Error::last_os_error`, which does not allocate.
     unsafe {
         command.pre_exec(|| {
             let fd = libc::open(

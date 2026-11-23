@@ -502,7 +502,6 @@ impl Disk {
 
     fn retire_log(&self, mapper: &Mapper, target: &str, params: &str) -> Result<(), String> {
         let log_name = self.log_name();
-        mapper.suspend(&log_name)?;
         mapper.send(&log_name, &format!("mark {DRAIN_MARK}"))?;
         let device = self.first + 1;
         let mut log = RamDevice::reader(device)
@@ -523,9 +522,10 @@ impl Disk {
     }
 
     fn cut(&mut self, mapper: &Mapper) -> Result<Vec<LogEntry>, String> {
-        self.finish_fold()?;
         let name = self.name();
         let log_name = self.log_name();
+        mapper.suspend(&log_name)?;
+        self.finish_fold()?;
         self.retire_log(mapper, "error", "")?;
         mapper.fail(&name, self.sectors())?;
         rustix::mount::unmount(Path::new(&self.spec.path), UnmountFlags::DETACH)
@@ -568,6 +568,7 @@ impl Disk {
         let (target, params) = DiskMode::Normal.table(&format!("{RAM_MAJOR}:{}", self.first));
         mapper.suspend(&name)?;
         self.finish_fold()?;
+        mapper.suspend(&log_name)?;
         self.retire_log(mapper, target, &params)?;
         let mut log = self.open(1)?;
         let mut growing = Growing {

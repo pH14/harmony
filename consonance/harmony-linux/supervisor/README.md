@@ -382,7 +382,9 @@ as a kill window does and keeps it down until a later restart window. It then
 cuts the disk:
 
 1. It suspends the log device without flushing or freezing the filesystem,
-   adds a `harmony-drain` mark to the log, and waits until the entry headers,
+   so no write reaches the log after the moment of the cut, and waits for a
+   compaction's fold still running on that disk. It then adds a
+   `harmony-drain` mark to the log and waits until the entry headers,
    followed from the start of the log, end at that mark in the last allocated
    sector. No entry is then still queued when the target is torn down. It
    then swaps an `error` table under the log device and then under the
@@ -421,10 +423,11 @@ supervisor compacts its log:
    writes still waiting for a flush and their data, drops the end mark, and
    keeps the extents of the applied plain writes after the format mark for
    corruption draws. The poll loop goes on meanwhile, and other disks fold in
-   their own threads. A cut on that disk waits for the fold. If the new log
-   reaches 64 MiB before the fold ends, the next compaction suspends the disk
-   and waits for the fold before it waits for the drain mark, so a workload
-   that logs faster than the supervisor folds is held back.
+   their own threads. A cut on that disk waits for the fold with the log
+   device suspended. If the new log reaches 64 MiB before the fold ends, the
+   next compaction suspends the disk and waits for the fold before it waits
+   for the drain mark, so a workload that logs faster than the supervisor
+   folds is held back.
 
 The supervisor checks the logs after it applies a tick's actions, so a cut
 never waits for a fold that started in the same tick. It logs a compaction at
@@ -467,10 +470,10 @@ teardown (a flush queues every write held for it), the writes still waiting for
 a flush that the teardown logs, and everything logged while a stall window is
 open. Raise the guest RAM (`ram_mib`) to match.
 A guest that runs out of memory ends the execution: the supervisor reads the
-`oom_kill` counter in `/proc/vmstat` whenever a node exits and once a second,
-and reports the first kernel OOM kill as an infrastructure error. A structured
-supervisor sets its own `oom_score_adj` to -1000 and that of every process it
-starts back to 0, so the OOM killer picks one of those processes, never the
+`oom_kill` counter in `/proc/vmstat` whenever a node exits and every 100 poll
+ticks, and reports the first kernel OOM kill as an infrastructure error. A
+structured supervisor sets its own `oom_score_adj` to -1000 and that of every
+process it starts back to 0, so the OOM killer picks another process, never the
 supervisor, which holds the copied logs while folds run. The guest
 kernels charge one execution tick for each page-allocation retry, so an
 allocation that reclaim cannot satisfy still lets timers fire and the OOM
