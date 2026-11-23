@@ -68,8 +68,9 @@ An action is a button chord or a missile volley, defined in
 Chords come from the shared NES chord draw in the
 [package README](../../README.md#chord-draw): the 36 chords of nine D-pad
 positions and four A/B states, with no tap button, so a chord never presses
-Start or Select, and B from a chord fires the beam unless a volley's disarm
-presses all missed within its limit and left missiles armed. A red door takes
+Start or Select, and B from a chord fires whatever the missile toggle holds:
+the beam, unless a root ended with missiles armed or a volley's disarm presses
+all missed within its limit. A red door takes
 five missiles, and a Select tap left missiles armed for every later B press,
 so random play spent its stock on whatever it faced before it reached a door.
 One draw in 12 is a volley. A volley fires only while something that takes
