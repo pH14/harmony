@@ -168,6 +168,11 @@ ARG HARNESS_BUNDLE=bundle
 COPY workloads/harness/targets/etcd/${HARNESS_BUNDLE} /etc/harmony/bundle
 COPY workloads/harness/targets/etcd/setup.sh workloads/harness/targets/etcd/node.sh /opt/harmony/
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
+RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
+    && if grep -q -e '--snapshot-catchup-entries' /etc/harmony/bundle; then \
+        case "${ETCD_VERSION}" in \
+            v3.5.*) echo "${HARNESS_BUNDLE} passes --snapshot-catchup-entries, which etcd ${ETCD_VERSION} does not accept; build it with ETCD_VERSION set to a 3.6 release such as v3.6.9" >&2; exit 1 ;; \
+        esac; \
+    fi
 
 CMD ["/opt/harmony/node.sh", "1", "1"]

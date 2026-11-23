@@ -887,7 +887,10 @@ passes every argument after the member index and count to etcd.
 `bundle-snapshot` runs three members with `--snapshot-count 10` and
 `--snapshot-catchup-entries 10`, so a member that falls behind by a few
 writes is sent a snapshot rather than log entries, and sets
-`HARNESS_ETCD_DEFRAGMENT=20` for the driver.
+`HARNESS_ETCD_DEFRAGMENT=20` for the driver. etcd 3.5 does not accept
+`--snapshot-catchup-entries`, so the image build refuses a bundle that passes
+it on a 3.5 release; build it with `--build-arg HARNESS_BUNDLE=bundle-snapshot
+--build-arg ETCD_VERSION=v3.6.9` or another 3.6 release.
 
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
@@ -906,25 +909,35 @@ failure. A write is a definite failure only when the dial fails; every other
 write error is indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
-With `HARNESS_ETCD_DEFRAGMENT` set to N, one operation in N, drawn at the
-`etcd.defragment` site, first sends `/v3/maintenance/defragment` to the
-operation's member. The defragment changes no key, so it is not journaled and
-its error is ignored; a defragment that loses data shows up in the pinned
-reads and the replica comparison.
+With `HARNESS_ETCD_DEFRAGMENT` set to N, one operation of the `drive` in N,
+drawn at the `etcd.defragment` site, first sends `/v3/maintenance/defragment`
+to the operation's member; `check` and `ready` ignore the variable. N is 0
+(off) to 65,535, the largest bound for which the draw is a host choice. The
+defragment gets at most 2 seconds and at most half of the operation's
+remaining time. It changes no key, so it is not journaled and its error is
+ignored; an operation whose deadline passed during it fails definitely,
+because its own request was never sent. A defragment that loses data shows up
+in the pinned reads and the replica comparison.
 
 The guest has one vCPU, which three members and the driver keep busy, so
 the driver's operation mix sets how fast the Raft log grows. With the default
 bundle, about 6 entries are applied per guest second with no faults. A bundle
-that needs more entries per guest second, such as one that waits for etcd's
-default snapshot count of 10,000, can set two driver variables.
-`HARNESS_ETCD_WRITES_ONLY=1` draws only writes and compare-and-swaps
-(`Register.NoReads`). Linearizable reads cost a ReadIndex round on every
-member and add no entry. The read properties stay undecided; the write
-properties, the pinned reads and the replica comparison still run.
-`HARNESS_ETCD_KEEPALIVE=1` keeps one connection per member open for each
-process, rather than dialing for each operation. A request to a member cut
-off by a partition then waits for the operation timeout and is
-indeterminate, where a fresh dial would fail at once and be definite. With
+that needs more entries per guest second, such as one that waits for etcd 3.6's
+default snapshot count of 10,000 (100,000 in 3.5), can set two driver variables.
+`HARNESS_ETCD_WRITES_ONLY=1` makes the drive draw only writes and
+compare-and-swaps (`Register.NoReads`). Linearizable reads cost a ReadIndex
+round on every member and add no entry. The check still makes its own reads:
+the unpinned read of each key, the pinned reads and the replica comparison.
+So the stale-read and linearizability properties are decided only on those
+check reads, and a stale read that happens during the drive and is gone by
+the check is not seen.
+`HARNESS_ETCD_KEEPALIVE=1` keeps one idle connection per member open for each
+client, rather than dialing for each operation; a connection goes to one
+member and closes with its client. The network hooks cut links between
+members, not between the driver and a member, so they do not change which
+connection a request uses. A request to a killed member that reuses a kept
+connection fails on that connection and is indeterminate, where a fresh dial
+would be refused at once and be definite. With
 both variables, `--processes 16` and `--max-pause 2ms`, the members apply
 about 14 entries per guest second with no faults. More processes do not
 raise the rate further, because the vCPU is already saturated.
@@ -932,7 +945,8 @@ raise the rate further, because the vCPU is already saturated.
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.4`, `v3.6.5`, `v3.6.8` and
 `v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions. Choose another bundle
-with `--build-arg HARNESS_BUNDLE=bundle-single` or `bundle-snapshot`.
+with `--build-arg HARNESS_BUNDLE=bundle-single` or `bundle-snapshot`, which
+needs a 3.6 release.
 
 ## Redis-Raft
 

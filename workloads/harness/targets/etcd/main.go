@@ -28,6 +28,8 @@ const (
 	defragmentEnv = "HARNESS_ETCD_DEFRAGMENT"
 	writesEnv     = "HARNESS_ETCD_WRITES_ONLY"
 	keepAliveEnv  = "HARNESS_ETCD_KEEPALIVE"
+
+	defragmentLimit = 2 * time.Second
 )
 
 type adapter struct {
@@ -62,7 +64,7 @@ func newHTTP(keepAlive bool) *http.Client {
 	}}
 }
 
-func (c client) Close() {}
+func (c client) Close() { c.http.CloseIdleConnections() }
 
 type kv struct {
 	Key            string `json:"key"`
@@ -95,11 +97,17 @@ func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) 
 // Each operation goes to one member drawn from the SDK stream, so reads and
 // writes reach followers as well as the leader. With defragment set to N, one
 // operation in N first defragments that member's backend; the result is not
-// recorded because a defragment changes no key.
+// recorded because a defragment changes no key. The defragment gets at most
+// half of the operation's remaining time, and an operation whose deadline
+// passed during the defragment fails definitely because its request was never
+// sent.
 func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	base := c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
 	if c.defragment > 0 && sdk.Below("etcd.defragment", c.defragment) == 0 {
-		_, _ = c.post(ctx, base, "/v3/maintenance/defragment", map[string]any{})
+		c.defragmentMember(ctx, base)
+		if err := ctx.Err(); err != nil {
+			return nil, runner.Definite(fmt.Errorf("defragment of %s: %w", base, err))
+		}
 	}
 	key := enc(op.K)
 	switch op.F {
@@ -212,6 +220,16 @@ func (c client) replicas(ctx context.Context, node string, keys []string) (map[s
 
 // Only a refused or failed dial is definite. The gateway answers every other
 // error after the request may have reached the raft log.
+func (c client) defragmentMember(ctx context.Context, base string) {
+	limit := defragmentLimit
+	if deadline, ok := ctx.Deadline(); ok {
+		limit = min(limit, time.Until(deadline)/2)
+	}
+	maintenance, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	_, _ = c.post(maintenance, base, "/v3/maintenance/defragment", map[string]any{})
+}
+
 func (c client) post(ctx context.Context, base, path string, body any) (reply, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -279,11 +297,13 @@ func main() {
 	var defragment uint64
 	if text := os.Getenv(defragmentEnv); text != "" {
 		n, err := strconv.ParseUint(text, 10, 64)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bad %s %q\n", defragmentEnv, text)
+		if err != nil || n > sdk.MaxChoiceOptions {
+			fmt.Fprintf(os.Stderr, "bad %s %q: want 0 to %d\n", defragmentEnv, text, sdk.MaxChoiceOptions)
 			os.Exit(2)
 		}
-		defragment = n
+		if len(os.Args) > 1 && os.Args[1] == "drive" {
+			defragment = n
+		}
 	}
 	runner.Main(adapter{
 		members:    members,
