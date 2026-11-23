@@ -128,15 +128,18 @@ Each stage climbs one integer:
   done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
-  few touches of margin. The strategy in `metroid.toml` continues past Kraid,
+  few touches of margin. It is also done once Kraid is defeated, so a state
+  that beats him on less energy is not sent back to refill. The strategy in `metroid.toml` continues past Kraid,
   where this plan ends. Its stage after Kraid is done at 120 energy, six
   touches for the six screens of the hideout shaft at map column 12 that the
   route out climbs, which needs the energy tank in Kraid's room. A touch in
   Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
   the Ridley elevator is done at 80, one touch for each of the eight screens
   of the shaft at Norfair column 30. A touch in Ridley's hideout costs 24
-  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there are done at 96,
-  four touches. Its routes run from Kraid's door to the Norfair elevator
+  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there, before Ridley's
+  door and after Ridley, are done at 96, four touches. There is no energy
+  stage between Ridley's door and the fight, because the rooms there supply
+  no energy to farm. Its routes run from Kraid's door to the Norfair elevator
   `(22,13)`, from there to the Ridley elevator `(25,24)` and on to Ridley's
   door `(18,29)`, built from the same tables as the routes below, with the
   elevators Brinstar `(22,11)` to Norfair `(22,13)` and Norfair `(25,22)` to
@@ -172,7 +175,11 @@ Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
 avoids red doors, since they open only to missiles. Each route is a shortest
 path in that graph. Elevators join Brinstar `(7,18)` to Kraid's hideout
-`(7,20)`.
+`(7,20)`. The route to Kraid's door starts with eleven cells from `(20,11)`
+west along row 11 and up column 13 to `(13,8)`, where the energy stage before
+it leaves Samus, and then lists the shortest path from the bombs room
+`(25,5)`. Both reach column 13 at `(13,7)`, whose index is past the bombs-room
+loop, so a state that climbs column 13 skips that loop.
 
 The place is the area byte, the map cell, boss damage and the Zebetite hits
 still needed, so every hit on a boss or a Zebetite column opens a new place

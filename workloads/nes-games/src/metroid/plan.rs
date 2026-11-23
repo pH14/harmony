@@ -25,6 +25,7 @@ pub enum Done {
     MissileCapacity,
     RouteEnd,
     Energy(u16),
+    EnergyOrKraid(u16),
     Kraid,
     Never,
 }
@@ -123,6 +124,17 @@ const TO_BOMBS: &[Cell] = &[
 ];
 
 const TO_KRAID_DOOR: &[Cell] = &[
+    b(20, 11),
+    b(19, 11),
+    b(18, 11),
+    b(17, 11),
+    b(16, 11),
+    b(15, 11),
+    b(14, 11),
+    b(13, 11),
+    b(13, 10),
+    b(13, 9),
+    b(13, 8),
     b(25, 5),
     b(26, 5),
     b(27, 5),
@@ -227,7 +239,7 @@ pub const PLAN: &[Stage] = &[
     },
     Stage {
         name: "energy_before_kraid",
-        done: Done::Energy(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID),
+        done: Done::EnergyOrKraid(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID),
         objective: Objective::Energy,
     },
     Stage {
@@ -288,13 +300,17 @@ impl plan::Stage for Stage {
                 _ => false,
             },
             Done::Energy(target) => energy_reached(state, target),
+            Done::EnergyOrKraid(target) => state.kraid_defeated || energy_reached(state, target),
             Done::Kraid => state.kraid_defeated,
             Done::Never => false,
         }
     }
 
     fn latches(self) -> bool {
-        matches!(self.done, Done::RouteEnd | Done::Energy(_))
+        matches!(
+            self.done,
+            Done::RouteEnd | Done::Energy(_) | Done::EnergyOrKraid(_)
+        )
     }
 }
 
@@ -385,7 +401,7 @@ mod tests {
         state.health = 640;
         assert_eq!(locate(state, 0, Some((2, 3))), (2, 3));
         state.missile_capacity = 5;
-        assert_eq!(locate(state, 0, Some((2, 3))), (6, 0));
+        assert_eq!(locate(state, 0, Some((2, 3))), (6, 11));
     }
 
     #[test]
@@ -450,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn every_route_starts_where_the_previous_stage_ends() {
+    fn every_route_holds_the_cell_where_the_previous_stage_ends() {
         let routes: Vec<&[Cell]> = PLAN
             .iter()
             .filter_map(|stage| match stage.objective {
@@ -459,7 +475,7 @@ mod tests {
             })
             .collect();
         for pair in routes.windows(2) {
-            assert_eq!(pair[0].last(), pair[1].first());
+            assert!(pair[1].contains(pair[0].last().unwrap()));
         }
         for route in routes {
             for (index, cell) in route.iter().enumerate() {

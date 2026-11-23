@@ -608,6 +608,14 @@ mod tests {
     }
 
     #[test]
+    fn the_ridley_fight_follows_his_door_with_no_energy_stage_between() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(at("ridley_door") + 1, at("ridley"));
+    }
+
+    #[test]
     fn missiles_then_energy_refill_before_the_tourian_elevator() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();
