@@ -26,20 +26,24 @@ import (
 const (
 	membersEnv    = "HARNESS_ETCD_MEMBERS"
 	defragmentEnv = "HARNESS_ETCD_DEFRAGMENT"
+	writesEnv     = "HARNESS_ETCD_WRITES_ONLY"
+	keepAliveEnv  = "HARNESS_ETCD_KEEPALIVE"
 )
 
 type adapter struct {
 	members    []string
 	names      []string
 	defragment uint64
+	writesOnly bool
+	keepAlive  bool
 }
 
-func (adapter) Family() family.Family { return family.Register{} }
+func (a adapter) Family() family.Family { return family.Register{NoReads: a.writesOnly} }
 
 func (a adapter) Nodes() []string { return a.names }
 
 func (a adapter) Connect(context.Context, int) (runner.Client, error) {
-	return client{members: a.members, names: a.names, defragment: a.defragment, http: newHTTP()}, nil
+	return client{members: a.members, names: a.names, defragment: a.defragment, http: newHTTP(a.keepAlive)}, nil
 }
 
 type client struct {
@@ -49,11 +53,12 @@ type client struct {
 	http       *http.Client
 }
 
-func newHTTP() *http.Client {
+func newHTTP(keepAlive bool) *http.Client {
 	return &http.Client{Transport: &http.Transport{
-		Proxy:             nil,
-		DialContext:       (&net.Dialer{Timeout: time.Second}).DialContext,
-		DisableKeepAlives: true,
+		Proxy:               nil,
+		DialContext:         (&net.Dialer{Timeout: time.Second}).DialContext,
+		DisableKeepAlives:   !keepAlive,
+		MaxIdleConnsPerHost: 1,
 	}}
 }
 
@@ -241,7 +246,7 @@ func (c client) post(ctx context.Context, base, path string, body any) (reply, e
 }
 
 func (a adapter) Ready(ctx context.Context) error {
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	return runner.AnyMember(ctx, a.members, func(ctx context.Context, base string) error {
 		if _, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": enc("ready"), "value": enc("1")}); err != nil {
 			return fmt.Errorf("%s: %w", base, err)
@@ -280,5 +285,24 @@ func main() {
 		}
 		defragment = n
 	}
-	runner.Main(adapter{members: members, names: names, defragment: defragment})
+	runner.Main(adapter{
+		members:    members,
+		names:      names,
+		defragment: defragment,
+		writesOnly: flagEnv(writesEnv),
+		keepAlive:  flagEnv(keepAliveEnv),
+	})
+}
+
+func flagEnv(name string) bool {
+	switch text := os.Getenv(name); text {
+	case "", "0":
+		return false
+	case "1":
+		return true
+	default:
+		fmt.Fprintf(os.Stderr, "bad %s %q\n", name, text)
+		os.Exit(2)
+	}
+	return false
 }

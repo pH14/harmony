@@ -41,12 +41,13 @@ const (
 )
 
 type Register struct {
-	Keys   int
-	NoCAS  bool
-	Steps  int
-	Rounds int
-	Pause  time.Duration
-	Reads  ReadConsistency
+	Keys    int
+	NoCAS   bool
+	NoReads bool
+	Steps   int
+	Rounds  int
+	Pause   time.Duration
+	Reads   ReadConsistency
 }
 
 func (Register) Name() string { return "register" }
@@ -86,7 +87,7 @@ func registerKey(index int) string { return fmt.Sprintf("k%d", index) }
 func (r Register) Read() Op { return Op{F: RegisterReadF, K: registerKey(0)} }
 
 func (r Register) Generator(int) Generator {
-	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, known: map[string]string{}}
+	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, known: map[string]string{}}
 }
 
 func (Register) Recorder(*history.History) Recorder { return plainRecorder{} }
@@ -94,12 +95,19 @@ func (Register) Recorder(*history.History) Recorder { return plainRecorder{} }
 type registerGenerator struct {
 	keys  int
 	cas   bool
+	reads bool
 	known map[string]string
 }
 
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
 	key := registerKey(int(draw("register.key", uint64(g.keys))))
-	switch draw("register.op", 4) {
+	var choice uint64
+	if g.reads {
+		choice = draw("register.op", 4)
+	} else {
+		choice = 2 + draw("register.op", 2)
+	}
+	switch choice {
 	case 0, 1:
 		return Op{F: RegisterReadF, K: key}
 	case 3:

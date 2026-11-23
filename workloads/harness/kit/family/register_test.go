@@ -205,6 +205,24 @@ func TestRegisterGeneratorUsesKnownValuesForCAS(t *testing.T) {
 	}
 }
 
+func TestRegisterGeneratorWithoutReads(t *testing.T) {
+	generator := Register{NoReads: true}.Generator(0)
+	generator.Observe(Op{F: RegisterWrite, K: "k0", V: "x"}, history.OK, nil)
+	seen := map[string]bool{}
+	for choice := uint64(0); choice < 2; choice++ {
+		op := generator.Next(func(site string, n uint64) uint64 {
+			if site == "register.op" {
+				return choice % n
+			}
+			return 0
+		}, func() string { return "v" })
+		seen[op.F] = true
+	}
+	if !seen[RegisterWrite] || !seen[RegisterCAS] || seen[RegisterReadF] {
+		t.Fatalf("operations %v", seen)
+	}
+}
+
 func TestRegisterMonotonicAcceptsStaleRead(t *testing.T) {
 	b := newBuilder(t)
 	b.write(0, "k0", "a", 1, history.OK, 2)

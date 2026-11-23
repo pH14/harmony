@@ -912,6 +912,23 @@ operation's member. The defragment changes no key, so it is not journaled and
 its error is ignored; a defragment that loses data shows up in the pinned
 reads and the replica comparison.
 
+The guest has one vCPU, which three members and the driver keep busy, so
+the driver's operation mix sets how fast the Raft log grows. With the default
+bundle, about 6 entries are applied per guest second with no faults. A bundle
+that needs more entries per guest second, such as one that waits for etcd's
+default snapshot count of 10,000, can set two driver variables.
+`HARNESS_ETCD_WRITES_ONLY=1` draws only writes and compare-and-swaps
+(`Register.NoReads`). Linearizable reads cost a ReadIndex round on every
+member and add no entry. The read properties stay undecided; the write
+properties, the pinned reads and the replica comparison still run.
+`HARNESS_ETCD_KEEPALIVE=1` keeps one connection per member open for each
+process, rather than dialing for each operation. A request to a member cut
+off by a partition then waits for the operation timeout and is
+indeterminate, where a fresh dial would fail at once and be definite. With
+both variables, `--processes 16` and `--max-pause 2ms`, the members apply
+about 14 entries per guest second with no faults. More processes do not
+raise the rate further, because the vCPU is already saturated.
+
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
 (default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.4`, `v3.6.5`, `v3.6.8` and
 `v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions. Choose another bundle
