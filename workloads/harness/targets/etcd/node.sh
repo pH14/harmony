@@ -4,6 +4,7 @@ set -eu
 
 index=${1:?missing member index}
 members=${2:?missing member count}
+shift 2
 name="m${index}"
 address="10.77.0.${index}"
 cluster=""
@@ -30,4 +31,5 @@ exec ${run} /opt/etcd/etcd \
   --initial-cluster "${cluster}" \
   --initial-cluster-state new \
   --initial-cluster-token harmony-harness \
+  "$@" \
   >>"/tmp/etcd/${name}.log" 2>&1

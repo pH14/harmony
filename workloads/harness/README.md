@@ -309,6 +309,34 @@ the check journal as evidence. A check that ran fewer rounds, or a round with
 fewer than two answering nodes, decides nothing unless a round with two or more
 answering nodes found no unexplained disagreement.
 
+`Register.Watch` set to N adds a `watch` operation to about one operation in
+N. A watch's input is a start revision, drawn from the highest revision the
+client has seen: up to 100 revisions in the past, the next revision, or up to
+100 revisions in the future. Its output is the list of events it delivered,
+each with a revision, key and value (no value for a delete). Writes and `cas`
+operations then return the revision the store assigned them. With watches on,
+the check also reads each pinned node's full change history (the `history`
+operation), and the longest history is the reference. These assertions check
+every successful watch:
+
+- `register: a watch never delivers an event below its start revision`;
+- `register: a watch delivers events in revision order, each once`, where
+  events at one revision are ordered by key;
+- `register: a watch delivers every event from its start revision to its last delivered revision`,
+  against the reference history where it reaches that far and against the
+  acknowledged writes' revisions beyond it;
+- `register: every delivered event matches the reference history`, or, beyond
+  the reference, an acknowledged write of that key and value at that revision;
+- `register: every member's history agrees`, which compares each node's
+  history with the reference up to the shorter one's last revision and names
+  the node that differs.
+
+The five checks and the history read belong to the kit, not to one adapter.
+A family that implements `Changefeed` (`Feed() (Op, bool)`) tells the check
+runner which operation reads a node's change history, so any target whose
+system has a change feed can use the same checks by answering `watch` and
+`history`.
+
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
 
@@ -318,7 +346,9 @@ The bundle's `check` line performs one read through the adapter into its own
 journal, plus one read per node when the adapter pins reads. For the register
 family it also runs, starting with those reads, up to three `replicas` rounds
 500 ms of guest time apart (`Register.Pause`), each with one read per node
-bounded by `--check-timeout`. After each round it reloads the journals and
+bounded by `--check-timeout`. When the family reads change histories
+(`Changefeed`) and `HARMONY_FAULTS_IN_FORCE` is not `1`, the check also issues
+one history read per pinned node. After each round it reloads the journals and
 stops when the round shows no disagreement under the register rule above, or
 when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
@@ -901,8 +931,23 @@ failure. A write is a definite failure only when the dial fails; every other
 write error is indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
+`HARNESS_ETCD_WATCH=N` turns on the register family's watches (`Register.Watch`)
+over the keys from `k` to `l`. A watch streams `/v3/watch` from its start
+revision and splits its time into one to three segments drawn from the SDK
+stream. Each segment after the first goes to a newly drawn member and resumes
+from the revision after the last delivered event, so a watch fails over the
+way a client does after its member restarts or is cut off. Events delivered
+before an error are kept. Writes and `cas` operations return the response
+header's revision. The `history` read on `mI` finds the highest
+`mod_revision` with a serializable range on `mI`, then streams a watch from
+revision 1 on `mI` until it delivers that revision. `bundle-watch` is the
+three-member bundle with `--snapshot-count 10 --snapshot-catchup-entries 10`
+on each member, so a follower that falls behind is sent a snapshot, and
+`HARNESS_ETCD_WATCH=4` on its drive and check lines.
+
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
-(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.8` and `v3.6.9`; pass
+(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.1`, `v3.6.2`, `v3.6.8` and
+`v3.6.9`; pass
 `ETCD_SOURCE_SHA256` for other versions. Build the single-member image with
 `--build-arg HARNESS_BUNDLE=bundle-single`.
 

@@ -23,14 +23,24 @@ import (
 	"harmony.local/harness/kit/sdk"
 )
 
-const membersEnv = "HARNESS_ETCD_MEMBERS"
+const (
+	membersEnv = "HARNESS_ETCD_MEMBERS"
+	watchEnv   = "HARNESS_ETCD_WATCH"
+)
+
+const (
+	watchFirst = "k"
+	watchEnd   = "l"
+	watchSpare = 250 * time.Millisecond
+)
 
 type adapter struct {
 	members []string
 	names   []string
+	watch   uint64
 }
 
-func (adapter) Family() family.Family { return family.Register{} }
+func (a adapter) Family() family.Family { return family.Register{Watch: a.watch} }
 
 func (a adapter) Nodes() []string { return a.names }
 
@@ -74,10 +84,15 @@ func (c *number) UnmarshalJSON(data []byte) error {
 // The gateway omits zero fields: a range with no match has no "kvs" and a
 // transaction whose compare failed has no "succeeded".
 type reply struct {
+	Header    header `json:"header"`
 	Kvs       []kv   `json:"kvs"`
 	Succeeded bool   `json:"succeeded"`
 	Error     string `json:"error"`
 	Message   string `json:"message"`
+}
+
+type header struct {
+	Revision number `json:"revision"`
 }
 
 func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -89,8 +104,11 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	key := enc(op.K)
 	switch op.F {
 	case family.RegisterWrite:
-		_, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": key, "value": enc(op.V.(string))})
-		return nil, err
+		r, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": key, "value": enc(op.V.(string))})
+		if err != nil {
+			return nil, err
+		}
+		return uint64(r.Header.Revision), nil
 	case family.RegisterCAS:
 		pair := op.V.([]string)
 		r, err := c.post(ctx, base, "/v3/kv/txn", map[string]any{
@@ -103,7 +121,7 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		if !r.Succeeded {
 			return nil, runner.Definite(errors.New("cas: current value differs"))
 		}
-		return nil, nil
+		return uint64(r.Header.Revision), nil
 	case family.RegisterReadF:
 		body := map[string]any{"key": key}
 		if op.Node != "" {
@@ -129,6 +147,18 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 			return string(value), nil
 		}
 		return nil, runner.Definite(fmt.Errorf("range: %d values for one key", len(r.Kvs)))
+	case family.RegisterWatch:
+		return c.watch(ctx, base, op.V.(family.WatchQuery).From)
+	case family.RegisterHistory:
+		at := slices.Index(c.names, op.Node)
+		if at < 0 {
+			return nil, runner.Definite(fmt.Errorf("unknown node %q", op.Node))
+		}
+		events, err := c.history(ctx, c.members[at])
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		return events, nil
 	case family.RegisterReplicas:
 		copies, err := c.replicas(ctx, op.Node, op.V.(family.ReplicaQuery).Keys)
 		if err != nil {
@@ -240,6 +270,153 @@ func (a adapter) Ready(ctx context.Context) error {
 	})
 }
 
+// A watch runs until shortly before the operation deadline, in up to three
+// segments on drawn members. Each later segment resumes from the revision after
+// the last event delivered, as a client does when it fails over to another
+// endpoint. Events delivered before a stream breaks are kept, because the
+// checks bound completeness by the last delivered revision.
+func (c client) watch(ctx context.Context, base string, from uint64) ([]family.Event, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(time.Second)
+	}
+	end := deadline.Add(-watchSpare)
+	segments := 1 + int(sdk.Below("etcd.watch.segments", 3))
+	events := []family.Event{}
+	next := from
+	for segment := range segments {
+		if segment > 0 {
+			base = c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
+		}
+		stop := time.Now().Add(time.Until(end) / time.Duration(segments-segment))
+		got, err := c.stream(ctx, base, next, stop, 0)
+		events = append(events, got...)
+		if len(got) > 0 {
+			next = got[len(got)-1].Revision + 1
+		}
+		if err != nil {
+			if len(events) == 0 {
+				return nil, runner.Definite(err)
+			}
+			break
+		}
+	}
+	return events, nil
+}
+
+// A member's history is a watch from revision 1 on that member, read until it
+// delivers the highest revision of any register key the member holds.
+func (c client) history(ctx context.Context, base string) ([]family.Event, error) {
+	r, err := c.post(ctx, base, "/v3/kv/range", map[string]any{
+		"key":          enc(watchFirst),
+		"range_end":    enc(watchEnd),
+		"serializable": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var through uint64
+	for _, entry := range r.Kvs {
+		through = max(through, uint64(entry.ModRevision))
+	}
+	if through == 0 {
+		return []family.Event{}, nil
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(time.Second)
+	}
+	events, err := c.stream(ctx, base, 1, deadline.Add(-watchSpare), through)
+	if err == nil && (len(events) == 0 || events[len(events)-1].Revision < through) {
+		err = fmt.Errorf("history ended before revision %d", through)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+type watchReply struct {
+	Result struct {
+		Canceled        bool    `json:"canceled"`
+		CompactRevision number  `json:"compact_revision"`
+		CancelReason    string  `json:"cancel_reason"`
+		Events          []event `json:"events"`
+	} `json:"result"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type event struct {
+	Type string `json:"type"`
+	Kv   kv     `json:"kv"`
+}
+
+func (c client) stream(ctx context.Context, base string, from uint64, stop time.Time, through uint64) ([]family.Event, error) {
+	node := c.names[slices.Index(c.members, base)]
+	ctx, cancel := context.WithDeadline(ctx, stop)
+	defer cancel()
+	data, err := json.Marshal(map[string]any{"create_request": map[string]any{
+		"key":            enc(watchFirst),
+		"range_end":      enc(watchEnd),
+		"start_revision": from,
+	}})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v3/watch", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		text, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("/v3/watch: status %d: %s", resp.StatusCode, strings.TrimSpace(string(text)))
+	}
+	events := []family.Event{}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var message watchReply
+		if err := decoder.Decode(&message); err != nil {
+			if ctx.Err() != nil && time.Now().After(stop.Add(-time.Millisecond)) {
+				return events, nil
+			}
+			return events, fmt.Errorf("/v3/watch: %w", err)
+		}
+		if message.Error != nil {
+			return events, fmt.Errorf("/v3/watch: %s", message.Error.Message)
+		}
+		if message.Result.Canceled {
+			return events, fmt.Errorf("/v3/watch canceled at compact revision %d: %s", message.Result.CompactRevision, message.Result.CancelReason)
+		}
+		for _, raw := range message.Result.Events {
+			name, err := base64.StdEncoding.DecodeString(raw.Kv.Key)
+			if err != nil {
+				return events, err
+			}
+			delivered := family.Event{Revision: uint64(raw.Kv.ModRevision), Key: string(name), Node: node}
+			if raw.Type != "DELETE" {
+				value, err := base64.StdEncoding.DecodeString(raw.Kv.Value)
+				if err != nil {
+					return events, err
+				}
+				text := string(value)
+				delivered.Value = &text
+			}
+			events = append(events, delivered)
+			if through > 0 && delivered.Revision >= through {
+				return events, nil
+			}
+		}
+	}
+}
+
 func main() {
 	count := 3
 	if text := os.Getenv(membersEnv); text != "" {
@@ -261,5 +438,14 @@ func main() {
 	for i := range names {
 		names[i] = fmt.Sprintf("m%d", i+1)
 	}
-	runner.Main(adapter{members: members, names: names})
+	var watch uint64
+	if text := os.Getenv(watchEnv); text != "" {
+		n, err := strconv.ParseUint(text, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad %s %q\n", watchEnv, text)
+			os.Exit(2)
+		}
+		watch = n
+	}
+	runner.Main(adapter{members: members, names: names, watch: watch})
 }
