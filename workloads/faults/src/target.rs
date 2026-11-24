@@ -2761,12 +2761,12 @@ mod tests {
             other => panic!("not a role pause: {other:?}"),
         };
         let actions = [FaultAction::from(FaultOperation::EndFaults(ticks(16)))];
-        let in_lead = standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 100 * TICK)], &actions)
-            .unwrap();
+        let in_lead =
+            standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 100 * TICK)], &actions).unwrap();
         assert_eq!(in_lead[0].end, ROOT);
         assert_eq!(length(&in_lead), 0);
-        let in_pause = standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 20 * TICK)], &actions)
-            .unwrap();
+        let in_pause =
+            standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 20 * TICK)], &actions).unwrap();
         assert_eq!(in_pause[0].end, ROOT);
         assert_eq!(length(&in_pause), 30 * TICK);
     }

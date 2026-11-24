@@ -3,7 +3,9 @@
 use super::{config::Explain, investigate, runs::Manifest, shrink, terminal};
 use crate::{adapters::Request, config::Result};
 use faults_workload::{
-    FaultAction, FaultOperation, consonance::FaultTarget, package::ReplaySummary,
+    FaultAction, FaultOperation,
+    consonance::FaultTarget,
+    package::ReplaySummary,
     target::{ROLE_LEAD_TICKS, SUPERVISOR_TICK_MICROS},
 };
 use serde::{Deserialize, Serialize};
@@ -593,12 +595,9 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
         }
         FaultOperation::Kill(index, ticks) => format!("kill {} for {}", node(index), span(ticks)),
         FaultOperation::KillAll(ticks) => format!("kill every node for {}", span(ticks)),
-        FaultOperation::Pause(index, ticks) => format!(
-            "{}pause {} for {}",
-            lead(index),
-            node(index),
-            span(ticks)
-        ),
+        FaultOperation::Pause(index, ticks) => {
+            format!("{}pause {} for {}", lead(index), node(index), span(ticks))
+        }
         FaultOperation::Restart(index, ticks) => format!(
             "restart {} (back after {})",
             node(index),
