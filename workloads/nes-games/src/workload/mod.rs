@@ -53,7 +53,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "nes-workload-campaign-stream-v3";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nes-workload-snapshot-checkpoint-v3";
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str =
     "nes-workload-consonance-snapshot-checkpoint-v1";

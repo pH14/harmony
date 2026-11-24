@@ -849,6 +849,15 @@ draw-table update. Once any site has a weight, half of the drawn
 parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
 range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 6 through 12, each of the eight widths equally likely.
+`park_aims` in `campaign-summary.json` and `report.json` covers only the
+`EventPark` actions drawn with a target: `armed` counts those the guest ran,
+`landings` their landings, and `sites` those landings by site. An unaimed park
+that draws `edges` 1 is not counted there. Each job record's
+`draw_checkpoint_before.weighted_sites` is the number of sites with a weight
+when the job was drawn, so the stream shows the record from which fresh draws
+could aim. A job or skip that reuses a recorded tail, a continuation or a
+splice, keeps that tail's targets whatever the count, and replay does not
+check its count.
 `park_thresholds` counts, for each `floor(log2(edges))`, the `EventPark`
 actions the guest ran at that threshold and their landings, so the landings
 per action at each threshold show which part of the drawn range a workload's

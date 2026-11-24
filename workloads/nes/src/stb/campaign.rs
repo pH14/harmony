@@ -38,7 +38,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v4";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v5";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v5";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";

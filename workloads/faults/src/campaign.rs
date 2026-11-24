@@ -41,10 +41,10 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, DrawProfile, FaultArchiveReport, FaultBugRecord, FaultFailureRecord,
         FaultHangRecord, FaultInput, FaultMilestones, FaultProgressWatermark, MAX_RECORDED_BUGS,
-        MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS, ParkThresholds, REPLACEMENT_IDENTIFIER,
-        UndecidedChecks, action_cost, bug_outcome, merge_milestones, merge_progress_watermark,
-        milestone_key, milestones, park_threshold_bucket, parked_pause, sample_action,
-        sample_profiled_action,
+        MAX_RECORDED_FAILURES, MAX_RECORDED_HANGS, ParkAims, ParkThresholds,
+        REPLACEMENT_IDENTIFIER, UndecidedChecks, action_cost, bug_outcome, merge_milestones,
+        merge_progress_watermark, milestone_key, milestones, park_threshold_bucket, parked_pause,
+        sample_action, sample_profiled_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -63,9 +63,9 @@ use crate::{
 pub(crate) mod nodes;
 pub(crate) mod settle;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v15";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v16";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v12";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v12";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v13";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v8";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -194,6 +194,8 @@ pub struct FaultCampaignEvidence {
     park_sites: BTreeMap<u64, u64>,
     park_reads: BTreeMap<u64, u64>,
     park_thresholds: BTreeMap<u32, ParkThresholds>,
+    #[serde(default)]
+    park_aims: ParkAims,
     undecided_checks: UndecidedChecks,
     undecided_execution: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -966,6 +968,7 @@ impl Reporting for FaultWorkload {
             park_sites: evidence.park_sites.clone(),
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
+            park_aims: evidence.park_aims.clone(),
             undecided_checks: evidence.undecided_checks,
             stage_falls: evidence.stage_falls(self.keys.compiled()),
             parked_pauses: evidence.parked_pauses.clone(),
@@ -1646,8 +1649,9 @@ impl Evaluation for FaultWorkload {
             merge_progress_watermark(&mut evidence.watermark, &action.observations);
             merge_milestones(&mut evidence.aggregate, action.milestones);
         }
+        let ran = !action.observations.is_empty();
         if let FaultOperation::EventPark { edges, .. } = action.action.operation
-            && !action.observations.is_empty()
+            && ran
         {
             evidence
                 .park_thresholds
@@ -1655,11 +1659,26 @@ impl Evaluation for FaultWorkload {
                 .or_default()
                 .armed += 1;
         }
+        let aimed = ran
+            && matches!(
+                action.action.operation,
+                FaultOperation::EventPark {
+                    target: Some(_),
+                    ..
+                }
+            );
+        if aimed {
+            evidence.park_aims.armed += 1;
+        }
         let parked = matches!(action.action.operation, FaultOperation::PauseParked { .. });
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
                 *evidence.park_sites.entry(park.site).or_default() += 1;
+                if aimed {
+                    evidence.park_aims.landings += 1;
+                    *evidence.park_aims.sites.entry(park.site).or_default() += 1;
+                }
                 if !parked {
                     evidence
                         .park_thresholds
@@ -2538,6 +2557,63 @@ mod tests {
             evidence.parked_pauses,
             BTreeMap::from([("fired".to_owned(), 1), ("unadopted".to_owned(), 1)])
         );
+    }
+
+    #[test]
+    fn park_aims_count_only_parks_drawn_with_a_target() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let park = |target| FaultOperation::EventPark {
+            node: 0,
+            edges: 1,
+            hold_us: 10_000,
+            ticks: std::num::NonZeroU16::MIN,
+            target,
+        };
+        let landing = |site| FaultObservations {
+            parks: vec![crate::target::ParkLanding {
+                moment: 1,
+                site,
+                edges: 1,
+            }],
+            ..FaultObservations::default()
+        };
+        let aimed = fault_policy::ParkTarget::new(0x40, 0x41);
+        for (operation, observations) in [
+            (park(aimed), vec![landing(0x40)]),
+            (park(aimed), vec![FaultObservations::default()]),
+            (park(None), vec![landing(0x80)]),
+            (park(aimed), vec![]),
+        ] {
+            let result = FaultCampaignActionResult {
+                action: operation.into(),
+                observations,
+                milestones: FaultMilestones::default(),
+                outcome: Outcome {
+                    doomed: false,
+                    objective_reached: false,
+                    disposition: ExecutionDisposition::Runnable,
+                },
+                candidate: None,
+                cost: ShrinkCost::ZERO,
+                bound: ShrinkCost::ZERO,
+            };
+            game.merge_action_evidence(&mut evidence, &result, 0, || Err("no input".into()))
+                .unwrap();
+        }
+        assert_eq!(
+            evidence.park_aims,
+            ParkAims {
+                armed: 2,
+                landings: 1,
+                sites: BTreeMap::from([(0x40, 1)]),
+            }
+        );
+        assert_eq!(
+            evidence.park_thresholds.get(&0),
+            Some(&ParkThresholds { armed: 3, fired: 2 })
+        );
+        assert_eq!(evidence.park_sites, BTreeMap::from([(0x40, 1), (0x80, 1)]));
     }
 
     #[test]

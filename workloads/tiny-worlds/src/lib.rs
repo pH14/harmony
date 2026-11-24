@@ -710,7 +710,7 @@ impl<K: Keying> CampaignTypes for Workload<K> {
 }
 impl<K: Keying> Reporting for Workload<K> {
     fn stream_format(&self) -> &'static str {
-        "tiny-world-v2"
+        "tiny-world-v3"
     }
     fn checkpoint_format(&self) -> &'static str {
         "tiny-world-checkpoint-v3"

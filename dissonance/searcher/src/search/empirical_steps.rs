@@ -30,6 +30,7 @@ pub struct EmpiricalStepCheckpoint {
     pub records: u64,
     pub retained_successes: u64,
     pub table_sha256: String,
+    pub weighted_sites: u64,
 }
 
 #[derive(Debug)]
@@ -222,6 +223,7 @@ where
             records: self.records,
             retained_successes: self.retained_successes,
             table_sha256: self.table_sha256.clone(),
+            weighted_sites: 0,
         })
     }
 
