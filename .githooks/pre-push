@@ -36,8 +36,10 @@ if ! git diff --quiet HEAD -- '*Cargo.lock'; then
     exit 1
 fi
 
-echo "== pre-push: cargo fmt --check"
-cargo fmt --all -- --check
+echo "== pre-push: cargo fmt --check for every manifest CI formats"
+for manifest in $(python3 scripts/ci_contract.py manifests); do
+    cargo fmt --manifest-path "$manifest" --all -- --check
+done
 
 echo "== pre-push: cargo clippy -D warnings"
 cargo clippy --all-features --all-targets -- -D warnings
