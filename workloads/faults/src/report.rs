@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, path::Path};
+use std::{collections::BTreeSet, error::Error, path::Path};
 
 use fault_policy::StandingWindow;
+use searcher::search::assertion::AssertionKey;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
 use crate::guest::{GuestAnswer, answers_through};
-use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
+use crate::target::{ActionWindows, FaultAction, FaultObservations, FaultStop, standing_windows};
 
 pub const BUG_REPORT_STEM: &str = "bug-";
 pub const HANG_REPORT_STEM: &str = "hang-";
@@ -96,6 +97,39 @@ pub fn write_bug_reports(
         written.push(report);
     }
     Ok(written)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Divergence {
+    pub key: Option<AssertionKey>,
+    pub stop: FaultStop,
+    pub violations: BTreeSet<String>,
+    pub reports: Vec<String>,
+}
+
+#[must_use]
+pub fn divergences(
+    reports: &[BugReport],
+    key: impl Fn(&FaultObservations) -> Option<AssertionKey>,
+) -> Vec<Divergence> {
+    let mut found: Vec<Divergence> = Vec::new();
+    for report in reports {
+        let key = key(&report.observations);
+        let stop = report.observations.stop;
+        let violations = report.observations.violations();
+        match found.iter_mut().find(|divergence| {
+            divergence.key == key && divergence.stop == stop && divergence.violations == violations
+        }) {
+            Some(divergence) => divergence.reports.push(report.file_name()),
+            None => found.push(Divergence {
+                key,
+                stop,
+                violations,
+                reports: vec![report.file_name()],
+            }),
+        }
+    }
+    found
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -205,7 +239,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{FaultOperation, FaultStop};
+    use crate::target::FaultOperation;
     use std::num::NonZeroU16;
 
     const WINDOWS: ActionWindows = ActionWindows {
@@ -233,6 +267,42 @@ mod tests {
             &observations,
         )
         .expect("build a report")
+    }
+
+    #[test]
+    fn reports_with_one_key_stop_and_violation_set_share_a_divergence() {
+        let report = |bug, alive, point| {
+            let observations = FaultObservations {
+                alive,
+                stop: FaultStop::Assertion { point },
+                ..FaultObservations::default()
+            };
+            BugReport::new(bug, bug, WINDOWS, &[], &[], &observations).expect("build a report")
+        };
+        let reports = [
+            report(1, 0b01, 1),
+            report(2, 0b11, 1),
+            report(3, 0b01, 1),
+            report(4, 0b01, 2),
+        ];
+        let key = |observations: &FaultObservations| {
+            Some(AssertionKey {
+                identity: observations.alive,
+                ..AssertionKey::default()
+            })
+        };
+        let found = divergences(&reports, key);
+        assert_eq!(
+            found
+                .iter()
+                .map(|divergence| divergence.reports.clone())
+                .collect::<Vec<_>>(),
+            [
+                vec!["bug-1.json".to_owned(), "bug-3.json".to_owned()],
+                vec!["bug-2.json".to_owned()],
+                vec!["bug-4.json".to_owned()],
+            ]
+        );
     }
 
     #[test]

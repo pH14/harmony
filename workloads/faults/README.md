@@ -1376,7 +1376,14 @@ from a cached snapshot. A campaign records its first 64 bugs. After that
 it records a bug only when it violates a property that no recorded bug
 violates, so a campaign records at most 64 bugs plus one for each property
 first violated after the 64th, and a long campaign whose first bugs share one
-property still keeps the input of a later bug of another. Each `bug-N.json`
+property still keeps the input of a later bug of another. Many reports repeat
+a divergence another report already reached, so `campaign-summary.json` groups
+the `bug-N.json` files under `divergences`, with their count in
+`distinct_divergences`. Two reports share a divergence when their bug
+observations have the same archive key, the same stop and the same set of
+violated properties, so the search's own key could not tell their end states
+apart. A workload-specific identity, such as the first raft log index at which
+the nodes disagree, can split one of these divergences further. Each `bug-N.json`
 carries the action list and the
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed

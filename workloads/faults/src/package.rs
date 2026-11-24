@@ -557,8 +557,8 @@ mod live {
         consonance::{FaultConfig, FaultTarget, GuestBackend, UmlGuest, identity},
         key::FaultKeys,
         report::{
-            BugReport, FailureReport, HangReport, write_bug_reports, write_failure_reports,
-            write_hang_reports,
+            BugReport, FailureReport, HangReport, divergences, write_bug_reports,
+            write_failure_reports, write_hang_reports,
         },
         target::{ActionWindows, FaultAction, FaultOperation},
     };
@@ -799,6 +799,7 @@ mod live {
             &archive.bugs,
             &options.output,
         )?;
+        let divergences = divergences(&written, |observations| game.key_of(observations));
         let hangs = write_hang_reports(
             windows,
             &inherited,
@@ -862,6 +863,8 @@ mod live {
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+            "distinct_divergences": divergences.len(),
+            "divergences": divergences,
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "hung_jobs": campaign_report.campaign.hung_jobs,
             "hang_reports": hangs.iter().map(HangReport::file_name).collect::<Vec<_>>(),
