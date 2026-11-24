@@ -1959,16 +1959,25 @@ mod equivalence_tests;
 #[cfg(test)]
 fn test_seed() -> u64 {
     use std::hash::{BuildHasher, Hasher};
-    let seed = std::env::var("HARMONY_TEST_SEED")
-        .ok()
-        .and_then(|seed| seed.parse().ok())
-        .unwrap_or_else(|| {
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
+    thread_local! {
+        static DRAWN: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+    }
+    DRAWN.with(|drawn| {
+        let (base, calls) = drawn.get().unwrap_or_else(|| {
+            let base = std::env::var("HARMONY_TEST_SEED")
+                .ok()
+                .and_then(|seed| seed.parse().ok())
+                .unwrap_or_else(|| {
+                    std::collections::hash_map::RandomState::new()
+                        .build_hasher()
+                        .finish()
+                });
+            eprintln!("campaign replay seed: {base}");
+            (base, 0)
         });
-    eprintln!("campaign replay seed: {seed}");
-    seed
+        drawn.set(Some((base, calls + 1)));
+        base.wrapping_add(calls.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+    })
 }
 
 #[cfg(test)]

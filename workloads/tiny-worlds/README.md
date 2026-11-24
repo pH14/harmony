@@ -87,8 +87,10 @@ With `verify=true`, the runner replays the campaign stream, repeats execution wi
 the same runtime seed, checks any objective witness against world transitions,
 independently sums admitted job work, and checks that the last job started
 before the work budget was spent. Tests check these invariants using
-runtime-generated seeds, printed as `campaign replay seed`; set
-`HARMONY_TEST_SEED` to rerun a test with one. A test that checks how a
+runtime-generated seeds. Each test draws one base seed, printed as
+`campaign replay seed`, and derives a distinct seed from it for each further
+campaign it runs; set `HARMONY_TEST_SEED` to the printed base to rerun the
+whole test. A test's assertions hold for every seed. A test that checks how a
 campaign spends its work uses a fixed seed, because a runtime seed can reach
 the goal before the archive forms the structure it checks. Controlled
 transition and archive tests check the mechanics directly.
