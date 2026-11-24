@@ -1190,13 +1190,20 @@ where
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {
         let stalled = self.stall_due();
+        let mut checkpointed_milestone = false;
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             let due = checkpoints.due(
                 self.core.sequence,
                 G::checkpoint_marks(&self.core.evidence),
                 self.core.archive.top_progress(),
             );
-            if let Some(reason) = if stalled { Some("stall") } else { due } {
+            checkpointed_milestone = due == Some("milestone");
+            let reason = if stalled && !checkpointed_milestone {
+                Some("stall")
+            } else {
+                due
+            };
+            if let Some(reason) = reason {
                 write_search_checkpoint(
                     self.workload,
                     checkpoints,
@@ -1218,7 +1225,12 @@ where
             }
         }
         if stalled {
-            self.write_stall_record()?;
+            let reason = if checkpointed_milestone {
+                "milestone"
+            } else {
+                "stall"
+            };
+            self.write_stall_record(reason)?;
         }
         Ok(())
     }
@@ -1287,7 +1299,7 @@ where
         watch.count_job(parent_id, departure, steps);
     }
 
-    fn write_stall_record(&self) -> Result<(), Box<dyn Error>> {
+    fn write_stall_record(&self, reason: &str) -> Result<(), Box<dyn Error>> {
         let Some(watch) = self.stall.as_ref() else {
             return Ok(());
         };
@@ -1313,7 +1325,7 @@ where
         let choice_sites = watch.site_table(&top);
         let record = StallRecord {
             executions: self.core.sequence,
-            checkpoint: format!("{:012}-stall.ckpt", self.core.sequence),
+            checkpoint: format!("{:012}-{reason}.ckpt", self.core.sequence),
             tier: format!("{progress:?}"),
             tier_yields: yields,
             since_execution: watch.since_execution,
