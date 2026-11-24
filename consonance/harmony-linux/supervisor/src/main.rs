@@ -127,7 +127,6 @@ mod runtime {
     use harmony_supervisor::process::{self, ChildStop};
     use harmony_supervisor::reconcile::Standing;
     use harmony_supervisor::recovery::{HookFaults, RecoveryReadiness, RecoveryWatch};
-    use harmony_supervisor::role::{RolePause, RoleWindows};
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
@@ -139,6 +138,7 @@ mod runtime {
         REG_RECOVERY_PENDING, REG_RESTARTS, REG_TICKS, REG_UNEXPECTED_DEATHS,
         REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
     };
+    use harmony_supervisor::role::{RolePause, RoleWindows};
     use harmony_supervisor::supervise::{Action, RemountCheck, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
     use hypercall_proto::MAX_PAYLOAD;

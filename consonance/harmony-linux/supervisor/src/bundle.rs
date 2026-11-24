@@ -503,7 +503,11 @@ ready /usr/bin/servicectl endpoint health
         let bundle = parse_bundle("node n1 /a\nnode n2 /b\nrole /leader --of kv\n").unwrap();
         assert_eq!(
             bundle.role,
-            Some(vec!["/leader".to_owned(), "--of".to_owned(), "kv".to_owned()])
+            Some(vec![
+                "/leader".to_owned(),
+                "--of".to_owned(),
+                "kv".to_owned()
+            ])
         );
         assert_eq!(bundle.node_named("n2"), Some(1));
         assert_eq!(bundle.node_named("n3"), None);
