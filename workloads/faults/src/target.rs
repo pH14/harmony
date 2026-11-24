@@ -19,6 +19,7 @@ use crate::guest::GuestChoices;
 
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
+pub const ROLE_LEAD_TICKS: u64 = 128;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 const HOOK_HOLD_CHOICE_SHIFT: u32 = 62;
 const NOMINAL_COVERAGE_QUANTUM: NonZeroU16 = NonZeroU16::new(1024).unwrap();
@@ -672,9 +673,21 @@ impl ActionWindows {
 
 #[must_use]
 pub fn action_ticks(action: &FaultAction) -> u64 {
-    match action.operation {
+    let ticks = match action.operation {
         FaultOperation::PauseParked { ticks, .. } => u64::from(ticks.get()) * 2,
         _ => action.ticks(),
+    };
+    ticks.saturating_add(role_lead_ticks(&action.operation))
+}
+
+#[must_use]
+pub fn role_lead_ticks(operation: &FaultOperation) -> u64 {
+    match operation {
+        FaultOperation::Pause(ROLE_NODE, _)
+        | FaultOperation::PauseParked {
+            node: ROLE_NODE, ..
+        } => ROLE_LEAD_TICKS,
+        _ => 0,
     }
 }
 
@@ -725,6 +738,7 @@ fn event_park_delta(
 
 fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> ActionDelta {
     let (start, end) = window;
+    let lead = (role_lead_ticks(&action.operation) * SUPERVISOR_TICK_NANOS).min(end - start);
     let horizon = end.saturating_sub(start);
     match action.operation {
         FaultOperation::Wait(_) | FaultOperation::EndFaults(_) => ActionDelta::default(),
@@ -748,12 +762,12 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
             target,
             ..
         } => {
-            let resume = start.saturating_add(horizon / 2);
+            let resume = start + lead + (horizon - lead) / 2;
             let mut delta = event_park_delta(node, edges, hold_us, target, true, (resume, end));
             delta.standing.insert(
                 0,
                 standing(
-                    process_target(node, &Fault::ProcPause(Span(resume - start))),
+                    process_target(node, &Fault::ProcPause(Span(resume - start - lead))),
                     (start, resume),
                 ),
             );
@@ -827,7 +841,7 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
         },
         FaultOperation::Pause(node, _) => ActionDelta {
             standing: vec![standing(
-                process_target(node, &Fault::ProcPause(Span(horizon))),
+                process_target(node, &Fault::ProcPause(Span(horizon - lead))),
                 (start, end),
             )],
         },
@@ -1996,6 +2010,53 @@ mod tests {
         assert_eq!(
             action_deltas(WINDOWS, &actions),
             action_deltas(WINDOWS, &replay)
+        );
+    }
+
+    #[test]
+    fn a_role_pause_stands_from_its_action_start_with_its_drawn_length_after_the_lead() {
+        let lead = ROLE_LEAD_TICKS * TICK;
+        let parked = FaultAction::from(FaultOperation::PauseParked {
+            node: ROLE_NODE,
+            edges: 1,
+            hold_us: 1,
+            ticks: ticks(50),
+            target: None,
+        });
+        assert_eq!(action_ticks(&parked), ROLE_LEAD_TICKS + 100);
+        let window = WINDOWS.window(&[parked], 0).unwrap();
+        assert_eq!(window, (ROOT, ROOT + lead + 100 * TICK));
+        let standing = WINDOWS.delta(parked, window).standing;
+        assert_eq!(
+            standing
+                .iter()
+                .map(|window| (window.start, window.end))
+                .collect::<Vec<_>>(),
+            [
+                (ROOT, ROOT + lead + 50 * TICK),
+                (ROOT + lead + 50 * TICK, ROOT + lead + 100 * TICK),
+            ]
+        );
+        assert_eq!(
+            decode_process_target(&standing[0].target),
+            Some((ROLE_NODE, Fault::ProcPause(Span(50 * TICK))))
+        );
+
+        let pause = FaultAction::from(FaultOperation::Pause(ROLE_NODE, ticks(50)));
+        assert_eq!(action_ticks(&pause), ROLE_LEAD_TICKS + 50);
+        let window = WINDOWS.window(&[pause], 0).unwrap();
+        let standing = WINDOWS.delta(pause, window).standing;
+        assert_eq!((standing[0].start, standing[0].end), window);
+        assert_eq!(
+            decode_process_target(&standing[0].target),
+            Some((ROLE_NODE, Fault::ProcPause(Span(50 * TICK))))
+        );
+
+        let indexed = FaultAction::from(FaultOperation::Pause(1, ticks(50)));
+        assert_eq!(action_ticks(&indexed), 50);
+        assert_eq!(
+            pause.as_wait().map(|wait| wait.operation),
+            Some(FaultOperation::Wait(ticks(178)))
         );
     }
 

@@ -359,10 +359,13 @@ role pause (ours): the node is resolved inside the guest when the window
 opens, by running that command, and the pause goes to the node it names.
 `role::RoleWindows` holds each role pause's answer, keyed by the pause
 window's start, and rewrites the standing answer before `Supervisor::poll`
-sees it, so the reconciler only ever sees node indices. A resolved pause
-window starts at the moment of the poll that resolved it, so catch-up steps
-across earlier edges see no pause, and it ends where the standing answer now
-ends it, so an `EndFaults` that shortens it keeps its answer. An at-resume park
+sees it, so the reconciler only ever sees node indices. A role pause window can
+be longer than the pause length it carries: the host opens it a lead ahead of
+the drawn pause so the answer can arrive first. A resolved pause starts at the
+later of its window's end minus that length and the moment of the poll that
+resolved it, so an answer inside the lead leaves the drawn length intact and
+catch-up steps across earlier edges see no pause. It ends where the standing
+answer now ends it, so an `EndFaults` that shortens it keeps its answer. An at-resume park
 window on `ROLE_NODE` follows the one pause whose drawn end is where the park
 starts, so a parked pause parks the node it paused even after leadership has
 moved.
@@ -371,8 +374,8 @@ The command starts in the first poll whose moment lies inside the pause window,
 with its stdout sent to an unnamed temporary file in `/run/harmony/supervisor`,
 and runs in its own process group. Its exit is read before each standing poll,
 so an answer counts only when the command had exited before a poll whose moment
-is still inside the window. The node is paused from that poll until the window's
-end; the resolution time shortens the pause. When the answer is taken, or the
+is still inside the window. An answer that arrives after the lead shortens the
+pause by the time past it. When the answer is taken, or the
 window ends or leaves the standing answer first, the command's whole process
 group and the command itself are killed, so no helper in its group outlives its
 pause. The first line of its output names the node: it must end within the first

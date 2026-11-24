@@ -427,9 +427,14 @@ the pause's length are the ones a bundle without the line draws. Parks and holds
 come from a separate stream that each pause made parked consumes, so where a
 node-indexed pause would be parked and the role pause is not (some node not
 yet ready), the later parks and holds of that suffix differ.
-The supervisor resolves the node in the guest when the pause window opens, by
-running the line's command, and a pause it cannot resolve runs as a wait of the
-same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+A role pause action starts with a lead of `ROLE_LEAD_TICKS` (128 supervisor
+ticks) before its drawn pause, so its duration is the lead plus what the same
+node-indexed action takes. Its pause window stands from the action's start and
+carries the drawn length, so the supervisor resolves the node in the guest
+during the lead, by running the line's command, and pauses it for the drawn
+length at the end of the window. A pause it cannot resolve runs as a wait of the
+whole action's length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+The duration policy identifier is `adaptive_action_ticks_v4`.
 A role `Pause` becomes a `PauseParked` only when every node's runtime has
 announced readiness, because the host cannot know which node the guest will
 name. Kills, restarts, disk and clock faults keep their node index. The
