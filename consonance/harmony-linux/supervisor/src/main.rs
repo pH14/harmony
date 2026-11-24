@@ -234,7 +234,9 @@ mod runtime {
         child: Child,
     }
 
-    const ROLE_ANSWER_PATH: &str = "/run/harmony/role-answer";
+    const ROLE_ANSWER_DIR: &str = "/run/harmony/supervisor";
+    const ROLE_ANSWER_PATH: &str = "/run/harmony/supervisor/role-answer";
+    const ROLE_ANSWER_LIMIT: u64 = 4096;
 
     struct Asking {
         pause: RolePause,
@@ -277,9 +279,16 @@ mod runtime {
                     let mut asking = self.asking.take().ok_or("role command vanished")?;
                     process::signal_group(asking.child.id(), libc::SIGKILL)
                         .map_err(|error| format!("role command: {error}"))?;
+                    if asking.exited.is_none() {
+                        asking
+                            .child
+                            .kill()
+                            .map_err(|error| format!("role command: {error}"))?;
+                    }
                     let named = match (asking.exited, open) {
                         (Some(status), Some(_)) if status.success() => {
-                            bundle.node_named(&read_answer(&mut asking.answer)?)
+                            read_answer(&mut asking.answer)?
+                                .and_then(|name| bundle.node_named(&name))
                         }
                         _ => None,
                     };
@@ -347,12 +356,15 @@ mod runtime {
         spec: &execution_proto::ExecutionSpec,
         argv: &[String],
     ) -> std::io::Result<(Child, File)> {
-        std::fs::create_dir_all("/run/harmony")?;
+        std::fs::create_dir_all(ROLE_ANSWER_DIR)?;
+        match std::fs::remove_file(ROLE_ANSWER_PATH) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
         let answer = File::options()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(ROLE_ANSWER_PATH)?;
         std::fs::remove_file(ROLE_ANSWER_PATH)?;
         let child = process::command(spec, argv)?
@@ -361,18 +373,16 @@ mod runtime {
         Ok((child, answer))
     }
 
-    fn read_answer(answer: &mut File) -> Result<String, String> {
+    fn read_answer(answer: &mut File) -> Result<Option<String>, String> {
         let mut bytes = Vec::new();
         answer
             .seek(SeekFrom::Start(0))
-            .and_then(|_| answer.read_to_end(&mut bytes))
+            .and_then(|_| answer.take(ROLE_ANSWER_LIMIT).read_to_end(&mut bytes))
             .map_err(|error| format!("role command output: {error}"))?;
-        Ok(String::from_utf8_lossy(&bytes)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_owned())
+        let line = bytes.split(|byte| *byte == b'\n').next().unwrap_or_default();
+        Ok(std::str::from_utf8(line)
+            .ok()
+            .map(|name| name.trim().to_owned()))
     }
 
     fn record_role(node: Option<u16>, output: &mut File, tick: u64) -> Result<(), String> {

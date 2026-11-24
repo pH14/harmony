@@ -908,12 +908,15 @@ mod tests {
         snapshot.observation.parks = Vec::with_capacity(31);
         snapshot.observation.park_reads = Vec::with_capacity(47);
         snapshot.observation.parked_pauses = Vec::with_capacity(13);
+        snapshot.observation.role_pauses = Vec::with_capacity(17);
         snapshot.observation.check = Some(crate::target::CheckEvidence {
             points: Vec::with_capacity(11),
             ..Default::default()
         });
         let pauses =
-            snapshot.observation.parked_pauses.capacity() * size_of::<crate::target::ParkedPause>();
+            snapshot.observation.parked_pauses.capacity() * size_of::<crate::target::ParkedPause>()
+                + snapshot.observation.role_pauses.capacity()
+                    * size_of::<crate::target::RolePause>();
         let points = &mut snapshot.observation.check.as_mut().unwrap().points;
         let mut point = String::with_capacity(8192);
         point.push_str("check point");

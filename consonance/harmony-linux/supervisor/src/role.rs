@@ -53,9 +53,43 @@ impl RoleWindows {
 
     pub fn bind(&mut self, standing: &mut Standing, asking: Option<RolePause>) -> Bound {
         let moment = standing.moment;
-        let mut used = vec![false; self.bindings.len()];
         let mut bound = Bound::default();
-        let mut expired = Vec::new();
+        for window in &standing.windows {
+            if window.node != ROLE_NODE || !matches!(window.action, ProcessAction::Pause(_)) {
+                continue;
+            }
+            let pause = RolePause {
+                start: window.start,
+                end: window.end,
+            };
+            let known = self
+                .bindings
+                .iter()
+                .any(|binding| binding.start == pause.start)
+                || asking.is_some_and(|asking| asking.start == pause.start);
+            if known {
+                continue;
+            }
+            if pause.end <= moment {
+                if !bound.expired.iter().any(|seen| seen.start == pause.start) {
+                    bound.expired.push(pause);
+                }
+            } else if pause.start <= moment
+                && asking.is_none()
+                && bound.ask.is_none()
+            {
+                bound.ask = Some(pause);
+            }
+        }
+        for pause in &bound.expired {
+            self.bindings.push(Binding {
+                start: pause.start,
+                park_start: pause.end,
+                from: moment,
+                node: None,
+            });
+        }
+        let mut used = vec![false; self.bindings.len()];
         let bindings = &self.bindings;
         standing.windows.retain_mut(|window| {
             if window.node != ROLE_NODE {
@@ -67,20 +101,6 @@ impl RoleWindows {
                         .iter()
                         .position(|binding| binding.start == window.start)
                     else {
-                        let pause = RolePause {
-                            start: window.start,
-                            end: window.end,
-                        };
-                        let pending = asking.is_some_and(|asking| asking.start == pause.start);
-                        if !pending && pause.end <= moment {
-                            expired.push(pause);
-                        } else if !pending
-                            && pause.start <= moment
-                            && asking.is_none()
-                            && bound.ask.is_none()
-                        {
-                            bound.ask = Some(pause);
-                        }
                         return false;
                     };
                     used[index] = true;
@@ -120,15 +140,6 @@ impl RoleWindows {
             index += 1;
             keep
         });
-        for pause in &expired {
-            self.bindings.push(Binding {
-                start: pause.start,
-                park_start: pause.end,
-                from: moment,
-                node: None,
-            });
-        }
-        bound.expired = expired;
         bound
     }
 
@@ -321,6 +332,40 @@ mod tests {
                 .windows
                 .iter()
                 .all(|window| !matches!(window.action, ProcessAction::EventPark { .. }))
+        );
+    }
+
+    #[test]
+    fn a_park_whose_own_pause_expired_unseen_stays_off_the_node_another_pause_holds() {
+        let mut roles = RoleWindows::new();
+        roles.resolve(RolePause { start: 10, end: 60 }, Some(1), 12);
+        let mut answer = standing(
+            61,
+            vec![
+                window(ROLE_NODE, ProcessAction::Pause(50), 10, 60),
+                window(ROLE_NODE, ProcessAction::Pause(10), 50, 60),
+                window(ROLE_NODE, park(), 60, 100),
+            ],
+        );
+        let bound = roles.bind(&mut answer, None);
+        assert_eq!(bound.expired, [RolePause { start: 50, end: 60 }]);
+        assert!(
+            answer
+                .windows
+                .iter()
+                .all(|window| !matches!(window.action, ProcessAction::EventPark { .. }))
+        );
+    }
+
+    #[test]
+    fn a_repeated_expired_window_is_settled_once() {
+        let mut roles = RoleWindows::new();
+        let pause = window(ROLE_NODE, ProcessAction::Pause(10), 10, 20);
+        let bound = roles.bind(&mut standing(25, vec![pause, pause]), None);
+        assert_eq!(bound.expired, [RolePause { start: 10, end: 20 }]);
+        assert_eq!(
+            roles.bind(&mut standing(26, vec![pause]), None),
+            Bound::default()
         );
     }
 
