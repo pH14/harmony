@@ -1190,20 +1190,15 @@ where
 
     fn write_due_checkpoint(&mut self) -> Result<(), Box<dyn Error>> {
         let stalled = self.stall_due();
-        let mut checkpointed_milestone = false;
+        let mut written = None;
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             let due = checkpoints.due(
                 self.core.sequence,
                 G::checkpoint_marks(&self.core.evidence),
                 self.core.archive.top_progress(),
             );
-            checkpointed_milestone = due == Some("milestone");
-            let reason = if stalled && !checkpointed_milestone {
-                Some("stall")
-            } else {
-                due
-            };
-            if let Some(reason) = reason {
+            written = checkpoint_reason(stalled, due);
+            if let Some(reason) = written {
                 write_search_checkpoint(
                     self.workload,
                     checkpoints,
@@ -1225,12 +1220,7 @@ where
             }
         }
         if stalled {
-            let reason = if checkpointed_milestone {
-                "milestone"
-            } else {
-                "stall"
-            };
-            self.write_stall_record(reason)?;
+            self.write_stall_record(written.unwrap_or("stall"))?;
         }
         Ok(())
     }
@@ -2053,14 +2043,42 @@ where
     }
 }
 
+fn checkpoint_reason(stalled: bool, due: Option<&'static str>) -> Option<&'static str> {
+    match due {
+        Some("milestone") => due,
+        _ if stalled => Some("stall"),
+        _ => due,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
-    use super::{SignalChanges, StallWatch, StalledStep};
+    use super::{SignalChanges, StallWatch, StalledStep, checkpoint_reason};
     use crate::search::assertion::Record;
     use crate::search::choice::{Choice, ChoiceRecord, ChoiceSite};
+
+    #[test]
+    fn a_stall_keeps_a_due_milestone_checkpoint_and_replaces_any_other_reason() {
+        for (stalled, due, written) in [
+            (true, Some("milestone"), Some("milestone")),
+            (true, Some("top_progress"), Some("stall")),
+            (true, Some("interval"), Some("stall")),
+            (true, None, Some("stall")),
+            (false, Some("milestone"), Some("milestone")),
+            (false, Some("top_progress"), Some("top_progress")),
+            (false, Some("interval"), Some("interval")),
+            (false, None, None),
+        ] {
+            assert_eq!(
+                checkpoint_reason(stalled, due),
+                written,
+                "{stalled} {due:?}"
+            );
+        }
+    }
 
     fn watch(signals: usize, sites: Vec<ChoiceSite>) -> StallWatch<u8> {
         StallWatch {
