@@ -377,9 +377,11 @@ mod runtime {
             .seek(SeekFrom::Start(0))
             .and_then(|_| answer.take(ROLE_ANSWER_LIMIT).read_to_end(&mut bytes))
             .map_err(|error| format!("role command output: {error}"))?;
-        let Some(end) = bytes.iter().position(|byte| *byte == b'\n').or(
-            (bytes.len() < ROLE_ANSWER_LIMIT as usize).then_some(bytes.len()),
-        ) else {
+        let Some(end) = bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .or((bytes.len() < ROLE_ANSWER_LIMIT as usize).then_some(bytes.len()))
+        else {
             return Ok(None);
         };
         Ok(std::str::from_utf8(&bytes[..end])
