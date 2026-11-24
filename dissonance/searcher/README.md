@@ -409,8 +409,9 @@ with a parked pause
 fit the campaign's memory budget.
 
 Streams require the current engine `schema_version` in addition to the
-workload's format identifier. Missing or unsupported engine versions are
-rejected before replay. The stateful resource fixture uses a distinct checkpoint
+workload's format identifier. The reader checks both before it decodes the
+rest of the header, so a stream from an older schema is refused with the
+schema message even when its header lacks a field this build requires. The stateful resource fixture uses a distinct checkpoint
 shape and checks that corrupted checkpoint evidence is rejected.
 
 Workloads can expose bounded observation counters through `Reporting::diagnostics`.
