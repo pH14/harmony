@@ -124,6 +124,10 @@ const TO_BOMBS: &[Cell] = &[
 ];
 
 const TO_KRAID_DOOR: &[Cell] = &[
+    b(20, 9),
+    b(21, 9),
+    b(22, 9),
+    b(22, 8),
     b(20, 11),
     b(19, 11),
     b(18, 11),
@@ -401,7 +405,7 @@ mod tests {
         state.health = 640;
         assert_eq!(locate(state, 0, Some((2, 3))), (2, 3));
         state.missile_capacity = 5;
-        assert_eq!(locate(state, 0, Some((2, 3))), (6, 11));
+        assert_eq!(locate(state, 0, Some((2, 3))), (6, 15));
     }
 
     #[test]
@@ -478,17 +482,20 @@ mod tests {
     }
 
     #[test]
-    fn the_kraid_door_route_walks_from_row_11_to_column_13_past_the_bombs_room_loop() {
+    fn the_kraid_door_route_joins_the_refill_rooms_and_row_11_past_the_bombs_room_loop() {
         let adjacent = |from: Cell, to: Cell| {
             from.0 == to.0 && from.1.abs_diff(to.1) + from.2.abs_diff(to.2) == 1
         };
         let index = |cell: Cell| TO_KRAID_DOOR.iter().position(|kept| *kept == cell).unwrap();
-        assert_eq!(TO_KRAID_DOOR[0], b(20, 11));
-        for pair in TO_KRAID_DOOR[..11].windows(2) {
-            assert!(adjacent(pair[0], pair[1]), "{pair:?}");
-        }
-        assert!(adjacent(TO_KRAID_DOOR[10], b(13, 7)));
-        assert_eq!(index(b(25, 5)), 11);
+        let walks = |cells: &[Cell]| cells.windows(2).all(|pair| adjacent(pair[0], pair[1]));
+        assert_eq!(TO_KRAID_DOOR[0], b(20, 9));
+        assert!(walks(&TO_KRAID_DOOR[..4]));
+        assert!(adjacent(TO_KRAID_DOOR[3], b(22, 7)));
+        assert_eq!(TO_KRAID_DOOR[4], b(20, 11));
+        assert!(walks(&TO_KRAID_DOOR[4..15]));
+        assert!(adjacent(TO_KRAID_DOOR[14], b(13, 7)));
+        assert_eq!(index(b(25, 5)), 15);
+        assert!(index(b(22, 7)) > index(b(25, 5)));
         assert!(index(b(13, 7)) > index(b(25, 7)));
     }
 

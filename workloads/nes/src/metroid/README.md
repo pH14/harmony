@@ -182,14 +182,15 @@ Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
 avoids red doors, since they open only to missiles. Each route but the one to
 Kraid's door is a shortest path in that graph. Elevators join Brinstar
-`(7,18)` to Kraid's hideout `(7,20)`. The route to Kraid's door joins two
-paths: eleven cells from `(20,11)` west along row 11 and up column 13 to
-`(13,8)`, the way recorded runs went from the refill rooms, and then the
-shortest path from the bombs room `(25,5)`. Both reach column 13 at `(13,7)`,
-whose index is past the bombs-room loop, so a state that climbs column 13
-skips that loop. The energy stage before it is done at any action end with
-health at 64 or more, so the route stage can start off the route, at
-objective 0.
+`(7,18)` to Kraid's hideout `(7,20)`. The route to Kraid's door joins three
+paths. Four cells run from `(20,9)` east along row 9 and up to `(22,8)`, out
+of the refill rooms below the corridor. Eleven cells run from `(20,11)` west
+along row 11 and up column 13 to `(13,8)`, the way recorded runs went from
+the refill rooms. Then comes the shortest path from the bombs room `(25,5)`.
+The row-9 cells meet it at `(22,7)` and the row-11 cells at `(13,7)`, both
+indexed past the bombs room, so a state on either skips the bombs-room loop.
+The energy stage before it is done at any action end with health at 64 or
+more, so the route stage can still start off the route, at objective 0.
 
 The place is the area byte, the map cell, boss damage and the Zebetite hits
 still needed, so every hit on a boss or a Zebetite column opens a new place
