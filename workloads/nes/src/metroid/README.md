@@ -68,7 +68,9 @@ An action is a button chord or a missile volley, defined in
 Chords come from the shared NES chord draw in the
 [package README](../../README.md#chord-draw): the 36 chords of nine D-pad
 positions and four A/B states, with no tap button, so a chord never presses
-Start or Select and B from a chord always fires the beam. A red door takes
+Start or Select, and B from a chord fires whatever the missile toggle holds:
+the beam, unless a root ended with missiles armed or a volley's disarm presses
+all missed within its limit. A red door takes
 five missiles, and a Select tap left missiles armed for every later B press,
 so random play spent its stock on whatever it faced before it reached a door.
 One draw in 12 is a volley. A volley fires only while something that takes
@@ -92,8 +94,13 @@ toggle at `$010E` reads armed, presses B on every other frame until the
 missile count at cartridge `0x879` has dropped by the count or the room holds
 no missile target any more, then presses Select until the toggle reads off. A
 shot counts only when the count drops, so a shot the game refuses, such as one
-from the morph ball, is not counted. Arming and disarming give up after 8
-frames, since Select flips the toggle within one press. Firing gives up after
+from the morph ball, is not counted. Arming and disarming repeat a three-frame
+cycle of release, Select, release until the toggle changes, and give up after
+12 frames. The leading release lets a volley that follows another volley's
+closing Select register a new press, and the repeat covers presses the game
+misses: in Tourian a one-frame Select fails on some frames and a press one
+frame later succeeds, and the toggle can read the change a frame late, which
+the trailing release waits out. Firing gives up after
 64 frames without a shot: the game refuses a missile while the last one is
 still in flight, and a missile crosses the screen in under 64 frames. With no
 missiles, or outside play, a volley waits 12 frames. A volley plans 12

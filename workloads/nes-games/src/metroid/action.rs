@@ -20,7 +20,9 @@ pub const FIRE_WAIT_FRAMES: u8 = SHORT_HOLD_FRAMES.1;
 
 pub const FIRE_PLANNED_FRAMES: u64 = 12;
 
-const TOGGLE_FRAME_LIMIT: u32 = 8;
+const TOGGLE_FRAME_LIMIT: u32 = 12;
+
+const TOGGLE_CYCLE: u32 = 3;
 
 const SHOT_FRAME_LIMIT: u32 = 64;
 
@@ -187,11 +189,8 @@ impl FireMissiles {
             }
         }
         let buttons = match self.phase {
-            Phase::Arm | Phase::Disarm if self.pressed => 0,
-            Phase::Arm | Phase::Disarm => {
-                self.pressed = true;
-                JOYPAD_SELECT
-            }
+            Phase::Arm | Phase::Disarm if self.phase_frames % TOGGLE_CYCLE == 1 => JOYPAD_SELECT,
+            Phase::Arm | Phase::Disarm => 0,
             Phase::Fire => {
                 self.pressed = !self.pressed;
                 if self.pressed { JOYPAD_B } else { 0 }
@@ -227,12 +226,20 @@ mod tests {
         held: u8,
         fires: bool,
         target_hits: Option<u8>,
+        select_presses: usize,
+        dropped_presses: Vec<usize>,
+        lagged: bool,
+        shown_armed: bool,
     }
 
     impl Game {
         fn press(&mut self, buttons: u8) {
+            let armed_before = self.armed;
             if buttons & JOYPAD_SELECT != 0 && self.held & JOYPAD_SELECT == 0 {
-                self.armed = !self.armed;
+                self.select_presses += 1;
+                if !self.dropped_presses.contains(&self.select_presses) {
+                    self.armed = !self.armed;
+                }
             }
             if self.fires
                 && self.armed
@@ -244,10 +251,15 @@ mod tests {
                 self.target_hits = self.target_hits.map(|hits| hits.saturating_sub(1));
             }
             self.held = buttons;
+            self.shown_armed = if self.lagged {
+                armed_before
+            } else {
+                self.armed
+            };
         }
 
         fn reading(&self) -> MetroidReading {
-            let mut reading = reading(self.missiles, self.armed);
+            let mut reading = reading(self.missiles, self.shown_armed);
             reading.missile_target = self.target_hits != Some(0);
             reading
         }
@@ -272,6 +284,10 @@ mod tests {
             held: 0,
             fires: true,
             target_hits: None,
+            select_presses: 0,
+            dropped_presses: Vec::new(),
+            lagged: false,
+            shown_armed: false,
         }
     }
 
@@ -292,12 +308,14 @@ mod tests {
         assert_eq!(
             pressed,
             [
+                0,
                 JOYPAD_SELECT,
                 JOYPAD_B,
                 0,
                 JOYPAD_B,
                 0,
                 JOYPAD_B,
+                0,
                 JOYPAD_SELECT
             ]
         );
@@ -314,8 +332,9 @@ mod tests {
     fn fire_starting_armed_skips_arming() {
         let mut start = game(4);
         start.armed = true;
+        start.shown_armed = true;
         let (pressed, after) = run(0, start);
-        assert_eq!(pressed, [JOYPAD_B, JOYPAD_SELECT]);
+        assert_eq!(pressed, [JOYPAD_B, 0, JOYPAD_SELECT]);
         assert_eq!(after.missiles, 3);
         assert!(!after.armed);
     }
@@ -329,7 +348,7 @@ mod tests {
         assert!(!after.armed);
         assert_eq!(
             pressed.len(),
-            1 + usize::try_from(SHOT_FRAME_LIMIT).unwrap() + 1
+            2 + usize::try_from(SHOT_FRAME_LIMIT).unwrap() + 2
         );
     }
 
@@ -357,8 +376,49 @@ mod tests {
         assert!(!after.armed);
         assert_eq!(
             pressed,
-            [JOYPAD_SELECT, JOYPAD_B, 0, JOYPAD_B, JOYPAD_SELECT]
+            [0, JOYPAD_SELECT, JOYPAD_B, 0, JOYPAD_B, 0, JOYPAD_SELECT]
         );
+    }
+
+    #[test]
+    fn fire_right_after_a_move_that_held_select_still_arms() {
+        let mut after_volley = game(6);
+        after_volley.held = JOYPAD_SELECT;
+        let (_, after) = run(1, after_volley);
+        assert_eq!(after.missiles, 4);
+        assert!(!after.armed);
+    }
+
+    #[test]
+    fn fire_presses_select_again_when_the_game_misses_a_press() {
+        let mut missed = game(6);
+        missed.dropped_presses = vec![1, 3];
+        let (_, after) = run(1, missed);
+        assert_eq!(after.missiles, 4);
+        assert!(!after.armed);
+        assert_eq!(after.select_presses, 4);
+    }
+
+    #[test]
+    fn fire_waits_for_a_toggle_shown_a_frame_late_before_pressing_again() {
+        let mut late = game(6);
+        late.lagged = true;
+        late.dropped_presses = vec![1];
+        let (_, after) = run(2, late);
+        assert_eq!(after.missiles, 3);
+        assert!(!after.armed);
+        assert_eq!(after.select_presses, 3);
+    }
+
+    #[test]
+    fn fire_toggles_on_the_last_press_its_limit_allows() {
+        let mut slow = game(6);
+        slow.lagged = true;
+        slow.dropped_presses = vec![1, 2, 3, 5, 6, 7];
+        let (_, after) = run(1, slow);
+        assert_eq!(after.missiles, 4);
+        assert!(!after.armed);
+        assert_eq!(after.select_presses, 8);
     }
 
     #[test]
