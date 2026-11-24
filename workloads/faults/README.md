@@ -835,8 +835,9 @@ range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 that draws `edges` 1 is not counted there. Each job record's
 `draw_checkpoint_before.weighted_sites` is the number of sites with a weight
 when the job was drawn, so the stream shows the record from which fresh draws
-could aim. A continuation that reuses a recorded tail keeps that tail's targets
-whatever the count.
+could aim. A job or skip that reuses a recorded tail, a continuation or a
+splice, keeps that tail's targets whatever the count, and replay does not
+check its count.
 `park_thresholds` counts, for each `floor(log2(edges))`, the `EventPark`
 actions the guest ran at that threshold and their landings, so the landings
 per action at each threshold show which part of the drawn range a workload's
