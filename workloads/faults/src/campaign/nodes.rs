@@ -30,11 +30,11 @@ pub(crate) fn site(vocabulary: &FaultVocabulary) -> ChoiceSite {
 }
 
 pub(crate) fn asks(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
-    vocabulary.untried_first_nodes() && fresh(action)
+    vocabulary.untried_first_nodes() && fresh(vocabulary, action)
 }
 
-fn fresh(action: &FaultAction) -> bool {
-    action.guest.is_none() && action.operation.target_node().is_some()
+fn fresh(vocabulary: &FaultVocabulary, action: &FaultAction) -> bool {
+    action.guest.is_none() && !action.operation.target_offer(vocabulary).is_empty()
 }
 
 #[must_use]
@@ -95,7 +95,7 @@ pub(crate) fn resolve(
                 .iter()
                 .zip(1..)
                 .map(|(action, step)| {
-                    fresh(action)
+                    fresh(vocabulary, action)
                         .then(|| row(vocabulary, depth + step, 0, &action.operation))
                         .flatten()
                 })
@@ -123,7 +123,7 @@ pub(crate) fn resolve(
             let offered = action.operation.target_offer(vocabulary);
             let (Some(drawn), Some(&default)) = (drawn, offered.first()) else {
                 rows.push(
-                    fresh(action)
+                    fresh(vocabulary, action)
                         .then(|| row(vocabulary, depth + step, 0, &action.operation))
                         .flatten(),
                 );
@@ -247,6 +247,36 @@ mod tests {
     }
 
     #[test]
+    fn a_role_pause_asks_no_node_and_leaves_the_untried_ordinal_to_the_next_ask() {
+        let vocabulary = vocabulary(true);
+        let role = action(FaultOperation::Pause(process_proto::ROLE_NODE, TICKS));
+        assert!(!asks(&vocabulary, &role));
+        let only_roles = [role, action(FaultOperation::Wait(TICKS))];
+        let resolved = resolve(
+            &vocabulary,
+            &only_roles,
+            Some(&permuted(Some(1), 4)),
+            Some(1),
+            4,
+        );
+        assert_eq!(resolved.suffix, only_roles);
+        assert_eq!(resolved.untried, None);
+        assert!(resolved.rows.iter().all(Option::is_none));
+        let mut drawn = suffix();
+        drawn.insert(0, role);
+        let resolved = resolve(
+            &vocabulary,
+            &drawn,
+            Some(&permuted(Some(1), 4)),
+            Some(1),
+            4,
+        );
+        assert_eq!(resolved.suffix[0], role);
+        assert_eq!(resolved.untried, Some(1));
+        assert!(resolved.rows[0].is_none() && resolved.rows[1].is_some());
+    }
+
+    #[test]
     fn without_the_option_or_a_plan_the_drawn_nodes_stand() {
         let drawn = suffix();
         let unplanned = resolve(&vocabulary(true), &drawn, None, Some(1), 0);
@@ -259,7 +289,7 @@ mod tests {
         for ((action, asked), step) in drawn.iter().zip(&resolved.rows).zip(1..) {
             assert_eq!(
                 asked.as_ref(),
-                fresh(action)
+                fresh(&off, action)
                     .then(|| row(&off, step, 0, &action.operation))
                     .flatten()
                     .as_ref()

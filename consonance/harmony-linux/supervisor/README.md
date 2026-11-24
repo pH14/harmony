@@ -358,26 +358,34 @@ window whose target is the reserved node id `ROLE_NODE` (`u16::MAX - 1`) is a
 role pause (ours): the node is resolved inside the guest when the window
 opens, by running that command, and the pause goes to the node it names.
 `role::RoleWindows` holds each role pause's answer, keyed by the pause
-window's start and end, and rewrites the standing answer before
-`Supervisor::poll` sees it, so the reconciler only ever sees node indices.
-An at-resume park window on `ROLE_NODE` follows the pause that ends where it
+window's start, and rewrites the standing answer before `Supervisor::poll`
+sees it, so the reconciler only ever sees node indices. A resolved pause
+window starts at the moment of the poll that resolved it, so catch-up steps
+across earlier edges see no pause, and it ends where the standing answer now
+ends it, so an `EndFaults` that shortens it keeps its answer. An at-resume park
+window on `ROLE_NODE` follows the one pause whose drawn end is where the park
 starts, so a parked pause parks the node it paused even after leadership has
-moved.
+moved; a park that two role pauses could own is dropped.
 
-The command starts in the first poll whose moment has reached the pause
-window's start, with its stdout piped, and is polled each tick. While it runs,
-the window is left out of the standing answer, so the node is paused from the
-poll in which the command exits until the window's end; the resolution time
-shortens the pause. The command's first line, trimmed, must be a node name the
-bundle declares. When the command exits nonzero, prints no declared name, is
-still running when the pause window ends (it is then killed), exits after the
-window ends, or the bundle has no `role` line, the role pause is unresolved:
-its pause and park windows are dropped, so the action runs as a wait of the
-same length. Each role pause writes one SDK line when it resolves,
-`{"harmony_role_pause":{"node":N}}`, or `{"harmony_role_pause":{"node":null}}`
-when it is unresolved. The command runs in the deterministic guest, so a
-replay asks the same nodes at the same virtual times, gets the same answers,
-and resolves the same node or the same no-op.
+The command starts in the first poll whose moment lies inside the pause
+window, with its stdout sent to an unlinked file under `/run/harmony`, and
+runs in its own process group. Its exit is read before each standing poll, so
+an answer counts only when the command had exited before a poll whose moment
+is still inside the window. The node is paused from that poll until the
+window's end; the resolution time shortens the pause. When the answer is
+taken, or the window ends or leaves the standing answer first, the command's
+whole process group is killed, so no helper outlives its pause. The first line
+of its output, trimmed, must be a node name the bundle declares. When the
+command does not start, exits nonzero, prints no declared name, is still
+running when the window ends, or the bundle has no `role` line, the role pause
+is unresolved: its pause and park windows are dropped, so the action runs as a
+wait of the same length. A role pause whose window has ended before any poll
+could ask is unresolved too, and one command runs at a time, so a role pause
+that opens while another is being resolved waits for it. Each role pause writes
+one SDK line when it resolves, `{"harmony_role_pause":{"node":N}}`, or
+`{"harmony_role_pause":{"node":null}}` when it is unresolved. The command runs
+in the deterministic guest, so a replay asks the same nodes at the same virtual
+times, gets the same answers, and resolves the same node or the same no-op.
 
 ## Node disks
 

@@ -579,7 +579,7 @@ struct LiveTelemetry {
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
 const PUBLISH_SPACING_WARMUP: u64 = 64;
 const MAX_PUBLISH_SPACING: usize = 16;
-const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v1";
+const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v2";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CapturedObservations {

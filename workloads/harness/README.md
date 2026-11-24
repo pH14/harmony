@@ -665,10 +665,12 @@ first. Build the image with
 `bundle-leader` is `bundle` with a `role` line,
 `role /opt/harmony/rqlite-harness leader`, so every pause the search draws,
 and every parked pause made from one under `resume_park`, goes to the node
-that leads when the pause starts instead of a node the draw picks. The search
-still draws each pause's length and park. `rqlite-harness leader` asks each
-node in order with `leaderOf`, the stepdown facts' leader read, and prints the
-first leader's name; the whole search shares one 1-second status timeout, and
+that `rqlite-harness leader` names when the pause opens instead of a node the
+draw picks. The search still draws each pause's length and park.
+`rqlite-harness leader` asks each node in order with `leaderOf`, the stepdown
+facts' leader read, and prints the first leader it finds; the reads are
+sequential, so leadership can move while they run and the name is the leader
+one read saw. The whole search shares one 1-second status timeout, and
 it exits 1 when no node reports a leader, which makes the pause a wait of the
 same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
 Kills, restarts, disk and clock faults keep their drawn node. `bundle`,

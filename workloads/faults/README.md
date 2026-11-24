@@ -422,8 +422,11 @@ A bundle with a `role` line draws role pauses (ours) in place of node-indexed
 ones. Every drawn `Pause`, and so every `PauseParked` made from one under
 `resume_park`, targets the reserved node id `ROLE_NODE` (`u16::MAX - 1`, shown
 as `Pause[65534, …]`) instead of the node the draw picked; the draw still
-consumes the same random words, so every other action of the suffix, and the
-pause's length, park and hold, are the ones a bundle without the line draws.
+consumes the same random words, so every other drawn action of the suffix and
+the pause's length are the ones a bundle without the line draws. Parks and holds
+come from a separate stream that each pause made parked consumes, so where a
+node-indexed pause would be parked and the role pause is not (some node not
+yet ready), the later parks and holds of that suffix differ.
 The supervisor resolves the node in the guest when the pause window opens, by
 running the line's command, and a pause it cannot resolve runs as a wait of the
 same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
@@ -1157,7 +1160,7 @@ preserve the last tuple moment and repeated observations preserve action evidenc
 Branch and replay install a checkpoint from the selected actual captured Link;
 rollback, new sessions and failures cannot reuse another lineage's cursor.
 
-Captured observation attachments use `fault-observations-v1`, included in the exact
+Captured observation attachments use `fault-observations-v2`, included in the exact
 cache namespace. Imported decoder checkpoints remain untrusted. When a pending
 checkpoint is retained, the normal required machine replay or branch reconstructs
 the full actual SDK history and compares all decoder state, including hidden maps
@@ -1507,7 +1510,7 @@ before its certified endpoint ends the requested action with stop
 `Unexpected`; that action has no endpoint, so the target folds nothing, and
 the state has no key and counts no stage fall. A target without the
 strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
-`fault-history-dag-v4` and the campaign stream and checkpoint formats carry
+`fault-history-dag-v5` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
@@ -1687,7 +1690,7 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v4`, whose endpoint frame also
+The shared history codec is `fault-history-dag-v5`, whose endpoint frame also
 carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.

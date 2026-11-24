@@ -1212,6 +1212,9 @@ impl SdkDecoder {
 }
 
 #[cfg(feature = "consonance")]
+const OBSERVATION_CHECKPOINT_VERSION: u16 = 2;
+
+#[cfg(feature = "consonance")]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ObservationCheckpoint {
     version: u16,
@@ -1226,7 +1229,7 @@ impl ObservationCheckpoint {
         decoder: SdkDecoder,
     ) -> Result<Self, String> {
         let checkpoint = Self {
-            version: 1,
+            version: OBSERVATION_CHECKPOINT_VERSION,
             receipt: receipt.root(),
             decoder,
         };
@@ -1246,7 +1249,7 @@ impl ObservationCheckpoint {
             self.decoder.capture(),
             FaultStop::Deadline,
         );
-        if self.version != 1
+        if self.version != OBSERVATION_CHECKPOINT_VERSION
             || self.receipt != receipt.root()
             || self.decoder.action_after() != after
             || self.decoder.moment() != receipt.moment()
@@ -3034,10 +3037,17 @@ mod tests {
         decoder.append(&events).unwrap();
         decoder.begin_action(3);
         assert_eq!(decoder.capture().parked_pauses, &capture.parked_pauses[1..]);
+        assert_eq!(decoder.capture().role_pauses, capture.role_pauses);
+        decoder.begin_action(5);
+        assert!(decoder.capture().role_pauses.is_empty());
         let mut observation = FaultObservations::new(9, &capture, FaultStop::Deadline);
         assert_eq!(observation.parked_pauses, capture.parked_pauses);
         observation.keep_parks_after(3);
         assert_eq!(observation.parked_pauses, &capture.parked_pauses[1..]);
+        assert_eq!(observation.role_pauses, capture.role_pauses);
+        let mut later = observation.clone();
+        later.keep_parks_after(5);
+        assert!(later.role_pauses.is_empty());
         let bytes = postcard::to_allocvec(&(&observation, &capture, 0x55_u8)).unwrap();
         assert_eq!(
             postcard::from_bytes::<(FaultObservations, SdkCapture, u8)>(&bytes).unwrap(),

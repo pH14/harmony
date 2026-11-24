@@ -149,7 +149,7 @@ mod runtime {
     use process_proto::{STANDING_NAMESPACE, encode_standing_question};
     use std::collections::VecDeque;
     use std::fs::File;
-    use std::io::{ErrorKind, Read, Write};
+    use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
@@ -234,13 +234,34 @@ mod runtime {
         child: Child,
     }
 
+    const ROLE_ANSWER_PATH: &str = "/run/harmony/role-answer";
+
+    struct Asking {
+        pause: RolePause,
+        child: Child,
+        answer: File,
+        exited: Option<ExitStatus>,
+    }
+
     #[derive(Default)]
     struct RoleResolver {
         windows: RoleWindows,
-        asking: Option<(RolePause, Child)>,
+        asking: Option<Asking>,
     }
 
     impl RoleResolver {
+        fn observe(&mut self) -> Result<(), String> {
+            if let Some(asking) = self.asking.as_mut()
+                && asking.exited.is_none()
+            {
+                asking.exited = asking
+                    .child
+                    .try_wait()
+                    .map_err(|error| format!("role command: {error}"))?;
+            }
+            Ok(())
+        }
+
         fn step(
             &mut self,
             spec: &execution_proto::ExecutionSpec,
@@ -249,46 +270,57 @@ mod runtime {
             output: &mut File,
             tick: u64,
         ) -> Result<(), String> {
-            if let Some((pause, child)) = self.asking.as_mut() {
-                let pause = *pause;
-                let exited = child
-                    .try_wait()
-                    .map_err(|error| format!("role command: {error}"))?;
-                if exited.is_some() || standing.moment >= pause.end {
-                    let (_, mut child) = self.asking.take().ok_or("role command vanished")?;
-                    let named = match exited {
-                        Some(status) if status.success() => {
-                            let mut text = String::new();
-                            if let Some(mut stdout) = child.stdout.take() {
-                                stdout
-                                    .read_to_string(&mut text)
-                                    .map_err(|error| format!("role command output: {error}"))?;
-                            }
-                            bundle.node_named(text.trim())
+            if let Some(asking) = self.asking.as_ref() {
+                let open = RoleWindows::current(standing, asking.pause)
+                    .filter(|pause| standing.moment < pause.end);
+                if asking.exited.is_some() || open.is_none() {
+                    let mut asking = self.asking.take().ok_or("role command vanished")?;
+                    process::signal_group(asking.child.id(), libc::SIGKILL)
+                        .map_err(|error| format!("role command: {error}"))?;
+                    let named = match (asking.exited, open) {
+                        (Some(status), Some(_)) if status.success() => {
+                            bundle.node_named(&read_answer(&mut asking.answer)?)
                         }
-                        Some(_) => None,
-                        None => {
-                            let _ = child.kill();
-                            child
-                                .wait()
-                                .map_err(|error| format!("role command: {error}"))?;
-                            None
-                        }
+                        _ => None,
                     };
-                    self.settle(pause, named, standing.moment, output, tick)?;
+                    if asking.exited.is_none() {
+                        asking
+                            .child
+                            .wait()
+                            .map_err(|error| format!("role command: {error}"))?;
+                    }
+                    self.settle(
+                        open.unwrap_or(asking.pause),
+                        named,
+                        standing.moment,
+                        output,
+                        tick,
+                    )?;
                 }
             }
-            if let Some(pause) = self.windows.bind(standing)
-                && self.asking.is_none()
-            {
+            let bound = self
+                .windows
+                .bind(standing, self.asking.as_ref().map(|asking| asking.pause));
+            for _ in &bound.expired {
+                record_role(None, output, tick)?;
+            }
+            if let Some(pause) = bound.ask {
                 match bundle.role.as_deref() {
-                    Some(argv) => {
-                        let child = process::command(spec, argv)
-                            .and_then(|mut command| command.stdout(Stdio::piped()).spawn())
-                            .map_err(|error| format!("role command: {error}"))?;
-                        log(tick, "run the role command for a role pause");
-                        self.asking = Some((pause, child));
-                    }
+                    Some(argv) => match ask_role(spec, argv) {
+                        Ok((child, answer)) => {
+                            log(tick, "run the role command for a role pause");
+                            self.asking = Some(Asking {
+                                pause,
+                                child,
+                                answer,
+                                exited: None,
+                            });
+                        }
+                        Err(error) => {
+                            log(tick, &format!("role command did not start: {error}"));
+                            self.settle(pause, None, standing.moment, output, tick)?;
+                        }
+                    },
                     None => self.settle(pause, None, standing.moment, output, tick)?,
                 }
             }
@@ -303,21 +335,56 @@ mod runtime {
             output: &mut File,
             tick: u64,
         ) -> Result<(), String> {
-            let node = self.windows.resolve(pause, named, moment);
-            log(
-                tick,
-                &node.map_or_else(
-                    || "role pause unresolved; it waits out its window".to_owned(),
-                    |node| format!("role pause aims at node {node}"),
-                ),
-            );
-            process::write_record(output, &process::role_pause_record(node))
-                .map_err(|error| format!("role pause record: {error}"))
+            record_role(self.windows.resolve(pause, named, moment), output, tick)
         }
 
         fn child_id(&self) -> Option<u32> {
-            self.asking.as_ref().map(|(_, child)| child.id())
+            self.asking.as_ref().map(|asking| asking.child.id())
         }
+    }
+
+    fn ask_role(
+        spec: &execution_proto::ExecutionSpec,
+        argv: &[String],
+    ) -> std::io::Result<(Child, File)> {
+        std::fs::create_dir_all("/run/harmony")?;
+        let answer = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(ROLE_ANSWER_PATH)?;
+        std::fs::remove_file(ROLE_ANSWER_PATH)?;
+        let child = process::command(spec, argv)?
+            .stdout(Stdio::from(answer.try_clone()?))
+            .spawn()?;
+        Ok((child, answer))
+    }
+
+    fn read_answer(answer: &mut File) -> Result<String, String> {
+        let mut bytes = Vec::new();
+        answer
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| answer.read_to_end(&mut bytes))
+            .map_err(|error| format!("role command output: {error}"))?;
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned())
+    }
+
+    fn record_role(node: Option<u16>, output: &mut File, tick: u64) -> Result<(), String> {
+        log(
+            tick,
+            &node.map_or_else(
+                || "role pause unresolved; it waits out its window".to_owned(),
+                |node| format!("role pause aims at node {node}"),
+            ),
+        );
+        process::write_record(output, &process::role_pause_record(node))
+            .map_err(|error| format!("role pause record: {error}"))
     }
 
     struct Check {
@@ -1174,6 +1241,7 @@ mod runtime {
             thread::sleep(Duration::from_nanos(harmony_supervisor::TICK_NANOS));
             sdk.state_set(REG_PENDING_FAULTS, u64::MAX)
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
+            runtime.roles.observe()?;
             let mut standing = poll_standing(
                 sdk,
                 supervisor.counters().ticks,
