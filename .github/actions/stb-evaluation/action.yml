@@ -4,10 +4,9 @@ runs:
   using: composite
   steps:
     - name: Install source build and video tools
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends build-essential curl git unzip python3 python3-pil ffmpeg jq
+      uses: ./.github/actions/apt-packages
+      with:
+        packages: build-essential curl git unzip python3 python3-pil ffmpeg jq
     - uses: Swatinem/rust-cache@v2
       with:
         save-if: ${{ github.ref == 'refs/heads/main' }}

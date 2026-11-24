@@ -30,7 +30,8 @@ class ScopeTests(unittest.TestCase):
     def test_stb_changes_select_the_stb_check(self):
         for path in ("workloads/nes-games/src/stb/target.rs", "workloads/nes/src/bin/stb-probe.rs",
                      "workloads/nes/scripts/build-stb-rom.sh",
-                     ".github/actions/stb-evaluation/action.yml"):
+                     ".github/actions/stb-evaluation/action.yml",
+                     ".github/actions/apt-packages/action.yml"):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), {"dissonance_stb"})
 

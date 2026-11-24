@@ -54,10 +54,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install source build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            build-essential cc65 curl ffmpeg git python3 python3-pil unzip
+        uses: ./.github/actions/apt-packages
+        with:
+          packages: build-essential cc65 curl ffmpeg git python3 python3-pil unzip
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
