@@ -1380,9 +1380,10 @@ property still keeps the input of a later bug of another. A job that runs
 several actions records its bug again at each later action that still
 violates, so `campaign-summary.json` gives `distinct_reports`, the number of
 distinct executions among the `bug-N.json` files. A resumed campaign rewrites
-every earlier report with its original execution number, so the last summary
-of a resumed chain counts each report once and adding up the chain's summaries
-does not. The summary also groups the reports into `violation_classes`, with
+every earlier report with its original execution number, so the
+`distinct_reports` of the last summary of a resumed chain counts each
+execution once, and adding up the chain's summaries counts earlier ones
+again. The summary also groups the reports into `violation_classes`, with
 their number in `violation_class_count`. A class is the set of reports that
 stopped the same way and violate the same set of properties. A class is
 neither an upper nor a lower bound on the number of distinct failure
