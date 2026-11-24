@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Cached system packages
+description: >-
+  Install Ubuntu packages with apt, keeping the downloaded archives in the
+  Actions cache so a run downloads only the package lists and any package newer
+  than the cached copy. Main saves the cache; every ref restores it.
+inputs:
+  packages:
+    description: Space-separated apt package names
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Key the package archive cache
+      id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        list=$(tr ' ' '\n' <<<"$PACKAGES" | sed '/^$/d' | sort -u | sha256sum | cut -c1-16)
+        echo "key=apt-archives-v1-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${list}" >>"$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      id: restore
+      with:
+        path: ~/.cache/apt-archives
+        key: ${{ steps.key.outputs.key }}
+    - name: Install packages from the cached archives and the mirror
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        archives="$HOME/.cache/apt-archives"
+        mkdir -p "$archives/partial"
+        sudo apt-get update
+        read -ra packages <<<"$PACKAGES"
+        sudo apt-get install --yes --no-install-recommends \
+          -o Dir::Cache::Archives="$archives" "${packages[@]}"
+        sudo rm -f "$archives/lock"
+        sudo chown -R "$(id -u):$(id -g)" "$archives"
+        echo "Cached archives: $(find "$archives" -maxdepth 1 -name '*.deb' | wc -l) packages, $(du -sh "$archives" | cut -f1)."
+    - uses: actions/cache/save@v4
+      if: github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
+      with:
+        path: ~/.cache/apt-archives
+        key: ${{ steps.key.outputs.key }}

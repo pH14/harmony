@@ -48,7 +48,7 @@ def selected(paths):
             result["dissonance_stb"] = True
         if path in ("scripts/build-quicknes-core.sh", "scripts/quicknes-translate.py"):
             result["dissonance_stb"] = True
-        if path.startswith(".github/actions/stb-evaluation/"):
+        if path.startswith((".github/actions/stb-evaluation/", ".github/actions/apt-packages/")):
             result["dissonance_stb"] = True
         if path.startswith(("workloads/fault-policy/", "workloads/faults/", "workloads/bugs/historical/postgres-cic-corruption/", "scripts/historical-")):
             result["harmony_oci"] = True

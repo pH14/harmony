@@ -345,6 +345,14 @@ from the entry `main` saved. The language layer caches save on any ref,
 because a missed layer costs a build of up to sixteen minutes and the entry is
 small.
 
+The STB check and the NES benchmarks install their Ubuntu packages through
+`.github/actions/apt-packages`, which keeps the downloaded archives in the
+cache under the runner image version and the package list. Main saves the
+entry and every ref restores it, so a run downloads only the package lists and
+any package newer than the cached copy, and the 15-minute STB check does not
+depend on the Ubuntu mirror's speed for its roughly 64 MB of `ffmpeg`
+dependencies.
+
 ## Ignored tests
 
 The Nested Host Qualification workflow's `Nested Host` job runs on its
