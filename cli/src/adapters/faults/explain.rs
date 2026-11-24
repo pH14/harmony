@@ -4,7 +4,7 @@ use super::{config::Explain, investigate, runs::Manifest, shrink, terminal};
 use crate::{adapters::Request, config::Result};
 use faults_workload::{
     FaultAction, FaultOperation, consonance::FaultTarget, package::ReplaySummary,
-    target::SUPERVISOR_TICK_MICROS,
+    target::{ROLE_LEAD_TICKS, SUPERVISOR_TICK_MICROS},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -579,6 +579,13 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             .unwrap_or_else(|| format!("node {index}"))
     };
     let span = |ticks: NonZeroU16| seconds(u64::from(ticks.get()));
+    let lead = |index: u16| {
+        if index == process_proto::ROLE_NODE {
+            format!("after a {} lead, ", seconds(ROLE_LEAD_TICKS))
+        } else {
+            String::new()
+        }
+    };
     match *operation {
         FaultOperation::Wait(ticks) => format!("wait {}", span(ticks)),
         FaultOperation::EndFaults(ticks) => {
@@ -586,7 +593,12 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
         }
         FaultOperation::Kill(index, ticks) => format!("kill {} for {}", node(index), span(ticks)),
         FaultOperation::KillAll(ticks) => format!("kill every node for {}", span(ticks)),
-        FaultOperation::Pause(index, ticks) => format!("pause {} for {}", node(index), span(ticks)),
+        FaultOperation::Pause(index, ticks) => format!(
+            "{}pause {} for {}",
+            lead(index),
+            node(index),
+            span(ticks)
+        ),
         FaultOperation::Restart(index, ticks) => format!(
             "restart {} (back after {})",
             node(index),
@@ -617,7 +629,8 @@ pub fn describe(operation: &FaultOperation, names: &Names) -> String {
             ticks,
             ..
         } => format!(
-            "pause {} for {}, then park it after {edges} edges from the resume for {hold_us} us",
+            "{}pause {} for {}, then park it after {edges} edges from the resume for {hold_us} us",
+            lead(index),
             node(index),
             span(ticks)
         ),
@@ -2145,7 +2158,7 @@ mod tests {
                 &FaultOperation::Pause(process_proto::ROLE_NODE, ticks(128)),
                 &super::names("node n1 /a\nrole /opt/harmony/rqlite-harness leader\n")
             ),
-            "pause the node `/opt/harmony/rqlite-harness leader` names for 1.28 s"
+            "after a 1.28 s lead, pause the node `/opt/harmony/rqlite-harness leader` names for 1.28 s"
         );
         assert_eq!(
             describe(&FaultOperation::DiskStall(0, ticks(64)), &names),

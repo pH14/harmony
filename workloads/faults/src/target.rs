@@ -663,6 +663,14 @@ impl ActionWindows {
     ) {
         if matches!(action.operation, FaultOperation::EndFaults(_)) {
             for open in standing.iter_mut().filter(|open| open.end > window.0) {
+                if let Some((ROLE_NODE, Fault::ProcPause(Span(length)))) =
+                    fault_policy::decode_process_target(&open.target)
+                {
+                    open.target = process_target(
+                        ROLE_NODE,
+                        &Fault::ProcPause(Span(length.saturating_sub(open.end - window.0))),
+                    );
+                }
                 open.end = window.0;
             }
             standing.retain(|open| open.start < open.end);
@@ -2738,6 +2746,29 @@ mod tests {
                 .iter()
                 .all(|fault| fault.class == DecisionClass::Process.as_u16())
         );
+    }
+
+    #[test]
+    fn ending_faults_in_a_role_pause_lead_leaves_no_pause_and_later_keeps_what_is_left() {
+        let role = |length: u64, end: u64| StandingWindow {
+            class: DecisionClass::Process.as_u16(),
+            target: process_target(ROLE_NODE, &Fault::ProcPause(Span(length))),
+            start: 0,
+            end,
+        };
+        let length = |windows: &[StandingWindow]| match decode_process_target(&windows[0].target) {
+            Some((ROLE_NODE, Fault::ProcPause(Span(length)))) => length,
+            other => panic!("not a role pause: {other:?}"),
+        };
+        let actions = [FaultAction::from(FaultOperation::EndFaults(ticks(16)))];
+        let in_lead = standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 100 * TICK)], &actions)
+            .unwrap();
+        assert_eq!(in_lead[0].end, ROOT);
+        assert_eq!(length(&in_lead), 0);
+        let in_pause = standing_windows(WINDOWS, &[role(50 * TICK, ROOT + 20 * TICK)], &actions)
+            .unwrap();
+        assert_eq!(in_pause[0].end, ROOT);
+        assert_eq!(length(&in_pause), 30 * TICK);
     }
 
     #[test]
