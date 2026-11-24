@@ -750,12 +750,31 @@ mod tests {
             route_credit(&stage_alone("tourian_elevator"), &[on, off, on]),
             [index, 0, index]
         );
-        for name in ["norfair_return", "zebetite_door"] {
-            assert_eq!(
-                route_credit(&stage_alone(name), &[on, off, on]),
-                [index, index, index],
-                "{name}"
-            );
+        let carrying: Vec<&str> = Metroid::STRATEGY
+            .split("[[stage]]")
+            .filter(|stage| stage.contains("index(cell, to_ending) else none"))
+            .map(|stage| {
+                stage
+                    .lines()
+                    .find_map(|line| line.strip_prefix("name = "))
+                    .unwrap()
+                    .trim_matches('"')
+            })
+            .collect();
+        assert_eq!(
+            carrying,
+            [
+                "ridley_exit",
+                "norfair_return",
+                "zebetite_door",
+                "zebetites",
+                "escape"
+            ]
+        );
+        for name in carrying {
+            let credit = route_credit(&stage_alone(name), &[on, off, on]);
+            assert!(credit[0] >= index, "{name}");
+            assert_eq!(credit, [credit[0]; 3], "{name}");
         }
     }
 

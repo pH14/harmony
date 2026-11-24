@@ -541,7 +541,11 @@ climbs 256 per destroyed column plus boss damage and is done on
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
 `to_ridley` and every route after Ridley shares `to_ending`, each read by one
-`last` with no stage scope. Neither table repeats a cell, and every stage that
+`last` with no stage scope. The tourian_elevator stage reads `to_ending`
+without an aggregate, `if in(cell, to_ending) then index(cell, to_ending) else 0`,
+which scores 0 off the route and equals the route index on it at every action
+end, where keys are taken; the [Metroid README](../nes/src/metroid/README.md#archive-key)
+gives the reason. Neither table repeats a cell, and every stage that
 reads one starts on a cell of it (the Norfair elevator's arrival and Ridley's
 room), so the unscoped `last` starts each stage at its entry cell as the
 scoped form does. Each of those stages is done on its route's last cell. The routes
