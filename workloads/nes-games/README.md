@@ -541,13 +541,19 @@ climbs 256 per destroyed column plus boss damage and is done on
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
 `to_ridley` and every route after Ridley shares `to_ending`, each read by one
-`last` with no stage scope. Neither table repeats a cell, and every stage that
+`last` with no stage scope. The tourian_elevator stage reads `to_ending`
+without an aggregate, `if in(cell, to_ending) then index(cell, to_ending) else 0`,
+which scores 0 off the route. At an action end, where archive candidates are
+taken, it equals the route index the shared `last` would give; on an interior
+frame it scores the cell Samus is passing through, so a route cell crossed
+mid-action can raise the reported progress mark. The [Metroid README](../nes/src/metroid/README.md#archive-key)
+gives the reason for the stage's rule. Neither table repeats a cell, and every stage that
 reads one starts on a cell of it (the Norfair elevator's arrival and Ridley's
 room), so the unscoped `last` starts each stage at its entry cell as the
 scoped form does. Each of those stages is done on its route's last cell. The routes
 and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
 the equivalence test compares the stages up to Kraid and checks that every
-state past his defeat is located past the hand plan's stages. A route stage's objective is the last route index
+state past his defeat is located past the hand plan's stages. In the stages the hand plan covers, a route stage's objective is the last route index
 a kept state stood on within that stage,
 `last(if action_end then index(cell, route) else none, stage)`, and 0 when the
 stage is entered off the route, as the hand plan locates from action endpoints

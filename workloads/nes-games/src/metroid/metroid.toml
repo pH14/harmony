@@ -138,7 +138,7 @@ latch = true
 
 [[stage]]
 name = "tourian_elevator"
-objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+objective = "if in(cell, to_ending) then index(cell, to_ending) else 0"
 goal = "action_end and cell == 190304 and not dead"
 latch = true
 
@@ -186,6 +186,7 @@ to_bombs = [
     162805, 162705, 162605, 162505,
 ]
 to_kraid_door = [
+    162009, 162109, 162209, 162208,
     162011, 161911, 161811, 161711, 161611, 161511, 161411, 161311, 161310, 161309,
     161308, 162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
     162707, 162607, 162507, 162407, 162307, 162207, 162107, 162007, 161907, 161807,
