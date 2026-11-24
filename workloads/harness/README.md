@@ -908,12 +908,31 @@ v10.6.2 `bundle-forward` with `ram_mib = 2048`, searches with both options on
 found a duplicated append in each of four seeds, within 2,391 to 7,192 guest
 seconds. Four seeds with both off found none in 17.6 guest hours.
 
-Node disks and their write logs live in guest memory, and a write log empties
-only when a power loss replays it, so with `ram_mib = 1024` the guest's
-out-of-memory killer ended 2 executions in 66 guest hours of v10.7.1 `bundle`
-searches, each about 1,100 to 1,200 guest seconds after the path's last power
-loss ([#992](https://github.com/pH14/harmony/issues/992)), while 12 v10.6.2
-`bundle-forward` searches with `ram_mib = 2048` lost none in 53.5 guest hours.
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and their pages grow with the distinct blocks a path writes,
+filesystem metadata and journal included, not with the size of the database.
+ext4 is formatted and mounted there without discard, so a deleted file's
+blocks keep their pages. Each node can use up to 256 MiB for its data disk and
+up to 256 MiB for its replay base, which allocates pages as compactions and
+power losses apply writes to it. The supervisor compacts a write log once a
+check finds 64 MiB in it; the log can grow past that before a check or while
+a fold runs. Allowing 64 MiB per log, three nodes come to about 1.7 GiB of
+disk pages, and with the 380 MiB of other guest memory measured below
+(anonymous, shared, slab, kernel stacks and page tables) to about 2.1 GiB,
+more than a 2048 MiB guest as well as a 1024 MiB one. 2048 MiB is headroom
+for the path lengths measured, not a bound. At `ram_mib = 1024`, where the
+guest reports 978 MiB of RAM, replays of v10.7.1 search paths applied every
+action with no out-of-memory kill, but available memory fell to 284 MiB after
+188 actions of `bundle-stepdown` and to 225 MiB after 471 actions of
+`bundle-stepdown-facts`, below the 256 MiB margin chosen for this setting.
+After the 471 actions the three filesystems reported 7 to 10 MiB used each,
+while the guest RAM left after subtracting free memory, buffers, page cache,
+anonymous memory, slab, kernel stacks and page tables, where RAM disk pages
+fall, was 361 MiB, up from 171 MiB after 100 actions. These readings fit pages
+accumulating for distinct blocks written; they leave the split among data
+disks, replay bases and logs undetermined. Reducing node disk memory is open
+work: reclaiming discarded blocks on both the data disk and the replay base,
+smaller node disks, or a replay base that shares pages with the data disk.
 
 ## etcd
 
