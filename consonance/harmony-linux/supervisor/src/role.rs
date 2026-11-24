@@ -270,6 +270,30 @@ mod tests {
     }
 
     #[test]
+    fn a_role_pause_cut_after_its_lead_runs_from_its_drawn_opening_to_the_cut() {
+        let mut roles = RoleWindows::new();
+        let pause = RolePause {
+            start: 10,
+            end: 188,
+        };
+        assert_eq!(roles.resolve(pause, Some(1), 30), Some(1));
+        let mut cut = standing(
+            145,
+            vec![window(ROLE_NODE, ProcessAction::Pause(12), 10, 150)],
+        );
+        assert_eq!(roles.bind(&mut cut, None), Bound::default());
+        assert_eq!(cut.windows, [window(1, ProcessAction::Pause(12), 138, 150)]);
+        let steps = cut.steps(Some(125));
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| (step.moment(), step.node(1).pause))
+                .collect::<Vec<_>>(),
+            [(138, true), (145, true)]
+        );
+    }
+
+    #[test]
     fn a_resolved_pause_starts_at_its_resolution_so_catch_up_edges_before_it_see_no_pause() {
         let mut roles = RoleWindows::new();
         let pause = RolePause { start: 10, end: 60 };
