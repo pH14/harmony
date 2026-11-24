@@ -309,6 +309,45 @@ the check journal as evidence. A check that ran fewer rounds, or a round with
 fewer than two answering nodes, decides nothing unless a round with two or more
 answering nodes found no unexplained disagreement.
 
+`Register.Watch` set to N adds a `watch` operation to about one operation in
+N. A watch's input is a start revision, drawn from the highest revision the
+client has seen: up to 100 revisions in the past, the next revision, or up to
+100 revisions in the future. Its output is the list of events it delivered,
+each with a revision, key and value (no value for a delete) and the start
+revision of the stream that delivered it, which a watch that resumes on
+another node raises. Writes and `cas`
+operations then return the revision the store assigned them. With watches on,
+the check also reads each pinned node's full change history (the `history`
+operation), and the longest history is the reference. These assertions check
+every successful watch:
+
+- `register: a watch never delivers an event below its start revision`, or
+  below the start of the stream that delivered it;
+- `register: a watch delivers events in revision order, each once`, where
+  events at one revision may come in any key order but no key twice;
+- `register: a watch delivers every event from its start revision to its last delivered revision`,
+  against the reference history where it reaches that far and against every
+  acknowledged write's revision in that interval;
+- `register: every delivered event matches the reference history`, where an
+  event equal to an acknowledged write of that key and value at that
+  revision always matches, and beyond the reference an event must be such a
+  write; the family issues no deletes, so a delete beyond the reference is
+  not checked;
+- `register: every member's history agrees`, which compares every pair of
+  histories from different nodes up to the shorter one's last revision, and
+  checks that each history holds every acknowledged write up to its own last
+  revision, naming the node that differs; it is decided only when nonempty
+  histories from two nodes answered.
+
+The floor, completeness and match checks are decided only when some watch
+delivered an event, and the order check when some watch delivered two.
+
+The five checks and the history read belong to the kit, not to one adapter.
+A family that implements `Changefeed` (`Feed() (Op, bool)`) tells the check
+runner which operation reads a node's change history, so any target whose
+system has a change feed can use the same checks by answering `watch` and
+`history`.
+
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
 
@@ -318,7 +357,9 @@ The bundle's `check` line performs one read through the adapter into its own
 journal, plus one read per node when the adapter pins reads. For the register
 family it also runs, starting with those reads, up to three `replicas` rounds
 500 ms of guest time apart (`Register.Pause`), each with one read per node
-bounded by `--check-timeout`. After each round it reloads the journals and
+bounded by `--check-timeout`. When the family reads change histories
+(`Changefeed`) and `HARMONY_FAULTS_IN_FORCE` is not `1`, the check also issues
+one history read per pinned node. After each round it reloads the journals and
 stops when the round shows no disagreement under the register rule above, or
 when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
@@ -346,7 +387,8 @@ also writes these `Sometimes` assertions:
 When the family left keys undecided, the check writes one
 `{"harmony_check":{"undecided_keys":N}}` record, which the host carries into
 `undecided_checks` in `campaign-summary.json` and `report.json`. The JSON line
-the check prints and the `harness-check` output both have `undecided_keys`.
+the check prints and the `harness-check` output both have `undecided_keys`;
+the `harness-check` output also lists the undecided assertions.
 
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.
@@ -605,7 +647,9 @@ data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
 host_history = "harness-check -family register -reads monotonic @/tmp/harness/journal"
 ```
 
-Pass `-reads monotonic` to check the history the way the nats-kv adapter does.
+Pass `-reads monotonic` to check the history the way the nats-kv adapter does. Pass
+`-watches` to add the register watch and member history checks, as a target
+with `Register.Watch` set does.
 `harness-check` checks the clients' operations without the check's final read.
 It prints the journal files, the operation count, the facts and the violations
 as JSON, and exits 3 when it finds violations.
@@ -911,6 +955,27 @@ defragment, its deadline passed before it was sent; every other write error is
 indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
+`HARNESS_ETCD_WATCH=N` turns on the register family's watches (`Register.Watch`)
+over the keys from `k` to `l`. A watch streams `/v3/watch` from its start
+revision and splits its time into one to three segments drawn from the SDK
+stream. Each segment after the first goes to a newly drawn member and resumes
+from the revision after the highest delivered event, so a watch fails over the
+way a client does after its member restarts or is cut off. A segment that
+breaks hands over to the next, and events delivered before an error are kept.
+A watch that delivered nothing and met a segment error fails definitely,
+since it changes no key; one whose segments all ran to their ends succeeds,
+even with no events. A
+frame with an event that has no key or revision ends its segment with an
+error. Writes and `cas` operations return the response
+header's revision. The `history` read on `mI` finds the highest
+`mod_revision` with a serializable range on `mI`, then streams a watch from
+revision 1 on `mI` until a frame delivers that revision, keeping every event
+of the frame. `bundle-watch` is the
+three-member bundle with `--snapshot-count 10 --snapshot-catchup-entries 10`
+on each member, so a follower that falls behind is sent a snapshot, and
+`HARNESS_ETCD_WATCH=4` on its drive and check lines; like `bundle-snapshot`, it
+needs a 3.6 release.
+
 The adapter also asserts an always property of its own: a linearizable
 request's response revision is never below a revision acknowledged before the
 request was sent. Puts, the compare-and-swap transaction and ranges without
@@ -947,7 +1012,8 @@ bundle, about 6 entries are applied per guest second with no faults. A bundle
 that needs more entries per guest second, such as one that waits for etcd 3.6's
 default snapshot count of 10,000 (100,000 in 3.5), can set two driver variables.
 `HARNESS_ETCD_WRITES_ONLY=1` makes the drive draw only writes and
-compare-and-swaps (`Register.NoReads`). Linearizable reads cost a ReadIndex
+compare-and-swaps (`Register.NoReads`), plus watches when
+`HARNESS_ETCD_WATCH` is set. Linearizable reads cost a ReadIndex
 round on every member and add no entry. The check still makes its own reads: an
 unpinned read and a read pinned to each member of the register's first key,
 and the replica comparison over every key. The register checker still checks
@@ -969,10 +1035,10 @@ about 14 entries per guest second with no faults. More processes do not
 raise the rate further, because the vCPU is already saturated.
 
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
-(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.4`, `v3.6.5`, `v3.6.8` and
-`v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions. Choose another bundle
-with `--build-arg HARNESS_BUNDLE=bundle-single` or `bundle-snapshot`, which
-needs a 3.6 release.
+(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.1`, `v3.6.2`, `v3.6.4`,
+`v3.6.5`, `v3.6.8` and `v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions.
+Choose another bundle with `--build-arg HARNESS_BUNDLE=bundle-single`,
+`bundle-snapshot` or `bundle-watch`; the last two need a 3.6 release.
 
 ## Redis-Raft
 

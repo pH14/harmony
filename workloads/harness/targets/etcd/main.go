@@ -26,6 +26,7 @@ import (
 
 const (
 	membersEnv    = "HARNESS_ETCD_MEMBERS"
+	watchEnv      = "HARNESS_ETCD_WATCH"
 	defragmentEnv = "HARNESS_ETCD_DEFRAGMENT"
 	writesEnv     = "HARNESS_ETCD_WRITES_ONLY"
 	keepAliveEnv  = "HARNESS_ETCD_KEEPALIVE"
@@ -33,15 +34,24 @@ const (
 	defragmentLimit = 2 * time.Second
 )
 
+const (
+	watchFirst = "k"
+	watchEnd   = "l"
+	watchSpare = 250 * time.Millisecond
+)
+
 type adapter struct {
 	members    []string
 	names      []string
+	watch      uint64
 	defragment uint64
 	writesOnly bool
 	keepAlive  bool
 }
 
-func (a adapter) Family() family.Family { return family.Register{NoReads: a.writesOnly} }
+func (a adapter) Family() family.Family {
+	return family.Register{NoReads: a.writesOnly, Watch: a.watch}
+}
 
 func (a adapter) Nodes() []string { return a.names }
 
@@ -164,8 +174,11 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	key := enc(op.K)
 	switch op.F {
 	case family.RegisterWrite:
-		_, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": key, "value": enc(op.V.(string))})
-		return nil, err
+		r, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": key, "value": enc(op.V.(string))})
+		if err != nil {
+			return nil, err
+		}
+		return uint64(r.Header.Revision), nil
 	case family.RegisterCAS:
 		pair := op.V.([]string)
 		r, err := c.post(ctx, base, "/v3/kv/txn", map[string]any{
@@ -178,7 +191,7 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		if !r.Succeeded {
 			return nil, runner.Definite(errors.New("cas: current value differs"))
 		}
-		return nil, nil
+		return uint64(r.Header.Revision), nil
 	case family.RegisterReadF:
 		body := map[string]any{"key": key}
 		if op.Node != "" {
@@ -204,6 +217,18 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 			return string(value), nil
 		}
 		return nil, runner.Definite(fmt.Errorf("range: %d values for one key", len(r.Kvs)))
+	case family.RegisterWatch:
+		return c.watch(ctx, base, op.V.(family.WatchQuery).From)
+	case family.RegisterHistory:
+		at := slices.Index(c.names, op.Node)
+		if at < 0 {
+			return nil, runner.Definite(fmt.Errorf("unknown node %q", op.Node))
+		}
+		events, err := c.history(ctx, c.members[at])
+		if err != nil {
+			return nil, runner.Definite(err)
+		}
+		return events, nil
 	case family.RegisterReplicas:
 		copies, err := c.replicas(ctx, op.Node, op.V.(family.ReplicaQuery).Keys)
 		if err != nil {
@@ -343,6 +368,169 @@ func (a adapter) Ready(ctx context.Context) error {
 	})
 }
 
+// A watch runs until shortly before the operation deadline, in up to three
+// segments on drawn members. Each later segment resumes from the revision after
+// the highest event delivered, as a client does when it fails over to another
+// endpoint, and a segment that breaks hands over to the next. Events delivered
+// before a stream breaks are kept, because the checks bound completeness by the
+// last delivered revision. Each event carries its segment's start revision. A
+// watch changes no key, so one that delivered nothing after a segment error
+// fails definitely; one whose segments all stopped cleanly succeeds even when
+// empty.
+func (c client) watch(ctx context.Context, base string, from uint64) ([]family.Event, error) {
+	return c.segmented(ctx, base, from, 1+int(sdk.Below("etcd.watch.segments", 3)))
+}
+
+func (c client) segmented(ctx context.Context, base string, from uint64, segments int) ([]family.Event, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(time.Second)
+	}
+	end := deadline.Add(-min(watchSpare, time.Until(deadline)/4))
+	events := []family.Event{}
+	next := from
+	var failed error
+	for segment := range segments {
+		if segment > 0 {
+			base = c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
+		}
+		stop := time.Now().Add(time.Until(end) / time.Duration(segments-segment))
+		got, err := c.stream(ctx, base, next, stop, 0)
+		events = append(events, got...)
+		for _, event := range got {
+			next = max(next, event.Revision+1)
+		}
+		if err != nil {
+			failed = err
+		}
+		if ctx.Err() != nil || !time.Now().Before(end) {
+			break
+		}
+	}
+	if len(events) == 0 && failed != nil {
+		return nil, runner.Definite(failed)
+	}
+	return events, nil
+}
+
+// A member's history is a watch from revision 1 on that member, read until it
+// delivers the highest revision of any register key the member holds.
+func (c client) history(ctx context.Context, base string) ([]family.Event, error) {
+	r, err := c.post(ctx, base, "/v3/kv/range", map[string]any{
+		"key":          enc(watchFirst),
+		"range_end":    enc(watchEnd),
+		"serializable": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var through uint64
+	for _, entry := range r.Kvs {
+		through = max(through, uint64(entry.ModRevision))
+	}
+	if through == 0 {
+		return []family.Event{}, nil
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(time.Second)
+	}
+	events, err := c.stream(ctx, base, 1, deadline.Add(-min(watchSpare, time.Until(deadline)/4)), through)
+	if err == nil && (len(events) == 0 || events[len(events)-1].Revision < through) {
+		err = fmt.Errorf("history ended before revision %d", through)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+type watchReply struct {
+	Result struct {
+		Canceled        bool    `json:"canceled"`
+		CompactRevision number  `json:"compact_revision"`
+		CancelReason    string  `json:"cancel_reason"`
+		Events          []event `json:"events"`
+	} `json:"result"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type event struct {
+	Type string `json:"type"`
+	Kv   kv     `json:"kv"`
+}
+
+func (c client) stream(ctx context.Context, base string, from uint64, stop time.Time, through uint64) ([]family.Event, error) {
+	node := c.names[slices.Index(c.members, base)]
+	ctx, cancel := context.WithDeadline(ctx, stop)
+	defer cancel()
+	data, err := json.Marshal(map[string]any{"create_request": map[string]any{
+		"key":            enc(watchFirst),
+		"range_end":      enc(watchEnd),
+		"start_revision": from,
+	}})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v3/watch", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		text, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("/v3/watch: status %d: %s", resp.StatusCode, strings.TrimSpace(string(text)))
+	}
+	events := []family.Event{}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var message watchReply
+		if err := decoder.Decode(&message); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) && !time.Now().Before(stop) {
+				return events, nil
+			}
+			return events, fmt.Errorf("/v3/watch: %w", err)
+		}
+		if message.Error != nil {
+			return events, fmt.Errorf("/v3/watch: %s", message.Error.Message)
+		}
+		if message.Result.Canceled {
+			return events, fmt.Errorf("/v3/watch canceled at compact revision %d: %s", message.Result.CompactRevision, message.Result.CancelReason)
+		}
+		frame := make([]family.Event, 0, len(message.Result.Events))
+		for _, raw := range message.Result.Events {
+			name, err := base64.StdEncoding.DecodeString(raw.Kv.Key)
+			if err != nil {
+				return events, err
+			}
+			if raw.Kv.ModRevision == 0 || len(name) == 0 {
+				return events, errors.New("/v3/watch: event without a key or revision")
+			}
+			delivered := family.Event{Revision: uint64(raw.Kv.ModRevision), Key: string(name), Node: node, Start: from}
+			if raw.Type != "DELETE" {
+				value, err := base64.StdEncoding.DecodeString(raw.Kv.Value)
+				if err != nil {
+					return events, err
+				}
+				text := string(value)
+				delivered.Value = &text
+			}
+			frame = append(frame, delivered)
+		}
+		events = append(events, frame...)
+		if through > 0 && len(events) > 0 && events[len(events)-1].Revision >= through {
+			return events, nil
+		}
+	}
+}
+
 func main() {
 	count := 3
 	if text := os.Getenv(membersEnv); text != "" {
@@ -364,6 +552,15 @@ func main() {
 	for i := range names {
 		names[i] = fmt.Sprintf("m%d", i+1)
 	}
+	var watch uint64
+	if text := os.Getenv(watchEnv); text != "" {
+		n, err := strconv.ParseUint(text, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bad %s %q\n", watchEnv, text)
+			os.Exit(2)
+		}
+		watch = n
+	}
 	var defragment uint64
 	if text := os.Getenv(defragmentEnv); text != "" && len(os.Args) > 1 && os.Args[1] == "drive" {
 		n, err := strconv.ParseUint(text, 10, 64)
@@ -377,6 +574,7 @@ func main() {
 	runner.Main(adapter{
 		members:    members,
 		names:      names,
+		watch:      watch,
 		defragment: defragment,
 		writesOnly: flagEnv(writesEnv),
 		keepAlive:  flagEnv(keepAliveEnv),

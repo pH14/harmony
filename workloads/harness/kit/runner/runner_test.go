@@ -774,3 +774,118 @@ func TestAnyMemberJoinsEveryFailure(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+type memoryFeed struct {
+	mu     sync.Mutex
+	events []family.Event
+	values map[string]string
+	early  uint64
+}
+
+func (m *memoryFeed) Family() family.Family { return family.Register{Watch: 4} }
+
+func (m *memoryFeed) Nodes() []string { return []string{"n1", "n2", "n3"} }
+
+func (m *memoryFeed) Connect(context.Context, int) (Client, error) { return m, nil }
+
+func (m *memoryFeed) Close() {}
+
+func (m *memoryFeed) put(key, value string) uint64 {
+	m.values[key] = value
+	m.events = append(m.events, family.Event{Revision: uint64(len(m.events) + 1), Key: key, Value: &value})
+	return uint64(len(m.events))
+}
+
+func (m *memoryFeed) Invoke(_ context.Context, op family.Op) (any, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch op.F {
+	case family.RegisterWrite:
+		return m.put(op.K, op.V.(string)), nil
+	case family.RegisterCAS:
+		pair := op.V.([]string)
+		if m.values[op.K] != pair[0] {
+			return nil, Definite(errors.New("compare failed"))
+		}
+		return m.put(op.K, pair[1]), nil
+	case family.RegisterReadF:
+		if value, ok := m.values[op.K]; ok {
+			return value, nil
+		}
+		return nil, nil
+	case family.RegisterReplicas:
+		copies := map[string]family.Copy{}
+		for _, key := range op.V.(family.ReplicaQuery).Keys {
+			if value, ok := m.values[key]; ok {
+				copies[key] = family.Copy{Value: &value}
+			} else {
+				copies[key] = family.Copy{}
+			}
+		}
+		return copies, nil
+	case family.RegisterWatch:
+		from := op.V.(family.WatchQuery).From
+		from -= min(from-1, m.early)
+		var delivered []family.Event
+		for _, event := range m.events {
+			if event.Revision >= from {
+				delivered = append(delivered, event)
+			}
+		}
+		return delivered, nil
+	case family.RegisterHistory:
+		return append([]family.Event(nil), m.events...), nil
+	}
+	return nil, Definite(errors.New("unknown op"))
+}
+
+func TestCheckReadsEachNodesHistoryForWatches(t *testing.T) {
+	config := testConfig(t)
+	adapter := &memoryFeed{values: map[string]string{}}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Check(context.Background(), adapter, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Violations) != 0 {
+		t.Fatalf("result %s", result)
+	}
+	h, err := history.Load(config.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads, watches := map[string]bool{}, 0
+	for _, op := range h.Ops {
+		switch op.F {
+		case family.RegisterHistory:
+			reads[op.Node] = op.Type == history.OK
+		case family.RegisterWatch:
+			watches++
+		}
+	}
+	if len(reads) != 3 || !reads["n1"] || !reads["n2"] || !reads["n3"] || watches == 0 {
+		t.Fatalf("history reads %v, watches %d", reads, watches)
+	}
+	held := passed(t)
+	for _, kind := range []string{family.RegisterWatchFloor, family.RegisterWatchComplete, family.RegisterHistoryAgrees} {
+		if !held[kind] {
+			t.Fatalf("%q did not pass", kind)
+		}
+	}
+}
+
+func TestWatchBelowItsStartIsReported(t *testing.T) {
+	config := testConfig(t)
+	adapter := &memoryFeed{values: map[string]string{}, early: 3}
+	if err := Run(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), adapter, config); err != nil {
+		t.Fatal(err)
+	}
+	if !failing(t)[family.RegisterWatchFloor] {
+		t.Fatalf("failing %v", failing(t))
+	}
+}
