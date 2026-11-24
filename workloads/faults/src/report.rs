@@ -3,7 +3,6 @@
 use std::{collections::BTreeSet, error::Error, path::Path};
 
 use fault_policy::StandingWindow;
-use searcher::search::assertion::AssertionKey;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
@@ -100,36 +99,40 @@ pub fn write_bug_reports(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct Divergence {
-    pub key: Option<AssertionKey>,
+pub struct ViolationClass {
     pub stop: FaultStop,
     pub violations: BTreeSet<String>,
     pub reports: Vec<String>,
 }
 
 #[must_use]
-pub fn divergences(
-    reports: &[BugReport],
-    key: impl Fn(&FaultObservations) -> Option<AssertionKey>,
-) -> Vec<Divergence> {
-    let mut found: Vec<Divergence> = Vec::new();
+pub fn violation_classes(reports: &[BugReport]) -> Vec<ViolationClass> {
+    let mut classes: Vec<ViolationClass> = Vec::new();
     for report in reports {
-        let key = key(&report.observations);
         let stop = report.observations.stop;
         let violations = report.observations.violations();
-        match found.iter_mut().find(|divergence| {
-            divergence.key == key && divergence.stop == stop && divergence.violations == violations
-        }) {
-            Some(divergence) => divergence.reports.push(report.file_name()),
-            None => found.push(Divergence {
-                key,
+        match classes
+            .iter_mut()
+            .find(|class| class.stop == stop && class.violations == violations)
+        {
+            Some(class) => class.reports.push(report.file_name()),
+            None => classes.push(ViolationClass {
                 stop,
                 violations,
                 reports: vec![report.file_name()],
             }),
         }
     }
-    found
+    classes
+}
+
+#[must_use]
+pub fn distinct_reports(reports: &[BugReport]) -> usize {
+    reports
+        .iter()
+        .map(|report| report.execution)
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -239,6 +242,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assertion::{AssertionKind, AssertionOutcome, Assertions};
     use crate::target::FaultOperation;
     use std::num::NonZeroU16;
 
@@ -270,32 +274,40 @@ mod tests {
     }
 
     #[test]
-    fn reports_with_one_key_stop_and_violation_set_share_a_divergence() {
-        let report = |bug, alive, point| {
+    fn reports_with_one_stop_and_violation_set_share_a_class() {
+        let report = |bug, execution, point, violated: &[&str]| {
+            let mut assertions = Assertions::default();
+            for id in violated {
+                assertions.record(
+                    (*id).to_owned(),
+                    AssertionOutcome {
+                        kind: AssertionKind::Always,
+                        message: (*id).to_owned(),
+                        location: String::new(),
+                        passed: true,
+                        failed: true,
+                        holds: None,
+                    },
+                );
+            }
             let observations = FaultObservations {
-                alive,
                 stop: FaultStop::Assertion { point },
+                assertions,
                 ..FaultObservations::default()
             };
-            BugReport::new(bug, bug, WINDOWS, &[], &[], &observations).expect("build a report")
+            BugReport::new(bug, execution, WINDOWS, &[], &[], &observations)
+                .expect("build a report")
         };
         let reports = [
-            report(1, 0b01, 1),
-            report(2, 0b11, 1),
-            report(3, 0b01, 1),
-            report(4, 0b01, 2),
+            report(1, 10, 1, &["register"]),
+            report(2, 10, 1, &["register", "liveness"]),
+            report(3, 20, 1, &["register"]),
+            report(4, 30, 2, &["register"]),
         ];
-        let key = |observations: &FaultObservations| {
-            Some(AssertionKey {
-                identity: observations.alive,
-                ..AssertionKey::default()
-            })
-        };
-        let found = divergences(&reports, key);
         assert_eq!(
-            found
+            violation_classes(&reports)
                 .iter()
-                .map(|divergence| divergence.reports.clone())
+                .map(|class| class.reports.clone())
                 .collect::<Vec<_>>(),
             [
                 vec!["bug-1.json".to_owned(), "bug-3.json".to_owned()],
@@ -303,6 +315,7 @@ mod tests {
                 vec!["bug-4.json".to_owned()],
             ]
         );
+        assert_eq!(distinct_reports(&reports), 3);
     }
 
     #[test]
