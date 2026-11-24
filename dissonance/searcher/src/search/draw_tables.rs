@@ -231,6 +231,7 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
     }
 
     fn with_feedback(&self, mut checkpoint: EmpiricalStepCheckpoint) -> EmpiricalStepCheckpoint {
+        checkpoint.weighted_sites = u64::try_from(self.feedback.len()).unwrap_or(u64::MAX);
         if !self.feedback_sha256.is_empty() {
             let mut hasher = Sha256::new();
             hasher.update(b"dissonance-draw-feedback-v1\0");
@@ -478,11 +479,13 @@ mod tests {
             .expect("finish a record")
             .expect("hash every record");
         assert_eq!(first.table_sha256, untouched.table_sha256);
+        assert_eq!((untouched.weighted_sites, first.weighted_sites), (0, 0));
         let second = live
             .finish_record_with_feedback(&[], || weights.clone())
             .expect("finish a record")
             .expect("hash every record");
         assert_ne!(second.table_sha256, untouched.table_sha256);
+        assert_eq!(second.weighted_sites, 2);
         let feedback = live
             .draw(None, false, |view| Ok(view.feedback.clone()))
             .expect("read the feedback");
@@ -559,6 +562,7 @@ mod tests {
                     records: 1,
                     retained_successes: 1,
                     table_sha256: String::new(),
+                    weighted_sites: 0,
                 },
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),
@@ -572,6 +576,7 @@ mod tests {
                     records: 2,
                     retained_successes: 1,
                     table_sha256: String::new(),
+                    weighted_sites: 0,
                 },
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),

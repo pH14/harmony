@@ -130,7 +130,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 18;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 19;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -9872,7 +9872,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":18,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":19,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -11380,8 +11380,8 @@ mod tests {
         let line = r#"{"event":"job","sequence":1,"reservation":1,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"tiers","tier_rank":0},
-"draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
-"draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
+"draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa","weighted_sites":2},
+"draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb","weighted_sites":2}}"#
             .replace('\n', "");
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
             serde_json::from_str(&line).expect("record parses");
@@ -11399,6 +11399,7 @@ mod tests {
                 records: 3,
                 retained_successes: 1,
                 table_sha256: "aa".to_owned(),
+                weighted_sites: 2,
             })
         );
         let written = serde_json::to_value(&job).expect("job serializes");

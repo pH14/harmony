@@ -433,7 +433,7 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     )
 }
 
-pub const ARCHIVE_FORMAT: &str = "faults-archive-v1";
+pub const ARCHIVE_FORMAT: &str = "faults-archive-v2";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FaultArchive;
@@ -475,6 +475,8 @@ pub struct FaultArchiveReport {
     #[serde(default)]
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
     #[serde(default)]
+    pub park_aims: ParkAims,
+    #[serde(default)]
     pub undecided_checks: UndecidedChecks,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stage_falls: Vec<StageFalls>,
@@ -486,6 +488,13 @@ pub struct FaultArchiveReport {
 pub struct ParkThresholds {
     pub armed: u64,
     pub fired: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkAims {
+    pub armed: u64,
+    pub landings: u64,
+    pub sites: BTreeMap<u64, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1261,13 +1270,13 @@ mod tests {
         };
         let missing = refused("{}");
         assert!(
-            missing.contains("archive names no format; this build reads faults-archive-v1"),
+            missing.contains("archive names no format; this build reads faults-archive-v2"),
             "{missing}"
         );
         let other = refused("{\"format\":\"faults-archive-v0\"}");
         assert!(
             other.contains(
-                "archive format is faults-archive-v0; this build reads faults-archive-v1"
+                "archive format is faults-archive-v0; this build reads faults-archive-v2"
             ),
             "{other}"
         );

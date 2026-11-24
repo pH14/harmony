@@ -524,7 +524,7 @@ impl Evaluation for NestedWorkload {
 
 impl Reporting for NestedWorkload {
     fn stream_format(&self) -> &'static str {
-        "nested-consonance-campaign-v2"
+        "nested-consonance-campaign-v3"
     }
     fn checkpoint_format(&self) -> &'static str {
         "nested-consonance-checkpoint-v3"

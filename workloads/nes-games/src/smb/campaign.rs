@@ -52,7 +52,7 @@ pub use crate::search::campaign::{
 
 pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v4";
 
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v5";
 

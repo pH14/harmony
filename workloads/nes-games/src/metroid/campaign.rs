@@ -46,7 +46,7 @@ use crate::{
     workload::{StateHook, publish_milestone_inputs},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v5";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v13";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";

@@ -335,6 +335,8 @@ pub struct Report {
     pub never_satisfied: Vec<String>,
     #[serde(default)]
     pub undecided_checks: crate::archive::UndecidedChecks,
+    #[serde(default)]
+    pub park_aims: crate::archive::ParkAims,
     pub replays: Vec<ReplaySummary>,
     pub execution_ticks: u64,
     pub wall_seconds: u64,
@@ -382,6 +384,7 @@ impl Report {
             bugs: Vec::new(),
             never_satisfied: Vec::new(),
             undecided_checks: crate::archive::UndecidedChecks::default(),
+            park_aims: crate::archive::ParkAims::default(),
             replays: Vec::new(),
             execution_ticks: 0,
             wall_seconds: 0,
@@ -855,6 +858,7 @@ mod live {
             "park_sites": archive.park_sites,
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
+            "park_aims": archive.park_aims,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
@@ -889,6 +893,7 @@ mod live {
             eprintln!("FAIL: assertion never satisfied: {id}");
         }
         report.undecided_checks = archive.undecided_checks;
+        report.park_aims = archive.park_aims.clone();
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         let previous = match start {
@@ -1836,6 +1841,26 @@ mod tests {
             initramfs: b"initramfs".to_vec(),
         };
         Report::new("search", &artifacts, identity.to_owned(), &options(), 1)
+    }
+
+    #[test]
+    fn the_written_report_carries_the_park_aims() {
+        let mut report = search_report("identity");
+        report.park_aims = crate::archive::ParkAims {
+            armed: 3,
+            landings: 2,
+            sites: std::collections::BTreeMap::from([(0x40, 2)]),
+        };
+        let directory = tempfile::tempdir().expect("temp dir");
+        report.write(directory.path()).expect("write the report");
+        let written: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("report.json")).expect("read the report"),
+        )
+        .expect("report is JSON");
+        assert_eq!(
+            written["park_aims"],
+            serde_json::json!({"armed": 3, "landings": 2, "sites": {"64": 2}})
+        );
     }
 
     fn earlier_run(
