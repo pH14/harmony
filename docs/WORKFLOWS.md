@@ -347,13 +347,14 @@ small.
 
 The STB check and the NES benchmarks install their Ubuntu packages through
 `.github/actions/apt-packages`, which keeps the downloaded archives in the
-cache under the runner image version, the package list and the names of the
-cached archives. Every ref restores the newest entry for its image and package
-list, so a run downloads only the package lists and any package newer than the
-cached copy, and the 15-minute STB check does not depend on the Ubuntu mirror's
-speed for its roughly 64 MB of `ffmpeg` dependencies. When the mirror publishes
-a newer package, the next `main` run downloads it, drops archives the mirror no
-longer lists, and saves the changed set as a new entry.
+cache. Both share one entry per Ubuntu release and architecture, so the
+nightly benchmarks, which have no 15-minute limit, also fill the archives the
+STB check needs. Every ref restores the newest entry, so a run downloads only
+the package lists and any package newer than the cached copy, and the STB check
+does not depend on the Ubuntu mirror's speed for its roughly 64 MB of `ffmpeg`
+dependencies. When the mirror publishes a newer package, the next `main` run
+downloads it, drops archives the mirror no longer lists, and saves the changed
+set as a new entry named by the archive names and the run.
 
 ## Ignored tests
 

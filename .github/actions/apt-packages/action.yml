@@ -3,8 +3,8 @@ name: Cached system packages
 description: >-
   Install Ubuntu packages with apt, keeping the downloaded archives in the
   Actions cache so a run downloads only the package lists and any package newer
-  than the cached copy. Every ref restores the newest entry for the runner image
-  and package list; main saves a new entry whenever the set of archives changed.
+  than the cached copy. Every ref restores the newest entry for the Ubuntu
+  release; main saves a new entry whenever the set of archives changed.
 inputs:
   packages:
     description: Space-separated apt package names
@@ -15,11 +15,7 @@ runs:
     - name: Key the package archive cache
       id: key
       shell: bash
-      env:
-        PACKAGES: ${{ inputs.packages }}
-      run: |
-        list=$(tr ' ' '\n' <<<"$PACKAGES" | sed '/^$/d' | sort -u | sha256sum | cut -c1-16)
-        echo "prefix=apt-archives-v2-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${list}-" >>"$GITHUB_OUTPUT"
+      run: echo "prefix=apt-archives-v3-${ImageOS:-unknown}-${RUNNER_ARCH}-" >>"$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       id: restore
       with:
@@ -43,10 +39,11 @@ runs:
         sudo rm -f "$archives/lock"
         sudo chown -R "$(id -u):$(id -g)" "$archives"
         contents=$(find "$archives" -maxdepth 1 -name '*.deb' -printf '%f\n' | sort | sha256sum | cut -c1-16)
-        echo "key=${PREFIX}${contents}" >>"$GITHUB_OUTPUT"
+        echo "contents=${contents}" >>"$GITHUB_OUTPUT"
+        echo "key=${PREFIX}${contents}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >>"$GITHUB_OUTPUT"
         echo "Cached archives: $(find "$archives" -maxdepth 1 -name '*.deb' | wc -l) packages, $(du -sh "$archives" | cut -f1)."
     - uses: actions/cache/save@v4
-      if: github.ref == 'refs/heads/main' && steps.install.outputs.key != steps.restore.outputs.cache-matched-key
+      if: github.ref == 'refs/heads/main' && !startsWith(steps.restore.outputs.cache-matched-key, format('{0}{1}-', steps.key.outputs.prefix, steps.install.outputs.contents))
       with:
         path: ~/.cache/apt-archives
         key: ${{ steps.install.outputs.key }}
