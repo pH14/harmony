@@ -155,7 +155,22 @@ Each stage climbs one integer:
   `$9F` in Brinstar and `$97` elsewhere. In the Ridley bank, room pointers 0
   and 1 point to the same data, so rooms are read through the pointer table
   rather than the disassembly's room labels. The Ridley stage is done on
-  Ridley's defeat bit at `$687C`. Back in Brinstar before the Tourian
+  Ridley's defeat bit at `$687C`. After the fight the strategy walks to the
+  refill rooms before its energy stage: east from Ridley's room `(17,29)`
+  along row 29 to `(30,29)`, down to `(30,30)`, and west along row 30 to
+  `(27,30)`. The rooms on row 29 next to Ridley's room supply a little energy,
+  and a walk east from them can cost nearly all of it, while the enemies in
+  the row-30 rooms from `(24,30)` to `(27,30)` refill to 96. The table of the
+  route out of the hideout lists row 30 first, from `(20,30)` east to
+  `(30,30)`, and then the earlier route from `(18,29)` along row 29 to
+  `(30,29)` and up column 30. Without the row-30 cells every state on row 30
+  shares the tier of `(30,29)`, the last route cell it crossed on the way
+  down. Tested from one refilled state in the refill rooms, three searches
+  climbed past `(30,29)` within 50,000 executions and left the hideout within
+  120,000 each. Three searches without the row-30 cells were still at
+  `(30,27)` or `(30,28)` when they stopped, two at a budget of 1,000,000
+  executions and one at 763,600, and none had left the hideout. Back in
+  Brinstar before the Tourian
   elevator, the strategy refills missiles to capacity first and then energy to
   within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
   390 of 399.9 with three tanks), in that order
@@ -164,10 +179,10 @@ Each stage climbs one integer:
   energy goals use `energy_tanks`; the preferences below use `tanks` on
   purpose, to rank by tanks collected of either kind. Past Kraid a route stage
   that leaves its route keeps the index of the last route cell it stood on at
-  an action end, except the Tourian elevator stage, which scores the cell it
-  is in and 0 off the route. Between the refill and the Tourian elevator the
-  off-route rooms are detours, so crediting them would spread the stage's
-  draws over dead ends. The way from Kraid back to the Norfair elevator needs
+  an action end, except the walk to the refill rooms after Ridley and the
+  Tourian elevator stage, which score the cell they are in and 0 off the
+  route. On those two walks the off-route rooms are detours, so crediting
+  them would spread the stage's draws over dead ends. The way from Kraid back to the Norfair elevator needs
   the other rule: it crosses `(7,24)` in Kraid's hideout only by a loop
   through off-route rooms to the south and west that re-enters `(7,24)` from
   the west, and that loop would score 0.
@@ -188,8 +203,11 @@ rows are walkable (tile `$A0` or above) in two neighbouring columns, and
 leaves sideways only through a door; every door flips the scroll direction.
 Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
-avoids red doors, since they open only to missiles. Each route but the one to
-Kraid's door is a shortest path in that graph. Elevators join Brinstar
+avoids red doors, since they open only to missiles. Each route is a shortest
+path in that graph except three: the route to Kraid's door, the walk to the
+refill rooms after Ridley, which follows the path a probe search took, and
+the route out of Ridley's hideout, whose table puts the row-30 cells ahead
+of its shortest path from Ridley's room. Elevators join Brinstar
 `(7,18)` to Kraid's hideout `(7,20)`. The route to Kraid's door joins three
 paths. Four cells run from `(20,9)` east along row 9 and up to `(22,8)`, out
 of the refill rooms below the corridor. Eleven cells run from `(20,11)` west
