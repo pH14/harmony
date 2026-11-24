@@ -81,6 +81,7 @@ impl Terminal {
                     .stdin(Stdio::from(slave.try_clone()?))
                     .stdout(Stdio::from(slave.try_clone()?))
                     .stderr(Stdio::from(slave));
+                crate::process::restore_oom_score(&mut command);
                 self.child = Some(command.spawn()?);
                 self.master = Some(File::from(master));
                 self.exit_code = None;

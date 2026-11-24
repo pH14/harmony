@@ -2137,7 +2137,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&directory);
             let mut stream = BoundedStream(Vec::new());
             let mut progress = Vec::new();
-            run_campaign_checkpointed_with_options(
+            let (original, _) = run_campaign_checkpointed_with_options(
                 w,
                 config,
                 &CampaignOrigin::Genesis,
@@ -2158,10 +2158,33 @@ mod tests {
             )
             .unwrap();
             let stalls = std::fs::read_to_string(directory.join("stalls.jsonl")).ok();
-            let checkpoints = std::fs::read_dir(&directory)
+            let mut checkpoints = std::fs::read_dir(&directory)
                 .unwrap()
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
+            checkpoints.sort();
+            if on_stall {
+                let newest = checkpoints
+                    .iter()
+                    .rev()
+                    .find(|name| name.ends_with("-stall.ckpt"))
+                    .expect("a kept stall checkpoint");
+                let (resumed, _) = run_campaign_checkpointed_with_options(
+                    w,
+                    config,
+                    &CampaignOrigin::SearchCheckpoint {
+                        path: directory.join(newest),
+                        expected_sha256: None,
+                    },
+                    &mut BoundedStream(Vec::new()),
+                    None,
+                    CampaignExecutionOptions::default(),
+                )
+                .unwrap();
+                assert_eq!(resumed.origin.kind, "search_checkpoint");
+                assert_eq!(resumed.archive, original.archive);
+                assert_eq!(resumed.executions_completed, original.executions_completed);
+            }
             std::fs::remove_dir_all(&directory).unwrap();
             (stream.0, stalls, checkpoints)
         };
@@ -2175,13 +2198,31 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        let stall_files = records
+            .iter()
+            .filter_map(|record| record["checkpoint"].as_str())
+            .filter(|name| name.ends_with("-stall.ckpt"))
+            .collect::<Vec<_>>();
+        for (index, name) in stall_files.iter().enumerate() {
+            assert_eq!(
+                checkpoints.iter().any(|kept| kept == name),
+                index + 2 >= stall_files.len(),
+                "{name}"
+            );
+        }
+        assert_eq!(stall_files.len(), records.len());
+        assert!(
+            checkpoints
+                .iter()
+                .filter(|name| name.ends_with("-stall.ckpt"))
+                .count()
+                <= 2
+        );
         for record in &records {
             assert!(watches.insert((
                 record["tier"].to_string(),
                 record["tier_yields"].to_string()
             )));
-            let checkpoint = record["checkpoint"].as_str().unwrap();
-            assert!(checkpoints.iter().any(|name| name == checkpoint));
             assert!(
                 record["states"]
                     .as_array()

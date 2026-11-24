@@ -3,9 +3,52 @@
 use execution_proto::ExecutionSpec;
 use std::io;
 use std::process::{Child, Command, ExitStatus};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+#[cfg(target_os = "linux")]
+static OOM_EXEMPT: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+pub fn exempt_from_oom_kill() -> io::Result<()> {
+    std::fs::write("/proc/self/oom_score_adj", "-1000")?;
+    OOM_EXEMPT.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn restore_oom_score(command: &mut Command) {
+    if !OOM_EXEMPT.load(Ordering::Relaxed) {
+        return;
+    }
+    // SAFETY: the closure captures nothing, and the child runs only open,
+    // write and close, which are async-signal-safe, and reads errno through
+    // `io::Error::last_os_error`, which does not allocate.
+    unsafe {
+        command.pre_exec(|| {
+            let fd = libc::open(
+                c"/proc/self/oom_score_adj".as_ptr(),
+                libc::O_WRONLY | libc::O_CLOEXEC,
+            );
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let written = libc::write(fd, b"0".as_ptr().cast(), 1);
+            let error = io::Error::last_os_error();
+            libc::close(fd);
+            if written != 1 {
+                return Err(error);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn restore_oom_score(_command: &mut Command) {}
 
 pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
     command_group(spec, argv, true, None)
@@ -72,6 +115,7 @@ fn command_group(
         command.env(key, value);
     }
     command.env("ANTITHESIS_OUTPUT_DIR", crate::ANTITHESIS_OUTPUT_DIR);
+    restore_oom_score(&mut command);
     #[cfg(unix)]
     {
         let uid = spec.uid;

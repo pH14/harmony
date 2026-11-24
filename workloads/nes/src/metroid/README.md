@@ -68,7 +68,9 @@ An action is a button chord or a missile volley, defined in
 Chords come from the shared NES chord draw in the
 [package README](../../README.md#chord-draw): the 36 chords of nine D-pad
 positions and four A/B states, with no tap button, so a chord never presses
-Start or Select and B from a chord always fires the beam. A red door takes
+Start or Select, and B from a chord fires whatever the missile toggle holds:
+the beam, unless a root ended with missiles armed or a volley's disarm presses
+all missed within its limit. A red door takes
 five missiles, and a Select tap left missiles armed for every later B press,
 so random play spent its stock on whatever it faced before it reached a door.
 One draw in 12 is a volley. A volley fires only while something that takes
@@ -92,8 +94,13 @@ toggle at `$010E` reads armed, presses B on every other frame until the
 missile count at cartridge `0x879` has dropped by the count or the room holds
 no missile target any more, then presses Select until the toggle reads off. A
 shot counts only when the count drops, so a shot the game refuses, such as one
-from the morph ball, is not counted. Arming and disarming give up after 8
-frames, since Select flips the toggle within one press. Firing gives up after
+from the morph ball, is not counted. Arming and disarming repeat a three-frame
+cycle of release, Select, release until the toggle changes, and give up after
+12 frames. The leading release lets a volley that follows another volley's
+closing Select register a new press, and the repeat covers presses the game
+misses: in Tourian a one-frame Select fails on some frames and a press one
+frame later succeeds, and the toggle can read the change a frame late, which
+the trailing release waits out. Firing gives up after
 64 frames without a shot: the game refuses a missile while the last one is
 still in flight, and a missile crosses the screen in under 64 frames. With no
 missiles, or outside play, a volley waits 12 frames. A volley plans 12
@@ -128,15 +135,18 @@ Each stage climbs one integer:
   done at 80 energy: a touch in Kraid's hideout costs 20 (`$02` at `$95CF` in
   the Kraid bank), and 80 is four touches. Full energy for the tanks held is
   out of reach at Kraid's door on the recorded route, so the stage asks for a
-  few touches of margin. The strategy in `metroid.toml` continues past Kraid,
+  few touches of margin. It is also done once Kraid is defeated, so a state
+  that beats him on less energy is not sent back to refill. The strategy in `metroid.toml` continues past Kraid,
   where this plan ends. Its stage after Kraid is done at 120 energy, six
   touches for the six screens of the hideout shaft at map column 12 that the
   route out climbs, which needs the energy tank in Kraid's room. A touch in
   Norfair costs 10 (`$00` at `$95CE`, `$01` at `$95CF`), and the stage before
   the Ridley elevator is done at 80, one touch for each of the eight screens
   of the shaft at Norfair column 30. A touch in Ridley's hideout costs 24
-  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there are done at 96,
-  four touches. Its routes run from Kraid's door to the Norfair elevator
+  (`$40` at `$95CE`, `$02` at `$95CF`), and the stages there, before Ridley's
+  door and after Ridley, are done at 96, four touches. There is no energy
+  stage between Ridley's door and the fight, because the rooms there supply
+  no energy to farm. Its routes run from Kraid's door to the Norfair elevator
   `(22,13)`, from there to the Ridley elevator `(25,24)` and on to Ridley's
   door `(18,29)`, built from the same tables as the routes below, with the
   elevators Brinstar `(22,11)` to Norfair `(22,13)` and Norfair `(25,22)` to
@@ -170,9 +180,16 @@ rows are walkable (tile `$A0` or above) in two neighbouring columns, and
 leaves sideways only through a door; every door flips the scroll direction.
 Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
-avoids red doors, since they open only to missiles. Each route is a shortest
-path in that graph. Elevators join Brinstar `(7,18)` to Kraid's hideout
-`(7,20)`.
+avoids red doors, since they open only to missiles. Each route but the one to
+Kraid's door is a shortest path in that graph. Elevators join Brinstar
+`(7,18)` to Kraid's hideout `(7,20)`. The route to Kraid's door joins two
+paths: eleven cells from `(20,11)` west along row 11 and up column 13 to
+`(13,8)`, the way recorded runs went from the refill rooms, and then the
+shortest path from the bombs room `(25,5)`. Both reach column 13 at `(13,7)`,
+whose index is past the bombs-room loop, so a state that climbs column 13
+skips that loop. The energy stage before it is done at any action end with
+health at 64 or more, so the route stage can start off the route, at
+objective 0.
 
 The place is the area byte, the map cell, boss damage and the Zebetite hits
 still needed, so every hit on a boss or a Zebetite column opens a new place

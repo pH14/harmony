@@ -37,7 +37,7 @@ func watchMember(t *testing.T, kvs string, frames ...string) client {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return client{members: []string{server.URL}, names: []string{"m1"}, http: newHTTP()}
+	return client{members: []string{server.URL}, names: []string{"m1"}, http: newHTTP(false)}
 }
 
 func eventFrame(revision uint64, keys ...string) string {

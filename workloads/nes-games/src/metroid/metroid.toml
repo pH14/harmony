@@ -51,7 +51,7 @@ latch = true
 [[stage]]
 name = "energy_before_kraid"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 80 and not dead"
+goal = "(kraid_defeated or (action_end and health / 10 >= 80)) and not dead"
 latch = true
 
 [[stage]]
@@ -93,12 +93,6 @@ latch = true
 name = "ridley_door"
 objective = "max(last(if action_end then index(cell, to_ridley) else none), 0)"
 goal = "action_end and cell == 201829 and not dead"
-latch = true
-
-[[stage]]
-name = "energy_before_ridley"
-objective = "health / 10"
-goal = "action_end and health / 10 >= 96 and not dead"
 latch = true
 
 [[stage]]
@@ -192,7 +186,8 @@ to_bombs = [
     162805, 162705, 162605, 162505,
 ]
 to_kraid_door = [
-    162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
+    162011, 161911, 161811, 161711, 161611, 161511, 161411, 161311, 161310, 161309,
+    161308, 162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
     162707, 162607, 162507, 162407, 162307, 162207, 162107, 162007, 161907, 161807,
     161707, 161607, 161507, 161407, 161307, 161207, 161107, 161108, 161109, 161110,
     161111, 161112, 161113, 161114, 161014, 160914, 160814, 160714, 160614, 160615,
