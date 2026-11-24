@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, path::Path};
+use std::{collections::BTreeSet, error::Error, path::Path};
 
 use fault_policy::StandingWindow;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::{FaultBugRecord, FaultFailureRecord, FaultHangRecord};
 use crate::guest::{GuestAnswer, answers_through};
-use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
+use crate::target::{ActionWindows, FaultAction, FaultObservations, FaultStop, standing_windows};
 
 pub const BUG_REPORT_STEM: &str = "bug-";
 pub const HANG_REPORT_STEM: &str = "hang-";
@@ -96,6 +96,43 @@ pub fn write_bug_reports(
         written.push(report);
     }
     Ok(written)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ViolationClass {
+    pub stop: FaultStop,
+    pub violations: BTreeSet<String>,
+    pub reports: Vec<String>,
+}
+
+#[must_use]
+pub fn violation_classes(reports: &[BugReport]) -> Vec<ViolationClass> {
+    let mut classes: Vec<ViolationClass> = Vec::new();
+    for report in reports {
+        let stop = report.observations.stop;
+        let violations = report.observations.violations();
+        match classes
+            .iter_mut()
+            .find(|class| class.stop == stop && class.violations == violations)
+        {
+            Some(class) => class.reports.push(report.file_name()),
+            None => classes.push(ViolationClass {
+                stop,
+                violations,
+                reports: vec![report.file_name()],
+            }),
+        }
+    }
+    classes
+}
+
+#[must_use]
+pub fn distinct_reports(reports: &[BugReport]) -> usize {
+    reports
+        .iter()
+        .map(|report| report.execution)
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -205,7 +242,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{FaultOperation, FaultStop};
+    use crate::assertion::{AssertionKind, AssertionOutcome, Assertions};
+    use crate::target::FaultOperation;
     use std::num::NonZeroU16;
 
     const WINDOWS: ActionWindows = ActionWindows {
@@ -233,6 +271,51 @@ mod tests {
             &observations,
         )
         .expect("build a report")
+    }
+
+    #[test]
+    fn reports_with_one_stop_and_violation_set_share_a_class() {
+        let report = |bug, execution, point, violated: &[&str]| {
+            let mut assertions = Assertions::default();
+            for id in violated {
+                assertions.record(
+                    (*id).to_owned(),
+                    AssertionOutcome {
+                        kind: AssertionKind::Always,
+                        message: (*id).to_owned(),
+                        location: String::new(),
+                        passed: true,
+                        failed: true,
+                        holds: None,
+                    },
+                );
+            }
+            let observations = FaultObservations {
+                stop: FaultStop::Assertion { point },
+                assertions,
+                ..FaultObservations::default()
+            };
+            BugReport::new(bug, execution, WINDOWS, &[], &[], &observations)
+                .expect("build a report")
+        };
+        let reports = [
+            report(1, 10, 1, &["register"]),
+            report(2, 10, 1, &["register", "liveness"]),
+            report(3, 20, 1, &["register"]),
+            report(4, 30, 2, &["register"]),
+        ];
+        assert_eq!(
+            violation_classes(&reports)
+                .iter()
+                .map(|class| class.reports.clone())
+                .collect::<Vec<_>>(),
+            [
+                vec!["bug-1.json".to_owned(), "bug-3.json".to_owned()],
+                vec!["bug-2.json".to_owned()],
+                vec!["bug-4.json".to_owned()],
+            ]
+        );
+        assert_eq!(distinct_reports(&reports), 3);
     }
 
     #[test]
