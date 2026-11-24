@@ -24,36 +24,48 @@ import (
 	"harmony.local/harness/kit/sdk"
 )
 
-const membersEnv = "HARNESS_ETCD_MEMBERS"
+const (
+	membersEnv    = "HARNESS_ETCD_MEMBERS"
+	defragmentEnv = "HARNESS_ETCD_DEFRAGMENT"
+	writesEnv     = "HARNESS_ETCD_WRITES_ONLY"
+	keepAliveEnv  = "HARNESS_ETCD_KEEPALIVE"
+
+	defragmentLimit = 2 * time.Second
+)
 
 type adapter struct {
-	members []string
-	names   []string
+	members    []string
+	names      []string
+	defragment uint64
+	writesOnly bool
+	keepAlive  bool
 }
 
-func (adapter) Family() family.Family { return family.Register{} }
+func (a adapter) Family() family.Family { return family.Register{NoReads: a.writesOnly} }
 
 func (a adapter) Nodes() []string { return a.names }
 
 func (a adapter) Connect(context.Context, int) (runner.Client, error) {
-	return client{members: a.members, names: a.names, http: newHTTP()}, nil
+	return client{members: a.members, names: a.names, defragment: a.defragment, http: newHTTP(a.keepAlive)}, nil
 }
 
 type client struct {
-	members []string
-	names   []string
-	http    *http.Client
+	members    []string
+	names      []string
+	defragment uint64
+	http       *http.Client
 }
 
-func newHTTP() *http.Client {
+func newHTTP(keepAlive bool) *http.Client {
 	return &http.Client{Transport: &http.Transport{
-		Proxy:             nil,
-		DialContext:       (&net.Dialer{Timeout: time.Second}).DialContext,
-		DisableKeepAlives: true,
+		Proxy:               nil,
+		DialContext:         (&net.Dialer{Timeout: time.Second}).DialContext,
+		DisableKeepAlives:   !keepAlive,
+		MaxIdleConnsPerHost: 1,
 	}}
 }
 
-func (c client) Close() {}
+func (c client) Close() { c.http.CloseIdleConnections() }
 
 type kv struct {
 	Key            string `json:"key"`
@@ -135,9 +147,20 @@ func (r *revisions) answered(member, path string, floor uint64, from string, got
 func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 // Each operation goes to one member drawn from the SDK stream, so reads and
-// writes reach followers as well as the leader.
+// writes reach followers as well as the leader. With defragment set to N, one
+// operation in N first defragments that member's backend; the result is not
+// recorded because a defragment changes no key. The defragment gets at most
+// half of the operation's remaining time, and an operation whose deadline
+// passed during the defragment fails definitely because its request was never
+// sent.
 func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	base := c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
+	if c.defragment > 0 && sdk.Below("etcd.defragment", c.defragment) == 0 {
+		c.defragmentMember(ctx, base)
+		if err := expired(ctx); err != nil {
+			return nil, runner.Definite(fmt.Errorf("defragment of %s: %w", base, err))
+		}
+	}
 	key := enc(op.K)
 	switch op.F {
 	case family.RegisterWrite:
@@ -249,6 +272,29 @@ func (c client) replicas(ctx context.Context, node string, keys []string) (map[s
 
 // Only a refused or failed dial is definite. The gateway answers every other
 // error after the request may have reached the raft log.
+func (c client) defragmentMember(ctx context.Context, base string) {
+	now := time.Now()
+	deadline := now.Add(defragmentLimit)
+	if parent, ok := ctx.Deadline(); ok && parent.Sub(now)/2 < defragmentLimit {
+		deadline = now.Add(parent.Sub(now) / 2)
+	}
+	maintenance, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	_, _ = c.post(maintenance, base, "/v3/maintenance/defragment", map[string]any{})
+}
+
+// The context's own deadline timer may not have fired yet when the deadline
+// has already passed, so the clock is checked as well as the context.
+func expired(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func (c client) post(ctx context.Context, base, path string, body any) (reply, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -288,7 +334,7 @@ func (c client) post(ctx context.Context, base, path string, body any) (reply, e
 }
 
 func (a adapter) Ready(ctx context.Context) error {
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	return runner.AnyMember(ctx, a.members, func(ctx context.Context, base string) error {
 		if _, err := c.post(ctx, base, "/v3/kv/put", map[string]any{"key": enc("ready"), "value": enc("1")}); err != nil {
 			return fmt.Errorf("%s: %w", base, err)
@@ -318,6 +364,34 @@ func main() {
 	for i := range names {
 		names[i] = fmt.Sprintf("m%d", i+1)
 	}
+	var defragment uint64
+	if text := os.Getenv(defragmentEnv); text != "" && len(os.Args) > 1 && os.Args[1] == "drive" {
+		n, err := strconv.ParseUint(text, 10, 64)
+		if err != nil || n > sdk.MaxChoiceOptions {
+			fmt.Fprintf(os.Stderr, "bad %s %q: want 0 to %d\n", defragmentEnv, text, sdk.MaxChoiceOptions)
+			os.Exit(2)
+		}
+		defragment = n
+	}
 	sdk.Declare(sdk.KindAlways, revisionNeverFalls)
-	runner.Main(adapter{members: members, names: names})
+	runner.Main(adapter{
+		members:    members,
+		names:      names,
+		defragment: defragment,
+		writesOnly: flagEnv(writesEnv),
+		keepAlive:  flagEnv(keepAliveEnv),
+	})
+}
+
+func flagEnv(name string) bool {
+	switch text := os.Getenv(name); text {
+	case "", "0":
+		return false
+	case "1":
+		return true
+	default:
+		fmt.Fprintf(os.Stderr, "bad %s %q\n", name, text)
+		os.Exit(2)
+	}
+	return false
 }
