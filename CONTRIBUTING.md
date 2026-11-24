@@ -33,7 +33,8 @@ Run the standard checks from the repository root:
 cargo build --all-features
 cargo nextest run --all-features
 cargo clippy --all-features --all-targets -- -D warnings
-for manifest in $(python3 scripts/ci_contract.py manifests); do
+manifests=$(python3 scripts/ci_contract.py manifests)
+for manifest in $manifests; do
   cargo fmt --manifest-path "$manifest" --all -- --check
 done
 cargo deny check

@@ -23,11 +23,14 @@ if ! git diff --quiet; then
     git add -u
 fi
 
+manifests=$(python3 scripts/ci_contract.py manifests)
+[ -n "$manifests" ] || { echo "scripts/ci_contract.py listed no manifests" >&2; exit 1; }
+
 # A crate shared by several workspaces appears in several lock files, and
 # building the root workspace updates only the root one. CI runs with --locked,
 # so every lock file must already match its manifest.
 echo "== pre-push: every Cargo.lock matches its manifest"
-for manifest in $(python3 scripts/ci_contract.py manifests); do
+for manifest in $manifests; do
     cargo metadata --format-version 1 --manifest-path "$manifest" >/dev/null
 done
 if ! git diff --quiet HEAD -- '*Cargo.lock'; then
@@ -37,7 +40,7 @@ if ! git diff --quiet HEAD -- '*Cargo.lock'; then
 fi
 
 echo "== pre-push: cargo fmt --check for every manifest CI formats"
-for manifest in $(python3 scripts/ci_contract.py manifests); do
+for manifest in $manifests; do
     cargo fmt --manifest-path "$manifest" --all -- --check
 done
 
