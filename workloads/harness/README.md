@@ -875,7 +875,8 @@ loss ([#992](https://github.com/pH14/harmony/issues/992)), while 12 v10.6.2
 
 `targets/etcd` drives the `register` family through the etcd v3 JSON gateway
 (`/v3/kv/put`, `/v3/kv/range`, `/v3/kv/txn`) with Go's HTTP client, so no
-client library retries a request. The default `bundle` runs three members at
+client library retries a request; Go's transport only resends a request on a
+new connection when a reused connection failed before any of it was written. The default `bundle` runs three members at
 10.77.0.1-3 (client port 2379, peer port 2380) in `harness-net` namespaces
 with the four network hooks. `bundle-single` sets `HARNESS_ETCD_MEMBERS=1` and
 runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
@@ -905,8 +906,9 @@ same fence and runs one serializable range over the keys. Each key's metadata
 is `create_revision`, `mod_revision` and `version`. `bundle-single` has one
 member, so its check skips the replica comparison. The gateway
 omits `succeeded` from a transaction whose compare failed, which is a definite
-failure. A write is a definite failure only when the dial fails; every other
-write error is indeterminate. Read errors are definite. `ready` passes once a
+failure. A write is a definite failure only when the dial fails or, with a
+defragment, its deadline passed before it was sent; every other write error is
+indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
 
 The adapter also asserts an always property of its own: a linearizable
@@ -929,13 +931,15 @@ see; it cannot see a stale value returned under a current header revision.
 
 With `HARNESS_ETCD_DEFRAGMENT` set to N, one operation of the `drive` in N,
 drawn at the `etcd.defragment` site, first sends `/v3/maintenance/defragment`
-to the operation's member; `check` and `ready` ignore the variable. N is 0
-(off) to 65,535, the largest bound for which the draw is a host choice. The
-defragment gets at most 2 seconds and at most half of the operation's
-remaining time. It changes no key, so it is not journaled and its error is
-ignored; an operation whose deadline passed during it fails definitely,
-because its own request was never sent. A defragment that loses data shows up
-in the pinned reads and the replica comparison.
+to the operation's member; `check` and `ready` neither read nor validate the
+variable. N is 0 (off) to 65,535, the largest bound for which the draw is a
+host choice. The client waits at most 2 seconds and at most half of the
+operation's remaining time for the defragment; etcd may keep defragmenting
+after the client stops waiting. It changes no key, so it is not journaled and
+its error is ignored; an operation whose deadline passed during it fails
+definitely, because its own request was never sent. A defragment that loses
+data shows up in the pinned reads and the replica comparison when the member
+that lost it answers them before it recovers the data.
 
 The guest has one vCPU, which three members and the driver keep busy, so
 the driver's operation mix sets how fast the Raft log grows. With the default
@@ -944,18 +948,22 @@ that needs more entries per guest second, such as one that waits for etcd 3.6's
 default snapshot count of 10,000 (100,000 in 3.5), can set two driver variables.
 `HARNESS_ETCD_WRITES_ONLY=1` makes the drive draw only writes and
 compare-and-swaps (`Register.NoReads`). Linearizable reads cost a ReadIndex
-round on every member and add no entry. The check still makes its own reads:
-the unpinned read of each key, the pinned reads and the replica comparison.
-So the stale-read and linearizability properties are decided only on those
-check reads, and a stale read that happens during the drive and is gone by
-the check is not seen.
+round on every member and add no entry. The check still makes its own reads: an
+unpinned read and a read pinned to each member of the register's first key,
+and the replica comparison over every key. The register checker still checks
+the writes and compare-and-swaps of the drive against those reads, and the
+revision property still checks every put and transaction of the drive. A
+stale read that would have happened during the drive and is gone by the check
+is not seen.
 `HARNESS_ETCD_KEEPALIVE=1` keeps one idle connection per member open for each
 client, rather than dialing for each operation; a connection goes to one
 member and closes with its client. The network hooks cut links between
 members, not between the driver and a member, so they do not change which
-connection a request uses. A request to a killed member that reuses a kept
-connection fails on that connection and is indeterminate, where a fresh dial
-would be refused at once and be definite. With
+connection a request uses. A request to a killed member that was written to a
+kept connection before the member died and gets no answer is indeterminate.
+When the kept connection had already failed before the request was written,
+Go discards it or redials, and a refused dial is definite as without
+keep-alive. With
 both variables, `--processes 16` and `--max-pause 2ms`, the members apply
 about 14 entries per guest second with no faults. More processes do not
 raise the rate further, because the vCPU is already saturated.

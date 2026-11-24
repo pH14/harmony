@@ -157,7 +157,7 @@ func (c client) Invoke(ctx context.Context, op family.Op) (any, error) {
 	base := c.members[sdk.Below("etcd.server", uint64(len(c.members)))]
 	if c.defragment > 0 && sdk.Below("etcd.defragment", c.defragment) == 0 {
 		c.defragmentMember(ctx, base)
-		if err := ctx.Err(); err != nil {
+		if err := expired(ctx); err != nil {
 			return nil, runner.Definite(fmt.Errorf("defragment of %s: %w", base, err))
 		}
 	}
@@ -273,13 +273,26 @@ func (c client) replicas(ctx context.Context, node string, keys []string) (map[s
 // Only a refused or failed dial is definite. The gateway answers every other
 // error after the request may have reached the raft log.
 func (c client) defragmentMember(ctx context.Context, base string) {
-	limit := defragmentLimit
-	if deadline, ok := ctx.Deadline(); ok {
-		limit = min(limit, time.Until(deadline)/2)
+	now := time.Now()
+	deadline := now.Add(defragmentLimit)
+	if parent, ok := ctx.Deadline(); ok && parent.Sub(now)/2 < defragmentLimit {
+		deadline = now.Add(parent.Sub(now) / 2)
 	}
-	maintenance, cancel := context.WithTimeout(ctx, limit)
+	maintenance, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	_, _ = c.post(maintenance, base, "/v3/maintenance/defragment", map[string]any{})
+}
+
+// The context's own deadline timer may not have fired yet when the deadline
+// has already passed, so the clock is checked as well as the context.
+func expired(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func (c client) post(ctx context.Context, base, path string, body any) (reply, error) {
@@ -352,15 +365,13 @@ func main() {
 		names[i] = fmt.Sprintf("m%d", i+1)
 	}
 	var defragment uint64
-	if text := os.Getenv(defragmentEnv); text != "" {
+	if text := os.Getenv(defragmentEnv); text != "" && len(os.Args) > 1 && os.Args[1] == "drive" {
 		n, err := strconv.ParseUint(text, 10, 64)
 		if err != nil || n > sdk.MaxChoiceOptions {
 			fmt.Fprintf(os.Stderr, "bad %s %q: want 0 to %d\n", defragmentEnv, text, sdk.MaxChoiceOptions)
 			os.Exit(2)
 		}
-		if len(os.Args) > 1 && os.Args[1] == "drive" {
-			defragment = n
-		}
+		defragment = n
 	}
 	sdk.Declare(sdk.KindAlways, revisionNeverFalls)
 	runner.Main(adapter{
