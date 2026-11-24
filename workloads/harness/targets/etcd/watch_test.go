@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
+
+	"harmony.local/harness/kit/runner"
 )
 
 func watchMember(t *testing.T, kvs string, frames ...string) client {
@@ -58,7 +61,7 @@ func bounded(t *testing.T) context.Context {
 }
 
 func TestAnEventWithoutARevisionIsAnError(t *testing.T) {
-	c := watchMember(t, `[]`, `{"result":{"events":[{}]}}`)
+	c := watchMember(t, `[]`, `{"result":{"events":[{"kv":{"key":"azA="}}]}}`)
 	events, err := c.stream(bounded(t), c.members[0], 10, time.Now().Add(time.Second), 0)
 	if err == nil || len(events) != 0 {
 		t.Fatalf("events %+v, error %v", events, err)
@@ -96,7 +99,89 @@ func TestAWatchKeepsEventsFromABrokenStreamWithTheirStart(t *testing.T) {
 func TestAWatchThatDeliversNothingFails(t *testing.T) {
 	c := watchMember(t, `[]`, `{"error":{"message":"etcdserver: mvcc: required revision has been compacted"}}`)
 	got, err := c.watch(bounded(t), c.members[0], 12)
-	if err == nil {
+	if !runner.IsDefinite(err) {
+		t.Fatalf("events %+v, error %v", got, err)
+	}
+}
+
+func TestAFrameWithOneBadEventDeliversNoneOfIt(t *testing.T) {
+	c := watchMember(t, `[]`, eventFrame(11, "k0"), `{"result":{"events":[{"kv":{"key":"azA=","value":"dg==","mod_revision":"12"}},{"kv":{"key":"azE="}}]}}`)
+	events, err := c.stream(bounded(t), c.members[0], 10, time.Now().Add(time.Second), 0)
+	if err == nil || len(events) != 1 || events[0].Revision != 11 {
+		t.Fatalf("events %+v, error %v", events, err)
+	}
+}
+
+// held answers puts, and holds every watch open until its request ends, after
+// sending frame on the first watch it serves.
+type held struct {
+	mu     sync.Mutex
+	starts []uint64
+	frame  string
+}
+
+func (h *held) serve(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v3/kv/put":
+			fmt.Fprint(w, `{"header":{"revision":"40"}}`)
+		case "/v3/watch":
+			var body struct {
+				Create struct {
+					Start uint64 `json:"start_revision"`
+				} `json:"create_request"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("watch body: %v", err)
+			}
+			h.mu.Lock()
+			h.starts = append(h.starts, body.Create.Start)
+			first := len(h.starts) == 1
+			h.mu.Unlock()
+			if first && h.frame != "" {
+				fmt.Fprintln(w, h.frame)
+				return
+			}
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestAWatchFailsOverFromABrokenSegmentAtTheNextRevision(t *testing.T) {
+	h := &held{frame: eventFrame(12, "k0")}
+	first, second := h.serve(t), h.serve(t)
+	c := client{members: []string{first, second}, names: []string{"m1", "m2"}, http: newHTTP(false)}
+	got, err := c.segmented(bounded(t), first, 12, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Revision != 12 || got[0].Start != 12 {
 		t.Fatalf("events %+v", got)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.starts) != 2 || h.starts[0] != 12 || h.starts[1] != 13 {
+		t.Fatalf("watch starts %v", h.starts)
+	}
+}
+
+func TestAWatchThatStopsAtItsDeadlineLeavesAKeptConnectionUsable(t *testing.T) {
+	recording(t)
+	h := &held{}
+	c := client{members: []string{h.serve(t)}, names: []string{"m1"}, http: newHTTP(true)}
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	got, err := c.segmented(ctx, c.members[0], 12, 1)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("events %+v, error %v", got, err)
+	}
+	if _, err := c.post(bounded(t), c.members[0], "/v3/kv/put", map[string]any{"key": enc("k0"), "value": enc("v")}); err != nil {
+		t.Fatal(err)
 	}
 }

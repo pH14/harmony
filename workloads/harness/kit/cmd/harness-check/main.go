@@ -64,6 +64,7 @@ func main() {
 		"ops":            len(h.Ops),
 		"malformed":      h.Malformed,
 		"decided":        report.Decided,
+		"undecided":      report.Undecided,
 		"undecided_keys": report.UndecidedKeys,
 		"facts":          report.Facts,
 		"violations":     report.Violations,

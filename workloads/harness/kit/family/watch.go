@@ -179,16 +179,23 @@ func (r Register) checkWatches(h *history.History, report *Report, found *collec
 			writes[op.K][decoded.input.value] = acknowledged{op: op, key: op.K, value: decoded.input.value, revision: revision, known: known}
 		}
 	}
-	if len(watches) > 0 {
-		report.Decided = true
-		for _, kind := range []string{RegisterWatchFloor, RegisterWatchOrder, RegisterWatchComplete, RegisterWatchMatches} {
-			delete(report.Undecided, kind)
+	for _, watch := range watches {
+		if len(watch.events) > 0 {
+			report.Decided = true
+			for _, kind := range []string{RegisterWatchFloor, RegisterWatchComplete, RegisterWatchMatches} {
+				delete(report.Undecided, kind)
+			}
+		}
+		if len(watch.events) > 1 {
+			delete(report.Undecided, RegisterWatchOrder)
 		}
 	}
 	sort.SliceStable(feeds, func(i, j int) bool { return feeds[i].last > feeds[j].last })
 	nodes := map[string]bool{}
 	for _, feed := range feeds {
-		nodes[feed.op.Node] = true
+		if feed.last > 0 {
+			nodes[feed.op.Node] = true
+		}
 	}
 	if len(nodes) >= 2 {
 		report.Decided = true
@@ -210,6 +217,7 @@ func (r Register) checkWatches(h *history.History, report *Report, found *collec
 		checkWatch(watch, writes, byRevision, reference, found)
 	}
 	checkFeedsAgree(feeds, found)
+	checkFeedsHoldWrites(feeds, byRevision, found)
 }
 
 func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevision map[uint64][]acknowledged, reference *feedHistory, found *collector) {
@@ -235,6 +243,9 @@ func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevi
 		}
 		delivered[event.Revision] = append(delivered[event.Revision], event)
 		last = max(last, event.Revision)
+		if acknowledgedAt(event, byRevision) {
+			continue
+		}
 		if reference != nil && event.Revision <= reference.last {
 			want := reference.events[event.Revision]
 			match := false
@@ -261,16 +272,68 @@ func checkWatch(watch watchOp, writes map[string]map[string]acknowledged, byRevi
 		}
 		found.add(RegisterWatchComplete, evidence(map[string]any{"missing": want, "last_delivered": last}))
 	}
-	for revision := watch.from; revision <= last; revision++ {
+	revisions := map[uint64]bool{}
+	if reference != nil {
+		for revision := range reference.events {
+			revisions[revision] = true
+		}
+	}
+	for revision := range byRevision {
+		revisions[revision] = true
+	}
+	ordered := make([]uint64, 0, len(revisions))
+	for revision := range revisions {
+		if revision >= watch.from && revision <= last {
+			ordered = append(ordered, revision)
+		}
+	}
+	slices.Sort(ordered)
+	for _, revision := range ordered {
 		if reference != nil && revision <= reference.last {
 			for _, want := range reference.events[revision] {
 				missing(revision, want)
 			}
-			continue
 		}
 		for _, write := range byRevision[revision] {
 			value := write.value
 			missing(revision, Event{Revision: revision, Key: write.key, Value: &value})
+		}
+	}
+}
+
+func acknowledgedAt(event Event, byRevision map[uint64][]acknowledged) bool {
+	for _, write := range byRevision[event.Revision] {
+		if write.key == event.Key && event.Value != nil && write.value == *event.Value {
+			return true
+		}
+	}
+	return false
+}
+
+// A member's history that covers an acknowledged write's revision without the
+// write disagrees with the cluster's acknowledgment, whatever the other
+// members hold.
+func checkFeedsHoldWrites(feeds []feedHistory, byRevision map[uint64][]acknowledged, found *collector) {
+	for _, feed := range feeds {
+		for revision, writes := range byRevision {
+			if revision > feed.last {
+				continue
+			}
+			for _, write := range writes {
+				value := write.value
+				want := Event{Revision: revision, Key: write.key, Value: &value}
+				if slices.ContainsFunc(feed.events[revision], func(held Event) bool { return sameEvent(held, want) }) {
+					continue
+				}
+				found.addFor(RegisterHistoryAgrees, feed.op.Node, func() map[string]any {
+					return map[string]any{
+						"missing":        want,
+						"write":          describe(write.op),
+						"history_read":   describe(feed.op),
+						"compared_up_to": feed.last,
+					}
+				})
+			}
 		}
 	}
 }
@@ -284,41 +347,46 @@ func matchesWrite(event Event, writes map[string]map[string]acknowledged) bool {
 }
 
 func checkFeedsAgree(feeds []feedHistory, found *collector) {
-	for i := 1; i < len(feeds); i++ {
-		a, b := feeds[0], feeds[i]
-		if a.op.Node == b.op.Node {
-			continue
+	for i := range feeds {
+		for j := i + 1; j < len(feeds); j++ {
+			compareFeeds(feeds[i], feeds[j], found)
 		}
-		limit := min(a.last, b.last)
-		revisions := map[uint64]bool{}
-		for revision := range a.events {
-			revisions[revision] = revision <= limit
-		}
-		for revision := range b.events {
-			revisions[revision] = revision <= limit
-		}
-		var differing []uint64
-		for revision, within := range revisions {
-			if within && !sameEvents(a.events[revision], b.events[revision]) {
-				differing = append(differing, revision)
-			}
-		}
-		if len(differing) == 0 {
-			continue
-		}
-		sort.Slice(differing, func(x, y int) bool { return differing[x] < differing[y] })
-		first := differing[0]
-		found.addFor(RegisterHistoryAgrees, b.op.Node, func() map[string]any {
-			return map[string]any{
-				"revision":       first,
-				"revisions":      len(differing),
-				"reference_node": a.op.Node,
-				"reference":      a.events[first],
-				"events":         b.events[first],
-				"reference_read": describe(a.op),
-				"history_read":   describe(b.op),
-				"compared_up_to": limit,
-			}
-		})
 	}
+}
+
+func compareFeeds(a, b feedHistory, found *collector) {
+	if a.op.Node == b.op.Node {
+		return
+	}
+	limit := min(a.last, b.last)
+	revisions := map[uint64]bool{}
+	for revision := range a.events {
+		revisions[revision] = revision <= limit
+	}
+	for revision := range b.events {
+		revisions[revision] = revision <= limit
+	}
+	var differing []uint64
+	for revision, within := range revisions {
+		if within && !sameEvents(a.events[revision], b.events[revision]) {
+			differing = append(differing, revision)
+		}
+	}
+	if len(differing) == 0 {
+		return
+	}
+	sort.Slice(differing, func(x, y int) bool { return differing[x] < differing[y] })
+	first := differing[0]
+	found.addFor(RegisterHistoryAgrees, b.op.Node, func() map[string]any {
+		return map[string]any{
+			"revision":       first,
+			"revisions":      len(differing),
+			"reference_node": a.op.Node,
+			"reference":      a.events[first],
+			"events":         b.events[first],
+			"reference_read": describe(a.op),
+			"history_read":   describe(b.op),
+			"compared_up_to": limit,
+		}
+	})
 }

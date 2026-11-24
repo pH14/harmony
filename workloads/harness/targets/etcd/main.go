@@ -374,14 +374,19 @@ func (a adapter) Ready(ctx context.Context) error {
 // endpoint, and a segment that breaks hands over to the next. Events delivered
 // before a stream breaks are kept, because the checks bound completeness by the
 // last delivered revision. Each event carries its segment's start revision. A
-// watch changes no key, so one that delivered nothing fails definitely.
+// watch changes no key, so one that delivered nothing after a segment error
+// fails definitely; one whose segments all stopped cleanly succeeds even when
+// empty.
 func (c client) watch(ctx context.Context, base string, from uint64) ([]family.Event, error) {
+	return c.segmented(ctx, base, from, 1+int(sdk.Below("etcd.watch.segments", 3)))
+}
+
+func (c client) segmented(ctx context.Context, base string, from uint64, segments int) ([]family.Event, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(time.Second)
 	}
-	end := deadline.Add(-watchSpare)
-	segments := 1 + int(sdk.Below("etcd.watch.segments", 3))
+	end := deadline.Add(-min(watchSpare, time.Until(deadline)/4))
 	events := []family.Event{}
 	next := from
 	var failed error
@@ -398,7 +403,7 @@ func (c client) watch(ctx context.Context, base string, from uint64) ([]family.E
 		if err != nil {
 			failed = err
 		}
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || !time.Now().Before(end) {
 			break
 		}
 	}
@@ -430,7 +435,7 @@ func (c client) history(ctx context.Context, base string) ([]family.Event, error
 	if !ok {
 		deadline = time.Now().Add(time.Second)
 	}
-	events, err := c.stream(ctx, base, 1, deadline.Add(-watchSpare), through)
+	events, err := c.stream(ctx, base, 1, deadline.Add(-min(watchSpare, time.Until(deadline)/4)), through)
 	if err == nil && (len(events) == 0 || events[len(events)-1].Revision < through) {
 		err = fmt.Errorf("history ended before revision %d", through)
 	}
@@ -488,7 +493,7 @@ func (c client) stream(ctx context.Context, base string, from uint64, stop time.
 	for {
 		var message watchReply
 		if err := decoder.Decode(&message); err != nil {
-			if ctx.Err() != nil && time.Now().After(stop.Add(-time.Millisecond)) {
+			if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) && !time.Now().Before(stop) {
 				return events, nil
 			}
 			return events, fmt.Errorf("/v3/watch: %w", err)
@@ -499,6 +504,7 @@ func (c client) stream(ctx context.Context, base string, from uint64, stop time.
 		if message.Result.Canceled {
 			return events, fmt.Errorf("/v3/watch canceled at compact revision %d: %s", message.Result.CompactRevision, message.Result.CancelReason)
 		}
+		frame := make([]family.Event, 0, len(message.Result.Events))
 		for _, raw := range message.Result.Events {
 			name, err := base64.StdEncoding.DecodeString(raw.Kv.Key)
 			if err != nil {
@@ -516,8 +522,9 @@ func (c client) stream(ctx context.Context, base string, from uint64, stop time.
 				text := string(value)
 				delivered.Value = &text
 			}
-			events = append(events, delivered)
+			frame = append(frame, delivered)
 		}
+		events = append(events, frame...)
 		if through > 0 && len(events) > 0 && events[len(events)-1].Revision >= through {
 			return events, nil
 		}

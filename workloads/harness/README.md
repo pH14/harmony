@@ -326,16 +326,21 @@ every successful watch:
 - `register: a watch delivers events in revision order, each once`, where
   events at one revision may come in any key order but no key twice;
 - `register: a watch delivers every event from its start revision to its last delivered revision`,
-  against the reference history where it reaches that far and against the
-  acknowledged writes' revisions beyond it;
-- `register: every delivered event matches the reference history`, or, beyond
-  the reference, an acknowledged write of that key and value at that revision;
-  the family issues no deletes, so a delete beyond the reference is not
-  checked;
-- `register: every member's history agrees`, which compares each other node's
-  history with the reference up to the shorter one's last revision and names
-  the node that differs; it is decided only when histories from two nodes
-  answered.
+  against the reference history where it reaches that far and against every
+  acknowledged write's revision in that interval;
+- `register: every delivered event matches the reference history`, where an
+  event equal to an acknowledged write of that key and value at that
+  revision always matches, and beyond the reference an event must be such a
+  write; the family issues no deletes, so a delete beyond the reference is
+  not checked;
+- `register: every member's history agrees`, which compares every pair of
+  histories from different nodes up to the shorter one's last revision, and
+  checks that each history holds every acknowledged write up to its own last
+  revision, naming the node that differs; it is decided only when nonempty
+  histories from two nodes answered.
+
+The floor, completeness and match checks are decided only when some watch
+delivered an event, and the order check when some watch delivered two.
 
 The five checks and the history read belong to the kit, not to one adapter.
 A family that implements `Changefeed` (`Feed() (Op, bool)`) tells the check
@@ -382,7 +387,8 @@ also writes these `Sometimes` assertions:
 When the family left keys undecided, the check writes one
 `{"harmony_check":{"undecided_keys":N}}` record, which the host carries into
 `undecided_checks` in `campaign-summary.json` and `report.json`. The JSON line
-the check prints and the `harness-check` output both have `undecided_keys`.
+the check prints and the `harness-check` output both have `undecided_keys`;
+the `harness-check` output also lists the undecided assertions.
 
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.
@@ -956,7 +962,9 @@ stream. Each segment after the first goes to a newly drawn member and resumes
 from the revision after the highest delivered event, so a watch fails over the
 way a client does after its member restarts or is cut off. A segment that
 breaks hands over to the next, and events delivered before an error are kept.
-A watch that delivered nothing fails definitely, since it changes no key. A
+A watch that delivered nothing and met a segment error fails definitely,
+since it changes no key; one whose segments all ran to their ends succeeds,
+even with no events. A
 frame with an event that has no key or revision ends its segment with an
 error. Writes and `cas` operations return the response
 header's revision. The `history` read on `mI` finds the highest
@@ -1004,7 +1012,8 @@ bundle, about 6 entries are applied per guest second with no faults. A bundle
 that needs more entries per guest second, such as one that waits for etcd 3.6's
 default snapshot count of 10,000 (100,000 in 3.5), can set two driver variables.
 `HARNESS_ETCD_WRITES_ONLY=1` makes the drive draw only writes and
-compare-and-swaps (`Register.NoReads`). Linearizable reads cost a ReadIndex
+compare-and-swaps (`Register.NoReads`), plus watches when
+`HARNESS_ETCD_WATCH` is set. Linearizable reads cost a ReadIndex
 round on every member and add no entry. The check still makes its own reads: an
 unpinned read and a read pinned to each member of the register's first key,
 and the replica comparison over every key. The register checker still checks

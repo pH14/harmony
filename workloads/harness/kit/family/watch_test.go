@@ -172,7 +172,7 @@ func TestWatchDeleteBeyondTheReferenceIsNotAMismatch(t *testing.T) {
 }
 
 func TestOneMemberDecidesNoHistoryAgreement(t *testing.T) {
-	b := watchHistory(t)
+	b := newBuilder(t)
 	b.history(10, "n1", 20, reference...)
 	b.history(11, "n1", 30, reference[:2]...)
 	b.history(12, "n1", 40, ev(2, "k0", "a"), ev(3, "k1", "z"))
@@ -181,4 +181,53 @@ func TestOneMemberDecidesNoHistoryAgreement(t *testing.T) {
 	if !report.Undecided[RegisterHistoryAgrees] {
 		t.Fatalf("agreement decided by one member: %v", report.Undecided)
 	}
+}
+
+func TestAnIncompleteReferenceHidesNoAcknowledgedWrite(t *testing.T) {
+	b := watchHistory(t)
+	b.watch(2, 2, 2, ev(2, "k0", "a"), ev(4, "k0", "c"))
+	b.history(10, "n1", 20, ev(2, "k0", "a"), ev(4, "k0", "c"))
+	expectKinds(t, Register{Watch: 4}.Check(b.build()), RegisterWatchComplete, RegisterHistoryAgrees)
+}
+
+func TestAWatchHoldingAnAcknowledgedWriteIsNotBlamedForTheReference(t *testing.T) {
+	b := watchHistory(t)
+	b.watch(2, 2, 2, ev(2, "k0", "a"), ev(3, "k1", "b"), ev(4, "k0", "c"))
+	b.history(10, "n1", 20, ev(2, "k0", "a"), ev(4, "k0", "c"), ev(5, "k1", "d"))
+	report := Register{Watch: 4}.Check(b.build())
+	expectKinds(t, report, RegisterHistoryAgrees)
+	if report.Violations[0].Details["node"] != "n1" {
+		t.Fatalf("details %+v", report.Violations[0].Details)
+	}
+}
+
+func TestAnIdleWatchDecidesNoWatchProperty(t *testing.T) {
+	b := watchHistory(t)
+	b.watch(2, 9, 8)
+	report := Register{Watch: 4}.Check(b.build())
+	for _, kind := range []string{RegisterWatchFloor, RegisterWatchOrder, RegisterWatchComplete, RegisterWatchMatches} {
+		if !report.Undecided[kind] {
+			t.Fatalf("%q decided by an idle watch: %v", kind, report.Undecided)
+		}
+	}
+}
+
+func TestAnEmptyHistoryDecidesNoAgreement(t *testing.T) {
+	b := watchHistory(t)
+	b.history(10, "n1", 20, reference...)
+	b.history(11, "n2", 20)
+	report := Register{Watch: 4}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Undecided[RegisterHistoryAgrees] {
+		t.Fatalf("agreement decided by an empty history: %v", report.Undecided)
+	}
+}
+
+func TestAShorterHistoryIsComparedWithEveryOtherMember(t *testing.T) {
+	b := newBuilder(t)
+	b.history(10, "n1", 20, ev(2, "k0", "a"), ev(3, "k1", "b"), ev(5, "k0", "x"), ev(6, "k1", "y"))
+	b.history(11, "n1", 30, ev(2, "k0", "a"), ev(3, "k1", "z"))
+	b.history(12, "n2", 40, ev(2, "k0", "a"), ev(3, "k1", "b"), ev(5, "k0", "x"), ev(6, "k1", "y"))
+	report := Register{Watch: 4}.Check(b.build())
+	expectKinds(t, report, RegisterHistoryAgrees)
 }
