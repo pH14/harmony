@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"harmony.local/harness/kit/family"
@@ -86,10 +87,61 @@ func (c *number) UnmarshalJSON(data []byte) error {
 // The gateway omits zero fields: a range with no match has no "kvs" and a
 // transaction whose compare failed has no "succeeded".
 type reply struct {
+	Header    header `json:"header"`
 	Kvs       []kv   `json:"kvs"`
 	Succeeded bool   `json:"succeeded"`
 	Error     string `json:"error"`
 	Message   string `json:"message"`
+}
+
+type header struct {
+	Revision number `json:"revision"`
+}
+
+const revisionNeverFalls = "etcd: a linearizable request's response revision is never below a revision acknowledged before the request was sent"
+
+// A put, the compare-and-swap transaction and a range without "serializable"
+// go through the raft log or a read index, so the member answers from a store
+// that holds every write acknowledged before the request was sent.
+// Serializable ranges answer from the member's own store and are exempt. The
+// floor is the highest revision this process has seen acknowledged when it
+// starts the request; each harness process (ready, drive, check) starts from
+// zero.
+type revisions struct {
+	mu     sync.Mutex
+	high   uint64
+	from   string
+	assert func(bool, string, map[string]any)
+}
+
+var acknowledged = &revisions{assert: sdk.Always}
+
+func linearizable(path string, body any) bool {
+	fields, ok := body.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, set := fields["serializable"]; set {
+		return false
+	}
+	return path == "/v3/kv/put" || path == "/v3/kv/txn" || path == "/v3/kv/range"
+}
+
+func (r *revisions) floor() (uint64, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.high, r.from
+}
+
+func (r *revisions) answered(member, path string, floor uint64, from string, got uint64) {
+	r.assert(got >= floor, revisionNeverFalls, map[string]any{
+		"member": member, "path": path, "revision": got, "acknowledged": floor, "acknowledged_by": from,
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if got > r.high {
+		r.high, r.from = got, member
+	}
 }
 
 func enc(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -240,6 +292,8 @@ func (c client) post(ctx context.Context, base, path string, body any) (reply, e
 		return reply{}, runner.Definite(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	checked := linearizable(path, body)
+	floor, from := acknowledged.floor()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		var opErr *net.OpError
@@ -259,6 +313,9 @@ func (c client) post(ctx context.Context, base, path string, body any) (reply, e
 	}
 	if resp.StatusCode != http.StatusOK || r.Error != "" || r.Message != "" {
 		return reply{}, fmt.Errorf("%s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(text)))
+	}
+	if checked {
+		acknowledged.answered(base, path, floor, from, uint64(r.Header.Revision))
 	}
 	return r, nil
 }
@@ -305,6 +362,7 @@ func main() {
 			defragment = n
 		}
 	}
+	sdk.Declare(sdk.KindAlways, revisionNeverFalls)
 	runner.Main(adapter{
 		members:    members,
 		names:      names,
