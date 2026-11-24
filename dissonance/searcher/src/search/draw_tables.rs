@@ -486,12 +486,6 @@ mod tests {
             .expect("hash every record");
         assert_ne!(second.table_sha256, untouched.table_sha256);
         assert_eq!(second.weighted_sites, 2);
-        assert!(
-            serde_json::to_value(&untouched)
-                .expect("checkpoint serializes")
-                .get("weighted_sites")
-                .is_none()
-        );
         let feedback = live
             .draw(None, false, |view| Ok(view.feedback.clone()))
             .expect("read the feedback");

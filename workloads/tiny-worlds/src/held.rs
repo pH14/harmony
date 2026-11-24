@@ -365,7 +365,7 @@ impl CampaignTypes for HeldWorkload {
 
 impl Reporting for HeldWorkload {
     fn stream_format(&self) -> &'static str {
-        "tiny-held-world-v1"
+        "tiny-held-world-v2"
     }
     fn checkpoint_format(&self) -> &'static str {
         "tiny-held-world-checkpoint-v2"

@@ -42,7 +42,7 @@ use crate::{
     workload::publish_milestone_inputs,
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "castlevania-quicknes-campaign-stream-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "castlevania-quicknes-campaign-stream-v2";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "castlevania-quicknes-snapshot-checkpoint-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";

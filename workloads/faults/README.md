@@ -834,8 +834,8 @@ range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 `landings` their landings, and `sites` those landings by site. An unaimed park
 that draws `edges` 1 is not counted there. Each job record's
 `draw_checkpoint_before.weighted_sites` is the number of sites with a weight
-when the job was drawn; it is absent while no site has one, so the stream shows
-the record at which aiming could begin.
+when the job was drawn, so the stream shows the record at which aiming could
+begin.
 `park_thresholds` counts, for each `floor(log2(edges))`, the `EventPark`
 actions the guest ran at that threshold and their landings, so the landings
 per action at each threshold show which part of the drawn range a workload's

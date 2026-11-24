@@ -11380,8 +11380,8 @@ mod tests {
         let line = r#"{"event":"job","sequence":1,"reservation":1,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"tiers","tier_rank":0},
-"draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
-"draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
+"draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa","weighted_sites":2},
+"draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb","weighted_sites":2}}"#
             .replace('\n', "");
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
             serde_json::from_str(&line).expect("record parses");
@@ -11399,7 +11399,7 @@ mod tests {
                 records: 3,
                 retained_successes: 1,
                 table_sha256: "aa".to_owned(),
-                weighted_sites: 0,
+                weighted_sites: 2,
             })
         );
         let written = serde_json::to_value(&job).expect("job serializes");
