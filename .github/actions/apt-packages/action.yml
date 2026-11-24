@@ -3,7 +3,8 @@ name: Cached system packages
 description: >-
   Install Ubuntu packages with apt, keeping the downloaded archives in the
   Actions cache so a run downloads only the package lists and any package newer
-  than the cached copy. Main saves the cache; every ref restores it.
+  than the cached copy. Every ref restores the newest entry for the runner image
+  and package list; main saves a new entry whenever the set of archives changed.
 inputs:
   packages:
     description: Space-separated apt package names
@@ -18,16 +19,19 @@ runs:
         PACKAGES: ${{ inputs.packages }}
       run: |
         list=$(tr ' ' '\n' <<<"$PACKAGES" | sed '/^$/d' | sort -u | sha256sum | cut -c1-16)
-        echo "key=apt-archives-v1-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${list}" >>"$GITHUB_OUTPUT"
+        echo "prefix=apt-archives-v2-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${list}-" >>"$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       id: restore
       with:
         path: ~/.cache/apt-archives
-        key: ${{ steps.key.outputs.key }}
+        key: ${{ steps.key.outputs.prefix }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
     - name: Install packages from the cached archives and the mirror
+      id: install
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
+        PREFIX: ${{ steps.key.outputs.prefix }}
       run: |
         archives="$HOME/.cache/apt-archives"
         mkdir -p "$archives/partial"
@@ -35,11 +39,14 @@ runs:
         read -ra packages <<<"$PACKAGES"
         sudo apt-get install --yes --no-install-recommends \
           -o Dir::Cache::Archives="$archives" "${packages[@]}"
+        sudo apt-get autoclean -o Dir::Cache::Archives="$archives"
         sudo rm -f "$archives/lock"
         sudo chown -R "$(id -u):$(id -g)" "$archives"
+        contents=$(find "$archives" -maxdepth 1 -name '*.deb' -printf '%f\n' | sort | sha256sum | cut -c1-16)
+        echo "key=${PREFIX}${contents}" >>"$GITHUB_OUTPUT"
         echo "Cached archives: $(find "$archives" -maxdepth 1 -name '*.deb' | wc -l) packages, $(du -sh "$archives" | cut -f1)."
     - uses: actions/cache/save@v4
-      if: github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true'
+      if: github.ref == 'refs/heads/main' && steps.install.outputs.key != steps.restore.outputs.cache-matched-key
       with:
         path: ~/.cache/apt-archives
-        key: ${{ steps.key.outputs.key }}
+        key: ${{ steps.install.outputs.key }}
