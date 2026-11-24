@@ -704,9 +704,9 @@ mod tests {
         .unwrap()
     }
 
-    fn route_credit(lowered: &Lowered<Metroid>, cells: &[u32]) -> Vec<i64> {
+    fn route_credit(lowered: &Lowered<Metroid>, cells: &[u32]) -> (Vec<i64>, usize) {
         let mut accumulator = Accumulator::default();
-        cells
+        let credit = cells
             .iter()
             .map(|cell| {
                 let state = MetroidMechanicalState {
@@ -726,7 +726,8 @@ mod tests {
                     .unwrap();
                 lowered.compiled.view(key).progress[0]
             })
-            .collect()
+            .collect();
+        (credit, accumulator.heap_bytes())
     }
 
     #[test]
@@ -745,10 +746,11 @@ mod tests {
         let on = route[index];
         let off = 160_101;
         assert!(!route.contains(&off));
+        let below = route[index - 1];
         let index = i64::try_from(index).unwrap();
         assert_eq!(
-            route_credit(&stage_alone("tourian_elevator"), &[on, off, on]),
-            [index, 0, index]
+            route_credit(&stage_alone("tourian_elevator"), &[on, off, below]),
+            (vec![index, 0, index - 1], 0)
         );
         let carrying: Vec<&str> = Metroid::STRATEGY
             .split("[[stage]]")
@@ -772,9 +774,12 @@ mod tests {
             ]
         );
         for name in carrying {
-            let credit = route_credit(&stage_alone(name), &[on, off, on]);
+            let lowered = stage_alone(name);
+            let (credit, _) = route_credit(&lowered, &[on, off, below]);
+            let (lower, _) = route_credit(&lowered, &[below]);
             assert!(credit[0] >= index, "{name}");
-            assert_eq!(credit, [credit[0]; 3], "{name}");
+            assert!(lower[0] < credit[0], "{name}");
+            assert_eq!(credit, [credit[0], credit[0], lower[0]], "{name}");
         }
     }
 
