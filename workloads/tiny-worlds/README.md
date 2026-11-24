@@ -89,9 +89,12 @@ independently sums admitted job work, and checks that the last job started
 before the work budget was spent. Tests check these invariants using
 runtime-generated seeds. The first `test_seed()` call on a thread draws a base
 seed, printed as `campaign replay seed`, and returns it; each later call on that
-thread returns a seed mixed from the base and the call count. libtest runs each
-test on its own thread, so setting `HARMONY_TEST_SEED` to the printed base
-reruns the whole test. A test's assertions must hold for every seed it can
+thread returns a seed mixed from the base and the call count, kept apart from
+the searcher's own SplitMix64 expansion of the base. libtest normally runs each
+test on a fresh thread, so setting `HARMONY_TEST_SEED` to the printed base
+reruns the whole test. A test that libtest runs on its harness thread, which
+happens only when it cannot spawn a thread, continues the previous test's draws
+and prints no base of its own. A test's assertions must hold for every seed it can
 draw. A test that checks how a
 campaign spends its work uses a fixed seed, because a runtime seed can reach
 the goal before the archive forms the structure it checks. Controlled

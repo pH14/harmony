@@ -1979,7 +1979,8 @@ fn test_seed() -> u64 {
         if calls == 0 {
             return base;
         }
-        let mut mixed = base.wrapping_add(calls.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let mut mixed =
+            (base ^ 0x7465_7374_5f73_6565).wrapping_add(calls.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         mixed ^ (mixed >> 31)
