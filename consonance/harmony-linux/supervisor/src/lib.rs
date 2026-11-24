@@ -9,6 +9,7 @@ pub mod process;
 pub mod reconcile;
 pub mod recovery;
 pub mod regs;
+pub mod role;
 pub mod supervise;
 
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};

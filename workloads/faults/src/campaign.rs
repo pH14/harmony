@@ -709,7 +709,11 @@ pub(crate) fn execute_job(
     };
     let mut resolved = nodes::resolve(&run.vocabulary, suffix, stop.choices(), host_untried, depth);
     let suffix = guest_suffix(
-        &ready_parked_pauses(&resolved.suffix, target.observation().event_ready),
+        &ready_parked_pauses(
+            &resolved.suffix,
+            target.observation().event_ready,
+            run.vocabulary.nodes(),
+        ),
         stop.choices(),
         guest_untried,
     );
@@ -1172,32 +1176,42 @@ fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
 fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
     match &action.operation {
         FaultOperation::EventKill { node, .. } | FaultOperation::EventPark { node, .. } => {
-            node_is_ready(*node, event_ready)
+            node_is_ready(*node, event_ready, 0)
         }
         _ => true,
     }
 }
 
-fn node_is_ready(node: u16, event_ready: u64) -> bool {
+fn node_is_ready(node: u16, event_ready: u64, nodes: u16) -> bool {
+    if node == process_proto::ROLE_NODE {
+        let every = u64::MAX.checked_shr(64 - u32::from(nodes)).unwrap_or(0);
+        return every != 0 && event_ready & every == every;
+    }
     1_u64
         .checked_shl(u32::from(node))
         .is_some_and(|bit| event_ready & bit != 0)
 }
 
-fn unparked_unless_ready(operation: FaultOperation, event_ready: u64) -> FaultOperation {
+fn unparked_unless_ready(
+    operation: FaultOperation,
+    event_ready: u64,
+    nodes: u16,
+) -> FaultOperation {
     match operation {
-        FaultOperation::PauseParked { node, ticks, .. } if !node_is_ready(node, event_ready) => {
+        FaultOperation::PauseParked { node, ticks, .. }
+            if !node_is_ready(node, event_ready, nodes) =>
+        {
             FaultOperation::Pause(node, ticks)
         }
         operation => operation,
     }
 }
 
-fn ready_parked_pauses(suffix: &[FaultAction], event_ready: u64) -> Vec<FaultAction> {
+fn ready_parked_pauses(suffix: &[FaultAction], event_ready: u64, nodes: u16) -> Vec<FaultAction> {
     suffix
         .iter()
         .map(|action| FaultAction {
-            operation: unparked_unless_ready(action.operation, event_ready),
+            operation: unparked_unless_ready(action.operation, event_ready, nodes),
             ..*action
         })
         .collect()
@@ -1211,6 +1225,7 @@ fn with_parked_pauses(
     suffix: Vec<FaultAction>,
     sites: &[u64],
     event_ready: u64,
+    nodes: u16,
     ticks: std::num::NonZeroU16,
     mutation_seed: u64,
 ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
@@ -1219,10 +1234,10 @@ fn with_parked_pauses(
         .into_iter()
         .map(|action| {
             let operation = match action.operation {
-                FaultOperation::Pause(node, _) if node_is_ready(node, event_ready) => {
+                FaultOperation::Pause(node, _) if node_is_ready(node, event_ready, nodes) => {
                     parked_pause(&mut rand, node, sites, ticks)?
                 }
-                operation => unparked_unless_ready(operation, event_ready),
+                operation => unparked_unless_ready(operation, event_ready, nodes),
             };
             Ok(FaultAction {
                 operation,
@@ -1273,7 +1288,14 @@ fn held_suffix(
             )
         })?;
     if let Some(sites) = run.vocabulary.resume_park() {
-        suffix = with_parked_pauses(suffix, sites, event_ready, ticks, mutation_seed)?;
+        suffix = with_parked_pauses(
+            suffix,
+            sites,
+            event_ready,
+            run.vocabulary.nodes(),
+            ticks,
+            mutation_seed,
+        )?;
     }
     for action in &mut suffix {
         *action = action.with_ticks(ticks);
@@ -2980,7 +3002,7 @@ mod tests {
         let wait = FaultAction::from(FaultOperation::Wait(ticks));
         let suffix = vec![parked(0), wait, parked(1)];
         assert_eq!(
-            with_parked_pauses(suffix.clone(), &[], 0b011, ticks, 7).unwrap(),
+            with_parked_pauses(suffix.clone(), &[], 0b011, 2, ticks, 7).unwrap(),
             suffix
         );
         let unready_first = vec![
@@ -2989,11 +3011,42 @@ mod tests {
             parked(1),
         ];
         assert_eq!(
-            with_parked_pauses(suffix.clone(), &[], 0b010, ticks, 7).unwrap(),
+            with_parked_pauses(suffix.clone(), &[], 0b010, 2, ticks, 7).unwrap(),
             unready_first
         );
-        assert_eq!(ready_parked_pauses(&suffix, 0b011), suffix);
-        assert_eq!(ready_parked_pauses(&suffix, 0b010), unready_first);
+        assert_eq!(ready_parked_pauses(&suffix, 0b011, 2), suffix);
+        assert_eq!(ready_parked_pauses(&suffix, 0b010, 2), unready_first);
+        let role = vec![parked(process_proto::ROLE_NODE)];
+        assert_eq!(ready_parked_pauses(&role, 0b111, 3), role);
+        assert_eq!(
+            ready_parked_pauses(&role, 0b011, 3),
+            [
+                FaultAction::from(FaultOperation::Pause(process_proto::ROLE_NODE, ticks))
+                    .with_choice(9)
+            ]
+        );
+        let drawn = with_parked_pauses(
+            vec![FaultAction::from(FaultOperation::Pause(
+                process_proto::ROLE_NODE,
+                ticks,
+            ))],
+            &[],
+            0b111,
+            3,
+            ticks,
+            7,
+        )
+        .unwrap();
+        assert!(matches!(
+            drawn[..],
+            [FaultAction {
+                operation: FaultOperation::PauseParked {
+                    node: process_proto::ROLE_NODE,
+                    ..
+                },
+                ..
+            }]
+        ));
     }
 
     #[test]

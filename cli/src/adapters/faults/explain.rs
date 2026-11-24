@@ -535,6 +535,7 @@ pub fn declared(bundle: &str) -> Explain {
 pub struct Names {
     pub nodes: Vec<String>,
     pub hooks: BTreeMap<u32, String>,
+    pub role: Option<String>,
 }
 
 pub fn names(bundle: &str) -> Names {
@@ -552,6 +553,7 @@ pub fn names(bundle: &str) -> Names {
                     names.hooks.insert(id, fields.collect::<Vec<_>>().join(" "));
                 }
             }
+            Some("role") => names.role = Some(fields.collect::<Vec<_>>().join(" ")),
             _ => {}
         }
     }
@@ -564,6 +566,12 @@ fn seconds(ticks: u64) -> String {
 
 pub fn describe(operation: &FaultOperation, names: &Names) -> String {
     let node = |index: u16| {
+        if index == process_proto::ROLE_NODE {
+            return names.role.as_ref().map_or_else(
+                || "the node the role command names".to_owned(),
+                |command| format!("the node `{command}` names"),
+            );
+        }
         names
             .nodes
             .get(usize::from(index))
@@ -2131,6 +2139,13 @@ mod tests {
         assert_eq!(
             describe(&FaultOperation::Kill(7, ticks(1)), &names),
             "kill node 7 for 0.01 s"
+        );
+        assert_eq!(
+            describe(
+                &FaultOperation::Pause(process_proto::ROLE_NODE, ticks(128)),
+                &super::names("node n1 /a\nrole /opt/harmony/rqlite-harness leader\n")
+            ),
+            "pause the node `/opt/harmony/rqlite-harness leader` names for 1.28 s"
         );
         assert_eq!(
             describe(&FaultOperation::DiskStall(0, ticks(64)), &names),

@@ -579,7 +579,7 @@ struct LiveTelemetry {
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
 const PUBLISH_SPACING_WARMUP: u64 = 64;
 const MAX_PUBLISH_SPACING: usize = 16;
-const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v1";
+const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v2";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CapturedObservations {
@@ -2766,6 +2766,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .parked_pauses
                 .capacity()
                 .saturating_mul(size_of::<crate::target::ParkedPause>()),
+        )
+        .saturating_add(
+            snapshot
+                .observation
+                .role_pauses
+                .capacity()
+                .saturating_mul(size_of::<crate::target::RolePause>()),
         )
 }
 

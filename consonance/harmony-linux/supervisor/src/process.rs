@@ -520,6 +520,12 @@ pub fn parked_pause_record(node: u16, outcome: process_proto::events::ParkedOutc
     ) + "\n"
 }
 
+#[must_use]
+pub fn role_pause_record(node: Option<u16>) -> String {
+    let node = node.map_or_else(|| "null".to_owned(), |node| node.to_string());
+    format!(r#"{{"harmony_role_pause":{{"node":{node}}}}}"#) + "\n"
+}
+
 #[cfg(unix)]
 pub fn read_check_nodes(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
@@ -693,6 +699,18 @@ mod tests {
         assert_eq!(
             parked_pause_record(2, process_proto::events::ParkedOutcome::ClearedInBatch),
             "{\"harmony_parked_pause\":{\"node\":2,\"outcome\":\"cleared_in_batch\"}}\n"
+        );
+    }
+
+    #[test]
+    fn a_role_pause_record_is_one_json_line_naming_the_node_or_null() {
+        assert_eq!(
+            role_pause_record(Some(1)),
+            "{\"harmony_role_pause\":{\"node\":1}}\n"
+        );
+        assert_eq!(
+            role_pause_record(None),
+            "{\"harmony_role_pause\":{\"node\":null}}\n"
         );
     }
 
