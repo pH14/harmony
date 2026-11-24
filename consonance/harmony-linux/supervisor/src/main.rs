@@ -154,6 +154,7 @@ mod runtime {
     use std::fs::File;
     use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
@@ -238,7 +239,6 @@ mod runtime {
     }
 
     const ROLE_ANSWER_DIR: &str = "/run/harmony/supervisor";
-    const ROLE_ANSWER_PATH: &str = "/run/harmony/supervisor/role-answer";
     const ROLE_ANSWER_LIMIT: u64 = 4096;
 
     struct Asking {
@@ -360,16 +360,11 @@ mod runtime {
         argv: &[String],
     ) -> std::io::Result<(Child, File)> {
         std::fs::create_dir_all(ROLE_ANSWER_DIR)?;
-        match std::fs::remove_file(ROLE_ANSWER_PATH) {
-            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
         let answer = File::options()
             .read(true)
             .write(true)
-            .create_new(true)
-            .open(ROLE_ANSWER_PATH)?;
-        std::fs::remove_file(ROLE_ANSWER_PATH)?;
+            .custom_flags(libc::O_TMPFILE)
+            .open(ROLE_ANSWER_DIR)?;
         let child = process::command(spec, argv)?
             .stdout(Stdio::from(answer.try_clone()?))
             .spawn()?;
@@ -382,11 +377,12 @@ mod runtime {
             .seek(SeekFrom::Start(0))
             .and_then(|_| answer.take(ROLE_ANSWER_LIMIT).read_to_end(&mut bytes))
             .map_err(|error| format!("role command output: {error}"))?;
-        let line = bytes
-            .split(|byte| *byte == b'\n')
-            .next()
-            .unwrap_or_default();
-        Ok(std::str::from_utf8(line)
+        let Some(end) = bytes.iter().position(|byte| *byte == b'\n').or(
+            (bytes.len() < ROLE_ANSWER_LIMIT as usize).then_some(bytes.len()),
+        ) else {
+            return Ok(None);
+        };
+        Ok(std::str::from_utf8(&bytes[..end])
             .ok()
             .map(|name| name.trim().to_owned()))
     }
