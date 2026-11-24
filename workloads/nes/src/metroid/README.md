@@ -162,7 +162,14 @@ Each stage climbs one integer:
   because farming missiles costs energy and an energy stage stays done after
   the loss. The `tanks` term counts missile tanks as well as energy tanks, so
   energy goals use `energy_tanks`; the preferences below use `tanks` on
-  purpose, to rank by tanks collected of either kind.
+  purpose, to rank by tanks collected of either kind. Past Kraid a route stage
+  keeps the index of the last route cell visited when it leaves the route,
+  except the Tourian elevator stage, which scores the cell it is in and 0 off
+  the route. Between the refill and the Tourian elevator the off-route rooms
+  are detours, so crediting them would spread the stage's draws over dead
+  ends. The Norfair passage on the way back needs the other rule: it crosses
+  Norfair `(7,24)` only by a loop through off-route rooms to the south and
+  west that re-enters `(7,24)` from the west, and that loop would score 0.
 - The boss stage climbs boss damage. It is done when Kraid is defeated, read
   from Kraid's own status byte: the key keeps the defeated bosses as bits (bit
   0 Kraid, bit 1 Ridley), because Ridley can fall first and a boss count would

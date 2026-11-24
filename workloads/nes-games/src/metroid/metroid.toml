@@ -138,7 +138,7 @@ latch = true
 
 [[stage]]
 name = "tourian_elevator"
-objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+objective = "if in(cell, to_ending) then index(cell, to_ending) else 0"
 goal = "action_end and cell == 190304 and not dead"
 latch = true
 

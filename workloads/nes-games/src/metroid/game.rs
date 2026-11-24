@@ -691,6 +691,74 @@ mod tests {
         assert!(goal_holds(stage_goal("missiles_before_tourian"), &full));
     }
 
+    fn stage_alone(name: &str) -> Lowered<Metroid> {
+        let stage = Metroid::STRATEGY
+            .split("[[stage]]")
+            .find(|stage| stage.contains(&format!("name = \"{name}\"")))
+            .unwrap();
+        let tables = &Metroid::STRATEGY[Metroid::STRATEGY.find("[define]").unwrap()..];
+        Lowered::new(
+            Metroid,
+            &format!("goal = \"false\"\n[[stage]]{stage}[[stage]]\ngoal = \"false\"\n{tables}"),
+        )
+        .unwrap()
+    }
+
+    fn route_credit(lowered: &Lowered<Metroid>, cells: &[u32]) -> Vec<i64> {
+        let mut accumulator = Accumulator::default();
+        cells
+            .iter()
+            .map(|cell| {
+                let state = MetroidMechanicalState {
+                    area: u8::try_from(cell / 10_000).unwrap(),
+                    map_x: u8::try_from(cell / 100 % 100).unwrap(),
+                    map_y: u8::try_from(cell % 100).unwrap(),
+                    mode: 3,
+                    health: 300,
+                    ..MetroidMechanicalState::default()
+                };
+                let (mut record, _) = lowered.record(&state);
+                record.set_action_end(true);
+                let key = lowered
+                    .compiled
+                    .observe(&record, &mut accumulator)
+                    .key
+                    .unwrap();
+                lowered.compiled.view(key).progress[0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_tourian_elevator_stage_scores_only_the_route_cell_it_is_in() {
+        let route: Vec<u32> = Metroid::STRATEGY
+            .split("to_ending = [")
+            .nth(1)
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap()
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|token| token.parse().ok())
+            .collect();
+        let index = route.iter().position(|cell| *cell == 190_304).unwrap() - 2;
+        let on = route[index];
+        let off = 160_101;
+        assert!(!route.contains(&off));
+        let index = i64::try_from(index).unwrap();
+        assert_eq!(
+            route_credit(&stage_alone("tourian_elevator"), &[on, off, on]),
+            [index, 0, index]
+        );
+        for name in ["norfair_return", "zebetite_door"] {
+            assert_eq!(
+                route_credit(&stage_alone(name), &[on, off, on]),
+                [index, index, index],
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn the_volley_offer_needs_play_missiles_and_a_missile_target() {
         let door = MetroidMechanicalState {
