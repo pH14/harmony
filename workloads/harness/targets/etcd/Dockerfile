@@ -61,6 +61,10 @@ RUN sha256="${ETCD_SOURCE_SHA256}" \
             v3.5.5) sha256=1a16ab899c2381f3ed68f7c38ab878edd391397f7ff987b22a9cd50aab092b79 ;; \
             v3.5.27) sha256=aa0cd1baf203f6ccb3c56ac4d0c61ed2b0cca4995c2541b884b383d330176ff7 ;; \
             v3.5.28) sha256=c1e873c174c44de5fb148024d3ad741cae11548b5b6d2ac36a003289e55024be ;; \
+            v3.6.1) sha256=3bb567830705d762cc5c177a9fd65750fd24bb676b47626d379f3583717d7f10 ;; \
+            v3.6.2) sha256=fd7bdb3517da16fc8590aa939e6bbaee0283f17a79aa653b81e05d316254db9d ;; \
+            v3.6.4) sha256=dcbb42495ebdfa66c3cbba00501f679a88de11523533ba13ead3de8585422b2c ;; \
+            v3.6.5) sha256=96b2eabaf6da7dd21797152e7d1c1ce27da75926ae10e08a90b7ed0458287a4b ;; \
             v3.6.8) sha256=703f43b7e26c761d9bee1f7d1377c2d671bac8879285b9868b6205ebde0f8eda ;; \
             v3.6.9) sha256=17d01cb6075a50cbc795ded0f4caf2bcf5b8005fc4c4631ce8df711dfbd118ed ;; \
             *) echo "pass ETCD_SOURCE_SHA256 for ${ETCD_VERSION}" >&2; exit 1 ;; \
@@ -166,6 +170,11 @@ ARG HARNESS_BUNDLE=bundle
 COPY workloads/harness/targets/etcd/${HARNESS_BUNDLE} /etc/harmony/bundle
 COPY workloads/harness/targets/etcd/setup.sh workloads/harness/targets/etcd/node.sh /opt/harmony/
 
-RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh
+RUN chmod 0755 /opt/harmony/setup.sh /opt/harmony/node.sh \
+    && if grep -q -e '--snapshot-catchup-entries' /etc/harmony/bundle; then \
+        case "${ETCD_VERSION}" in \
+            v3.5.*) echo "${HARNESS_BUNDLE} passes --snapshot-catchup-entries, which etcd ${ETCD_VERSION} does not accept; build it with ETCD_VERSION set to a 3.6 release such as v3.6.9" >&2; exit 1 ;; \
+        esac; \
+    fi
 
 CMD ["/opt/harmony/node.sh", "1", "1"]

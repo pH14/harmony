@@ -516,14 +516,17 @@ from the same bytes. It still runs in its own `target` and `campaign`.
 `metroid/metroid.toml` is the strategy that reproduces the hand key: the stages of
 `metroid/plan.rs` with the same goals and latches (an energy stage's goal reads
 `action_end`, because the plan latches from the parent key at the action's
-end), the place (area, map cell,
+end, except that the stage before Kraid is also done on `kraid_defeated` at any
+frame, as the plan's stage is once Kraid is defeated), the place (area, map cell,
 boss damage, Zebetite hits), the identity (16-pixel position, posture, door),
 and the two hand preferences. Past Kraid's defeat the strategy continues where
 the hand plan stops: energy for the hideout shaft (120), the route to the
 Norfair elevator, energy (80), the route to the Ridley elevator, energy (96),
-the route to Ridley's door, energy (96), and Ridley, whose stage climbs boss
+the route to Ridley's door, and Ridley, whose stage climbs boss
 damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
-Ridley come energy (96), the route out of the hideout, energy (80), the route
+Ridley come the route to the refill rooms (`to_ridley_refill`, scored like the
+Tourian elevator stage below by the cell a state is in), energy (96), the route
+out of the hideout, energy (80), the route
 back through Norfair, full missiles, energy of at least
 `100 * energy_tanks + 90`, the route to the Tourian
 elevator and the route to the Zebetite door. The norfair_return objective is
@@ -540,13 +543,27 @@ climbs 256 per destroyed column plus boss damage and is done on
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
 `to_ridley` and every route after Ridley shares `to_ending`, each read by one
-`last` with no stage scope. Neither table repeats a cell, and every stage that
-reads one starts on a cell of it (the Norfair elevator's arrival and Ridley's
-room), so the unscoped `last` starts each stage at its entry cell as the
-scoped form does. Each of those stages is done on its route's last cell. The routes
+`last` with no stage scope. The walk to the refill rooms after Ridley reads
+its own table, `to_ridley_refill`, without an aggregate, as the
+tourian_elevator stage below reads `to_ending`. The tourian_elevator
+stage reads `to_ending` without an aggregate,
+`if in(cell, to_ending) then index(cell, to_ending) else 0`, which scores 0
+off the route. On the route at an action end, where archive candidates are
+taken, it equals the index the shared `last` would give; on an interior frame
+it scores the cell Samus is passing through, so a route cell crossed
+mid-action can raise the reported progress mark. The [Metroid README](../nes/src/metroid/README.md#archive-key)
+gives the reason for the stage's rule. Neither table repeats a cell. A stage
+that reads the shared `last` starts with the credit of the last cell of its
+table that the lineage stood on, which is its entry cell when the stage
+starts on its table: the Norfair elevator's arrival for `to_ridley`, and for
+ridley_exit the refill rooms on row 30 when the energy stage before it ends
+there, which `to_ending` lists first. An energy stage can end anywhere, so the
+stage after it can start elsewhere on its table or off it with that inherited
+credit. Each route stage but escape, which ends on the ending, is done on a
+cell of its route. The routes
 and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
 the equivalence test compares the stages up to Kraid and checks that every
-state past his defeat is located past the hand plan's stages. A route stage's objective is the last route index
+state past his defeat is located past the hand plan's stages. In the stages the hand plan covers, a route stage's objective is the last route index
 a kept state stood on within that stage,
 `last(if action_end then index(cell, route) else none, stage)`, and 0 when the
 stage is entered off the route, as the hand plan locates from action endpoints

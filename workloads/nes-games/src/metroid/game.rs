@@ -608,6 +608,47 @@ mod tests {
     }
 
     #[test]
+    fn a_kraid_win_short_of_the_energy_target_ends_the_energy_stage_on_any_frame() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let energy = names
+            .iter()
+            .position(|stage| *stage == "energy_before_kraid")
+            .unwrap();
+        let won = MetroidMechanicalState {
+            area: KRAID,
+            map_x: 9,
+            map_y: 29,
+            mode: 3,
+            health: 795,
+            energy_tanks: 1,
+            equipment: MORPH_BALL | BOMBS,
+            missiles: 5,
+            missile_capacity: 5,
+            bosses: 1,
+            kraid_defeated: true,
+            ..MetroidMechanicalState::default()
+        };
+        let alive = MetroidMechanicalState {
+            bosses: 0,
+            kraid_defeated: false,
+            ..won
+        };
+        for action_end in [false, true] {
+            assert!(goals(&lowered, &won, action_end).1[energy]);
+            assert!(!goals(&lowered, &alive, action_end).1[energy]);
+        }
+    }
+
+    #[test]
+    fn the_ridley_fight_follows_his_door_with_no_energy_stage_between() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(at("ridley_door") + 1, at("ridley"));
+    }
+
+    #[test]
     fn missiles_then_energy_refill_before_the_tourian_elevator() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();
@@ -648,6 +689,226 @@ mod tests {
         assert!(goal_holds(goal, &least), "{goal}");
         assert!(!goal_holds(goal, &short), "{goal}");
         assert!(goal_holds(stage_goal("missiles_before_tourian"), &full));
+    }
+
+    fn stages_alone(names: &[&str]) -> Lowered<Metroid> {
+        let stages: String = names
+            .iter()
+            .map(|name| {
+                let stage = Metroid::STRATEGY
+                    .split("[[stage]]")
+                    .find(|stage| stage.contains(&format!("name = \"{name}\"")))
+                    .unwrap();
+                format!("[[stage]]{stage}")
+            })
+            .collect();
+        let tables = &Metroid::STRATEGY[Metroid::STRATEGY.find("[define]").unwrap()..];
+        Lowered::new(
+            Metroid,
+            &format!(
+                "goal = \"false\"\n{stages}[[stage]]\nname = \"past\"\ngoal = \"false\"\n{tables}"
+            ),
+        )
+        .unwrap()
+    }
+
+    fn stage_alone(name: &str) -> Lowered<Metroid> {
+        stages_alone(&[name])
+    }
+
+    fn at_cell(cell: u32, health: u16) -> MetroidMechanicalState {
+        MetroidMechanicalState {
+            area: u8::try_from(cell / 10_000).unwrap(),
+            map_x: u8::try_from(cell / 100 % 100).unwrap(),
+            map_y: u8::try_from(cell % 100).unwrap(),
+            mode: 3,
+            health,
+            ..MetroidMechanicalState::default()
+        }
+    }
+
+    fn keys(
+        lowered: &Lowered<Metroid>,
+        states: &[MetroidMechanicalState],
+    ) -> (Vec<(String, i64)>, usize) {
+        let mut accumulator = Accumulator::default();
+        let keys = states
+            .iter()
+            .map(|state| {
+                let (mut record, _) = lowered.record(state);
+                record.set_action_end(true);
+                let key = lowered
+                    .compiled
+                    .observe(&record, &mut accumulator)
+                    .key
+                    .unwrap();
+                let view = lowered.compiled.view(key);
+                (view.stage.unwrap_or_default(), view.progress[0])
+            })
+            .collect();
+        (keys, accumulator.heap_bytes())
+    }
+
+    fn route_credit(lowered: &Lowered<Metroid>, cells: &[u32]) -> (Vec<i64>, usize) {
+        let states: Vec<_> = cells.iter().map(|cell| at_cell(*cell, 300)).collect();
+        let (keys, bytes) = keys(lowered, &states);
+        (keys.into_iter().map(|(_, credit)| credit).collect(), bytes)
+    }
+
+    fn table(name: &str) -> Vec<u32> {
+        Metroid::STRATEGY
+            .split(&format!("\n{name} = ["))
+            .nth(1)
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap()
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|token| token.parse().ok())
+            .collect()
+    }
+
+    fn walks(cells: &[u32]) -> bool {
+        cells.windows(2).all(|pair| {
+            let (from, to) = (pair[0], pair[1]);
+            from / 10_000 == to / 10_000
+                && (from / 100 % 100).abs_diff(to / 100 % 100) + (from % 100).abs_diff(to % 100)
+                    == 1
+        })
+    }
+
+    #[test]
+    fn after_ridley_the_plan_walks_to_the_refill_rooms_and_out_along_row_30() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(at("ridley") + 1, at("ridley_refill_rooms"));
+        assert_eq!(at("ridley_refill_rooms") + 1, at("energy_after_ridley"));
+        assert_eq!(at("energy_after_ridley") + 1, at("ridley_exit"));
+        let refill = table("to_ridley_refill");
+        let ending = table("to_ending");
+        assert_eq!(refill[0], 201_729);
+        assert!(walks(&refill));
+        assert_eq!(refill[12..15], [202_929, 203_029, 203_030]);
+        assert_eq!(*refill.last().unwrap(), 202_730);
+        assert_eq!(ending[..11].first(), Some(&202_030));
+        assert_eq!(ending[10], 203_030);
+        assert!(walks(&ending[..11]));
+        assert!(walks(&[ending[10], 203_029]));
+        assert!(ending[11..].contains(&203_029));
+        assert!(ending[..11].contains(refill.last().unwrap()));
+        for route in [&refill, &ending] {
+            for (index, cell) in route.iter().enumerate() {
+                assert!(!route[..index].contains(cell), "{cell}");
+            }
+        }
+        let before_goal = i64::try_from(refill.len() - 2).unwrap();
+        let (credit, bytes) = route_credit(
+            &stage_alone("ridley_refill_rooms"),
+            &[201_729, 202_529, 160_101, 202_830],
+        );
+        assert_eq!((credit, bytes), (vec![0, 8, 0, before_goal], 0));
+        let refill_then_energy = stages_alone(&["ridley_refill_rooms", "energy_after_ridley"]);
+        let named = |name: &str, objective: i64| (name.to_owned(), objective);
+        assert_eq!(
+            keys(
+                &refill_then_energy,
+                &[
+                    at_cell(202_830, 300),
+                    at_cell(202_730, 300),
+                    at_cell(202_830, 300),
+                    at_cell(202_830, 960),
+                ]
+            )
+            .0,
+            [
+                named("ridley_refill_rooms", before_goal),
+                named("energy_after_ridley", 30),
+                named("energy_after_ridley", 30),
+                named("past", 0),
+            ]
+        );
+        assert_eq!(
+            keys(&refill_then_energy, &[at_cell(202_730, 950)]).0,
+            [named("energy_after_ridley", 95)]
+        );
+        assert_eq!(
+            keys(&refill_then_energy, &[at_cell(202_830, 990)]).0,
+            [named("ridley_refill_rooms", before_goal)]
+        );
+        let mut accumulator = Accumulator::default();
+        for (cell, action_end) in [(202_730, false), (202_830, true)] {
+            let (mut record, _) = refill_then_energy.record(&at_cell(cell, 300));
+            record.set_action_end(action_end);
+            let observed = refill_then_energy
+                .compiled
+                .observe(&record, &mut accumulator);
+            if action_end {
+                let view = refill_then_energy.compiled.view(observed.key.unwrap());
+                assert_eq!(view.stage.as_deref(), Some("ridley_refill_rooms"));
+            }
+        }
+        let index = |cell: u32| {
+            i64::try_from(ending.iter().position(|kept| *kept == cell).unwrap()).unwrap()
+        };
+        let (credit, _) = route_credit(
+            &stage_alone("ridley_exit"),
+            &[202_730, 203_030, 160_101, 203_029],
+        );
+        assert_eq!(
+            credit,
+            [
+                index(202_730),
+                index(203_030),
+                index(203_030),
+                index(203_029)
+            ]
+        );
+        assert!(index(203_029) > index(203_030));
+    }
+
+    #[test]
+    fn the_tourian_elevator_stage_scores_only_the_route_cell_it_is_in() {
+        let route = table("to_ending");
+        let index = route.iter().position(|cell| *cell == 190_304).unwrap() - 2;
+        let on = route[index];
+        let off = 160_101;
+        assert!(!route.contains(&off));
+        let below = route[index - 1];
+        let index = i64::try_from(index).unwrap();
+        assert_eq!(
+            route_credit(&stage_alone("tourian_elevator"), &[on, off, below]),
+            (vec![index, 0, index - 1], 0)
+        );
+        let carrying: Vec<&str> = Metroid::STRATEGY
+            .split("[[stage]]")
+            .filter(|stage| stage.contains("index(cell, to_ending) else none"))
+            .map(|stage| {
+                stage
+                    .lines()
+                    .find_map(|line| line.strip_prefix("name = "))
+                    .unwrap()
+                    .trim_matches('"')
+            })
+            .collect();
+        assert_eq!(
+            carrying,
+            [
+                "ridley_exit",
+                "norfair_return",
+                "zebetite_door",
+                "zebetites",
+                "escape"
+            ]
+        );
+        for name in carrying {
+            let lowered = stage_alone(name);
+            let (credit, _) = route_credit(&lowered, &[on, off, below]);
+            let (lower, _) = route_credit(&lowered, &[below]);
+            assert!(credit[0] >= index, "{name}");
+            assert!(lower[0] < credit[0], "{name}");
+            assert_eq!(credit, [credit[0], credit[0], lower[0]], "{name}");
+        }
     }
 
     #[test]

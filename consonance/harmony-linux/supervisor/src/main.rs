@@ -49,6 +49,9 @@ fn run() -> Result<RunOutcome, String> {
     match spec.bundle.as_deref() {
         None => Ok(run_application(&spec)),
         Some(bundle) => {
+            #[cfg(target_os = "linux")]
+            process::exempt_from_oom_kill()
+                .map_err(|error| format!("/proc/self/oom_score_adj: {error}"))?;
             runtime::run(&spec, Path::new(bundle)).map(|()| RunOutcome::SupervisorFailure {
                 code: 1,
                 error: "structured supervisor ended without an application exit".into(),
@@ -119,7 +122,7 @@ fn run_application(spec: &ExecutionSpec) -> RunOutcome {
 ))]
 mod runtime {
     use harmony_sdk::{Point, Sdk};
-    use harmony_supervisor::blockdev::Disks;
+    use harmony_supervisor::blockdev::{COMPACT_POLL_TICKS, Disks};
     use harmony_supervisor::bundle::{Bundle, HookSpec, NodeSpec, parse_bundle};
     use harmony_supervisor::evidence::CheckEvidence;
     use harmony_supervisor::memory::{OOM_POLL_TICKS, OomWatch, VMSTAT_PATH};
@@ -1343,6 +1346,11 @@ mod runtime {
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
                 if let Some(check) = check.filter(|check| check.closing) {
                     remount_read_only_disk(check, nodes, supervisor, &mut runtime, tick)?;
+                }
+            }
+            if tick.is_multiple_of(COMPACT_POLL_TICKS) {
+                for compacted in runtime.disks.compact()? {
+                    log(tick, &compacted);
                 }
             }
             report_event_result(

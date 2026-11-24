@@ -71,7 +71,7 @@ func cas() map[string]any {
 
 func TestALinearizableRangeBelowAnAcknowledgedPutFails(t *testing.T) {
 	got := recording(t)
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	ctx := context.Background()
 	fresh, stale := member(t, 155, http.StatusOK), member(t, 3, http.StatusOK)
 
@@ -94,7 +94,7 @@ func TestALinearizableRangeBelowAnAcknowledgedPutFails(t *testing.T) {
 
 func TestSerializableRangesAndFailedAnswersNeitherAreCheckedNorRaiseTheFloor(t *testing.T) {
 	got := recording(t)
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	ctx := context.Background()
 	fresh := member(t, 155, http.StatusOK)
 	ahead, down := member(t, 900, http.StatusOK), member(t, 900, http.StatusServiceUnavailable)
@@ -130,7 +130,7 @@ func TestEachCheckedAnswerRaisesTheFloor(t *testing.T) {
 	} {
 		t.Run(first.path, func(t *testing.T) {
 			got := recording(t)
-			c := client{http: newHTTP()}
+			c := client{http: newHTTP(false)}
 			ctx := context.Background()
 			fresh, stale := member(t, 155, http.StatusOK), member(t, 154, http.StatusOK)
 
@@ -153,7 +153,7 @@ func TestEachCheckedAnswerRaisesTheFloor(t *testing.T) {
 
 func TestAnAnswerAtTheFloorPasses(t *testing.T) {
 	got := recording(t)
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	ctx := context.Background()
 	m := member(t, 155, http.StatusOK)
 
@@ -172,7 +172,7 @@ func TestAnAnswerAtTheFloorPasses(t *testing.T) {
 
 func TestARevisionAcknowledgedAfterTheRequestWasSentIsNotAFloor(t *testing.T) {
 	got := recording(t)
-	c := client{http: newHTTP()}
+	c := client{http: newHTTP(false)}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	arrived, release := make(chan struct{}, 1), make(chan struct{})

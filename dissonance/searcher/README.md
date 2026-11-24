@@ -1499,8 +1499,18 @@ follows it, so resuming re-executes the unadmitted jobs and admits them in the
 same order. `CheckpointPlan` writes one at a fixed execution interval, at each
 new workload milestone (`Reporting::checkpoint_marks`), and at each new top
 archive tier. A final checkpoint is also written after the reservation queue drains,
-including for runs shorter than the periodic interval. Milestone and tier
-checkpoints are kept; only the last two interval checkpoints are kept.
+including for runs shorter than the periodic interval. Milestone and final
+checkpoints are kept for the whole run. Interval, tier (`top_progress`) and
+`stall` checkpoints rotate: the writer keeps the newest two files of each of
+those reasons and deletes older ones, so the live snapshots in a long run's
+store are those of at most six rotated checkpoints plus its milestone and final
+ones. The store's length still grows. How much disk the freed ranges return
+depends on the filesystem: hole punching frees only whole blocks, and a
+filesystem without it frees nothing. A resume can start from any kept
+checkpoint. A resume from the directory of a run that is still writing, or a
+copy of that directory, can lose its checkpoint to rotation before its
+snapshots are read, and then fails the snapshot check; resume after the run
+ends, or from a filesystem snapshot of the directory.
 
 `checkpoint_archive_entries::<G>` reads a checkpoint's archive without the
 snapshot store and returns each entry's `ArchiveEntryReport`, with its full
@@ -1512,13 +1522,18 @@ workload identity, so the caller names the workload type.
 With `CheckpointPlan::on_stall`, the coordinator also watches the leading tier
 after each admission. When that tier starts to lose draw weight to the tier
 below it (the selector's halving condition, `tier_halvings` above zero), the
-run writes a kept checkpoint with reason `stall` and appends one line to
+run writes a checkpoint with reason `stall` and appends one line to
 `stalls.jsonl` in the checkpoint directory: the checkpoint's file name, the
 tier (the progress value, which for a staged plan is the stage and its
 objective), the tier's yield count, the execution of its last yield, the jobs
 drawn from the tier since then with the count of each action those jobs ran,
 and the tier's 16 most-selected states with their place, identity, selection
-counts and input length. The watch resets when the leading tier changes or
+counts and input length. When a milestone checkpoint is due at the stall's
+admission (`CheckpointPlan::on_marks` and a new milestone), the writer writes
+the milestone checkpoint instead, and the line names that file, so rotation
+never deletes it. A line that names a file with reason
+`stall` older than the newest two such files names a checkpoint that rotation
+has deleted. The watch resets when the leading tier changes or
 yields again, so one stall writes one report. It reads the archive and changes
 nothing in selection. A run whose budgets count executions or work records the
 same stream with the report as without it. Under a wall-clock budget no run
@@ -1643,8 +1658,8 @@ Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
 list it by entry id, offset, length, and SHA-256. Resume checks each referenced
 snapshot's bytes before decoding it. The writer counts the kept checkpoints that
-list each stored snapshot. Deleting an interval checkpoint decrements the
-counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
+list each stored snapshot. Deleting a rotated interval, tier or stall
+checkpoint decrements the counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
 the writer's map, and on Linux its byte range in the store becomes a hole
 (`fallocate` with `FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE`). The file
 keeps its length and every other offset stays valid, so no checkpoint file

@@ -25,6 +25,7 @@ pub enum Done {
     MissileCapacity,
     RouteEnd,
     Energy(u16),
+    EnergyOrKraid(u16),
     Kraid,
     Never,
 }
@@ -123,6 +124,21 @@ const TO_BOMBS: &[Cell] = &[
 ];
 
 const TO_KRAID_DOOR: &[Cell] = &[
+    b(20, 9),
+    b(21, 9),
+    b(22, 9),
+    b(22, 8),
+    b(20, 11),
+    b(19, 11),
+    b(18, 11),
+    b(17, 11),
+    b(16, 11),
+    b(15, 11),
+    b(14, 11),
+    b(13, 11),
+    b(13, 10),
+    b(13, 9),
+    b(13, 8),
     b(25, 5),
     b(26, 5),
     b(27, 5),
@@ -227,7 +243,7 @@ pub const PLAN: &[Stage] = &[
     },
     Stage {
         name: "energy_before_kraid",
-        done: Done::Energy(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID),
+        done: Done::EnergyOrKraid(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID),
         objective: Objective::Energy,
     },
     Stage {
@@ -288,13 +304,17 @@ impl plan::Stage for Stage {
                 _ => false,
             },
             Done::Energy(target) => energy_reached(state, target),
+            Done::EnergyOrKraid(target) => state.kraid_defeated || energy_reached(state, target),
             Done::Kraid => state.kraid_defeated,
             Done::Never => false,
         }
     }
 
     fn latches(self) -> bool {
-        matches!(self.done, Done::RouteEnd | Done::Energy(_))
+        matches!(
+            self.done,
+            Done::RouteEnd | Done::Energy(_) | Done::EnergyOrKraid(_)
+        )
     }
 }
 
@@ -385,7 +405,7 @@ mod tests {
         state.health = 640;
         assert_eq!(locate(state, 0, Some((2, 3))), (2, 3));
         state.missile_capacity = 5;
-        assert_eq!(locate(state, 0, Some((2, 3))), (6, 0));
+        assert_eq!(locate(state, 0, Some((2, 3))), (6, 15));
     }
 
     #[test]
@@ -437,6 +457,18 @@ mod tests {
     }
 
     #[test]
+    fn a_kraid_win_short_of_the_energy_target_ends_the_energy_stage() {
+        let mut state = at(KRAID, 9, 29);
+        state.equipment = MARU_MARI | BOMBS;
+        state.missile_capacity = 5;
+        state.energy_tanks = 1;
+        state.health = 795;
+        state.bosses = 1;
+        state.kraid_defeated = true;
+        assert_eq!(locate(state, 0, Some((7, 79))), (9, 0));
+    }
+
+    #[test]
     fn the_targets_are_eight_brinstar_touches_and_four_hideout_touches() {
         assert_eq!(BRINSTAR_TOUCH * TOUCHES_BEFORE_BRINSTAR_ROUTE, 64);
         assert_eq!(KRAID_HIDEOUT_TOUCH * TOUCHES_BEFORE_KRAID, 80);
@@ -450,7 +482,25 @@ mod tests {
     }
 
     #[test]
-    fn every_route_starts_where_the_previous_stage_ends() {
+    fn the_kraid_door_route_joins_the_refill_rooms_and_row_11_past_the_bombs_room_loop() {
+        let adjacent = |from: Cell, to: Cell| {
+            from.0 == to.0 && from.1.abs_diff(to.1) + from.2.abs_diff(to.2) == 1
+        };
+        let index = |cell: Cell| TO_KRAID_DOOR.iter().position(|kept| *kept == cell).unwrap();
+        let walks = |cells: &[Cell]| cells.windows(2).all(|pair| adjacent(pair[0], pair[1]));
+        assert_eq!(TO_KRAID_DOOR[0], b(20, 9));
+        assert!(walks(&TO_KRAID_DOOR[..4]));
+        assert!(adjacent(TO_KRAID_DOOR[3], b(22, 7)));
+        assert_eq!(TO_KRAID_DOOR[4], b(20, 11));
+        assert!(walks(&TO_KRAID_DOOR[4..15]));
+        assert!(adjacent(TO_KRAID_DOOR[14], b(13, 7)));
+        assert_eq!(index(b(25, 5)), 15);
+        assert!(index(b(22, 7)) > index(b(25, 5)));
+        assert!(index(b(13, 7)) > index(b(25, 7)));
+    }
+
+    #[test]
+    fn every_route_holds_the_last_cell_of_the_route_before_it() {
         let routes: Vec<&[Cell]> = PLAN
             .iter()
             .filter_map(|stage| match stage.objective {
@@ -459,7 +509,7 @@ mod tests {
             })
             .collect();
         for pair in routes.windows(2) {
-            assert_eq!(pair[0].last(), pair[1].first());
+            assert!(pair[1].contains(pair[0].last().unwrap()));
         }
         for route in routes {
             for (index, cell) in route.iter().enumerate() {

@@ -51,7 +51,7 @@ latch = true
 [[stage]]
 name = "energy_before_kraid"
 objective = "health / 10"
-goal = "action_end and health / 10 >= 80 and not dead"
+goal = "(kraid_defeated or (action_end and health / 10 >= 80)) and not dead"
 latch = true
 
 [[stage]]
@@ -96,15 +96,15 @@ goal = "action_end and cell == 201829 and not dead"
 latch = true
 
 [[stage]]
-name = "energy_before_ridley"
-objective = "health / 10"
-goal = "action_end and health / 10 >= 96 and not dead"
-latch = true
-
-[[stage]]
 name = "ridley"
 objective = "boss_damage"
 goal = "ridley_defeated and not dead"
+
+[[stage]]
+name = "ridley_refill_rooms"
+objective = "if in(cell, to_ridley_refill) then index(cell, to_ridley_refill) else 0"
+goal = "action_end and cell == 202730 and not dead"
+latch = true
 
 [[stage]]
 name = "energy_after_ridley"
@@ -144,7 +144,7 @@ latch = true
 
 [[stage]]
 name = "tourian_elevator"
-objective = "max(last(if action_end then index(cell, to_ending) else none), 0)"
+objective = "if in(cell, to_ending) then index(cell, to_ending) else 0"
 goal = "action_end and cell == 190304 and not dead"
 latch = true
 
@@ -192,7 +192,9 @@ to_bombs = [
     162805, 162705, 162605, 162505,
 ]
 to_kraid_door = [
-    162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
+    162009, 162109, 162209, 162208,
+    162011, 161911, 161811, 161711, 161611, 161511, 161411, 161311, 161310, 161309,
+    161308, 162505, 162605, 162705, 162805, 162905, 163005, 163006, 163007, 162907, 162807,
     162707, 162607, 162507, 162407, 162307, 162207, 162107, 162007, 161907, 161807,
     161707, 161607, 161507, 161407, 161307, 161207, 161107, 161108, 161109, 161110,
     161111, 161112, 161113, 161114, 161014, 160914, 160814, 160714, 160614, 160615,
@@ -215,7 +217,13 @@ to_ridley = [
     202325, 202225, 202125, 202025, 201925, 201825, 201725, 201726, 201727, 201827,
     201927, 202027, 202127, 202227, 202228, 202229, 202129, 202029, 201929, 201829,
 ]
+to_ridley_refill = [
+    201729, 201829, 201929, 202029, 202129, 202229, 202329, 202429, 202529, 202629,
+    202729, 202829, 202929, 203029, 203030, 202930, 202830, 202730,
+]
 to_ending = [
+    202030, 202130, 202230, 202330, 202430, 202530, 202630, 202730, 202830, 202930,
+    203030,
     201829, 201929, 202029, 202129, 202229, 202329, 202429, 202529, 202629, 202729,
     202829, 202929, 203029, 203028, 203027, 203026, 203025, 202925, 202825, 202725,
     202625, 202525, 202524, 202523, 172523, 172522, 172422, 172421, 172521, 172621,

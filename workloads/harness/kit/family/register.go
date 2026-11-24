@@ -41,21 +41,27 @@ const (
 )
 
 type Register struct {
-	Keys   int
-	NoCAS  bool
-	Steps  int
-	Rounds int
-	Pause  time.Duration
-	Reads  ReadConsistency
+	Keys    int
+	NoCAS   bool
+	NoReads bool
+	Steps   int
+	Rounds  int
+	Pause   time.Duration
+	Reads   ReadConsistency
+	Watch   uint64
 }
 
 func (Register) Name() string { return "register" }
 
 func (r Register) Kinds() []string {
+	kinds := []string{RegisterLinearizable, RegisterStale, RegisterNodeStale, RegisterReplicasAgree}
 	if r.Reads == MonotonicReads {
-		return []string{RegisterWritesLinear, RegisterMonotonic, RegisterNodeStale, RegisterReplicasAgree}
+		kinds = []string{RegisterWritesLinear, RegisterMonotonic, RegisterNodeStale, RegisterReplicasAgree}
 	}
-	return []string{RegisterLinearizable, RegisterStale, RegisterNodeStale, RegisterReplicasAgree}
+	if r.Watch > 0 {
+		kinds = append(kinds, watchKinds()...)
+	}
+	return kinds
 }
 
 func (r Register) linearKind() string {
@@ -86,20 +92,32 @@ func registerKey(index int) string { return fmt.Sprintf("k%d", index) }
 func (r Register) Read() Op { return Op{F: RegisterReadF, K: registerKey(0)} }
 
 func (r Register) Generator(int) Generator {
-	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, known: map[string]string{}}
+	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, watch: r.Watch, known: map[string]string{}}
 }
 
 func (Register) Recorder(*history.History) Recorder { return plainRecorder{} }
 
 type registerGenerator struct {
-	keys  int
-	cas   bool
-	known map[string]string
+	keys     int
+	cas      bool
+	reads    bool
+	watch    uint64
+	revision uint64
+	known    map[string]string
 }
 
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
+	if g.watch > 0 && draw("register.watch", g.watch) == 0 {
+		return Op{F: RegisterWatch, V: WatchQuery{From: g.watchFrom(draw)}}
+	}
 	key := registerKey(int(draw("register.key", uint64(g.keys))))
-	switch draw("register.op", 4) {
+	var choice uint64
+	if g.reads {
+		choice = draw("register.op", 4)
+	} else {
+		choice = 2 + draw("register.op", 2)
+	}
+	switch choice {
 	case 0, 1:
 		return Op{F: RegisterReadF, K: key}
 	case 3:
@@ -114,6 +132,7 @@ func (g *registerGenerator) Observe(op Op, outcome history.Type, result any) {
 	if outcome != history.OK {
 		return
 	}
+	g.observeRevision(result)
 	switch op.F {
 	case RegisterWrite:
 		if value, ok := op.V.(string); ok {
@@ -306,6 +325,9 @@ func (r Register) Check(h *history.History) Report {
 		}
 	}
 	r.checkReplicas(h, byKey, &report, &found)
+	if r.Watch > 0 {
+		r.checkWatches(h, &report, &found)
+	}
 	report.Violations = found.result()
 	return report
 }

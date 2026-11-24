@@ -309,6 +309,45 @@ the check journal as evidence. A check that ran fewer rounds, or a round with
 fewer than two answering nodes, decides nothing unless a round with two or more
 answering nodes found no unexplained disagreement.
 
+`Register.Watch` set to N adds a `watch` operation to about one operation in
+N. A watch's input is a start revision, drawn from the highest revision the
+client has seen: up to 100 revisions in the past, the next revision, or up to
+100 revisions in the future. Its output is the list of events it delivered,
+each with a revision, key and value (no value for a delete) and the start
+revision of the stream that delivered it, which a watch that resumes on
+another node raises. Writes and `cas`
+operations then return the revision the store assigned them. With watches on,
+the check also reads each pinned node's full change history (the `history`
+operation), and the longest history is the reference. These assertions check
+every successful watch:
+
+- `register: a watch never delivers an event below its start revision`, or
+  below the start of the stream that delivered it;
+- `register: a watch delivers events in revision order, each once`, where
+  events at one revision may come in any key order but no key twice;
+- `register: a watch delivers every event from its start revision to its last delivered revision`,
+  against the reference history where it reaches that far and against every
+  acknowledged write's revision in that interval;
+- `register: every delivered event matches the reference history`, where an
+  event equal to an acknowledged write of that key and value at that
+  revision always matches, and beyond the reference an event must be such a
+  write; the family issues no deletes, so a delete beyond the reference is
+  not checked;
+- `register: every member's history agrees`, which compares every pair of
+  histories from different nodes up to the shorter one's last revision, and
+  checks that each history holds every acknowledged write up to its own last
+  revision, naming the node that differs; it is decided only when nonempty
+  histories from two nodes answered.
+
+The floor, completeness and match checks are decided only when some watch
+delivered an event, and the order check when some watch delivered two.
+
+The five checks and the history read belong to the kit, not to one adapter.
+A family that implements `Changefeed` (`Feed() (Op, bool)`) tells the check
+runner which operation reads a node's change history, so any target whose
+system has a change feed can use the same checks by answering `watch` and
+`history`.
+
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
 
@@ -318,7 +357,9 @@ The bundle's `check` line performs one read through the adapter into its own
 journal, plus one read per node when the adapter pins reads. For the register
 family it also runs, starting with those reads, up to three `replicas` rounds
 500 ms of guest time apart (`Register.Pause`), each with one read per node
-bounded by `--check-timeout`. After each round it reloads the journals and
+bounded by `--check-timeout`. When the family reads change histories
+(`Changefeed`) and `HARMONY_FAULTS_IN_FORCE` is not `1`, the check also issues
+one history read per pinned node. After each round it reloads the journals and
 stops when the round shows no disagreement under the register rule above, or
 when fewer than two nodes answered. Guest computation advances no virtual
 time, so the settle period is a fixed number of rounds with a sleep between
@@ -346,7 +387,8 @@ also writes these `Sometimes` assertions:
 When the family left keys undecided, the check writes one
 `{"harmony_check":{"undecided_keys":N}}` record, which the host carries into
 `undecided_checks` in `campaign-summary.json` and `report.json`. The JSON line
-the check prints and the `harness-check` output both have `undecided_keys`.
+the check prints and the `harness-check` output both have `undecided_keys`;
+the `harness-check` output also lists the undecided assertions.
 
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.
@@ -605,7 +647,9 @@ data = ["/tmp/nats/n1", "/tmp/nats/n2", "/tmp/nats/n3"]
 host_history = "harness-check -family register -reads monotonic @/tmp/harness/journal"
 ```
 
-Pass `-reads monotonic` to check the history the way the nats-kv adapter does.
+Pass `-reads monotonic` to check the history the way the nats-kv adapter does. Pass
+`-watches` to add the register watch and member history checks, as a target
+with `Register.Watch` set does.
 `harness-check` checks the clients' operations without the check's final read.
 It prints the journal files, the operation count, the facts and the violations
 as JSON, and exits 3 when it finds violations.
@@ -880,25 +924,53 @@ v10.6.2 `bundle-forward` with `ram_mib = 2048`, searches with both options on
 found a duplicated append in each of four seeds, within 2,391 to 7,192 guest
 seconds. Four seeds with both off found none in 17.6 guest hours.
 
-Node disks and their write logs live in guest memory, and a write log empties
-only when a power loss replays it, so with `ram_mib = 1024` the guest's
-out-of-memory killer ended 2 executions in 66 guest hours of v10.7.1 `bundle`
-searches, each about 1,100 to 1,200 guest seconds after the path's last power
-loss ([#992](https://github.com/pH14/harmony/issues/992)), while 12 v10.6.2
-`bundle-forward` searches with `ram_mib = 2048` lost none in 53.5 guest hours.
+Set `ram_mib = 2048` under `[runner.options]`. The node disks live in guest
+memory, and their pages grow with the distinct blocks a path writes,
+filesystem metadata and journal included, not with the size of the database.
+ext4 is formatted and mounted there without discard, so a deleted file's
+blocks keep their pages. Each node can use up to 256 MiB for its data disk and
+up to 256 MiB for its replay base, which allocates pages as compactions and
+power losses apply writes to it. The supervisor compacts a write log once a
+check finds 64 MiB in it; the log can grow past that before a check or while
+a fold runs. Allowing 64 MiB per log, three nodes come to about 1.7 GiB of
+disk pages, and with the 380 MiB of other guest memory measured below
+(anonymous, shared, slab, kernel stacks and page tables) to about 2.1 GiB,
+more than a 2048 MiB guest as well as a 1024 MiB one. 2048 MiB is headroom
+for the path lengths measured, not a bound. At `ram_mib = 1024`, where the
+guest reports 978 MiB of RAM, replays of v10.7.1 search paths applied every
+action with no out-of-memory kill, but available memory fell to 284 MiB after
+188 actions of `bundle-stepdown` and to 225 MiB after 471 actions of
+`bundle-stepdown-facts`, below the 256 MiB margin chosen for this setting.
+After the 471 actions the three filesystems reported 7 to 10 MiB used each,
+while the guest RAM left after subtracting free memory, buffers, page cache,
+anonymous memory, slab, kernel stacks and page tables, where RAM disk pages
+fall, was 361 MiB, up from 171 MiB after 100 actions. These readings fit pages
+accumulating for distinct blocks written; they leave the split among data
+disks, replay bases and logs undetermined. Reducing node disk memory is open
+work: reclaiming discarded blocks on both the data disk and the replay base,
+smaller node disks, or a replay base that shares pages with the data disk.
 
 ## etcd
 
 `targets/etcd` drives the `register` family through the etcd v3 JSON gateway
 (`/v3/kv/put`, `/v3/kv/range`, `/v3/kv/txn`) with Go's HTTP client, so no
-client library retries a request. The default `bundle` runs three members at
+client library retries a request; Go's transport only resends a request on a
+new connection when a reused connection failed before any of it was written. The default `bundle` runs three members at
 10.77.0.1-3 (client port 2379, peer port 2380) in `harness-net` namespaces
 with the four network hooks. `bundle-single` sets `HARNESS_ETCD_MEMBERS=1` and
 runs one member on 127.0.0.1 without `harness-net`, which needs two nodes.
 Data lives under `/tmp/etcd/<member>` and logs in `/tmp/etcd/<member>.log`,
 which both bundles declare with `log` lines. `bundle-single` also makes the
 member's data directory a 256 MiB node disk: etcd preallocates a 64 MiB WAL
-file. Members use etcd's default flags.
+file. Members use etcd's default flags unless the bundle adds more: `node.sh`
+passes every argument after the member index and count to etcd.
+`bundle-snapshot` runs three members with `--snapshot-count 10` and
+`--snapshot-catchup-entries 10`, so a member that falls behind by a few
+writes is sent a snapshot rather than log entries, and sets
+`HARNESS_ETCD_DEFRAGMENT=20` for the driver. etcd 3.5 does not accept
+`--snapshot-catchup-entries`, so the image build refuses a bundle that passes
+it on a 3.5 release; build it with `--build-arg HARNESS_BUNDLE=bundle-snapshot
+--build-arg ETCD_VERSION=v3.6.9` or another 3.6 release.
 
 `write` is a put, `read` is a range on one key with etcd's default
 linearizable consistency, and `cas` is a transaction that compares the value
@@ -913,9 +985,31 @@ same fence and runs one serializable range over the keys. Each key's metadata
 is `create_revision`, `mod_revision` and `version`. `bundle-single` has one
 member, so its check skips the replica comparison. The gateway
 omits `succeeded` from a transaction whose compare failed, which is a definite
-failure. A write is a definite failure only when the dial fails; every other
-write error is indeterminate. Read errors are definite. `ready` passes once a
+failure. A write is a definite failure only when the dial fails or, with a
+defragment, its deadline passed before it was sent; every other write error is
+indeterminate. Read errors are definite. `ready` passes once a
 put succeeds through any member.
+
+`HARNESS_ETCD_WATCH=N` turns on the register family's watches (`Register.Watch`)
+over the keys from `k` to `l`. A watch streams `/v3/watch` from its start
+revision and splits its time into one to three segments drawn from the SDK
+stream. Each segment after the first goes to a newly drawn member and resumes
+from the revision after the highest delivered event, so a watch fails over the
+way a client does after its member restarts or is cut off. A segment that
+breaks hands over to the next, and events delivered before an error are kept.
+A watch that delivered nothing and met a segment error fails definitely,
+since it changes no key; one whose segments all ran to their ends succeeds,
+even with no events. A
+frame with an event that has no key or revision ends its segment with an
+error. Writes and `cas` operations return the response
+header's revision. The `history` read on `mI` finds the highest
+`mod_revision` with a serializable range on `mI`, then streams a watch from
+revision 1 on `mI` until a frame delivers that revision, keeping every event
+of the frame. `bundle-watch` is the
+three-member bundle with `--snapshot-count 10 --snapshot-catchup-entries 10`
+on each member, so a follower that falls behind is sent a snapshot, and
+`HARNESS_ETCD_WATCH=4` on its drive and check lines; like `bundle-snapshot`, it
+needs a 3.6 release.
 
 The adapter also asserts an always property of its own: a linearizable
 request's response revision is never below a revision acknowledged before the
@@ -935,10 +1029,51 @@ highest revision belongs to one harness process, so `ready`, `drive` and each
 when the key's value has not changed since, which the register check cannot
 see; it cannot see a stale value returned under a current header revision.
 
+With `HARNESS_ETCD_DEFRAGMENT` set to N, one operation of the `drive` in N,
+drawn at the `etcd.defragment` site, first sends `/v3/maintenance/defragment`
+to the operation's member; `check` and `ready` neither read nor validate the
+variable. N is 0 (off) to 65,535, the largest bound for which the draw is a
+host choice. The client waits at most 2 seconds and at most half of the
+operation's remaining time for the defragment; etcd may keep defragmenting
+after the client stops waiting. It changes no key, so it is not journaled and
+its error is ignored; an operation whose deadline passed during it fails
+definitely, because its own request was never sent. A defragment that loses
+data shows up in the pinned reads and the replica comparison when the member
+that lost it answers them before it recovers the data.
+
+The guest has one vCPU, which three members and the driver keep busy, so
+the driver's operation mix sets how fast the Raft log grows. With the default
+bundle, about 6 entries are applied per guest second with no faults. A bundle
+that needs more entries per guest second, such as one that waits for etcd 3.6's
+default snapshot count of 10,000 (100,000 in 3.5), can set two driver variables.
+`HARNESS_ETCD_WRITES_ONLY=1` makes the drive draw only writes and
+compare-and-swaps (`Register.NoReads`), plus watches when
+`HARNESS_ETCD_WATCH` is set. Linearizable reads cost a ReadIndex
+round on every member and add no entry. The check still makes its own reads: an
+unpinned read and a read pinned to each member of the register's first key,
+and the replica comparison over every key. The register checker still checks
+the writes and compare-and-swaps of the drive against those reads, and the
+revision property still checks every put and transaction of the drive. A
+stale read that would have happened during the drive and is gone by the check
+is not seen.
+`HARNESS_ETCD_KEEPALIVE=1` keeps one idle connection per member open for each
+client, rather than dialing for each operation; a connection goes to one
+member and closes with its client. The network hooks cut links between
+members, not between the driver and a member, so they do not change which
+connection a request uses. A request to a killed member that was written to a
+kept connection before the member died and gets no answer is indeterminate.
+When the kept connection had already failed before the request was written,
+Go discards it or redials, and a refused dial is definite as without
+keep-alive. With
+both variables, `--processes 16` and `--max-pause 2ms`, the members apply
+about 14 entries per guest second with no faults. More processes do not
+raise the rate further, because the vCPU is already saturated.
+
 The Dockerfile knows the source SHA-256 of `v3.5.2`, `v3.5.3`, `v3.5.4`
-(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.8` and `v3.6.9`; pass
-`ETCD_SOURCE_SHA256` for other versions. Build the single-member image with
-`--build-arg HARNESS_BUNDLE=bundle-single`.
+(default), `v3.5.5`, `v3.5.27`, `v3.5.28`, `v3.6.1`, `v3.6.2`, `v3.6.4`,
+`v3.6.5`, `v3.6.8` and `v3.6.9`; pass `ETCD_SOURCE_SHA256` for other versions.
+Choose another bundle with `--build-arg HARNESS_BUNDLE=bundle-single`,
+`bundle-snapshot` or `bundle-watch`; the last two need a 3.6 release.
 
 ## Redis-Raft
 

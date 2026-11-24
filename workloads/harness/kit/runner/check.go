@@ -109,7 +109,7 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 	retry = retry && progresses
 	outcomes := make([]history.Type, len(nodes)+1)
 	reasons := make([]string, len(nodes)+1)
-	errs := make([]error, len(nodes)+2)
+	errs := make([]error, 2*len(nodes)+2)
 	var wg sync.WaitGroup
 	var replicas *ReplicaResult
 	if replicated, ok := fam.(family.Replicated); ok {
@@ -118,6 +118,19 @@ func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, er
 			defer wg.Done()
 			replicas, errs[len(nodes)+1] = compareReplicas(ctx, adapter, replicated, recorder, journal, nodes, config)
 		}()
+	}
+	if feed, ok := fam.(family.Changefeed); ok {
+		if op, on := feed.Feed(); on && os.Getenv(faultsInForceEnv) != "1" {
+			for index, node := range nodes {
+				read := op
+				read.Node = node
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_, _, errs[len(nodes)+2+index] = checkRead(ctx, adapter, recorder, journal, 2*len(nodes)+1+index, read, config.CheckTimeout)
+				}()
+			}
+		}
 	}
 	for index := range outcomes {
 		op := fam.Read()
