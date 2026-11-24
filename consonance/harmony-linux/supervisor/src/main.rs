@@ -379,7 +379,10 @@ mod runtime {
             .seek(SeekFrom::Start(0))
             .and_then(|_| answer.take(ROLE_ANSWER_LIMIT).read_to_end(&mut bytes))
             .map_err(|error| format!("role command output: {error}"))?;
-        let line = bytes.split(|byte| *byte == b'\n').next().unwrap_or_default();
+        let line = bytes
+            .split(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
         Ok(std::str::from_utf8(line)
             .ok()
             .map(|name| name.trim().to_owned()))

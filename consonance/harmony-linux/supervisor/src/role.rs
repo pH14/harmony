@@ -74,10 +74,7 @@ impl RoleWindows {
                 if !bound.expired.iter().any(|seen| seen.start == pause.start) {
                     bound.expired.push(pause);
                 }
-            } else if pause.start <= moment
-                && asking.is_none()
-                && bound.ask.is_none()
-            {
+            } else if pause.start <= moment && asking.is_none() && bound.ask.is_none() {
                 bound.ask = Some(pause);
             }
         }
@@ -238,7 +235,11 @@ mod tests {
         );
         roles.bind(&mut answer, None);
         let steps = answer.steps(Some(5));
-        assert!(steps.iter().all(|step| step.moment() >= 30 || !step.node(1).pause));
+        assert!(
+            steps
+                .iter()
+                .all(|step| step.moment() >= 30 || !step.node(1).pause)
+        );
         assert!(steps.last().unwrap().node(1).pause);
     }
 

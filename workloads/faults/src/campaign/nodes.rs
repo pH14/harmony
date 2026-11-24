@@ -264,13 +264,7 @@ mod tests {
         assert!(resolved.rows.iter().all(Option::is_none));
         let mut drawn = suffix();
         drawn.insert(0, role);
-        let resolved = resolve(
-            &vocabulary,
-            &drawn,
-            Some(&permuted(Some(1), 4)),
-            Some(1),
-            4,
-        );
+        let resolved = resolve(&vocabulary, &drawn, Some(&permuted(Some(1), 4)), Some(1), 4);
         assert_eq!(resolved.suffix[0], role);
         assert_eq!(resolved.untried, Some(1));
         assert!(resolved.rows[0].is_none() && resolved.rows[1].is_some());
