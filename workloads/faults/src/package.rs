@@ -855,6 +855,7 @@ mod live {
             "park_sites": archive.park_sites,
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
+            "park_aims": archive.park_aims,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),

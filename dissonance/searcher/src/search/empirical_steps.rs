@@ -25,11 +25,29 @@ impl EmpiricalStepParameters {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct EmpiricalStepCheckpoint {
     pub records: u64,
     pub retained_successes: u64,
     pub table_sha256: String,
+    #[serde(default)]
+    pub weighted_sites: u64,
+}
+
+impl Serialize for EmpiricalStepCheckpoint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let weighted = !serializer.is_human_readable() || self.weighted_sites > 0;
+        let mut out =
+            serializer.serialize_struct("EmpiricalStepCheckpoint", 3 + usize::from(weighted))?;
+        out.serialize_field("records", &self.records)?;
+        out.serialize_field("retained_successes", &self.retained_successes)?;
+        out.serialize_field("table_sha256", &self.table_sha256)?;
+        if weighted {
+            out.serialize_field("weighted_sites", &self.weighted_sites)?;
+        }
+        out.end()
+    }
 }
 
 #[derive(Debug)]
@@ -222,6 +240,7 @@ where
             records: self.records,
             retained_successes: self.retained_successes,
             table_sha256: self.table_sha256.clone(),
+            weighted_sites: 0,
         })
     }
 

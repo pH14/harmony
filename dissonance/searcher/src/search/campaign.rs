@@ -11399,6 +11399,7 @@ mod tests {
                 records: 3,
                 retained_successes: 1,
                 table_sha256: "aa".to_owned(),
+                weighted_sites: 0,
             })
         );
         let written = serde_json::to_value(&job).expect("job serializes");
