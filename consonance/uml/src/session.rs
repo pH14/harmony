@@ -33,7 +33,7 @@ const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
-const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP3";
+const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP4";
 #[cfg(test)]
 static TEST_HOLD_TERMINAL_POLL: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -127,6 +127,7 @@ pub struct Checkpoint {
     memory: Snapshot,
     services: Services,
     request: Vec<u8>,
+    console: u64,
 }
 
 enum Ack {
@@ -207,6 +208,7 @@ impl Checkpoint {
             memory: self.memory.share(),
             services: other.services.clone(),
             request: other.request.clone(),
+            console: self.console,
         }
     }
 
@@ -229,6 +231,7 @@ impl Checkpoint {
         out.extend_from_slice(&services);
         out.extend_from_slice(&(self.request.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.request);
+        out.extend_from_slice(&self.console.to_le_bytes());
         Ok(out)
     }
 }
@@ -260,6 +263,7 @@ impl Checkpoints {
             memory: self.zero()?,
             services: near.services.clone(),
             request: near.request.clone(),
+            console: near.console,
         };
         self.import(&base, near, pages, sidecar, factory)
     }
@@ -304,6 +308,7 @@ impl Checkpoints {
         let request = length(&mut reader)
             .and_then(|request| reader.take(request).map_err(SessionError::Protocol))?
             .to_vec();
+        let console = reader.u64().map_err(SessionError::Protocol)?;
         if !reader.0.is_empty() {
             return Err(malformed("trailing bytes"));
         }
@@ -318,6 +323,7 @@ impl Checkpoints {
             memory,
             services,
             request,
+            console,
         })
     }
 }
@@ -672,6 +678,7 @@ impl Session {
             memory,
             services: self.services.clone(),
             request,
+            console: self.guest.console_position(),
         })
     }
 
@@ -767,7 +774,7 @@ impl Session {
         };
         self.services = checkpoint.services.clone();
         self.pending = Some(checkpoint.request.clone());
-        self.guest.reset_console()?;
+        self.guest.reset_console(checkpoint.console)?;
         Ok(())
     }
 
@@ -1256,6 +1263,7 @@ mod tests {
             memory,
             services,
             request: moment.map_or_else(Vec::new, |moment| moment.to_le_bytes().to_vec()),
+            console: 0,
         }
     }
 
@@ -1449,7 +1457,7 @@ mod tests {
 
         let mut trailing = sidecar.clone();
         trailing.push(0x5a);
-        let request_field = sidecar.len() - STAMP_LEN - 8;
+        let request_field = sidecar.len() - STAMP_LEN - 16;
         let mut short = sidecar[..request_field + 9].to_vec();
         short[request_field..request_field + 8].copy_from_slice(&1_u64.to_le_bytes());
         let mut oversized = sidecar[..request_field + 8].to_vec();
@@ -2384,6 +2392,7 @@ mod tests {
             memory: snapshot(&checkpoints, None, &[(0, 1)]),
             services,
             request,
+            console: 41,
         };
         let factory: ServiceFactory = std::sync::Arc::new(|config| {
             if config.identity != b"waiting-handler" || !config.configuration.is_empty() {
@@ -2395,6 +2404,7 @@ mod tests {
             .import(&held, &held, &[], &held.sidecar().unwrap(), &factory)
             .unwrap();
         assert_eq!(imported.digest().unwrap(), held.digest().unwrap());
+        assert_eq!(imported.console, 41);
         let answer = environment::channel::Answer::Data(vec![42]).encode();
         let (original_services, original_reply) = held
             .services
@@ -2502,6 +2512,7 @@ mod tests {
                 memory: store.adopt(id),
                 services: Services::new(7),
                 request: 0_u64.to_le_bytes().to_vec(),
+                console: 0,
             }
         }
         let first = Checkpoints::new();

@@ -162,7 +162,14 @@
   At restore, the console collector drains output already written by the
   paused guest and clears its diagnostic tail before the new branch runs. This
   keeps text from a discarded branch out of later diagnostics. Its cumulative
-  byte count still enforces the host output limit.
+  byte count still enforces the host output limit. Each `Checkpoint` also
+  records the console position, the number of bytes the guest had written
+  along its own history, and a restore sets the position back to it, as a VM
+  restore does with its serial capture. `Session::console_since(offset)`
+  returns that position and the kept bytes written after `offset`. Bytes
+  written before the restored checkpoint are no longer kept, so a read from
+  an offset behind the checkpoint returns fewer bytes than the position
+  implies.
   After a terminal guest stop, the client waits for the host process to exit,
   finishes process cleanup, and joins the console collector before recording
   the diagnostic tail. The kernel-owned exit status classifies a panic. A closed
@@ -179,7 +186,7 @@
   checkpoint. A restore writes back only the pages that differ between the
   current state and the target. `Checkpoints::delta` lists a checkpoint's
   pages relative to a base for publishing, `Checkpoint::sidecar` encodes the
-  services state, and `Checkpoints::import` rebuilds a checkpoint from both. An
+  services state and console position, and `Checkpoints::import` rebuilds a checkpoint from both. An
   import rejects trailing sidecar bytes, a private image length above the
   256 MiB live image limit, and pending requests whose size or virtual moment
   could not have come from a paused guest. Both import paths check the image

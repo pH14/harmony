@@ -185,7 +185,7 @@ pub struct Guest {
     over_limit: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    console_reset: Sender<SyncSender<io::Result<()>>>,
+    console_reset: Sender<(SyncSender<io::Result<()>>, u64)>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     console_wake: io::PipeWriter,
     bridge_state: Arc<AtomicU8>,
@@ -237,6 +237,7 @@ fn drain_console(
     console: &Mutex<ConsoleTail>,
     over_limit: &AtomicBool,
     limit: u64,
+    position: u64,
 ) -> io::Result<()> {
     loop {
         match read_console(reader, block, console, over_limit, limit)? {
@@ -245,7 +246,7 @@ fn drain_console(
                 console
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .clear_bytes();
+                    .rewind(position);
                 return Ok(());
             }
             ConsoleRead::Closed => return Err(io::ErrorKind::BrokenPipe.into()),
@@ -567,7 +568,7 @@ impl Guest {
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
         let limit = launch.console_limit_bytes;
-        let (console_reset, resets) = mpsc::channel::<SyncSender<io::Result<()>>>();
+        let (console_reset, resets) = mpsc::channel::<(SyncSender<io::Result<()>>, u64)>();
         let reader = {
             let console = Arc::clone(&console);
             let over_limit = Arc::clone(&over_limit);
@@ -597,7 +598,7 @@ impl Guest {
                             if wake_reader.read_exact(&mut wake).is_err() {
                                 return reader;
                             }
-                            let Ok(ack) = resets.recv() else {
+                            let Ok((ack, position)) = resets.recv() else {
                                 return reader;
                             };
                             let result = drain_console(
@@ -606,6 +607,7 @@ impl Guest {
                                 &console,
                                 &over_limit,
                                 limit,
+                                position,
                             );
                             let stopped = result.is_err();
                             let _ = ack.send(result);
@@ -669,14 +671,21 @@ impl Guest {
 
     pub fn console_since(&self, offset: u64) -> (u64, Vec<u8>) {
         let console = self.console.lock().unwrap_or_else(PoisonError::into_inner);
-        (console.total(), console.since(offset))
+        (console.position(), console.since(offset))
+    }
+
+    pub fn console_position(&self) -> u64 {
+        self.console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .position()
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn reset_console(&mut self) -> io::Result<()> {
+    pub(crate) fn reset_console(&mut self, position: u64) -> io::Result<()> {
         let (ack, reply) = mpsc::sync_channel(0);
         self.console_reset
-            .send(ack)
+            .send((ack, position))
             .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
         self.console_wake.write_all(&[1])?;
         reply
@@ -1856,9 +1865,10 @@ mod tests {
         console.lock().unwrap().push(b"already collected");
         writer.write_all(b"pending pipe bytes").unwrap();
 
-        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64).unwrap();
+        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64, 9).unwrap();
         assert_eq!(console.lock().unwrap().bytes(), b"");
         assert_eq!(console.lock().unwrap().total(), 35);
+        assert_eq!(console.lock().unwrap().position(), 9);
         assert!(!over_limit.load(Ordering::Acquire));
 
         writer.write_all(b"new branch").unwrap();
