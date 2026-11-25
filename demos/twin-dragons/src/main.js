@@ -1059,7 +1059,9 @@ function renderBranches() {
         action.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
         action.onclick = () => deleteSearch(search.id);
       }
-      play.disabled = action.disabled = branchBusy || controlMode || !ready;
+      action.disabled = branchBusy || controlMode || !ready;
+      if (play === pauseControl) setPause(action.disabled);
+      else play.disabled = action.disabled;
       actions.append(play, action);
       row.append(actions);
       li.append(row);

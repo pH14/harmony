@@ -45,10 +45,12 @@ async function stillDuring(page, ms) {
   assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
 async function clickWhenEnabled(page, selector) {
-  const deadline = Date.now() + 30000;
+  const deadline = performance.now() + 30000;
   try {
     await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, selector, {timeout: 30000});
-    await page.locator(selector).click({timeout: Math.max(1, deadline - Date.now())});
+    const left = Math.floor(deadline - performance.now());
+    if (left <= 0) throw new Error(`${selector} became enabled only as the 30 s ran out`);
+    await page.locator(selector).click({timeout: left});
   } catch (error) {
     const state = await page.evaluate((selector) => ({flags: document.querySelector(selector)?.dataset.flags ?? `no ${selector}`, frame: document.querySelector('#frame-label')?.textContent ?? 'no #frame-label'}), selector).catch((reason) => ({flags: `unreadable: ${reason.message}`, frame: 'unreadable'}));
     throw new Error(`${selector} was not clicked within 30 s; flags when it was last enabled or disabled ${state.flags}, frame label ${JSON.stringify(state.frame)}`, {cause: error});
