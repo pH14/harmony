@@ -577,7 +577,7 @@ struct LiveTelemetry {
 }
 
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
-const REPLAY_LINKS: usize = 2;
+const LINEAR_LINKS: usize = 2;
 const PUBLISH_SPACING_WARMUP: u64 = 64;
 const MAX_PUBLISH_SPACING: usize = 16;
 const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v2";
@@ -781,6 +781,7 @@ pub struct FaultTarget {
     keys: Option<Arc<FaultKeys>>,
     accumulator: Accumulator,
     observed: Observed,
+    linear: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -852,7 +853,14 @@ impl FaultTarget {
             keys: None,
             accumulator: Accumulator::default(),
             observed: UNOBSERVED,
+            linear: false,
         })
+    }
+
+    #[must_use]
+    pub fn linear(mut self) -> Self {
+        self.linear = true;
+        self
     }
 
     #[must_use]
@@ -1425,11 +1433,12 @@ impl FaultTarget {
             return None;
         }
         self.action_observations.clear();
+        let linear = self.linear;
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
-            if kind == RunKind::Replay && live.chain.shared().is_none() {
-                live.shed_to(REPLAY_LINKS)?;
+            if linear {
+                live.shed_to(LINEAR_LINKS)?;
             }
             self.action_choices = std::mem::take(&mut live.choices);
             observation.keep_parks_after(self.history.receipt().moment());
@@ -3084,6 +3093,7 @@ mod tests {
             keys: None,
             accumulator: Accumulator::default(),
             observed: UNOBSERVED,
+            linear: false,
         }
         .with_keys(Arc::new(crate::campaign::fixture_keys()))
     }
@@ -5183,24 +5193,23 @@ mod tests {
     }
 
     #[test]
-    fn a_replay_without_a_snapshot_cache_keeps_two_links_and_reaches_the_same_endpoint() {
+    fn a_linear_replay_drops_all_but_two_links_and_reaches_the_same_endpoint() {
         let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let actions = crate::chain::CHAIN_LIMIT + 4;
-        let run = |replayed: bool| {
-            let (mut target, _) = keyed_target(FOLDING);
+        let run = |linear: bool| {
+            let (target, _) = keyed_target(FOLDING);
+            let mut target = if linear { target.linear() } else { target };
             LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&vec![1; actions])));
             let mut most = 0;
             for _ in 0..actions {
-                if replayed {
-                    target.apply_replayed(action);
-                } else {
-                    target.apply(action);
-                }
+                target.apply_replayed(action);
                 assert!(!target.failed());
                 most = most.max(LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()));
             }
+            let evictions = LIVE.with(|slot| slot.borrow().as_ref().unwrap().telemetry.evictions);
             let ended = (
                 most,
+                evictions,
                 target.history.receipt().clone(),
                 target.observation().clone(),
                 target.state_hash_current().unwrap(),
@@ -5208,10 +5217,11 @@ mod tests {
             LIVE.with(|slot| slot.borrow_mut().take());
             ended
         };
-        let (kept, receipt, observation, hash) = run(true);
-        let (grown, unshed_receipt, unshed_observation, unshed_hash) = run(false);
-        assert_eq!(kept, REPLAY_LINKS);
-        assert!(grown > REPLAY_LINKS);
+        let (kept, dropped, receipt, observation, hash) = run(true);
+        let (grown, _, unshed_receipt, unshed_observation, unshed_hash) = run(false);
+        assert_eq!(kept, LINEAR_LINKS);
+        assert_eq!(dropped, (actions + 1 - LINEAR_LINKS) as u64);
+        assert!(grown > LINEAR_LINKS);
         assert_eq!(receipt, unshed_receipt);
         assert_eq!(observation, unshed_observation);
         assert_eq!(hash, unshed_hash);
