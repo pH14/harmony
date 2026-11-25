@@ -667,6 +667,11 @@ impl Guest {
             .bytes()
     }
 
+    pub fn console_since(&self, offset: u64) -> (u64, Vec<u8>) {
+        let console = self.console.lock().unwrap_or_else(PoisonError::into_inner);
+        (console.total(), console.since(offset))
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn reset_console(&mut self) -> io::Result<()> {
         let (ack, reply) = mpsc::sync_channel(0);

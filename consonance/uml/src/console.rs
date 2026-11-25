@@ -38,6 +38,13 @@ impl ConsoleTail {
         self.bytes.iter().copied().collect()
     }
 
+    #[must_use]
+    pub fn since(&self, offset: u64) -> Vec<u8> {
+        let after = usize::try_from(self.total.saturating_sub(offset)).unwrap_or(usize::MAX);
+        let skip = self.bytes.len().saturating_sub(after);
+        self.bytes.iter().skip(skip).copied().collect()
+    }
+
     pub fn contains(&self, needle: &[u8]) -> bool {
         if needle.is_empty() {
             return true;
@@ -72,6 +79,19 @@ mod tests {
         tail.push(b"0123456789");
         assert_eq!(tail.bytes(), b"6789");
         assert_eq!(tail.total(), 16);
+    }
+
+    #[test]
+    fn since_returns_the_bytes_after_a_total_even_across_a_wrap() {
+        let mut tail = ConsoleTail::new(8);
+        tail.push(b"ok\nok\n");
+        let mark = tail.total();
+        tail.push(b"ok\n");
+        assert_eq!(tail.since(mark), b"ok\n");
+        tail.push(b"ok\nok\n");
+        assert_eq!(tail.since(mark), b"k\nok\nok\n");
+        assert_eq!(tail.since(tail.total()), b"");
+        assert_eq!(tail.since(0), tail.bytes());
     }
 
     #[test]

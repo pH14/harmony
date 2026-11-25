@@ -1017,6 +1017,7 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let report = serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
             "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
             "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":7,
             "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],
@@ -1164,6 +1165,7 @@ mod tests {
         record.save(directory.path()).unwrap();
         let mut manifest = Manifest::read(directory.path()).unwrap();
         let returned: faults_workload::Report = serde_json::from_value(serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
             "package":"faults","mode":"search","image_sha256":crate::runtime::digest(b"image"),
             "kernel_sha256":crate::runtime::digest(b"kernel"),"identity":"runner","seed":0,"workers":1,
             "ram_mib":1024,"executions":1,"bug_found":false,

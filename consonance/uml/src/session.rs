@@ -426,6 +426,11 @@ impl Session {
         String::from_utf8_lossy(&tail[tail.len().saturating_sub(4096)..]).into_owned()
     }
 
+    #[must_use]
+    pub fn console_since(&self, offset: u64) -> (u64, Vec<u8>) {
+        self.guest.console_since(offset)
+    }
+
     pub fn events(&self) -> &[Event] {
         &self.services.events
     }

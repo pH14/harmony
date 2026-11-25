@@ -9,6 +9,30 @@ use crate::guest::{ActionChoice, GuestAnswer};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
+pub const REPORT_FORMAT: &str = "faults-report-v2";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReportFormat;
+
+impl Serialize for ReportFormat {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(REPORT_FORMAT)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReportFormat {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<String>::deserialize(deserializer)? {
+            Some(format) if format == REPORT_FORMAT => Ok(Self),
+            Some(format) => Err(serde::de::Error::custom(format!(
+                "faults report format is {format}; this build reads {REPORT_FORMAT}"
+            ))),
+            None => Err(serde::de::Error::custom(format!(
+                "faults report names no format; this build reads {REPORT_FORMAT}"
+            ))),
+        }
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
     pub seed: u64,
@@ -81,6 +105,8 @@ pub struct ReplayStep {
     pub action: Option<FaultAction>,
     pub observation: FaultObservations,
     pub console: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub console_dropped: u64,
     pub settlement: bool,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub choices: u64,
@@ -181,6 +207,42 @@ impl ReplaySummary {
             timeline: Vec::new(),
             choices: Vec::new(),
         }
+    }
+}
+
+impl ReplaySummary {
+    #[must_use]
+    pub fn console_through(&self, step: u64) -> String {
+        self.timeline
+            .iter()
+            .take_while(|entry| entry.step <= step)
+            .map(|entry| entry.console.as_str())
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConsoleCursor {
+    offset: u64,
+}
+
+impl ConsoleCursor {
+    pub fn take(&mut self, start: u64, bytes: &[u8]) -> (String, u64) {
+        let dropped = start.saturating_sub(self.offset);
+        let whole = match std::str::from_utf8(bytes) {
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            _ => bytes.len(),
+        };
+        self.offset = start.saturating_add(whole as u64);
+        (
+            String::from_utf8_lossy(&bytes[..whole]).into_owned(),
+            dropped,
+        )
+    }
+
+    #[must_use]
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 }
 
@@ -319,6 +381,7 @@ pub fn first_confirmed_bug(bugs: &[BugSummary]) -> Option<u64> {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Report {
+    pub format: ReportFormat,
     pub package: String,
     pub mode: String,
     pub image_sha256: String,
@@ -370,6 +433,7 @@ impl Report {
         workers: u32,
     ) -> Self {
         Self {
+            format: ReportFormat,
             package: PACKAGE.to_owned(),
             mode: mode.to_owned(),
             image_sha256: sha256_hex(&artifacts.initramfs),
@@ -1101,11 +1165,18 @@ mod live {
         settle: bool,
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
+        let mut cursor = super::ConsoleCursor::default();
+        let mut console = |target: &FaultTarget| -> Result<(String, u64), String> {
+            let since = target.console_since(cursor.offset())?;
+            Ok(cursor.take(since.start(), &since.bytes))
+        };
+        let (output, dropped) = console(&*target)?;
         let mut timeline = vec![super::ReplayStep {
             step: 0,
             action: None,
             observation: target.observation().clone(),
-            console: target.console_evidence()?,
+            console: output,
+            console_dropped: dropped,
             settlement: false,
             choices: 0,
         }];
@@ -1120,11 +1191,13 @@ mod live {
                 .and_then(|vocabulary| node_row(vocabulary, step, moment, &action.operation));
             choices.extend(host);
             choices.extend_from_slice(target.last_action_choices());
+            let (output, dropped) = console(&*target)?;
             timeline.push(super::ReplayStep {
                 step,
                 action: Some(*action),
                 observation: target.observation().clone(),
-                console: target.console_evidence()?,
+                console: output,
+                console_dropped: dropped,
                 settlement: false,
                 choices: target.last_action_choices().len() as u64,
             });
@@ -1149,11 +1222,13 @@ mod live {
             );
             target.apply_replayed(action);
             choices.extend_from_slice(target.last_action_choices());
+            let (output, dropped) = console(&*target)?;
             timeline.push(super::ReplayStep {
                 step: target.actions().len() as u64,
                 action: Some(action),
                 observation: target.observation().clone(),
-                console: target.console_evidence()?,
+                console: output,
+                console_dropped: dropped,
                 settlement: true,
                 choices: target.last_action_choices().len() as u64,
             });
@@ -1845,6 +1920,112 @@ mod tests {
             initramfs: b"initramfs".to_vec(),
         };
         Report::new("search", &artifacts, identity.to_owned(), &options(), 1)
+    }
+
+    fn console_steps(outputs: &[&[u8]], cap: usize) -> Vec<ReplayStep> {
+        let mut serial = Vec::new();
+        let mut cursor = ConsoleCursor::default();
+        outputs
+            .iter()
+            .enumerate()
+            .map(|(step, output)| {
+                serial.extend_from_slice(output);
+                let start = usize::try_from(cursor.offset())
+                    .unwrap()
+                    .min(serial.len())
+                    .max(serial.len().saturating_sub(cap));
+                let (console, console_dropped) = cursor.take(start as u64, &serial[start..]);
+                ReplayStep {
+                    step: step as u64,
+                    action: None,
+                    observation: FaultObservations::default(),
+                    console,
+                    console_dropped,
+                    settlement: false,
+                    choices: 0,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replay_steps_store_only_the_console_since_the_previous_step() {
+        let outputs: [&[u8]; 4] = [b"boot\nready\n", b"ready\n", b"ready\n", b"ready\nready\n"];
+        let summary = ReplaySummary {
+            timeline: console_steps(&outputs, 1 << 16),
+            ..ReplaySummary::from_observation(&FaultObservations::default(), None, 0, 0)
+        };
+        let stored: Vec<&str> = summary
+            .timeline
+            .iter()
+            .map(|step| step.console.as_str())
+            .collect();
+        assert_eq!(
+            stored,
+            ["boot\nready\n", "ready\n", "ready\n", "ready\nready\n"]
+        );
+        assert_eq!(summary.console_through(0), "boot\nready\n");
+        assert_eq!(summary.console_through(2), "boot\nready\nready\nready\n");
+        assert_eq!(
+            summary.console_through(3),
+            String::from_utf8(outputs.concat()).unwrap()
+        );
+        assert!(
+            summary
+                .timeline
+                .iter()
+                .all(|step| step.console_dropped == 0)
+        );
+    }
+
+    #[test]
+    fn a_step_larger_than_the_bound_keeps_its_newest_bytes_and_counts_the_rest() {
+        let outputs: [&[u8]; 3] = [b"boot\n", b"0123456789", b"end\n"];
+        let steps = console_steps(&outputs, 4);
+        assert_eq!(steps[0].console, "oot\n");
+        assert_eq!(steps[0].console_dropped, 1);
+        assert_eq!(steps[1].console, "6789");
+        assert_eq!(steps[1].console_dropped, 6);
+        assert_eq!(steps[2].console, "end\n");
+        assert_eq!(steps[2].console_dropped, 0);
+    }
+
+    #[test]
+    fn a_step_that_ends_inside_a_character_leaves_it_for_the_next_step() {
+        let text = "caf\u{e9} na\u{ef}ve";
+        let bytes = text.as_bytes();
+        let split = text.find('\u{e9}').unwrap() + 1;
+        let outputs: [&[u8]; 2] = [&bytes[..split], &bytes[split..]];
+        let steps = console_steps(&outputs, 1 << 16);
+        assert_eq!(steps[0].console, "caf");
+        assert_eq!(steps[1].console, "\u{e9} na\u{ef}ve");
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.console.as_str())
+                .collect::<String>(),
+            text
+        );
+    }
+
+    #[test]
+    fn a_report_of_another_format_is_refused() {
+        let mut value = serde_json::to_value(search_report("identity")).unwrap();
+        value["format"] = serde_json::json!("faults-report-v1");
+        let error = serde_json::from_value::<Report>(value.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(
+                "faults report format is faults-report-v1; this build reads faults-report-v2"
+            ),
+            "{error}"
+        );
+        value.as_object_mut().unwrap().remove("format");
+        let error = serde_json::from_value::<Report>(value)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("faults report names no format"), "{error}");
     }
 
     #[test]

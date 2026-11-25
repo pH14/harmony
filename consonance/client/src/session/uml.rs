@@ -663,6 +663,16 @@ impl SearchSession for UmlSession {
             .unwrap_or_default())
     }
 
+    fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>> {
+        let (total, mut bytes) = self
+            .session
+            .as_ref()
+            .map(|session| session.console_since(offset))
+            .unwrap_or_default();
+        bytes.drain(..bytes.len().saturating_sub(super::MAX_CONSOLE_DIAGNOSTIC));
+        Ok(super::ConsoleSince { total, bytes })
+    }
+
     fn telemetry_counters(&self) -> Vec<(String, u64)> {
         let c = &self.counters;
         let mut out = Vec::new();

@@ -2411,6 +2411,7 @@ mod tests {
                     ..FaultObservations::default()
                 },
                 console: String::new(),
+                console_dropped: 0,
                 settlement: false,
                 choices: 0,
             })

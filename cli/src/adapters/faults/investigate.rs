@@ -526,7 +526,18 @@ pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     if point.specified() {
         let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
         let step = point.resolve(&boundaries, anchor)?;
+        let console = witness.console_through(step as u64);
+        let dropped = witness
+            .timeline
+            .iter()
+            .take_while(|entry| entry.step as usize <= step)
+            .map(|entry| entry.console_dropped)
+            .sum();
         witness.timeline.retain(|entry| entry.step as usize == step);
+        if let Some(entry) = witness.timeline.first_mut() {
+            entry.console = console;
+            entry.console_dropped = dropped;
+        }
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&witness.timeline)?);
@@ -611,12 +622,12 @@ pub fn logs(
             } else {
                 None
             };
-            for step in witness
-                .timeline
-                .into_iter()
-                .filter(|step| at.is_none_or(|at| at == step.step))
-            {
-                sections.push(serde_json::json!({"source":"console","step":step.step,"lines":filter(&step.console)}));
+            if let Some(at) = at {
+                sections.push(serde_json::json!({"source":"console","step":at,"lines":filter(&witness.console_through(at))}));
+            } else {
+                for step in &witness.timeline {
+                    sections.push(serde_json::json!({"source":"console","step":step.step,"lines":filter(&step.console)}));
+                }
             }
         }
     }
@@ -690,6 +701,7 @@ mod tests {
             action: None,
             observation: FaultObservations::default(),
             console: "ready".into(),
+            console_dropped: 0,
             settlement: false,
             choices: 0,
         }];
@@ -1109,6 +1121,7 @@ mod tests {
                     ..Default::default()
                 },
                 console: String::new(),
+                console_dropped: 0,
                 settlement: step > 1,
                 choices: 0,
             })
