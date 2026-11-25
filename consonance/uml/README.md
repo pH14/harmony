@@ -168,6 +168,9 @@
   restore does with its serial capture. A capture and
   `Session::console_since(offset)` first have the collector take in all output
   already in the pipe, so neither depends on collector timing.
+  Once the collector has stopped, that step succeeds only if the guest closed
+  its console; after a console-limit stop or a collector failure it returns
+  that error.
   `Session::console_since(offset)` returns the position and the kept bytes
   written after `offset`. Bytes
   written before the restored checkpoint are no longer kept, so a read from

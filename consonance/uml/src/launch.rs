@@ -183,6 +183,8 @@ pub struct Guest {
     work: Option<TempDir>,
     console: Arc<Mutex<ConsoleTail>>,
     over_limit: Arc<AtomicBool>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    console_closed: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     console_reset: Sender<(SyncSender<io::Result<()>>, Option<u64>)>,
@@ -569,11 +571,13 @@ impl Guest {
         };
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
+        let console_closed = Arc::new(AtomicBool::new(false));
         let limit = launch.console_limit_bytes;
         let (console_reset, resets) = mpsc::channel::<(SyncSender<io::Result<()>>, Option<u64>)>();
         let reader = {
             let console = Arc::clone(&console);
             let over_limit = Arc::clone(&over_limit);
+            let console_closed = Arc::clone(&console_closed);
             std::thread::Builder::new()
                 .name(format!("uml-console-{pid}"))
                 .spawn(move || {
@@ -612,6 +616,10 @@ impl Guest {
                                 rewind,
                             );
                             let stopped = result.is_err();
+                            if matches!(&result, Err(error) if error.kind() == io::ErrorKind::BrokenPipe)
+                            {
+                                console_closed.store(true, Ordering::Release);
+                            }
                             let _ = ack.send(result);
                             if stopped {
                                 return reader;
@@ -633,7 +641,11 @@ impl Guest {
                                 limit,
                             ) {
                                 Ok(ConsoleRead::Bytes | ConsoleRead::Idle) => {}
-                                Ok(ConsoleRead::Closed | ConsoleRead::Limit) | Err(_) => {
+                                Ok(ConsoleRead::Closed) => {
+                                    console_closed.store(true, Ordering::Release);
+                                    return reader;
+                                }
+                                Ok(ConsoleRead::Limit) | Err(_) => {
                                     return reader;
                                 }
                             }
@@ -647,6 +659,7 @@ impl Guest {
             work: Some(work),
             console,
             over_limit,
+            console_closed,
             reader: Some(reader),
             console_reset,
             console_wake,
@@ -690,11 +703,24 @@ impl Guest {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn sync_console(&mut self) -> io::Result<()> {
-        if self.reader.as_ref().is_none_or(JoinHandle::is_finished) {
-            return Ok(());
-        }
-        match self.collect_console(None) {
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        let result = if self.reader.as_ref().is_none_or(JoinHandle::is_finished) {
+            Err(io::ErrorKind::BrokenPipe.into())
+        } else {
+            self.collect_console(None)
+        };
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                if self.over_limit.load(Ordering::Acquire) {
+                    Err(io::Error::other("console limit reached"))
+                } else if self.console_closed.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the console collector stopped before the guest closed its console",
+                    ))
+                }
+            }
             result => result,
         }
     }
@@ -1755,7 +1781,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let launch = launch(directory.path());
         let mut guest = shell(&launch, "printf done");
+        let deadline = now() + Duration::from_secs(10);
         while !guest.reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            assert!(now() < deadline, "the collector did not stop at EOF");
             std::thread::sleep(Duration::from_millis(5));
         }
         guest.sync_console().unwrap();
@@ -1769,6 +1797,39 @@ mod tests {
         guest.finish(reason).unwrap();
         guest.sync_console().unwrap();
         assert_eq!(guest.console_since(2), (4, b"ne".to_vec()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_console_limit_reports_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = launch(directory.path());
+        launch.console_limit_bytes = 4;
+        let mut guest = shell(&launch, "printf 0123456789; exec sleep 60");
+        let deadline = now() + Duration::from_secs(10);
+        while !guest.reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            assert!(now() < deadline, "the collector did not stop at the limit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let error = guest.sync_console().unwrap_err();
+        assert_eq!(error.to_string(), "console limit reached");
+        guest.shutdown().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_collector_failed_reports_the_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let (sender, _) = mpsc::channel();
+        guest.console_reset = sender;
+        let error = guest.sync_console().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(error.to_string().contains("collector stopped"), "{error}");
+        guest.shutdown().unwrap();
     }
 
     #[test]
