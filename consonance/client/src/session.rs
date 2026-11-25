@@ -761,39 +761,11 @@ const MAX_CONSOLE_DIAGNOSTIC: usize = 64 * 1024;
     )),
     allow(dead_code)
 )]
-fn drain_console_pages<F>(mut request: F) -> Result<Vec<u8>, Box<dyn Error>>
+fn drain_console_pages<F>(request: F) -> Result<Vec<u8>, Box<dyn Error>>
 where
     F: FnMut(u32) -> Result<Reply, Box<dyn Error>>,
 {
-    let mut console = Vec::new();
-    let mut offset = 0_u32;
-    loop {
-        let reply = request(offset)?;
-        let Reply::Console { total, chunk } = reply else {
-            return Err(SessionError::Reply {
-                operation: "console diagnostic",
-                reply,
-            }
-            .into());
-        };
-        if chunk.is_empty() {
-            break;
-        }
-        if offset == 0 && total as usize > MAX_CONSOLE_DIAGNOSTIC {
-            offset = total - MAX_CONSOLE_DIAGNOSTIC as u32;
-            continue;
-        }
-        let remaining = MAX_CONSOLE_DIAGNOSTIC.saturating_sub(console.len());
-        console.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-        if console.len() == MAX_CONSOLE_DIAGNOSTIC {
-            break;
-        }
-        offset = offset.saturating_add(chunk.len().min(remaining) as u32);
-        if offset >= total {
-            break;
-        }
-    }
-    Ok(console)
+    Ok(console_pages(0, "console diagnostic", request)?.bytes)
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -817,37 +789,48 @@ impl ConsoleSince {
     )),
     allow(dead_code)
 )]
-fn console_pages_since<F>(offset: u64, mut request: F) -> Result<ConsoleSince, Box<dyn Error>>
+fn console_pages_since<F>(offset: u64, request: F) -> Result<ConsoleSince, Box<dyn Error>>
+where
+    F: FnMut(u32) -> Result<Reply, Box<dyn Error>>,
+{
+    console_pages(offset, "console since", request)
+}
+
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn console_pages<F>(
+    offset: u64,
+    operation: &'static str,
+    mut request: F,
+) -> Result<ConsoleSince, Box<dyn Error>>
 where
     F: FnMut(u32) -> Result<Reply, Box<dyn Error>>,
 {
     let mut page = |at: u64| -> Result<(u64, Vec<u8>), Box<dyn Error>> {
         match request(u32::try_from(at).unwrap_or(u32::MAX))? {
             Reply::Console { total, chunk } => Ok((u64::from(total), chunk)),
-            reply => Err(SessionError::Reply {
-                operation: "console since",
-                reply,
-            }
-            .into()),
+            reply => Err(SessionError::Reply { operation, reply }.into()),
         }
     };
-    let (total, first) = page(offset)?;
+    let (total, _) = page(u64::from(u32::MAX))?;
     let start = offset
         .min(total)
         .max(total.saturating_sub(MAX_CONSOLE_DIAGNOSTIC as u64));
     let wanted = usize::try_from(total - start)?;
-    let mut chunk = if start == offset {
-        first
-    } else {
-        page(start)?.1
-    };
     let mut bytes = Vec::with_capacity(wanted);
-    while !chunk.is_empty() && bytes.len() < wanted {
+    while bytes.len() < wanted {
+        let chunk = page(start + bytes.len() as u64)?.1;
+        if chunk.is_empty() {
+            break;
+        }
         let take = chunk.len().min(wanted - bytes.len());
         bytes.extend_from_slice(&chunk[..take]);
-        if bytes.len() < wanted {
-            chunk = page(start + bytes.len() as u64)?.1;
-        }
     }
     Ok(ConsoleSince {
         total: start + bytes.len() as u64,
@@ -1472,6 +1455,10 @@ mod tests {
         let console = drain_console_pages(|offset| {
             offsets.push(offset);
             Ok(match offset {
+                u32::MAX => Reply::Console {
+                    total: 10,
+                    chunk: Vec::new(),
+                },
                 0 => Reply::Console {
                     total: 10,
                     chunk: b"guest".to_vec(),
@@ -1488,7 +1475,7 @@ mod tests {
             })
         })
         .expect("console pages");
-        assert_eq!(offsets, [0, 5]);
+        assert_eq!(offsets, [u32::MAX, 0, 5]);
         assert_eq!(console, b"guest boot");
     }
 
@@ -1499,7 +1486,7 @@ mod tests {
         let mut offsets = Vec::new();
         let bounded = drain_console_pages(|offset| {
             offsets.push(offset);
-            let start = offset as usize;
+            let start = (offset as usize).min(serial.len());
             let end = (start + 8192).min(serial.len());
             Ok(Reply::Console {
                 total: serial.len() as u32,
@@ -1546,6 +1533,42 @@ mod tests {
     }
 
     #[test]
+    fn a_long_step_transfers_only_the_kept_tail_after_one_length_query() {
+        const CAP: usize = 64 * 1024;
+        let serial = vec![b'z'; 16 * CAP];
+        for offset in [0, 3, (serial.len() - CAP - 1) as u64] {
+            let mut requests = Vec::new();
+            let since = console_pages_since(offset, |at| {
+                let start = (at as usize).min(serial.len());
+                let chunk = serial[start..].to_vec();
+                requests.push((at, chunk.len()));
+                Ok(Reply::Console {
+                    total: serial.len() as u32,
+                    chunk,
+                })
+            })
+            .expect("console since");
+            assert_eq!(since.bytes.len(), CAP);
+            assert_eq!(since.start(), (serial.len() - CAP) as u64);
+            assert_eq!(
+                requests,
+                [(u32::MAX, 0), ((serial.len() - CAP) as u32, CAP)]
+            );
+        }
+        let mut requests = 0;
+        let since = console_pages_since(serial.len() as u64, |_| {
+            requests += 1;
+            Ok(Reply::Console {
+                total: serial.len() as u32,
+                chunk: Vec::new(),
+            })
+        })
+        .expect("console since");
+        assert!(since.bytes.is_empty());
+        assert_eq!(requests, 1);
+    }
+
+    #[test]
     fn console_since_an_offset_past_the_end_reads_nothing() {
         let serial = b"short".to_vec();
         let since = console_pages_since(99, serve_console(&serial)).expect("console since");
@@ -1565,7 +1588,7 @@ mod tests {
         })
         .expect("empty console");
         assert!(console.is_empty());
-        assert_eq!(calls, 1);
+        assert_eq!(calls, 2);
     }
 
     #[test]
@@ -1578,6 +1601,29 @@ mod tests {
 
         let reply = drain_console_pages(|_| Ok(Reply::Unit)).expect_err("reply failure");
         assert!(reply.to_string().contains("console diagnostic"));
+
+        let after_length = |page: Result<Reply, Box<dyn Error>>| {
+            let mut page = Some(page);
+            move |offset| {
+                if offset == u32::MAX {
+                    Ok(Reply::Console {
+                        total: 10,
+                        chunk: Vec::new(),
+                    })
+                } else {
+                    page.take().expect("one data request")
+                }
+            }
+        };
+        let transport = console_pages_since(
+            0,
+            after_length(Err(std::io::Error::other("transport").into())),
+        )
+        .expect_err("transport failure on a data page");
+        assert_eq!(transport.to_string(), "transport");
+        let reply = console_pages_since(0, after_length(Ok(Reply::Unit)))
+            .expect_err("reply failure on a data page");
+        assert!(reply.to_string().contains("console since"));
     }
 
     #[test]
