@@ -5,10 +5,11 @@ use std::{collections::BTreeSet, error::Error, num::NonZeroU64};
 use searcher::search::{
     archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
     campaign::{
-        ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
-        CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting,
-        TargetExecution, WorkloadPolicies, postcard_result_sha256, postcard_value_sha256,
-        replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+        ArchiveReportState, CAMPAIGN_SCHEMA_VERSION, CampaignActionResult, CampaignConfig,
+        CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation,
+        InputPolicy, Reporting, TargetExecution, WorkloadPolicies, postcard_result_sha256,
+        postcard_value_sha256, replay_campaign_checkpointed,
+        run_campaign_checkpointed_with_options,
     },
     draw::{DrawMixture, MixtureDraw},
     draw_tables::DrawTables,
@@ -657,6 +658,60 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
     assert!(
         replay_campaign_checkpointed(&workload, &remaining_tampered, None, None).is_err(),
         "replay accepted a changed remaining-work input"
+    );
+}
+
+fn mutate_header<F>(stream: &[u8], mutate: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Value),
+{
+    let text = std::str::from_utf8(stream).expect("campaign stream is UTF-8");
+    let (header, rest) = text.split_once('\n').expect("campaign stream has records");
+    let mut header: Value = serde_json::from_str(header).expect("campaign header JSON");
+    mutate(&mut header);
+    format!(
+        "{}\n{rest}",
+        serde_json::to_string(&header).expect("campaign header encoding")
+    )
+    .into_bytes()
+}
+
+#[test]
+fn replay_checks_the_schema_and_format_before_the_rest_of_the_header() {
+    let workload = TimingWorkload {
+        fail_timed_action: false,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
+        endpoint_marker: None,
+    };
+    let stream = fixture_stream(&workload);
+    let refused = |stream: &[u8]| {
+        replay_campaign_checkpointed(&workload, stream, None, None)
+            .expect_err("the stream is refused")
+            .to_string()
+    };
+    let older = mutate_header(&stream, |header| {
+        header["schema_version"] = serde_json::json!(CAMPAIGN_SCHEMA_VERSION - 1);
+        header.as_object_mut().unwrap().remove("campaign_seed");
+    });
+    assert_eq!(
+        refused(&older),
+        "campaign stream schema version is not recognized"
+    );
+    let unversioned = mutate_header(&stream, |header| {
+        header.as_object_mut().unwrap().remove("schema_version");
+    });
+    assert_eq!(
+        refused(&unversioned),
+        "campaign stream schema version is not recognized"
+    );
+    let other = mutate_header(&stream, |header| {
+        header["format"] = serde_json::json!("adaptive-campaign-fixture-v0");
+        header.as_object_mut().unwrap().remove("campaign_seed");
+    });
+    assert_eq!(
+        refused(&other),
+        "campaign stream format is adaptive-campaign-fixture-v0; this build reads adaptive-campaign-fixture-v1"
     );
 }
 

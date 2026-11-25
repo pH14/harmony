@@ -1147,6 +1147,14 @@ impl<G: Workload + ?Sized> CampaignConfig<G> {
     }
 }
 
+#[derive(Deserialize)]
+struct CampaignStreamVersion {
+    #[serde(default)]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 pub struct CampaignStreamHeader<T> {
@@ -5719,11 +5727,20 @@ where
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
-    let header: CampaignStreamHeader<DrawTableHeader> =
-        serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
-    if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
+    let header_line = lines.next().ok_or("campaign stream is empty")?;
+    let version: CampaignStreamVersion = serde_json::from_str(header_line)?;
+    if version.schema_version != Some(CAMPAIGN_SCHEMA_VERSION) {
         return Err("campaign stream schema version is not recognized".into());
     }
+    if version.format.as_deref() != Some(workload.stream_format()) {
+        return Err(format!(
+            "campaign stream format is {}; this build reads {}",
+            version.format.as_deref().unwrap_or("missing"),
+            workload.stream_format()
+        )
+        .into());
+    }
+    let header: CampaignStreamHeader<DrawTableHeader> = serde_json::from_str(header_line)?;
     if header.preference_portfolio != preference_portfolio_identifier(workload.key_shape()) {
         return Err("campaign stream preference portfolio does not match the key".into());
     }
@@ -5735,14 +5752,6 @@ where
     }
     if header.work_budget == Some(0) {
         return Err("recorded work budget must be nonzero".into());
-    }
-    if header.format != workload.stream_format() {
-        return Err(format!(
-            "campaign stream format is {}; this build reads {}",
-            header.format,
-            workload.stream_format()
-        )
-        .into());
     }
     let origin_fields_match = header.origin_checkpoint_policy_changes.is_empty()
         && match header.origin_kind.as_str() {
