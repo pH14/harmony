@@ -38,11 +38,14 @@ pub fn selected_actions(manifest: &Manifest, bug: Option<usize>) -> Result<Vec<F
     }
 }
 
-fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> {
+fn report_witness(
+    report: &Report,
+    directory: &std::path::Path,
+    bug: Option<usize>,
+) -> Result<ReplaySummary> {
     if let Some(bug) = bug {
         report.bugs[bug_index(bug, report.bugs.len())?]
-            .replay
-            .clone()
+            .witness(directory)?
             .ok_or_else(|| "this finding has no successful replay evidence".into())
     } else {
         report
@@ -54,7 +57,7 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
 }
 
 pub(super) fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
-    report_witness(&recorded_report(manifest)?, bug)
+    report_witness(&recorded_report(manifest)?, manifest.directory()?, bug)
 }
 
 pub(super) fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
@@ -156,7 +159,7 @@ pub fn replay_saved(
     let recorded = if original.bundle.is_some() {
         let actions = selected_actions(&original, selection.finding)?;
         let report = recorded_report(&original)?;
-        let expected = report_witness(&report, selection.finding)?;
+        let expected = report_witness(&report, &source, selection.finding)?;
         if selection.finding.is_none()
             && expected.state_hash_encoding != StateHashEncoding::Unavailable
             && report
@@ -418,7 +421,12 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
         let bugs = report["bugs"]
             .as_array()
             .ok_or("this recording has no findings")?;
-        bugs[bug_index(bug, bugs.len())?].clone()
+        let mut selected = bugs[bug_index(bug, bugs.len())?].clone();
+        let summary: package::BugSummary = serde_json::from_value(selected.clone())?;
+        if let Some(witness) = summary.witness(&path)? {
+            selected["replay"] = serde_json::to_value(witness)?;
+        }
+        selected
     } else {
         report
     };
@@ -603,7 +611,7 @@ pub fn logs(
         let outcome = manifest.outcome()?;
         let witness = match serde_json::from_value::<Report>(outcome)
             .map_err(Into::into)
-            .and_then(|report| report_witness(&report, selection.finding))
+            .and_then(|report| report_witness(&report, &path, selection.finding))
         {
             Ok(witness) => Some(witness),
             Err(_)
@@ -964,6 +972,9 @@ mod tests {
                 1,
                 1,
             )),
+            timeline: Some(
+                faults_workload::package::TimelineFile::write(dir.path(), 1, &[]).unwrap(),
+            ),
         });
         report.write(dir.path()).unwrap();
         let mut config = crate::config::Config::default();
@@ -985,6 +996,25 @@ mod tests {
             recorded_witness(&original, Some(1)).unwrap().state_hash,
             recorded_hash
         );
+        let timeline = dir.path().join("bug-1-timeline.json");
+        let kept = dir.path().join("kept-timeline.json");
+        fs::rename(&timeline, &kept).unwrap();
+        assert_eq!(original.report_hint().unwrap().bugs.len(), 1);
+        for error in [
+            recorded_report(&original).map(drop).unwrap_err(),
+            recorded_witness(&original, Some(1)).map(drop).unwrap_err(),
+            original.verify(dir.path()).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("bug-1-timeline.json"), "{error}");
+        }
+        fs::write(&timeline, b"[ ]").unwrap();
+        let changed = recorded_report(&original)
+            .map(drop)
+            .unwrap_err()
+            .to_string();
+        assert!(changed.contains("differs"), "{changed}");
+        fs::rename(&kept, &timeline).unwrap();
+        original.verify(dir.path()).unwrap();
         report.bugs[0].confirmed = true;
         report.bugs[0]
             .actions
@@ -1057,6 +1087,9 @@ mod tests {
                 1,
                 1,
             )),
+            timeline: Some(
+                faults_workload::package::TimelineFile::write(dir.path(), 1, &[]).unwrap(),
+            ),
         });
         report.write(dir.path()).unwrap();
         let mut shared = crate::config::Config::default();
