@@ -826,9 +826,7 @@ that the JSON reader cannot parse (nesting past its depth limit) become
 `{"unreadable": "<reader error>"}` and the violation is still recorded.
 Details whose text is longer than 4096 bytes (`FAILURE_DETAILS_LIMIT_BYTES`)
 become `{"truncated_bytes": N, "prefix": "..."}` holding the first 1024 bytes
-(`FAILURE_DETAILS_PREFIX_BYTES`). `/dev/harmony` accepts at most 3939 bytes
-per record today, so a guest cannot reach that cap through the device: a
-larger SDK write fails in the guest and no record arrives. The set of
+(`FAILURE_DETAILS_PREFIX_BYTES`). The set of
 Sometimes and Reachable assertions that passed enters the archive key as a
 count plus a digest of the sorted ids, so the key has no limit on how many
 distinct assertions a workload declares. Every process's records feed the key.

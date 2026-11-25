@@ -77,9 +77,15 @@ impl Serialize for FailureDetails {
 impl<'de> Deserialize<'de> for FailureDetails {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
-        if text.is_empty() {
-            return Err(D::Error::custom("assertion failure details are empty"));
+        if text.len() > FAILURE_DETAILS_LIMIT_BYTES {
+            return Err(D::Error::custom(format!(
+                "assertion failure details are {} bytes, above the {FAILURE_DETAILS_LIMIT_BYTES}-byte limit",
+                text.len()
+            )));
         }
+        serde_json::from_str::<serde::de::IgnoredAny>(&text).map_err(|error| {
+            D::Error::custom(format!("assertion failure details are not JSON: {error}"))
+        })?;
         Ok(Self(text))
     }
 }
@@ -750,5 +756,22 @@ mod tests {
             text
         );
         assert_eq!(postcard::to_allocvec(&from_postcard).unwrap(), bytes);
+    }
+
+    #[test]
+    fn stored_details_must_be_json_within_the_limit() {
+        let outcome = |details: &str| {
+            serde_json::json!({"kind": "Always", "message": "m", "location": "", "passed": false,
+                "failed": true, "holds": null, "failure_details": details})
+        };
+        let oversized = format!("[{}0]", "0,".repeat(FAILURE_DETAILS_LIMIT_BYTES / 2));
+        assert!(serde_json::from_str::<serde_json::Value>(&oversized).is_ok());
+        for bad in ["{not json", "", oversized.as_str()] {
+            assert!(serde_json::from_value::<AssertionOutcome>(outcome(bad)).is_err());
+            let bytes = postcard::to_allocvec(&FailureDetails(bad.to_owned())).unwrap();
+            assert!(postcard::from_bytes::<FailureDetails>(&bytes).is_err());
+        }
+        let good = serde_json::from_value::<AssertionOutcome>(outcome(r#"{"try":1}"#)).unwrap();
+        assert_eq!(good.failure_details.unwrap().text(), r#"{"try":1}"#);
     }
 }
