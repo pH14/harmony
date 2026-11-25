@@ -217,34 +217,33 @@ func (adapter) Applied(ctx context.Context, node string) (uint64, error) {
 	return status.applied, err
 }
 
-const (
-	appliedNeverFalls  = "rqlite: a node's applied index never decreases while its process runs"
-	snapshotNeverFalls = "rqlite: a node's snapshot index never decreases while its process runs"
-)
+const appliedNeverFalls = "rqlite: a node's applied index never decreases while its process runs"
 
 func declareStatusProperties() {
 	sdk.Declare(sdk.KindAlways, appliedNeverFalls)
-	sdk.Declare(sdk.KindAlways, snapshotNeverFalls)
 }
 
 // The check retries a pinned read in new attempts, and a failed /status
 // attempt returns no index, so the last index a /status answer returned is kept
 // across attempts and named in each failed attempt's error.
 //
-// The answers also keep each node's highest applied and snapshot index per
-// process, which /status names by its start time. Within one process a correct
-// node applies entries in order and installs a snapshot only to move forward,
-// so a lower answer means the node went back to an older state. Answers to concurrent
-// requests can arrive out of order, so an answer is compared only with the
-// highest value among answers that arrived before its request was sent. An
-// answer that leaves an index out, as /status does while the store is closed,
-// is not compared for that index.
+// The answers also keep each node's highest applied index per process, which
+// /status names by its start time. Within one process a correct node applies
+// entries in order and installs a snapshot only to move forward, so a lower
+// applied index means the node went back to an older state. The snapshot index
+// is not compared: hashicorp/raft records it both when a local snapshot finishes
+// persisting and when a remote install completes, with no order between the two,
+// so it can fall while the state does not. Answers to concurrent requests can
+// arrive out of order, so an answer is compared only with the highest value
+// among answers that arrived before its request was sent. An answer that leaves
+// the applied index out, as /status does while the store is closed, is not
+// compared.
 type statusAnswers struct {
 	mu      sync.Mutex
 	clock   uint64
 	pending map[uint64]bool
 	last    map[string]statusAnswer
-	high    map[lifetime]*highs
+	high    map[lifetime]*high
 	assert  func(bool, string, map[string]any)
 	held    map[string]bool
 	failed  map[failure]bool
@@ -256,11 +255,9 @@ type statusAnswer struct {
 }
 
 type nodeStatus struct {
-	applied     uint64
-	snapshot    uint64
-	started     string
-	hasApplied  bool
-	hasSnapshot bool
+	applied    uint64
+	started    string
+	hasApplied bool
 }
 
 type lifetime struct {
@@ -299,11 +296,6 @@ func (h *high) observe(value, received, oldest uint64) {
 	h.rises = h.rises[keep:]
 }
 
-type highs struct {
-	applied  high
-	snapshot high
-}
-
 type failure struct {
 	lifetime
 	property string
@@ -313,7 +305,7 @@ func newStatusAnswers(assert func(bool, string, map[string]any)) *statusAnswers 
 	return &statusAnswers{
 		pending: map[uint64]bool{},
 		last:    map[string]statusAnswer{},
-		high:    map[lifetime]*highs{},
+		high:    map[lifetime]*high{},
 		assert:  assert,
 		held:    map[string]bool{},
 		failed:  map[failure]bool{},
@@ -367,14 +359,11 @@ func (s *statusAnswers) observe(node string, sent uint64, status nodeStatus, now
 	key := lifetime{node: node, started: status.started}
 	h := s.high[key]
 	if h == nil {
-		h = &highs{}
+		h = &high{}
 		s.high[key] = h
 	}
 	if status.hasApplied {
-		s.check(key, appliedNeverFalls, &h.applied, status.applied, sent)
-	}
-	if status.hasSnapshot {
-		s.check(key, snapshotNeverFalls, &h.snapshot, status.snapshot, sent)
+		s.check(key, appliedNeverFalls, h, status.applied, sent)
 	}
 }
 
@@ -426,9 +415,6 @@ func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 	var status struct {
 		Store struct {
 			DBAppliedIndex *uint64 `json:"db_applied_index"`
-			Raft           struct {
-				LastSnapshotIndex *raftStat `json:"last_snapshot_index"`
-			} `json:"raft"`
 		} `json:"store"`
 		Node struct {
 			StartTime string `json:"start_time"`
@@ -440,9 +426,6 @@ func (c *client) indexes(ctx context.Context) (nodeStatus, error) {
 	result := nodeStatus{started: status.Node.StartTime}
 	if applied := status.Store.DBAppliedIndex; applied != nil {
 		result.applied, result.hasApplied = *applied, true
-	}
-	if snapshot := status.Store.Raft.LastSnapshotIndex; snapshot != nil {
-		result.snapshot, result.hasSnapshot = uint64(*snapshot), true
 	}
 	return result, nil
 }
