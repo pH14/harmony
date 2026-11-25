@@ -184,8 +184,11 @@ impl Manifest {
 
     pub fn store(&mut self, path: &Path, name: &str, bytes: &[u8]) -> Result<()> {
         let destination = path.join("artifacts").join(name);
-        fs::create_dir_all(destination.parent().ok_or("artifact needs a parent")?)?;
-        fs::write(destination, bytes)?;
+        let parent = destination.parent().ok_or("artifact needs a parent")?;
+        fs::create_dir_all(parent)?;
+        let temp = tempfile::NamedTempFile::new_in(parent)?;
+        fs::write(temp.path(), bytes)?;
+        temp.persist(destination)?;
         self.artifacts.insert(name.into(), digest(bytes));
         Ok(())
     }
@@ -243,16 +246,13 @@ impl Manifest {
         child.checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         child.parent = Some(source.to_path_buf());
         for (name, expected) in &self.artifacts {
-            let original = source.join("artifacts").join(name);
-            let mut file = fs::File::open(original)?;
-            let permissions = file.metadata()?.permissions();
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            if digest(&bytes) != *expected {
+            let target = destination.join("artifacts").join(name);
+            fs::create_dir_all(target.parent().ok_or("artifact needs a parent")?)?;
+            link_or_copy(&source.join("artifacts").join(name), &target)?;
+            if file_digest(&target)? != *expected {
+                fs::remove_file(&target)?;
                 return Err(format!("recorded artifact {name} changed during inheritance").into());
             }
-            child.store(destination, name, &bytes)?;
-            fs::set_permissions(destination.join("artifacts").join(name), permissions)?;
         }
         Ok(child)
     }
@@ -262,6 +262,38 @@ fn new_checkpoint_owner() -> Result<String> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| format!("cannot create run identity: {error}"))?;
     Ok(digest(&bytes))
+}
+
+pub fn link_or_copy(source: &Path, destination: &Path) -> Result<()> {
+    link_or_copy_with(source, destination, |a, b| fs::hard_link(a, b))
+}
+
+fn link_or_copy_with(
+    source: &Path,
+    destination: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let staging = tempfile::Builder::new().prefix(".link").tempdir_in(
+        destination
+            .parent()
+            .ok_or("link destination needs a parent")?,
+    )?;
+    let staged = staging.path().join("file");
+    let regular = fs::symlink_metadata(source)
+        .map_err(|e| format!("cannot read {}: {e}", source.display()))?
+        .file_type()
+        .is_file();
+    let linked = regular
+        && link(source, &staged).is_ok()
+        && fs::symlink_metadata(&staged)?.file_type().is_file();
+    if !linked {
+        if fs::symlink_metadata(&staged).is_ok() {
+            fs::remove_file(&staged)?;
+        }
+        fs::copy(source, &staged).map_err(|e| format!("cannot copy {}: {e}", source.display()))?;
+    }
+    fs::rename(&staged, destination)?;
+    Ok(())
 }
 
 pub fn file_digest(path: &Path) -> Result<String> {
@@ -611,6 +643,83 @@ mod tests {
             Manifest::read(destination.path()).unwrap().cpu_provenance,
             child.cpu_provenance
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_artifacts_share_the_parent_file_and_outlive_the_parent() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(&source, "kernel", b"kernel bytes").unwrap();
+        manifest.store(&source, "uml/lib/a.so", b"library").unwrap();
+        let child = manifest.inherit(&source, &destination, "search").unwrap();
+        for name in ["kernel", "uml/lib/a.so"] {
+            let parent = fs::metadata(source.join("artifacts").join(name)).unwrap();
+            let inherited = fs::metadata(destination.join("artifacts").join(name)).unwrap();
+            assert_eq!(
+                (parent.dev(), parent.ino()),
+                (inherited.dev(), inherited.ino())
+            );
+        }
+        fs::remove_dir_all(&source).unwrap();
+        child.verify(&destination).unwrap();
+    }
+
+    #[test]
+    fn replacing_an_inherited_artifact_leaves_the_parent_file_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(&source, "kernel", b"kernel bytes").unwrap();
+        let mut child = manifest.inherit(&source, &destination, "search").unwrap();
+        child
+            .store(&destination, "kernel", b"other kernel")
+            .unwrap();
+        manifest.inherit(&source, &destination, "search").unwrap();
+        child
+            .store(&destination, "kernel", b"other kernel")
+            .unwrap();
+        assert_eq!(
+            fs::read(source.join("artifacts/kernel")).unwrap(),
+            b"kernel bytes"
+        );
+        manifest.verify(&source).unwrap();
+        child.verify(&destination).unwrap();
+    }
+
+    #[test]
+    fn link_or_copy_copies_when_the_link_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::write(&source, b"bytes").unwrap();
+        link_or_copy_with(&source, &destination, |_, _| {
+            Err(std::io::ErrorKind::CrossesDevices.into())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"bytes");
+        fs::write(&destination, b"changed").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"bytes");
+        link_or_copy(&source, &destination).unwrap();
+        link_or_copy_with(&source, &destination, |_, _| {
+            Err(std::io::ErrorKind::CrossesDevices.into())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"bytes");
+        assert_eq!(fs::read(&destination).unwrap(), b"bytes");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
     }
 
     #[test]

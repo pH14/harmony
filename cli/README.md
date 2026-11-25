@@ -463,7 +463,11 @@ an interrupted run. A completed search also records the selected checkpoint's
 SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
 remain valid for the same workload. The selected journal digest is carried to
 the searcher and compared with the checkpoint bytes it actually opens, closing
-the gap between selection and resume. Both NES and faults resume compare the
+the gap between selection and resume. A continuation hard-links each recorded
+artifact (such as the kernel and initramfs) from its parent run after checking
+its digest, and copies it when the link fails, so a chain of resumed chunks
+stores the artifacts once on one file system and each chunk stays readable
+after its parent is deleted. Both NES and faults resume compare the
 selected checkpoint with the manifest already verified at command start; a
 replacement manifest cannot authorize a later checkpoint swap.
 
@@ -766,7 +770,13 @@ findings; resume passes the earlier report to the package only when it
 matches its digest and decodes, and the package carries the replay results of
 inherited findings from it instead of replaying them. It replays an inherited
 finding when there is no such report, or when the report holds no replay
-result for that finding because that replay returned an error. Command runs
+result for that finding because that replay returned an error. A finding's
+per-step timeline is in its own `bug-N-timeline.json`, which the report names
+with its SHA-256. Every reader of a search report, including `show` and
+`harmony diff`, checks each finding's timeline file and refuses it by path when
+it is missing or changed. Resume hard-links a carried finding's timeline and
+unchanged `bug-N.json` from the earlier chunk, and replays the finding again
+when that timeline is missing or changed. Command runs
 with a saved serial digest check it before displaying `--logs`; a completed
 command without one refuses display. Other raw console and terminal logs
 remain diagnostic output. A supervised recording always uses

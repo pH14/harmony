@@ -9,7 +9,7 @@ use crate::guest::{ActionChoice, GuestAnswer};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
-pub const REPORT_FORMAT: &str = "faults-report-v2";
+pub const REPORT_FORMAT: &str = "faults-report-v3";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReportFormat;
@@ -87,6 +87,106 @@ pub struct BugSummary {
     pub state_hash_encoding: StateHashEncoding,
     pub confirmed: bool,
     pub replay: Option<ReplaySummary>,
+    pub timeline: Option<TimelineFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineFile {
+    pub file: String,
+    pub sha256: String,
+}
+
+impl TimelineFile {
+    #[must_use]
+    pub fn name(bug: u64) -> String {
+        format!("{}{bug}-timeline.json", crate::report::BUG_REPORT_STEM)
+    }
+
+    fn path(&self, directory: &std::path::Path) -> Result<PathBuf, Box<dyn Error>> {
+        let relative = std::path::Path::new(&self.file);
+        let mut components = relative.components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) {
+            return Err(format!(
+                "finding timeline file name {:?} is not a plain file name",
+                self.file
+            )
+            .into());
+        }
+        Ok(directory.join(relative))
+    }
+
+    pub fn write(
+        directory: &std::path::Path,
+        bug: u64,
+        timeline: &[ReplayStep],
+    ) -> Result<Self, Box<dyn Error>> {
+        let file = Self::name(bug);
+        let bytes = serde_json::to_vec(timeline)?;
+        crate::report::replace_file(&directory.join(&file), &bytes)?;
+        Ok(Self {
+            file,
+            sha256: sha256_hex(&bytes),
+        })
+    }
+
+    pub fn read(&self, directory: &std::path::Path) -> Result<Vec<ReplayStep>, Box<dyn Error>> {
+        let path = self.path(directory)?;
+        let bytes = fs::read(&path).map_err(|error| {
+            format!(
+                "finding timeline {} cannot be read: {error}",
+                path.display()
+            )
+        })?;
+        if sha256_hex(&bytes) != self.sha256 {
+            return Err(format!(
+                "finding timeline {} differs from the digest its report records",
+                path.display()
+            )
+            .into());
+        }
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    pub fn link(
+        &self,
+        earlier: &std::path::Path,
+        directory: &std::path::Path,
+        bug: u64,
+    ) -> Result<Self, Box<dyn Error>> {
+        let linked = Self {
+            file: Self::name(bug),
+            sha256: self.sha256.clone(),
+        };
+        let destination = directory.join(&linked.file);
+        crate::report::link_or_copy(&self.path(earlier)?, &destination)?;
+        if let Err(error) = linked.read(directory) {
+            fs::remove_file(&destination)?;
+            return Err(error);
+        }
+        Ok(linked)
+    }
+}
+
+impl BugSummary {
+    pub fn witness(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<Option<ReplaySummary>, Box<dyn Error>> {
+        let Some(replay) = &self.replay else {
+            return Ok(None);
+        };
+        let timeline = self
+            .timeline
+            .as_ref()
+            .ok_or("this finding's replay lists no timeline file")?;
+        let mut witness = replay.clone();
+        witness.timeline = timeline.read(directory)?;
+        Ok(Some(witness))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -335,28 +435,49 @@ fn carried_bug<'a>(
 ))]
 fn bug_summaries(
     written: &[crate::report::BugReport],
-    previous: Option<&Report>,
+    previous: Option<&PreviousReport>,
     current: &Report,
     uml: bool,
+    directory: &std::path::Path,
     mut replay: impl FnMut(&[FaultAction]) -> Result<ReplaySummary, Box<dyn Error>>,
-) -> Vec<BugSummary> {
+) -> Result<Vec<BugSummary>, Box<dyn Error>> {
     let previous = previous.filter(|previous| {
-        previous.package == current.package
-            && previous.mode == current.mode
-            && previous.identity == current.identity
-            && previous.image_sha256 == current.image_sha256
-            && previous.kernel_sha256 == current.kernel_sha256
-            && previous.ram_mib == current.ram_mib
+        let earlier = &previous.report;
+        earlier.package == current.package
+            && earlier.mode == current.mode
+            && earlier.identity == current.identity
+            && earlier.image_sha256 == current.image_sha256
+            && earlier.kernel_sha256 == current.kernel_sha256
+            && earlier.ram_mib == current.ram_mib
     });
     written
         .iter()
         .map(|bug| {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
             let sometimes: Vec<String> = bug.observations.sometimes().into_iter().collect();
-            if let Some(carried) = carried_bug(previous, bug, &violations, &sometimes) {
-                return carried.clone();
+            if let Some(previous) = previous
+                && let Some(carried) =
+                    carried_bug(Some(&previous.report), bug, &violations, &sometimes)
+            {
+                match carried
+                    .timeline
+                    .as_ref()
+                    .ok_or_else(|| Box::<dyn Error>::from("it lists no timeline file"))
+                    .and_then(|timeline| timeline.link(&previous.directory, directory, bug.bug))
+                {
+                    Ok(timeline) => {
+                        return Ok(BugSummary {
+                            timeline: Some(timeline),
+                            ..carried.clone()
+                        });
+                    }
+                    Err(error) => eprintln!(
+                        "bug {} is replayed again because its earlier timeline is unusable: {error}",
+                        bug.bug
+                    ),
+                }
             }
-            let witness = match replay(&bug.actions) {
+            let mut witness = match replay(&bug.actions) {
                 Ok(summary) => Some(summary),
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
@@ -372,7 +493,13 @@ fn bug_summaries(
                     bug.bug
                 );
             }
-            BugSummary {
+            let timeline = witness
+                .as_mut()
+                .map(|witness| {
+                    TimelineFile::write(directory, bug.bug, &std::mem::take(&mut witness.timeline))
+                })
+                .transpose()?;
+            Ok(BugSummary {
                 execution: bug.execution,
                 actions: bug.actions.clone(),
                 stop: bug.observations.stop,
@@ -394,7 +521,8 @@ fn bug_summaries(
                 ),
                 confirmed,
                 replay: witness,
-            }
+                timeline,
+            })
         })
         .collect()
 }
@@ -516,8 +644,14 @@ pub enum SearchStart {
     Actions(Vec<FaultAction>),
     Checkpoint {
         checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
-        previous: Option<Box<Report>>,
+        previous: Option<Box<PreviousReport>>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct PreviousReport {
+    pub report: Report,
+    pub directory: PathBuf,
 }
 
 pub struct Artifacts {
@@ -884,12 +1018,17 @@ mod live {
             .map(|root| crate::consonance::root_standing(root))
             .transpose()?
             .unwrap_or_default();
+        let previous = match start {
+            super::SearchStart::Checkpoint { previous, .. } => previous.as_deref(),
+            _ => None,
+        };
         let written = write_bug_reports(
             windows,
             &inherited,
             &options.answers,
             &archive.bugs,
             &options.output,
+            previous.map(|previous| previous.directory.as_path()),
         )?;
         let classes = violation_classes(&written);
         let hangs = write_hang_reports(
@@ -992,15 +1131,12 @@ mod live {
         report.park_aims = archive.park_aims.clone();
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
-        let previous = match start {
-            super::SearchStart::Checkpoint { previous, .. } => previous.as_deref(),
-            _ => None,
-        };
         report.bugs = super::bug_summaries(
             &written,
             previous,
             &report,
             config.uml().is_some(),
+            &options.output,
             |actions| {
                 replay_once(
                     artifacts,
@@ -1011,7 +1147,7 @@ mod live {
                     &mut |_, _| Ok(()),
                 )
             },
-        );
+        )?;
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
         if let Some(first) = report.bugs.iter().find(|bug| bug.confirmed) {
@@ -1835,6 +1971,7 @@ mod tests {
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             confirmed,
             replay: None,
+            timeline: None,
         }
     }
 
@@ -2095,7 +2232,7 @@ mod tests {
             .to_string();
         assert!(
             error.contains(
-                "faults report format is faults-report-v1; this build reads faults-report-v2"
+                "faults report format is faults-report-v1; this build reads faults-report-v3"
             ),
             "{error}"
         );
@@ -2126,64 +2263,184 @@ mod tests {
         );
     }
 
-    fn earlier_run(
-        replay: impl FnMut(&[FaultAction]) -> Result<ReplaySummary, Box<dyn Error>>,
-    ) -> Report {
-        let mut earlier = search_report("identity");
-        earlier.bugs = bug_summaries(&[crash_report(1, 4, 0)], None, &earlier, false, replay);
-        serde_json::from_value(serde_json::to_value(&earlier).unwrap()).unwrap()
+    fn with_console(mut witness: ReplaySummary) -> ReplaySummary {
+        witness.timeline = vec![ReplayStep {
+            step: 0,
+            action: None,
+            observation: FaultObservations::default(),
+            console: "boot\n".to_owned(),
+            console_dropped: 0,
+            settlement: false,
+            choices: 0,
+        }];
+        witness
     }
 
-    fn resumed_run(previous: Option<&Report>, identity: &str) -> (Vec<BugSummary>, Vec<u16>) {
+    fn earlier_run(
+        mut replay: impl FnMut(&[FaultAction]) -> Result<ReplaySummary, Box<dyn Error>>,
+    ) -> (tempfile::TempDir, PreviousReport) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut earlier = search_report("identity");
+        earlier.bugs = bug_summaries(
+            &[crash_report(1, 4, 0)],
+            None,
+            &earlier,
+            false,
+            directory.path(),
+            |actions| replay(actions).map(with_console),
+        )
+        .unwrap();
+        let previous = PreviousReport {
+            report: serde_json::from_value(serde_json::to_value(&earlier).unwrap()).unwrap(),
+            directory: directory.path().to_path_buf(),
+        };
+        (directory, previous)
+    }
+
+    fn resumed_into(
+        directory: &std::path::Path,
+        previous: Option<&PreviousReport>,
+        identity: &str,
+    ) -> (Vec<BugSummary>, Vec<u16>) {
         let mut replayed = Vec::new();
         let bugs = bug_summaries(
             &[crash_report(1, 4, 0), crash_report(2, 9, 1)],
             previous,
             &search_report(identity),
             false,
+            directory,
             |actions| {
                 let FaultOperation::Kill(node, _) = actions[0].operation else {
                     panic!("unexpected action");
                 };
                 replayed.push(node);
-                Ok(replay_summary(true, FaultStop::Crash, &[]))
+                Ok(with_console(replay_summary(true, FaultStop::Crash, &[])))
             },
-        );
+        )
+        .unwrap();
         (bugs, replayed)
+    }
+
+    fn resumed_run(
+        previous: Option<&PreviousReport>,
+        identity: &str,
+    ) -> (Vec<BugSummary>, Vec<u16>) {
+        resumed_into(tempfile::tempdir().unwrap().path(), previous, identity)
     }
 
     #[test]
     fn a_resumed_search_carries_an_inherited_replay_and_replays_only_its_new_finding() {
-        let earlier = earlier_run(|_| {
+        let (_earlier, earlier) = earlier_run(|_| {
             let mut witness = replay_summary(true, FaultStop::Crash, &[]);
             witness.state_hash = "earlier".to_owned();
             Ok(witness)
         });
-        assert!(earlier.bugs[0].confirmed);
+        assert!(earlier.report.bugs[0].confirmed);
         let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
         assert_eq!(replayed, vec![1], "only the new finding is replayed");
-        assert_eq!(bugs[0], earlier.bugs[0]);
+        assert_eq!(bugs[0], earlier.report.bugs[0]);
         assert_eq!(bugs[0].state_hash, "earlier");
         assert!(bugs[1].confirmed);
         assert_eq!(bugs[1].state_hash, "hash");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_carried_timeline_is_the_earlier_file_and_outlives_the_earlier_chunk() {
+        use std::os::unix::fs::MetadataExt;
+        let (earlier_directory, earlier) =
+            earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
+        let directory = tempfile::tempdir().unwrap();
+        let (bugs, replayed) = resumed_into(directory.path(), Some(&earlier), "identity");
+        assert_eq!(replayed, vec![1]);
+        let inode = |path: std::path::PathBuf| {
+            let metadata = fs::metadata(path).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        assert_eq!(
+            inode(earlier_directory.path().join("bug-1-timeline.json")),
+            inode(directory.path().join("bug-1-timeline.json"))
+        );
+        drop(earlier_directory);
+        let witness = bugs[0].witness(directory.path()).unwrap().unwrap();
+        assert_eq!(witness.console_through(0), "boot\n");
+        assert!(bugs[0].replay.as_ref().unwrap().timeline.is_empty());
+        assert!(!serde_json::to_string(&bugs).unwrap().contains("boot"));
+    }
+
+    #[test]
+    fn a_carried_finding_whose_earlier_timeline_is_unusable_is_replayed_again() {
+        let (earlier_directory, earlier) =
+            earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
+        let path = earlier_directory.path().join("bug-1-timeline.json");
+        fs::write(&path, b"[]").unwrap();
+        assert_eq!(resumed_run(Some(&earlier), "identity").1, vec![0, 1]);
+        fs::remove_file(&path).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let (bugs, replayed) = resumed_into(directory.path(), Some(&earlier), "identity");
+        assert_eq!(replayed, vec![0, 1]);
+        assert_eq!(
+            bugs[0]
+                .witness(directory.path())
+                .unwrap()
+                .unwrap()
+                .console_through(0),
+            "boot\n"
+        );
+    }
+
+    #[test]
+    fn a_finding_timeline_is_refused_when_missing_changed_or_outside_the_run() {
+        let (directory, earlier) = earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
+        let bug = &earlier.report.bugs[0];
+        let path = directory.path().join("bug-1-timeline.json");
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, b"[]").unwrap();
+        let changed = bug.witness(directory.path()).unwrap_err().to_string();
+        assert!(
+            changed.contains("bug-1-timeline.json") && changed.contains("differs"),
+            "{changed}"
+        );
+        fs::remove_file(&path).unwrap();
+        let missing = bug.witness(directory.path()).unwrap_err().to_string();
+        assert!(
+            missing.contains("bug-1-timeline.json") && missing.contains("cannot be read"),
+            "{missing}"
+        );
+        fs::write(&path, original).unwrap();
+        assert!(bug.witness(directory.path()).unwrap().is_some());
+        let mut escaped = bug.clone();
+        escaped.timeline.as_mut().unwrap().file = "../bug-1-timeline.json".to_owned();
+        assert!(
+            escaped
+                .witness(directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("plain file name")
+        );
+        let mut unlisted = bug.clone();
+        unlisted.timeline = None;
+        assert!(unlisted.witness(directory.path()).is_err());
+    }
+
     #[test]
     fn an_inherited_finding_that_replayed_without_confirming_stays_unconfirmed() {
-        let earlier = earlier_run(|_| Ok(replay_summary(false, FaultStop::Deadline, &[])));
-        assert!(!earlier.bugs[0].confirmed);
-        assert!(earlier.bugs[0].replay.is_some());
+        let (_earlier, earlier) =
+            earlier_run(|_| Ok(replay_summary(false, FaultStop::Deadline, &[])));
+        assert!(!earlier.report.bugs[0].confirmed);
+        assert!(earlier.report.bugs[0].replay.is_some());
         let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
         assert_eq!(replayed, vec![1]);
-        assert_eq!(bugs[0], earlier.bugs[0]);
+        assert_eq!(bugs[0], earlier.report.bugs[0]);
         assert!(!bugs[0].confirmed);
     }
 
     #[test]
     fn an_inherited_finding_whose_replay_failed_is_replayed_again() {
-        let earlier = earlier_run(|_| Err("worker killed".into()));
-        assert!(!earlier.bugs[0].confirmed);
-        assert!(earlier.bugs[0].replay.is_none());
+        let (_earlier, earlier) = earlier_run(|_| Err("worker killed".into()));
+        assert!(!earlier.report.bugs[0].confirmed);
+        assert!(earlier.report.bugs[0].replay.is_none());
+        assert!(earlier.report.bugs[0].timeline.is_none());
         let (bugs, replayed) = resumed_run(Some(&earlier), "identity");
         assert_eq!(replayed, vec![0, 1]);
         assert!(bugs[0].confirmed);
@@ -2191,18 +2448,18 @@ mod tests {
 
     #[test]
     fn an_inherited_replay_is_used_only_for_the_same_finding_and_runtime() {
-        let earlier = earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
+        let (_earlier, earlier) = earlier_run(|_| Ok(replay_summary(true, FaultStop::Crash, &[])));
         assert_eq!(resumed_run(None, "identity").1, vec![0, 1]);
         assert_eq!(resumed_run(Some(&earlier), "other").1, vec![0, 1]);
         let mut moved = earlier.clone();
-        moved.bugs[0].execution = 5;
+        moved.report.bugs[0].execution = 5;
         assert_eq!(resumed_run(Some(&moved), "identity").1, vec![0, 1]);
         let mut edited = earlier.clone();
-        edited.bugs[0].actions[0] =
+        edited.report.bugs[0].actions[0] =
             FaultOperation::Kill(2, std::num::NonZeroU16::new(50).unwrap()).into();
         assert_eq!(resumed_run(Some(&edited), "identity").1, vec![0, 1]);
         let mut inconsistent = earlier;
-        inconsistent.bugs[0].confirmed = false;
+        inconsistent.report.bugs[0].confirmed = false;
         assert_eq!(resumed_run(Some(&inconsistent), "identity").1, vec![0, 1]);
     }
 
