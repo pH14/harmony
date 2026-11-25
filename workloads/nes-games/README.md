@@ -527,7 +527,8 @@ damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
 Ridley come the route to the refill rooms (`to_ridley_refill`, scored like the
 Tourian elevator stage below by the cell a state is in), energy (96), the route
 out of the hideout, energy (80), the route
-back through Norfair, full missiles, energy of at least
+back through Norfair, the walk to the Ice Beam in Norfair (`to_ice_beam`,
+scored by the cell a state is in), full missiles, energy of at least
 `100 * energy_tanks + 90`, the route to the Tourian
 elevator and the route to the Zebetite door. The norfair_return objective is
 the last `to_ending` index a kept state stood on, Ridley's area included, so
@@ -543,8 +544,9 @@ climbs 256 per destroyed column plus boss damage and is done on
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
 `to_ridley` and every route after Ridley shares `to_ending`, each read by one
-`last` with no stage scope. The walk to the refill rooms after Ridley reads
-its own table, `to_ridley_refill`, without an aggregate, as the
+`last` with no stage scope. The walks to the refill rooms after Ridley and to
+the Ice Beam read their own tables, `to_ridley_refill` and `to_ice_beam`,
+without an aggregate, as the
 tourian_elevator stage below reads `to_ending`. The tourian_elevator
 stage reads `to_ending` without an aggregate,
 `if in(cell, to_ending) then index(cell, to_ending) else 0`, which scores 0
@@ -559,8 +561,12 @@ starts on its table: the Norfair elevator's arrival for `to_ridley`, and for
 ridley_exit the refill rooms on row 30 when the energy stage before it ends
 there, which `to_ending` lists first. An energy stage can end anywhere, so the
 stage after it can start elsewhere on its table or off it with that inherited
-credit. Each route stage but escape, which ends on the ending, is done on a
-cell of its route. The routes
+credit. Each route stage but escape, which ends on the ending, and
+ice_beam, which ends on the Ice Beam bit, is done on a cell of its route.
+`to_ending` lists the way back from the Ice Beam, row 12 east and up column
+30, just before `(30,14)`, so the Tourian elevator stage credits that walk;
+a state climbing column 30 in norfair_return reaches `(30,14)` first, so
+those cells score below it. The routes
 and energy targets are those of the [Metroid README](../nes/src/metroid/README.md#archive-key);
 the equivalence test compares the stages up to Kraid and checks that every
 state past his defeat is located past the hand plan's stages. In the stages the hand plan covers, a route stage's objective is the last route index

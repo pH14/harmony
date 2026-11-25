@@ -170,7 +170,22 @@ Each stage climbs one integer:
   120,000 each. Three searches without the row-30 cells were still at
   `(30,27)` or `(30,28)` when they stopped, two at a budget of 1,000,000
   executions and one at 763,600, and none had left the hideout. Back in
-  Brinstar before the Tourian
+  Brinstar the strategy first takes the Ice Beam (bit `$80` of the equipment
+  byte), since a Metroid can be killed only once frozen, and without it the
+  Metroids in Tourian latch on and drain energy: in one power-on run 44% of
+  executions ended in a death while its deepest state was in the stage to
+  the Zebetite door, against 10% over the million executions before it. Of the
+  two Ice Beams in the ROM's special item tables, Brinstar `(19,9)` and
+  Norfair `(26,12)`, the Norfair one is fewer route cells from where the
+  stage starts, the Brinstar elevator room `(22,11)`: 19 down the elevator,
+  east along row 14, up column 30 and west along row 12, against 28 to
+  `(19,9)`, because the shaft at column 22 does not climb from `(22,11)` to
+  `(22,10)` and the way there runs back through column 13 and row 7. The stage
+  scores the cell a state is in, as the Tourian elevator stage below does,
+  and is done on the Ice Beam bit. Picking up the Wave Beam would clear that
+  bit, and the stages after this one do not check it again; no route after
+  it passes the Wave Beam at Norfair `(18,21)`.
+  Before the Tourian
   elevator, the strategy refills missiles to capacity first and then energy to
   within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
   390 of 399.9 with three tanks), in that order
@@ -179,9 +194,9 @@ Each stage climbs one integer:
   energy goals use `energy_tanks`; the preferences below use `tanks` on
   purpose, to rank by tanks collected of either kind. Past Kraid a route stage
   that leaves its route keeps the index of the last route cell it stood on at
-  an action end, except the walk to the refill rooms after Ridley and the
-  Tourian elevator stage, which score the cell they are in and 0 off the
-  route. On those two walks the off-route rooms are detours, so crediting
+  an action end, except the walk to the refill rooms after Ridley, the walk
+  to the Ice Beam and the Tourian elevator stage, which score the cell they
+  are in and 0 off the route. On those three walks the off-route rooms are detours, so crediting
   them would spread the stage's draws over dead ends. The way from Kraid back to the Norfair elevator needs
   the other rule: it crosses `(7,24)` in Kraid's hideout only by a loop
   through off-route rooms to the south and west that re-enters `(7,24)` from

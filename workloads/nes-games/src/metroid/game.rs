@@ -649,6 +649,41 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_takes_the_ice_beam_in_norfair_before_refilling_for_tourian() {
+        let lowered = strategy();
+        let names = lowered.compiled.stage_names();
+        let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
+        assert_eq!(at("norfair_return") + 1, at("ice_beam"));
+        assert_eq!(at("ice_beam") + 1, at("missiles_before_tourian"));
+        let route = table("to_ice_beam");
+        assert_eq!(route[0], 162_211);
+        assert_eq!(route.last(), Some(&172_612));
+        assert!(walks(&route[..2]));
+        assert!(walks(&route[2..]));
+        assert_eq!(route[1] % 10_000, route[2] % 10_000);
+        let ending = table("to_ending");
+        let back: Vec<u32> = route[route.len() - 6..].iter().rev().copied().collect();
+        let start = ending.iter().position(|cell| *cell == back[0]).unwrap();
+        assert_eq!(ending[start..start + 7], [&back[..], &[173_014]].concat());
+        for (index, cell) in route.iter().enumerate() {
+            assert!(!route[..index].contains(cell), "{cell}");
+        }
+        let (credit, bytes) = route_credit(&stage_alone("ice_beam"), &[162_211, 172_914, 160_101]);
+        assert_eq!((credit, bytes), (vec![0, 11, 0], 0));
+        let goal = stage_goal("ice_beam");
+        let held = MetroidMechanicalState {
+            equipment: 0x80 | MORPH_BALL | BOMBS,
+            ..at_cell(172_612, 760)
+        };
+        let without = MetroidMechanicalState {
+            equipment: MORPH_BALL | BOMBS,
+            ..held
+        };
+        assert!(goal_holds(goal, &held), "{goal}");
+        assert!(!goal_holds(goal, &without), "{goal}");
+    }
+
+    #[test]
     fn missiles_then_energy_refill_before_the_tourian_elevator() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();
