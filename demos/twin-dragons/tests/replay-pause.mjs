@@ -44,6 +44,18 @@ async function stillDuring(page, ms) {
   assert.ok(during.length >= 4, 'The replay keeps playing while the counter is sampled');
   assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
+async function clickWhenEnabled(page, selector) {
+  const deadline = performance.now() + 30000;
+  try {
+    await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, selector, {timeout: 30000});
+    const left = Math.floor(deadline - performance.now());
+    if (left <= 0) throw new Error(`${selector} became enabled only as the 30 s ran out`);
+    await page.locator(selector).click({timeout: left});
+  } catch (error) {
+    const state = await page.evaluate((selector) => ({flags: document.querySelector(selector)?.dataset.flags ?? `no ${selector}`, frame: document.querySelector('#frame-label')?.textContent ?? 'no #frame-label'}), selector).catch((reason) => ({flags: `unreadable: ${reason.message}`, frame: 'unreadable'}));
+    throw new Error(`${selector} was not clicked within 30 s; flags when it was last enabled or disabled ${state.flags}, frame label ${JSON.stringify(state.frame)}`, {cause: error});
+  }
+}
 const detail = (page, name) => page.evaluate((name) => [...document.querySelectorAll('#details div')].find((d) => d.firstChild.textContent === name)?.lastChild.textContent, name);
 async function scrubMarker(page, frame) {
   await page.evaluate((frame) => {
@@ -165,8 +177,8 @@ try {
   await page.locator('#speed').selectOption('1');
   await replayFromStart(page);
   await stillDuring(page, 300);
-  await page.locator('#pause').click();
-  await page.locator('#pause').click();
+  await clickWhenEnabled(page, '#pause');
+  await clickWhenEnabled(page, '#pause');
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search');
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
