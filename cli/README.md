@@ -754,19 +754,22 @@ replace the worker executable. If the host cannot provide its strict identity,
 recording and replay fail closed.
 A faults manifest names its outcome file, `report.json` or `run.json`, and
 the SHA-256 of its bytes; it holds no copy of the outcome. Every reader of the
-outcome (replay, branching, search from a branch, `show`, `--timeline`
-and report-backed `--logs`) reads the file and refuses it ("recorded
-report.json has changed") when its digest differs, so a later edit cannot
-change the evidence or the displayed recording. Search resume is the
-exception: it restores its checkpoint and reads the report only as a hint, so
-an interrupted report write does not invalidate an earlier checkpoint. Resume
-passes the earlier report to the package when it matches its digest and
-decodes, and the package carries the replay results of inherited findings
-from it instead of replaying them. It replays an inherited finding when there
-is no such report, or when the report holds no replay result for that finding
-because that replay returned an error. Command runs with a saved serial
-digest check it before displaying `--logs`; a completed command without one refuses display. Other raw console
-and terminal logs remain diagnostic output. A supervised recording always uses
+outcome (replay, branching, search from a branch, `show`, `--timeline`,
+report-backed `--logs` and `harmony diff`) reads the file and refuses it
+("recorded report.json has changed") when its digest differs. It also refuses
+a manifest that names any other file, and a `report.json` whose format this
+build does not decode, so a later edit cannot change the evidence or the
+displayed recording. Search resume is the exception: it restores its
+checkpoint and reads the report only as a hint, so an interrupted report
+write does not invalidate an earlier checkpoint. The checkpoint holds the
+findings; resume passes the earlier report to the package only when it
+matches its digest and decodes, and the package carries the replay results of
+inherited findings from it instead of replaying them. It replays an inherited
+finding when there is no such report, or when the report holds no replay
+result for that finding because that replay returned an error. Command runs
+with a saved serial digest check it before displaying `--logs`; a completed
+command without one refuses display. Other raw console and terminal logs
+remain diagnostic output. A supervised recording always uses
 its saved action-boundary console; a stray `serial.log` cannot replace it.
 After a faults package returns, completion compares the saved report with the
 in-memory result before recording its outcome. A replaced or missing report

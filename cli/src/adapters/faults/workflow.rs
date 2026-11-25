@@ -1064,7 +1064,13 @@ mod tests {
         );
         assert!(previous(serde_json::Value::Null, None).is_none());
         assert!(previous(serde_json::json!({"bugs":[]}), None).is_none());
-        assert!(previous(report, Some(b"{\"bugs\":[")).is_none());
+        assert!(previous(report.clone(), Some(b"{\"bugs\":[")).is_none());
+        let mut later = report.clone();
+        later["executions"] = 8.into();
+        assert!(previous(report.clone(), Some(&serde_json::to_vec(&later).unwrap())).is_none());
+        let mut old = report;
+        old["format"] = "faults-report-v1".into();
+        assert!(previous(old, None).is_none());
     }
 
     #[test]

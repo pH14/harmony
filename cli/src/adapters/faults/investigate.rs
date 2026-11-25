@@ -591,18 +591,20 @@ pub fn logs(
             return Err("command logs have no action boundaries; omit point selectors".into());
         }
         let serial = fs::read(path.join("serial.log"))?;
-        if manifest.bundle.is_none() {
-            if let Some(expected) = manifest.outcome()?["serial_sha256"].as_str() {
-                if crate::runtime::digest(&serial) != expected {
-                    return Err("recorded serial.log has changed".into());
-                }
-            } else if manifest.status == "complete" {
-                return Err("completed command has no saved serial digest".into());
+        if let Some(expected) = manifest.outcome()?["serial_sha256"].as_str() {
+            if crate::runtime::digest(&serial) != expected {
+                return Err("recorded serial.log has changed".into());
             }
+        } else if manifest.status == "complete" {
+            return Err("completed command has no saved serial digest".into());
         }
         sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&String::from_utf8(serial)?)}));
     } else {
-        let witness = match recorded_witness(&manifest, selection.finding) {
+        let outcome = manifest.outcome()?;
+        let witness = match serde_json::from_value::<Report>(outcome)
+            .map_err(Into::into)
+            .and_then(|report| report_witness(&report, selection.finding))
+        {
             Ok(witness) => Some(witness),
             Err(_)
                 if selection.finding.is_none()
