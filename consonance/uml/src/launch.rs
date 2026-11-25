@@ -183,9 +183,11 @@ pub struct Guest {
     work: Option<TempDir>,
     console: Arc<Mutex<ConsoleTail>>,
     over_limit: Arc<AtomicBool>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    console_closed: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    console_reset: Sender<SyncSender<io::Result<()>>>,
+    console_reset: Sender<(SyncSender<io::Result<()>>, Option<u64>)>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     console_wake: io::PipeWriter,
     bridge_state: Arc<AtomicU8>,
@@ -237,15 +239,18 @@ fn drain_console(
     console: &Mutex<ConsoleTail>,
     over_limit: &AtomicBool,
     limit: u64,
+    rewind: Option<u64>,
 ) -> io::Result<()> {
     loop {
         match read_console(reader, block, console, over_limit, limit)? {
             ConsoleRead::Bytes => {}
             ConsoleRead::Idle => {
-                console
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clear_bytes();
+                if let Some(position) = rewind {
+                    console
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .rewind(position);
+                }
                 return Ok(());
             }
             ConsoleRead::Closed => return Err(io::ErrorKind::BrokenPipe.into()),
@@ -566,11 +571,13 @@ impl Guest {
         };
         let console = Arc::new(Mutex::new(ConsoleTail::new(launch.console_tail_bytes)));
         let over_limit = Arc::new(AtomicBool::new(false));
+        let console_closed = Arc::new(AtomicBool::new(false));
         let limit = launch.console_limit_bytes;
-        let (console_reset, resets) = mpsc::channel::<SyncSender<io::Result<()>>>();
+        let (console_reset, resets) = mpsc::channel::<(SyncSender<io::Result<()>>, Option<u64>)>();
         let reader = {
             let console = Arc::clone(&console);
             let over_limit = Arc::clone(&over_limit);
+            let console_closed = Arc::clone(&console_closed);
             std::thread::Builder::new()
                 .name(format!("uml-console-{pid}"))
                 .spawn(move || {
@@ -597,7 +604,7 @@ impl Guest {
                             if wake_reader.read_exact(&mut wake).is_err() {
                                 return reader;
                             }
-                            let Ok(ack) = resets.recv() else {
+                            let Ok((ack, rewind)) = resets.recv() else {
                                 return reader;
                             };
                             let result = drain_console(
@@ -606,8 +613,13 @@ impl Guest {
                                 &console,
                                 &over_limit,
                                 limit,
+                                rewind,
                             );
                             let stopped = result.is_err();
+                            if matches!(&result, Err(error) if error.kind() == io::ErrorKind::BrokenPipe)
+                            {
+                                console_closed.store(true, Ordering::Release);
+                            }
                             let _ = ack.send(result);
                             if stopped {
                                 return reader;
@@ -629,7 +641,11 @@ impl Guest {
                                 limit,
                             ) {
                                 Ok(ConsoleRead::Bytes | ConsoleRead::Idle) => {}
-                                Ok(ConsoleRead::Closed | ConsoleRead::Limit) | Err(_) => {
+                                Ok(ConsoleRead::Closed) => {
+                                    console_closed.store(true, Ordering::Release);
+                                    return reader;
+                                }
+                                Ok(ConsoleRead::Limit) | Err(_) => {
                                     return reader;
                                 }
                             }
@@ -643,6 +659,7 @@ impl Guest {
             work: Some(work),
             console,
             over_limit,
+            console_closed,
             reader: Some(reader),
             console_reset,
             console_wake,
@@ -667,11 +684,52 @@ impl Guest {
             .bytes()
     }
 
+    pub fn console_since(&self, offset: u64) -> (u64, Vec<u8>) {
+        let console = self.console.lock().unwrap_or_else(PoisonError::into_inner);
+        (console.position(), console.since(offset))
+    }
+
+    pub fn console_position(&self) -> u64 {
+        self.console
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .position()
+    }
+
     #[cfg(target_os = "linux")]
-    pub(crate) fn reset_console(&mut self) -> io::Result<()> {
+    pub(crate) fn reset_console(&mut self, position: u64) -> io::Result<()> {
+        self.collect_console(Some(position))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn sync_console(&mut self) -> io::Result<()> {
+        let result = if self.reader.as_ref().is_none_or(JoinHandle::is_finished) {
+            Err(io::ErrorKind::BrokenPipe.into())
+        } else {
+            self.collect_console(None)
+        };
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                if self.over_limit.load(Ordering::Acquire) {
+                    Err(io::Error::other("console limit reached"))
+                } else if self.console_closed.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the console collector stopped before the guest closed its console",
+                    ))
+                }
+            }
+            result => result,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn collect_console(&mut self, rewind: Option<u64>) -> io::Result<()> {
         let (ack, reply) = mpsc::sync_channel(0);
         self.console_reset
-            .send(ack)
+            .send((ack, rewind))
             .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
         self.console_wake.write_all(&[1])?;
         reply
@@ -1719,6 +1777,64 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_collector_stopped_keeps_the_collected_console() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "printf done");
+        let deadline = now() + Duration::from_secs(10);
+        while !guest.reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            assert!(now() < deadline, "the collector did not stop at EOF");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        guest.sync_console().unwrap();
+        assert_eq!(guest.console_since(0), (4, b"done".to_vec()));
+        let reason = loop {
+            if let Some(reason) = guest.stopped().unwrap() {
+                break reason;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        guest.finish(reason).unwrap();
+        guest.sync_console().unwrap();
+        assert_eq!(guest.console_since(2), (4, b"ne".to_vec()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_console_limit_reports_the_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = launch(directory.path());
+        launch.console_limit_bytes = 4;
+        let mut guest = shell(&launch, "printf 0123456789; exec sleep 60");
+        let deadline = now() + Duration::from_secs(10);
+        while !guest.reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            assert!(now() < deadline, "the collector did not stop at the limit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let error = guest.sync_console().unwrap_err();
+        assert_eq!(error.to_string(), "console limit reached");
+        guest.shutdown().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_collector_failed_reports_the_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let (sender, _) = mpsc::channel();
+        guest.console_reset = sender;
+        let error = guest.sync_console().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(error.to_string().contains("collector stopped"), "{error}");
+        guest.shutdown().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn explicit_shutdown_confirms_owned_child_and_never_resignals_finished_group() {
         let directory = tempfile::tempdir().unwrap();
         let launch = launch(directory.path());
@@ -1851,9 +1967,10 @@ mod tests {
         console.lock().unwrap().push(b"already collected");
         writer.write_all(b"pending pipe bytes").unwrap();
 
-        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64).unwrap();
+        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64, Some(9)).unwrap();
         assert_eq!(console.lock().unwrap().bytes(), b"");
         assert_eq!(console.lock().unwrap().total(), 35);
+        assert_eq!(console.lock().unwrap().position(), 9);
         assert!(!over_limit.load(Ordering::Acquire));
 
         writer.write_all(b"new branch").unwrap();
@@ -1862,6 +1979,23 @@ mod tests {
             Ok(ConsoleRead::Bytes)
         ));
         assert_eq!(console.lock().unwrap().bytes(), b"new branch");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_sync_collects_pending_console_pipe_bytes_and_keeps_them() {
+        let (mut reader, mut writer) = io::pipe().unwrap();
+        let flags = rustix::fs::fcntl_getfl(&reader).unwrap();
+        rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
+        let console = Mutex::new(ConsoleTail::new(64));
+        let over_limit = AtomicBool::new(false);
+        console.lock().unwrap().push(b"collected ");
+        writer.write_all(b"pending").unwrap();
+
+        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64, None).unwrap();
+        assert_eq!(console.lock().unwrap().bytes(), b"collected pending");
+        assert_eq!(console.lock().unwrap().position(), 17);
+        assert_eq!(console.lock().unwrap().since(10), b"pending");
     }
 
     #[test]

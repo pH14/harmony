@@ -518,9 +518,10 @@ completion. The parent reads the extent and computes its commitment only after
 that acknowledgement. The child holds the compressed pages, metadata and sidecar
 until the write; compressed pages copy once into the destination. The loaded-image
 handshake requires matching workers.
-The version 5 host image hello identifies qualification-aware INIT, descriptor-table
-IMPORT and transactional execution-endpoint commands. Both incompatible version 4
-schemas are refused alongside versions 1 through 3 before initialization.
+The version 6 host image hello identifies qualification-aware INIT, descriptor-table
+IMPORT, transactional execution-endpoint commands and the console-since read.
+Version 5, both incompatible version 4 schemas and versions 1 through 3 are
+refused before initialization.
 IMPORT carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
 Versions 1 through 4 are refused because those peers do not share the complete
@@ -560,7 +561,7 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap remains unchanged; the version 5 host hello
+The accepted worker descriptor cap remains unchanged; the version 6 host hello
 identifies both the descriptor-table import schema and the execution-endpoint
 protocol.
 
@@ -875,6 +876,13 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
+`SearchSession::console_since(offset)` returns the console position, the number
+of bytes the guest has written along its current history, and the bytes after
+`offset`, at most the newest 64 KiB of them. A restore sets the position back to
+the snapshot's: the VM serial capture is part of the snapshot, and a UML
+checkpoint records its position. On UML, bytes written before a restored
+checkpoint that were not read before the restore are no longer kept, so the
+bytes returned can start after `offset`.
 UML terminal settlement waits for the host process to exit and the console
 collector to finish before reporting the diagnostic tail. The kernel-owned exit
 status decides a panic; console text does not. Crash diagnostics report the
@@ -1053,7 +1061,7 @@ Guest; normal confirmed shutdown remains idempotent.
 
 ## Execution assurance
 
-The version 5 worker host hello separates the combined qualification-aware INIT,
+The version 6 worker host hello separates the combined qualification-aware INIT,
 descriptor-table IMPORT and execution-endpoint protocol from every prior schema.
 
 Sessions default to ordinary, explicitly unqualified execution. Standard

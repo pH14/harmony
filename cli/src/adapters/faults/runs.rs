@@ -602,6 +602,7 @@ mod tests {
     fn edited_report_fails_replay_verification_but_partial_report_allows_resume() {
         let dir = tempfile::tempdir().unwrap();
         let report = serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
             "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
             "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":1,
             "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],

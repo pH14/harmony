@@ -713,6 +713,15 @@ impl Session {
         drain_console(&mut self.client)
     }
 
+    pub fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>> {
+        let client = &mut self.client;
+        super::console_pages_since(offset, |offset| {
+            client
+                .request(&Request::Console { offset })
+                .map_err(|error| -> Box<dyn Error> { error })
+        })
+    }
+
     pub fn run_to_snapshot(&mut self, floor: u64) -> Result<u64, Box<dyn Error>> {
         self.ensure_mutation_available()?;
         run_to_snapshot(

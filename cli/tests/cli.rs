@@ -129,10 +129,12 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         action: None,
         observation,
         console: "saved console".into(),
+        console_dropped: 0,
         settlement: false,
         choices: 0,
     });
     let recorded = serde_json::json!({
+        "format": faults_workload::REPORT_FORMAT,
         "package": "faults", "mode": "search", "image_sha256": "image", "kernel_sha256": "kernel",
         "identity": "runner", "seed": 0, "workers": 1, "ram_mib": 1024, "executions": 1,
         "bug_found": false, "first_bug_execution": null, "bugs": [], "replays": [witness],

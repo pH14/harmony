@@ -7,6 +7,7 @@ pub struct ConsoleTail {
     bytes: VecDeque<u8>,
     capacity: usize,
     total: u64,
+    position: u64,
 }
 
 impl ConsoleTail {
@@ -15,11 +16,13 @@ impl ConsoleTail {
             bytes: VecDeque::with_capacity(capacity),
             capacity,
             total: 0,
+            position: 0,
         }
     }
 
     pub fn push(&mut self, chunk: &[u8]) {
         self.total = self.total.saturating_add(chunk.len() as u64);
+        self.position = self.position.saturating_add(chunk.len() as u64);
         let kept = &chunk[chunk.len().saturating_sub(self.capacity)..];
         let overflow = (self.bytes.len() + kept.len()).saturating_sub(self.capacity);
         self.bytes.drain(..overflow);
@@ -30,12 +33,24 @@ impl ConsoleTail {
         self.total
     }
 
-    pub fn clear_bytes(&mut self) {
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
+    pub fn rewind(&mut self, position: u64) {
         self.bytes.clear();
+        self.position = position;
     }
 
     pub fn bytes(&self) -> Vec<u8> {
         self.bytes.iter().copied().collect()
+    }
+
+    #[must_use]
+    pub fn since(&self, offset: u64) -> Vec<u8> {
+        let after = usize::try_from(self.position.saturating_sub(offset)).unwrap_or(usize::MAX);
+        let skip = self.bytes.len().saturating_sub(after);
+        self.bytes.iter().skip(skip).copied().collect()
     }
 
     pub fn contains(&self, needle: &[u8]) -> bool {
@@ -75,6 +90,19 @@ mod tests {
     }
 
     #[test]
+    fn since_returns_the_bytes_after_a_total_even_across_a_wrap() {
+        let mut tail = ConsoleTail::new(8);
+        tail.push(b"ok\nok\n");
+        let mark = tail.position();
+        tail.push(b"ok\n");
+        assert_eq!(tail.since(mark), b"ok\n");
+        tail.push(b"ok\nok\n");
+        assert_eq!(tail.since(mark), b"k\nok\nok\n");
+        assert_eq!(tail.since(tail.position()), b"");
+        assert_eq!(tail.since(0), tail.bytes());
+    }
+
+    #[test]
     fn finds_text_across_the_ring_boundary() {
         let mut tail = ConsoleTail::new(6);
         tail.push(b"xxxxAB");
@@ -93,14 +121,19 @@ mod tests {
     }
 
     #[test]
-    fn clearing_a_branch_keeps_the_host_output_budget() {
+    fn rewinding_to_a_checkpoint_keeps_the_host_output_budget() {
         let mut tail = ConsoleTail::new(8);
+        tail.push(b"boot\n");
+        let checkpoint = tail.position();
         tail.push(b"old text");
-        tail.clear_bytes();
+        tail.rewind(checkpoint);
         assert!(tail.bytes().is_empty());
-        assert_eq!(tail.total(), 8);
+        assert_eq!(tail.total(), 13);
+        assert_eq!(tail.position(), 5);
         tail.push(b"new");
         assert_eq!(tail.bytes(), b"new");
-        assert_eq!(tail.total(), 11);
+        assert_eq!(tail.total(), 16);
+        assert_eq!(tail.position(), 8);
+        assert_eq!(tail.since(checkpoint), b"new");
     }
 }
