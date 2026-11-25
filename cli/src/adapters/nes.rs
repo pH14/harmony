@@ -34,12 +34,12 @@ impl Package for Nes {
     fn validate_runner(&self, c: &mut Config) -> Result<()> {
         validate_runner(c)
     }
-    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
+    fn semantic_outcome(&self, _: &Path, payload: &serde_json::Value) -> Result<serde_json::Value> {
         let mut outcome = payload.clone();
         if let Some(outcome) = outcome.as_object_mut() {
             outcome.remove("repeats");
         }
-        outcome
+        Ok(outcome)
     }
     fn supports(&self, operation: Operation) -> bool {
         !matches!(
@@ -1407,8 +1407,8 @@ mod tests {
             "witness": first,
         });
         assert_eq!(
-            Nes.semantic_outcome(&m.payload),
-            Nes.semantic_outcome(&searched)
+            Nes.semantic_outcome(Path::new(""), &m.payload).unwrap(),
+            Nes.semantic_outcome(Path::new(""), &searched).unwrap()
         );
         record_witness(&mut m, &input, first.clone(), None).unwrap();
         assert_eq!(m.payload["repeats"].as_array().unwrap().len(), 2);
@@ -1417,8 +1417,8 @@ mod tests {
         assert!(record_witness(&mut m, &input, observed.clone(), Some(&first)).is_err());
         assert_eq!(m.payload["witness"], observed);
         assert_ne!(
-            Nes.semantic_outcome(&m.payload),
-            Nes.semantic_outcome(&searched)
+            Nes.semantic_outcome(Path::new(""), &m.payload).unwrap(),
+            Nes.semantic_outcome(Path::new(""), &searched).unwrap()
         );
         assert_eq!(m.payload["finding"], false);
         assert_eq!(m.payload["repeats"].as_array().unwrap().len(), 3);

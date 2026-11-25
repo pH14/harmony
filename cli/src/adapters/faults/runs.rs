@@ -5,9 +5,48 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     ops::{Deref, DerefMut},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedOutcome {
+    file: String,
+    sha256: String,
+}
+
+fn outcome_file(supervised: bool) -> &'static str {
+    if supervised {
+        "report.json"
+    } else {
+        "run.json"
+    }
+}
+
+fn read_outcome(
+    directory: &Path,
+    supervised: bool,
+    recorded: &RecordedOutcome,
+) -> Result<serde_json::Value> {
+    let expected = outcome_file(supervised);
+    if recorded.file != expected {
+        return Err(format!(
+            "faults run manifest names {} as its outcome; this run records {expected}",
+            recorded.file
+        )
+        .into());
+    }
+    let bytes = fs::read(directory.join(expected))?;
+    if crate::runtime::digest(&bytes) != recorded.sha256 {
+        return Err(format!("recorded {expected} has changed").into());
+    }
+    let outcome: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if supervised {
+        faults_workload::Report::deserialize(&outcome)?;
+    }
+    Ok(outcome)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +59,7 @@ struct State {
     #[serde(default)]
     uml_entropy_admitted: bool,
     #[serde(default)]
-    outcome: serde_json::Value,
+    outcome: Option<RecordedOutcome>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Manifest {
@@ -37,6 +76,10 @@ pub struct Manifest {
     pub uml_entropy_admitted: bool,
     #[serde(skip)]
     expected_outcome: Option<serde_json::Value>,
+    #[serde(skip)]
+    recorded_outcome: Option<RecordedOutcome>,
+    #[serde(skip)]
+    directory: Option<PathBuf>,
 }
 impl Deref for Manifest {
     type Target = crate::runs::Manifest;
@@ -51,20 +94,22 @@ impl DerefMut for Manifest {
 }
 impl Manifest {
     fn outcome_file(&self) -> &'static str {
-        if self.bundle.is_some() {
-            "report.json"
-        } else {
-            "run.json"
-        }
+        outcome_file(self.bundle.is_some())
     }
 
-    fn outcome(&self, path: &Path) -> Result<serde_json::Value> {
-        let file = path.join(self.outcome_file());
-        if file.is_file() {
-            Ok(serde_json::from_slice(&fs::read(file)?)?)
-        } else {
-            Ok(serde_json::Value::Null)
-        }
+    pub fn outcome(&self) -> Result<serde_json::Value> {
+        let Some(recorded) = &self.recorded_outcome else {
+            return Ok(serde_json::Value::Null);
+        };
+        let directory = self
+            .directory
+            .as_ref()
+            .ok_or("this faults run manifest was not read from a run directory")?;
+        read_outcome(directory, self.bundle.is_some(), recorded)
+    }
+
+    pub fn report(&self) -> Result<faults_workload::Report> {
+        Ok(serde_json::from_value(self.outcome()?)?)
     }
 
     fn verify_runtime_outcome(&self, outcome: &serde_json::Value) -> Result<()> {
@@ -107,15 +152,18 @@ impl Manifest {
             uml_host,
             uml_entropy_admitted,
             expected_outcome: None,
+            recorded_outcome: None,
+            directory: None,
         })
     }
     #[cfg(feature = "frontend")]
     pub fn read(path: &Path) -> Result<Self> {
-        Self::from_record(crate::runs::Manifest::read(path)?)
+        Self::from_record(crate::runs::Manifest::read(path)?, path)
     }
-    pub fn from_record(record: crate::runs::Manifest) -> Result<Self> {
+    pub fn from_record(record: crate::runs::Manifest, path: &Path) -> Result<Self> {
         let config = Config::from_shared(&record.config)?;
-        let state: State = serde_json::from_value(record.payload.clone())?;
+        let state: State = serde_json::from_value(record.payload.clone())
+            .map_err(|error| format!("faults run manifest does not match this build: {error}"))?;
         let uml_host =
             (config.backend == crate::config::Backend::Uml).then(|| record.runner_identity.clone());
         Ok(Self {
@@ -128,6 +176,8 @@ impl Manifest {
             uml_host,
             uml_entropy_admitted: state.uml_entropy_admitted,
             expected_outcome: None,
+            recorded_outcome: state.outcome,
+            directory: Some(path.to_path_buf()),
         })
     }
     pub fn pin_outcome(&mut self, outcome: impl Serialize) -> Result<()> {
@@ -138,7 +188,17 @@ impl Manifest {
         if self.record.status == "complete" && self.expected_outcome.is_none() {
             return Err("completed faults run has no returned outcome".into());
         }
-        let outcome = self.outcome(path)?;
+        let file = path.join(self.outcome_file());
+        let written = if file.is_file() {
+            let bytes = fs::read(file)?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            Some((bytes, value))
+        } else {
+            None
+        };
+        let outcome = written
+            .as_ref()
+            .map_or(serde_json::Value::Null, |(_, value)| value.clone());
         if self
             .expected_outcome
             .as_ref()
@@ -149,6 +209,10 @@ impl Manifest {
             );
         }
         self.verify_runtime_outcome(&outcome)?;
+        let outcome = written.map(|(bytes, _)| RecordedOutcome {
+            file: self.outcome_file().to_owned(),
+            sha256: crate::runtime::digest(&bytes),
+        });
         let mut record = self.record.clone();
         record.config = self.config.shared()?;
         record.payload = serde_json::to_value(State {
@@ -163,15 +227,20 @@ impl Manifest {
     }
     pub fn verify(&self, path: &Path) -> Result<()> {
         self.record.verify(path)?;
-        if self.outcome(path)? != self.record.payload["outcome"] {
-            return Err(format!("recorded {} has changed", self.outcome_file()).into());
-        }
-        self.verify_runtime_outcome(&self.record.payload["outcome"])
+        let present = path.join(self.outcome_file()).is_file();
+        let outcome = match (&self.recorded_outcome, present) {
+            (Some(recorded), true) => read_outcome(path, self.bundle.is_some(), recorded)?,
+            (None, false) => serde_json::Value::Null,
+            _ => return Err(format!("recorded {} has changed", self.outcome_file()).into()),
+        };
+        self.verify_runtime_outcome(&outcome)
     }
     pub fn inherit(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
         child.record = self.record.inherit(source, destination, mode)?;
         child.expected_outcome = None;
+        child.recorded_outcome = None;
+        child.directory = Some(destination.to_path_buf());
         Ok(child)
     }
     pub fn options(&self, path: &Path) -> Result<faults_workload::Options> {
@@ -275,15 +344,24 @@ impl Manifest {
 }
 
 #[cfg(feature = "frontend")]
-pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
+pub fn semantic_outcome(path: &Path, payload: &serde_json::Value) -> Result<serde_json::Value> {
     let mut outcome = payload.clone();
-    if let Some(report) = outcome
-        .get_mut("outcome")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        report.remove("wall_seconds");
+    let state: State = serde_json::from_value(payload.clone())
+        .map_err(|error| format!("faults run manifest does not match this build: {error}"))?;
+    if let Some(recorded) = &state.outcome {
+        let mut report = read_outcome(path, state.bundle.is_some(), recorded)?;
+        if let Some(report) = report.as_object_mut() {
+            report.remove("wall_seconds");
+        }
+        outcome["outcome"] = report;
     }
-    outcome
+    Ok(outcome)
+}
+
+#[cfg(test)]
+pub(super) fn recorded_outcome(dir: &Path, file: &str) -> serde_json::Value {
+    let bytes = fs::read(dir.join(file)).unwrap();
+    serde_json::json!({"file": file, "sha256": crate::runtime::digest(&bytes)})
 }
 
 #[cfg(test)]
@@ -553,17 +631,17 @@ mod tests {
         record
             .store(dir.path(), "initramfs", b"prepared initramfs")
             .unwrap();
-        let outcome = serde_json::json!({
-            "kernel_sha256": crate::runtime::digest(b"executed kernel"),
-            "image_sha256": crate::runtime::digest(b"prepared initramfs"),
-        });
+        let mut outcome = search_report(1);
+        outcome["kernel_sha256"] = crate::runtime::digest(b"executed kernel").into();
+        outcome["image_sha256"] = crate::runtime::digest(b"prepared initramfs").into();
         fs::write(
             dir.path().join("report.json"),
             serde_json::to_vec(&outcome).unwrap(),
         )
         .unwrap();
         record.payload = serde_json::json!({
-            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":outcome
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":recorded_outcome(dir.path(), "report.json")
         });
         record.status = "complete".into();
         record.save(dir.path()).unwrap();
@@ -578,7 +656,8 @@ mod tests {
         );
 
         let mut record = manifest.record.clone();
-        let mut outcome = record.payload["outcome"].clone();
+        let mut outcome: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join("report.json")).unwrap()).unwrap();
         outcome["kernel_sha256"] = record.artifacts["kernel"].clone().into();
         outcome["image_sha256"] = crate::runtime::digest(b"other initramfs").into();
         fs::write(
@@ -586,7 +665,7 @@ mod tests {
             serde_json::to_vec(&outcome).unwrap(),
         )
         .unwrap();
-        record.payload["outcome"] = outcome;
+        record.payload["outcome"] = recorded_outcome(dir.path(), "report.json");
         record.save(dir.path()).unwrap();
         let manifest = Manifest::read(dir.path()).unwrap();
         assert!(
@@ -618,7 +697,8 @@ mod tests {
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
         record.payload = serde_json::json!({
-            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":report
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":recorded_outcome(dir.path(), "report.json")
         });
         record.save(dir.path()).unwrap();
         let manifest = Manifest::read(dir.path()).unwrap();
@@ -673,7 +753,8 @@ mod tests {
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
         record.payload = serde_json::json!({
-            "bundle":null,"actions":[],"settle":true,"outcome":recorded
+            "bundle":null,"actions":[],"settle":true,
+            "outcome":recorded_outcome(dir.path(), "run.json")
         });
         record.save(dir.path()).unwrap();
         let manifest = Manifest::read(dir.path()).unwrap();
@@ -706,13 +787,126 @@ mod tests {
         assert!(!state.uml_entropy_admitted);
     }
 
+    fn search_report(executions: u64) -> serde_json::Value {
+        serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
+            "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
+            "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":executions,
+            "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],
+            "execution_ticks":1,"wall_seconds":1,"execution_failures":0
+        })
+    }
+
+    fn search_payload(dir: &Path, file: &str) -> serde_json::Value {
+        let bytes = fs::read(dir.join("report.json")).unwrap();
+        serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":{"file":file,"sha256":crate::runtime::digest(&bytes)}
+        })
+    }
+
     #[test]
     fn semantic_comparison_ignores_host_duration_but_keeps_execution_changes() {
-        let a = serde_json::json!({"actions":[1],"outcome":{"wall_seconds":1,"replays":[{"state_hash":"same"}]}});
+        let run = |report: serde_json::Value| {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(
+                dir.path().join("report.json"),
+                serde_json::to_vec(&report).unwrap(),
+            )
+            .unwrap();
+            semantic_outcome(dir.path(), &search_payload(dir.path(), "report.json")).unwrap()
+        };
+        let a = search_report(3);
         let mut b = a.clone();
-        b["outcome"]["wall_seconds"] = 2.into();
-        assert_eq!(semantic_outcome(&a), semantic_outcome(&b));
-        b["outcome"]["replays"][0]["state_hash"] = "changed".into();
-        assert_ne!(semantic_outcome(&a), semantic_outcome(&b));
+        b["wall_seconds"] = 2.into();
+        assert_eq!(run(a.clone()), run(b.clone()));
+        assert_ne!(run(a), run(search_report(4)));
+    }
+
+    #[test]
+    fn every_outcome_reader_refuses_an_old_format_another_file_or_a_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = search_report(3);
+        old["format"] = "faults-report-v1".into();
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let manifest = |payload: serde_json::Value| {
+            let mut record = crate::runs::Manifest::new(shared.clone(), "search").unwrap();
+            record.payload = payload;
+            record.save(dir.path()).unwrap();
+            Manifest::read(dir.path()).unwrap()
+        };
+        let errors = |payload: serde_json::Value| {
+            let manifest = manifest(payload.clone());
+            [
+                manifest.outcome().unwrap_err().to_string(),
+                manifest.report().unwrap_err().to_string(),
+                manifest.verify(dir.path()).unwrap_err().to_string(),
+                semantic_outcome(dir.path(), &payload)
+                    .unwrap_err()
+                    .to_string(),
+            ]
+        };
+        for error in errors(search_payload(dir.path(), "report.json")) {
+            assert!(error.contains("faults-report-v2"), "{error}");
+        }
+        for error in errors(search_payload(dir.path(), "../other/report.json")) {
+            assert!(error.contains("names ../other/report.json"), "{error}");
+        }
+        let payload = search_payload(dir.path(), "report.json");
+        fs::write(dir.path().join("report.json"), b"{\"bugs\":[").unwrap();
+        for error in errors(payload) {
+            assert!(
+                error.contains("recorded report.json has changed"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_manifest_names_the_report_by_digest_and_refuses_a_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = search_report(3);
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        let mut manifest = Manifest::from_record(record, dir.path()).unwrap();
+        manifest.pin_outcome(&report).unwrap();
+        manifest.save(dir.path()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved["payload"]["outcome"],
+            recorded_outcome(dir.path(), "report.json")
+        );
+        let manifest = Manifest::read(dir.path()).unwrap();
+        assert_eq!(manifest.outcome().unwrap(), report);
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&search_report(4)).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .outcome()
+                .unwrap_err()
+                .to_string()
+                .contains("recorded report.json has changed")
+        );
     }
 }
