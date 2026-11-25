@@ -543,8 +543,8 @@ climbs 256 per destroyed column plus boss damage and is done on
 `mother_brain_defeated`, and the escape stage climbs the escape shaft's route
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
-`to_ridley` and every route after Ridley shares `to_ending`, each read by one
-`last` with no stage scope. The walks to the refill rooms after Ridley and to
+`to_ridley` and every route stage after Ridley that keeps its last route
+cell shares `to_ending`, each read by one `last` with no stage scope. The walks to the refill rooms after Ridley and to
 the Ice Beam read their own tables, `to_ridley_refill` and `to_ice_beam`,
 without an aggregate, as the
 tourian_elevator stage below reads `to_ending`. The tourian_elevator
@@ -563,7 +563,7 @@ there, which `to_ending` lists first. An energy stage can end anywhere, so the
 stage after it can start elsewhere on its table or off it with that inherited
 credit. Each route stage but escape, which ends on the ending, and
 ice_beam, which ends on the Ice Beam bit, is done on a cell of its route.
-`to_ending` lists the way back from the Ice Beam, row 12 east and up column
+`to_ending` lists the way back from the Ice Beam, row 12 east and down column
 30, just before `(30,14)`, so the Tourian elevator stage credits that walk;
 a state climbing column 30 in norfair_return reaches `(30,14)` first, so
 those cells score below it. The routes

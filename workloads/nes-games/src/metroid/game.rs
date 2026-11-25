@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(route.last(), Some(&172_612));
         assert!(walks(&route[..2]));
         assert!(walks(&route[2..]));
-        assert_eq!(route[1] % 10_000, route[2] % 10_000);
+        assert_eq!(route[1..3], [162_212, 172_212]);
         let ending = table("to_ending");
         let back: Vec<u32> = route[route.len() - 6..].iter().rev().copied().collect();
         let start = ending.iter().position(|cell| *cell == back[0]).unwrap();
