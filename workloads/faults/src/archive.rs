@@ -26,7 +26,7 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_planned_ticks";
 
 pub const ACTION_HOST_TICKS: u64 = 256;
-pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
+pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v4";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultMilestones {

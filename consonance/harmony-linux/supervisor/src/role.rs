@@ -93,7 +93,7 @@ impl RoleWindows {
                 return true;
             }
             match window.action {
-                ProcessAction::Pause(_) => {
+                ProcessAction::Pause(length) => {
                     let Some(index) = bindings
                         .iter()
                         .position(|binding| binding.start == window.start)
@@ -106,7 +106,10 @@ impl RoleWindows {
                         return false;
                     };
                     window.node = node;
-                    window.start = window.start.max(binding.from);
+                    window.start = window
+                        .start
+                        .max(binding.from)
+                        .max(window.end.saturating_sub(length));
                     window.start < window.end
                 }
                 ProcessAction::EventPark {
@@ -222,6 +225,72 @@ mod tests {
         let mut parked = standing(80, windows[2..].to_vec());
         assert_eq!(roles.bind(&mut parked, None), Bound::default());
         assert_eq!(parked.windows, [window(2, park(), 60, 110)]);
+    }
+
+    #[test]
+    fn a_role_pause_answered_in_its_lead_starts_at_its_drawn_opening_with_its_drawn_length() {
+        let mut roles = RoleWindows::new();
+        let windows = vec![
+            window(ROLE_NODE, ProcessAction::Pause(50), 10, 188),
+            window(ROLE_NODE, park(), 188, 238),
+        ];
+        let pause = RolePause {
+            start: 10,
+            end: 188,
+        };
+        assert_eq!(
+            roles.bind(&mut standing(10, windows.clone()), None),
+            asked(pause)
+        );
+        assert_eq!(roles.resolve(pause, Some(1), 70), Some(1));
+        let mut answered = standing(80, windows.clone());
+        assert_eq!(roles.bind(&mut answered, None), Bound::default());
+        assert_eq!(
+            answered.windows,
+            [
+                window(1, ProcessAction::Pause(50), 138, 188),
+                window(1, park(), 188, 238),
+            ]
+        );
+        assert!(
+            answered
+                .steps(Some(5))
+                .iter()
+                .all(|step| !step.node(1).pause)
+        );
+
+        let mut late = RoleWindows::new();
+        late.resolve(pause, Some(1), 150);
+        let mut shortened = standing(150, windows);
+        late.bind(&mut shortened, None);
+        assert_eq!(
+            shortened.windows[0],
+            window(1, ProcessAction::Pause(50), 150, 188)
+        );
+    }
+
+    #[test]
+    fn a_role_pause_cut_after_its_lead_runs_from_its_drawn_opening_to_the_cut() {
+        let mut roles = RoleWindows::new();
+        let pause = RolePause {
+            start: 10,
+            end: 188,
+        };
+        assert_eq!(roles.resolve(pause, Some(1), 30), Some(1));
+        let mut cut = standing(
+            145,
+            vec![window(ROLE_NODE, ProcessAction::Pause(12), 10, 150)],
+        );
+        assert_eq!(roles.bind(&mut cut, None), Bound::default());
+        assert_eq!(cut.windows, [window(1, ProcessAction::Pause(12), 138, 150)]);
+        let steps = cut.steps(Some(125));
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| (step.moment(), step.node(1).pause))
+                .collect::<Vec<_>>(),
+            [(138, true), (145, true)]
+        );
     }
 
     #[test]

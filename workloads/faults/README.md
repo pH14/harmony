@@ -240,8 +240,8 @@ timing:
 | `DiskError(node, ticks)` | every read, write and flush on the node's disk fails with `EIO` for the window; drawn only for a node with a `disk` line |
 | `DiskStall(node, ticks)` | every request to the node's disk waits until the window closes; drawn only for a node with a `disk` line |
 | `DiskCorrupt(node, ticks)` | the node is killed, one bit flips in a block it wrote since its disk was last cut, and it comes back after a quarter of the window, as in `Restart`; drawn only for a node whose `disk` line has the `checksummed` flag |
-| `Pause(node, ticks)` | the node is stopped for the window, then continued |
-| `PauseParked(node, edges, hold, ticks, target)` | a parked pause (ours): the node is stopped for `ticks`, and from the resume a park counts for another `ticks`, so the action's window is twice `ticks`; the park counts one per edge from the resume, so the thread whose `edges`-th counted edge after the resume comes is held for the hold, with the optional target as in `EventPark`; never drawn on its own, only in place of a `Pause` under `resume_park` |
+| `Pause(node, ticks)` | the node is stopped for the window, then continued; a role pause's window starts with the role lead |
+| `PauseParked(node, edges, hold, ticks, target)` | a parked pause (ours): the node is stopped for `ticks`, and from the resume a park counts for another `ticks`, so the action's window is twice `ticks`, plus the role lead for a role pause; the park counts one per edge from the resume, so the thread whose `edges`-th counted edge after the resume comes is held for the hold, with the optional target as in `EventPark`; never drawn on its own, only in place of a `Pause` under `resume_park` |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once when its window opens; the window lasts the action's duration, or with the `hold_hooks` option its duration times 1, 2, 4 or 8, set by the top two bits of the action's `choice`, so it can overlap the actions after it; in a bundle with a `heal` line, every other hook is a cut, and when the last open cut window closes the supervisor runs the heal hook if a cut is still in force |
 | `Clock(node, offset_ms, rate_ppm, ticks)` | the node's wall clock steps by the offset and then moves by the rate in parts per million of guest time for the window, then returns to guest time; drawn only for VM execution |
@@ -392,7 +392,8 @@ vocabulary identifier records it with its sites.
 A parked pause is one action, so an expansion still returns one action per
 draw and the search's suffix limit counts it once: no limit can separate the
 pause from its park. Its standing windows are the pause for the first half of
-its window and an event park with the at-resume flag for the second half.
+its window and an event park with the at-resume flag for the second half; a
+role pause's first window also holds the lead before its pause.
 Under `resume_park` the host adds a `park-page` line to the supervisor bundle
 at preparation, unless the bundle already has one, so every node process gets
 the park page. The line goes into the bundle the host was given or, when it was
@@ -404,9 +405,10 @@ continues it after the write, so the first instrumented visit after the resume
 counts toward the park
 ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#parked-pause),
 [runtime README](runtime/README.md#park-page)). A replay repeats it. Shrinking
-offers three simpler forms of a `PauseParked(t)`: a `Wait(2t)` over its whole
-window when `2t` fits a wait's tick count, the plain `Pause(node, t)`, and a
-`PauseParked(t/2)`. The shrink cost counts a parked pause's whole window, `2t`.
+offers three simpler forms of a `PauseParked(t)`: a `Wait` over its whole
+window (`2t`, plus the lead for a role pause) when that fits a wait's tick
+count, the plain `Pause(node, t)`, and a `PauseParked(t/2)`. The shrink cost
+counts a parked pause's whole window.
 
 A parked pause can still run as a plain pause: the supervisor writes no record
 when the node has not stopped within its wait or has exited, and a node whose
@@ -427,9 +429,16 @@ the pause's length are the ones a bundle without the line draws. Parks and holds
 come from a separate stream that each pause made parked consumes, so where a
 node-indexed pause would be parked and the role pause is not (some node not
 yet ready), the later parks and holds of that suffix differ.
-The supervisor resolves the node in the guest when the pause window opens, by
-running the line's command, and a pause it cannot resolve runs as a wait of the
-same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+A role pause action starts with a lead of `ROLE_LEAD_TICKS` (128 supervisor
+ticks) before its drawn pause, so its duration is the lead plus what the same
+node-indexed action takes. Its pause window stands from the action's start and
+carries the drawn length, so the supervisor resolves the node in the guest
+during the lead, by running the line's command, and pauses it at the end of the
+window for the drawn length, less any time the answer took past the lead. An
+`EndFaults` that cuts the window shortens the carried length by the same
+amount, so a cut inside the lead leaves no pause. A pause the supervisor cannot
+resolve runs as a wait of the whole action's length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
+The duration policy identifier is `adaptive_action_ticks_v4`.
 A role `Pause` becomes a `PauseParked` only when every node's runtime has
 announced readiness, because the host cannot know which node the guest will
 name. Kills, restarts, disk and clock faults keep their node index. The
