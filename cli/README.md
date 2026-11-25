@@ -463,7 +463,11 @@ an interrupted run. A completed search also records the selected checkpoint's
 SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
 remain valid for the same workload. The selected journal digest is carried to
 the searcher and compared with the checkpoint bytes it actually opens, closing
-the gap between selection and resume. Both NES and faults resume compare the
+the gap between selection and resume. A continuation hard-links each recorded
+artifact (such as the kernel and initramfs) from its parent run after checking
+its digest, and copies it when the link fails, so a chain of resumed chunks
+stores the artifacts once on one file system and each chunk stays readable
+after its parent is deleted. Both NES and faults resume compare the
 selected checkpoint with the manifest already verified at command start; a
 replacement manifest cannot authorize a later checkpoint swap.
 
