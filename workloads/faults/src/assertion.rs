@@ -53,14 +53,13 @@ impl FailureDetails {
         ))
     }
 
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.0
+    fn unreadable(error: &serde_json::Error) -> Self {
+        Self(serde_json::json!({ "unreadable": error.to_string() }).to_string())
     }
 
     #[must_use]
-    pub fn value(&self) -> serde_json::Value {
-        serde_json::from_str(&self.0).unwrap_or_default()
+    pub fn text(&self) -> &str {
+        &self.0
     }
 
     #[must_use]
@@ -71,22 +70,17 @@ impl FailureDetails {
 
 impl Serialize for FailureDetails {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if serializer.is_human_readable() {
-            self.value().serialize(serializer)
-        } else {
-            serializer.serialize_str(&self.0)
-        }
+        serializer.serialize_str(&self.0)
     }
 }
 
 impl<'de> Deserialize<'de> for FailureDetails {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = if deserializer.is_human_readable() {
-            serde_json::Value::deserialize(deserializer)?
-        } else {
-            serde_json::from_str(&String::deserialize(deserializer)?).map_err(D::Error::custom)?
-        };
-        Self::of(&value).ok_or_else(|| D::Error::custom("assertion failure details are null"))
+        let text = String::deserialize(deserializer)?;
+        if text.is_empty() {
+            return Err(D::Error::custom("assertion failure details are empty"));
+        }
+        Ok(Self(text))
     }
 }
 
@@ -150,12 +144,13 @@ impl AssertionOutcome {
     }
 
     pub fn merge(&mut self, other: &Self) {
+        let first_violation = !self.violated() && other.violated();
         self.passed |= other.passed;
         self.failed |= other.failed;
         if other.holds.is_some() {
             self.holds = other.holds;
         }
-        if self.failure_details.is_none() {
+        if first_violation {
             self.failure_details.clone_from(&other.failure_details);
         }
     }
@@ -340,8 +335,24 @@ struct RawAssert {
     #[serde(default = "must_hit_default")]
     must_hit: bool,
     location: Option<RawLocation>,
+}
+
+#[derive(Deserialize)]
+struct RawDetailsEvent {
+    antithesis_assert: RawDetails,
+}
+
+#[derive(Deserialize)]
+struct RawDetails {
     #[serde(default)]
     details: serde_json::Value,
+}
+
+fn failure_details(bytes: &[u8]) -> Option<FailureDetails> {
+    match serde_json::from_slice::<RawDetailsEvent>(bytes) {
+        Ok(event) => FailureDetails::of(&event.antithesis_assert.details),
+        Err(error) => Some(FailureDetails::unreadable(&error)),
+    }
 }
 
 fn must_hit_default() -> bool {
@@ -403,7 +414,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             failure_details: None,
         };
         if outcome.violated() {
-            outcome.failure_details = FailureDetails::of(&record.details);
+            outcome.failure_details = failure_details(bytes);
         }
         Some((id, outcome))
     });
@@ -607,6 +618,14 @@ mod tests {
         .into_bytes()
     }
 
+    fn parsed(details: &FailureDetails) -> serde_json::Value {
+        serde_json::from_str(details.text()).unwrap()
+    }
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
     #[test]
     fn a_failed_record_keeps_its_details_and_a_passing_one_keeps_none() {
         let (_, failed) = decode(&detailed(
@@ -615,7 +634,7 @@ mod tests {
         ));
         let details = failed.failure_details.expect("details");
         assert_eq!(
-            details.value(),
+            parsed(&details),
             serde_json::json!({"node": "n1", "highest": 482, "answer": 333})
         );
         assert_eq!(
@@ -636,6 +655,19 @@ mod tests {
     }
 
     #[test]
+    fn details_too_deep_to_read_still_record_the_violation() {
+        let (_, failed) = decode(&detailed(false, &format!(r#"{{"deep":{}}}"#, nested(130))));
+        assert!(failed.violated());
+        let details = parsed(&failed.failure_details.expect("details"));
+        assert!(
+            details["unreadable"]
+                .as_str()
+                .unwrap()
+                .contains("recursion limit")
+        );
+    }
+
+    #[test]
     fn merging_keeps_the_details_of_the_first_failure() {
         let mut assertions = Assertions::default();
         let (id, declared) = decode(&record("always", true, false, false));
@@ -645,56 +677,78 @@ mod tests {
         assertions.record(id.clone(), first);
         assertions.record(id.clone(), second.clone());
         let mut later = Assertions::default();
-        later.record(id.clone(), second);
+        later.record(id.clone(), second.clone());
         assertions.merge(&later);
         assert_eq!(
             assertions.violation_details(),
             BTreeMap::from([(
-                id,
+                id.clone(),
                 FailureDetails::of(&serde_json::json!({"try": 1})).unwrap()
             )])
         );
+        let mut bare_first = Assertions::default();
+        bare_first.record(id.clone(), decode(&detailed(false, "null")).1);
+        bare_first.record(id.clone(), second);
+        assert_eq!(bare_first.violation_details(), BTreeMap::new());
     }
 
     #[test]
     fn oversize_details_are_replaced_by_a_counted_prefix() {
         let large = serde_json::json!({ "log": "\u{e9}".repeat(FAILURE_DETAILS_LIMIT_BYTES) });
         let serialized = large.to_string();
-        let details = FailureDetails::of(&large).unwrap().value();
+        let details = parsed(&FailureDetails::of(&large).unwrap());
         assert_eq!(details["truncated_bytes"], serialized.len());
         let prefix = details["prefix"].as_str().unwrap();
         assert!(prefix.len() <= FAILURE_DETAILS_PREFIX_BYTES);
         assert!(prefix.len() > FAILURE_DETAILS_PREFIX_BYTES - 4);
         assert!(serialized.starts_with(prefix));
         let small = serde_json::json!({ "log": "x".repeat(16) });
-        assert_eq!(FailureDetails::of(&small).unwrap().value(), small);
+        assert_eq!(parsed(&FailureDetails::of(&small).unwrap()), small);
     }
 
     #[test]
-    fn details_round_trip_as_json_and_as_postcard() {
-        let (id, failed) = decode(&detailed(false, r#"{"node":"n1","ok":[1,2.5,null]}"#));
+    fn details_round_trip_as_json_and_as_postcard_without_changing_their_text() {
+        let (id, failed) = decode(&detailed(
+            false,
+            &format!(
+                r#"{{"node":"n1","ok":[1,2.5,null,37e-23],"deep":{}}}"#,
+                nested(124)
+            ),
+        ));
+        let text = failed
+            .failure_details
+            .clone()
+            .expect("details")
+            .text()
+            .to_owned();
         let (other, plain) = decode(&record("always", true, true, true));
         let assertions = Assertions(BTreeMap::from([(id, failed), (other, plain)]));
-        let json = serde_json::to_value(&assertions).unwrap();
+        let json = serde_json::to_string(&assertions).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            json["m"]["failure_details"],
-            serde_json::json!({"node": "n1", "ok": [1, 2.5, null]})
+            value["m"]["failure_details"],
+            serde_json::Value::String(text.clone())
         );
         assert!(
-            json["id always true"]
+            value["id always true"]
                 .as_object()
                 .unwrap()
                 .get("failure_details")
                 .is_none()
         );
-        assert_eq!(
-            serde_json::from_value::<Assertions>(json).unwrap(),
-            assertions
-        );
+        let from_json = serde_json::from_str::<Assertions>(&json).unwrap();
+        assert_eq!(from_json, assertions);
         let bytes = postcard::to_allocvec(&assertions).unwrap();
+        let from_postcard = postcard::from_bytes::<Assertions>(&bytes).unwrap();
+        assert_eq!(from_postcard, assertions);
         assert_eq!(
-            postcard::from_bytes::<Assertions>(&bytes).unwrap(),
-            assertions
+            from_postcard.0["m"]
+                .failure_details
+                .as_ref()
+                .unwrap()
+                .text(),
+            text
         );
+        assert_eq!(postcard::to_allocvec(&from_postcard).unwrap(), bytes);
     }
 }

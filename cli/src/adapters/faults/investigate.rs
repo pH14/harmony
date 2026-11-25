@@ -414,12 +414,32 @@ fn undecided_line(undecided: &serde_json::Value) -> Option<String> {
 
 #[cfg(feature = "frontend")]
 fn violation_lines(replay: &serde_json::Value, details: &serde_json::Value) -> Vec<String> {
+    let detail_line = |id: &str| {
+        details
+            .get(id)
+            .map(|text| format!("    details: {}", text.as_str().unwrap_or_default()))
+    };
+    let replayed: Vec<&str> = replay["violations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
     let mut lines = Vec::new();
-    for violation in replay["violations"].as_array().into_iter().flatten() {
-        let violation = violation.as_str().unwrap_or_default();
+    for violation in &replayed {
         lines.push(format!("  violation: {violation}"));
-        if let Some(details) = details.get(violation) {
-            lines.push(format!("    details: {details}"));
+        lines.extend(detail_line(violation));
+    }
+    for id in details
+        .as_object()
+        .into_iter()
+        .flat_map(serde_json::Map::keys)
+    {
+        if !replayed.contains(&id.as_str()) {
+            lines.push(format!(
+                "  violation in the search, not in this replay: {id}"
+            ));
+            lines.extend(detail_line(id));
         }
     }
     lines
@@ -715,7 +735,7 @@ mod tests {
     #[test]
     fn a_finding_shows_the_details_after_each_violation_that_has_them() {
         let replay = serde_json::json!({"violations": ["highest", "acked"]});
-        let details = serde_json::json!({"highest": {"node": "n1", "answer": 333}});
+        let details = serde_json::json!({"highest": "{\"answer\":333,\"node\":\"n1\"}"});
         assert_eq!(
             violation_lines(&replay, &details),
             [
@@ -727,6 +747,13 @@ mod tests {
         assert_eq!(
             violation_lines(&replay, &serde_json::Value::Null),
             ["  violation: highest", "  violation: acked"]
+        );
+        assert_eq!(
+            violation_lines(&serde_json::json!({"violations": []}), &details),
+            [
+                "  violation in the search, not in this replay: highest",
+                "    details: {\"answer\":333,\"node\":\"n1\"}",
+            ]
         );
     }
 

@@ -816,13 +816,19 @@ The host keys each assertion by its `id` (the message when the id is empty)
 and keeps its kind, message, and source location. An Always or
 AlwaysOrUnreachable assertion evaluated false, or an Unreachable assertion that
 was reached, is a violation and marks the execution as a bug. The host keeps
-the `details` object of the first record that violates an assertion as that
+the `details` of the record that first violates an assertion as that
 assertion's `failure_details`, so a finding names the values the guest saw;
-passing records and null details keep nothing. Details whose JSON is longer
-than 4096 bytes (`FAILURE_DETAILS_LIMIT_BYTES`) are replaced by
-`{"truncated_bytes": N, "prefix": "..."}` holding the first 1024 bytes
-(`FAILURE_DETAILS_PREFIX_BYTES`), so one large payload cannot bloat every
-report and snapshot that carries the observation. The set of
+passing records keep nothing, and a first violation with null details keeps
+nothing even when a later violation has some. The details are stored as their
+compact JSON text, a string in every format, so a float or a deeply nested
+value reads back byte for byte and adds no nesting to `report.json`. Details
+that the JSON reader cannot parse (nesting past its depth limit) become
+`{"unreadable": "<reader error>"}` and the violation is still recorded.
+Details whose text is longer than 4096 bytes (`FAILURE_DETAILS_LIMIT_BYTES`)
+become `{"truncated_bytes": N, "prefix": "..."}` holding the first 1024 bytes
+(`FAILURE_DETAILS_PREFIX_BYTES`). `/dev/harmony` accepts at most 3939 bytes
+per record today, so a guest cannot reach that cap through the device: a
+larger SDK write fails in the guest and no record arrives. The set of
 Sometimes and Reachable assertions that passed enters the archive key as a
 count plus a digest of the sorted ids, so the key has no limit on how many
 distinct assertions a workload declares. Every process's records feed the key.
@@ -1035,9 +1041,13 @@ one: exact replay and the timeline refuse an old report, and `search --resume`
 discards it and replays its bugs again. The run manifest names `report.json`
 by its SHA-256 instead of holding a copy, so the report is stored once.
 Each bug's `violation_details` maps a violated assertion's id to its
-`failure_details`, and is omitted when no violated assertion has details;
+`failure_details` text, and is omitted when no violated assertion has details;
 `bug-N.json` carries the same field on each assertion of its observations.
-`harmony show --finding N` prints the details on the line after each violation.
+`harmony show --finding N` prints the details on the line after each violation,
+and lists a violation the search recorded but the replay did not reproduce,
+with its details, after the replay's own violations. The search archive's
+format is `faults-archive-v3`, because its per-bug observations carry the
+details too.
 
 A search report keeps each bug's replay outcome but not its per-step timeline
 (the console and observations at every step), which is most of a bug's

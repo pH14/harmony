@@ -440,7 +440,7 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
     )
 }
 
-pub const ARCHIVE_FORMAT: &str = "faults-archive-v2";
+pub const ARCHIVE_FORMAT: &str = "faults-archive-v3";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FaultArchive;
@@ -1316,7 +1316,7 @@ mod tests {
         ] {
             let missing = refused(text);
             assert_eq!(
-                missing, "archive names no format; this build reads faults-archive-v2",
+                missing, "archive names no format; this build reads faults-archive-v3",
                 "{text}"
             );
             let streamed = ArchiveSource::<FaultArchiveReport>::from_reader(text.as_bytes())
@@ -1328,7 +1328,7 @@ mod tests {
         let other = refused("{\"format\":\"faults-archive-v0\"}");
         assert!(
             other.contains(
-                "archive format is faults-archive-v0; this build reads faults-archive-v2"
+                "archive format is faults-archive-v0; this build reads faults-archive-v3"
             ),
             "{other}"
         );

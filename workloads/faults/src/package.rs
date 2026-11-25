@@ -2297,7 +2297,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             written["bugs"][0]["violation_details"],
-            serde_json::json!({"highest": {"node": "n1", "highest": 482, "answer": 333}})
+            serde_json::json!({"highest": r#"{"answer":333,"highest":482,"node":"n1"}"#})
         );
         assert!(
             written["bugs"][1]
