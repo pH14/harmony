@@ -1722,7 +1722,7 @@ function startSearch(level = bootLevel) {
   $("error").hidden = true;
   $("memory-limit").hidden = true;
   $("status").textContent = `Loading ${game.title}…`;
-  $("pause").disabled = true;
+  setPause(true);
   updateSearchControl();
 
   $("status-dot").className = "";
@@ -1789,7 +1789,7 @@ function startSearch(level = bootLevel) {
         updateStats();
         $("status").textContent = "Exploring";
         updateSearchControl();
-        $("pause").disabled = false;
+        setPause(false);
         $("reset").disabled = false;
         const state = data.state;
         stateCache.set(state.id, state);
@@ -1917,7 +1917,7 @@ function startSearch(level = bootLevel) {
         $("status").textContent = data.won ? "Game won" : ended;
         updateSearchControl();
         $("goal-status").textContent = data.won ? "Game complete" : ended;
-        $("pause").disabled = true;
+        setPause(true);
         $("memory-limit").hidden = data.won || data.finished;
         $("memory-limit").textContent = `The search used its ${fmt(budget.searchMiB)} MiB memory limit. Delete a branch or restart the search to free memory.`;
         $("status-dot").className = "paused";
@@ -2820,11 +2820,14 @@ function updateBranchControls() {
   for (const button of $("branch-tree").querySelectorAll("button[data-search],button[data-resume-search],button[data-delete-search]"))
     button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
-  $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
-  $("pause").dataset.flags = JSON.stringify({ ready, branchBusy, controlMode, stopped: !!stats.stopped });
+  setPause(!ready || branchBusy || controlMode || !!stats.stopped);
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
     button.disabled = controlMode || branchBusy;
+}
+function setPause(disabled) {
+  $("pause").disabled = disabled;
+  $("pause").dataset.flags = JSON.stringify({ ready, branchBusy, controlMode, stopped: !!stats.stopped });
 }
 function stopControl() {
   if (!controlMode) return;

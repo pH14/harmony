@@ -44,14 +44,15 @@ async function stillDuring(page, ms) {
   assert.ok(during.length >= 4, 'The replay keeps playing while the counter is sampled');
   assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
-async function whenEnabled(page, selector) {
+async function clickWhenEnabled(page, selector) {
+  const deadline = Date.now() + 30000;
   try {
-    await page.waitForFunction((selector) => !document.querySelector(selector).disabled, selector, {timeout: 30000});
+    await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, selector, {timeout: 30000});
+    await page.locator(selector).click({timeout: Math.max(1, deadline - Date.now())});
   } catch (error) {
-    const state = await page.evaluate((selector) => ({flags: document.querySelector(selector).dataset.flags, frame: document.querySelector('#frame-label').textContent}), selector);
-    throw new Error(`${selector} stayed disabled for 30 s; flags at the last control update ${state.flags}, frame label ${JSON.stringify(state.frame)}`, {cause: error});
+    const state = await page.evaluate((selector) => ({flags: document.querySelector(selector)?.dataset.flags ?? `no ${selector}`, frame: document.querySelector('#frame-label')?.textContent ?? 'no #frame-label'}), selector).catch((reason) => ({flags: `unreadable: ${reason.message}`, frame: 'unreadable'}));
+    throw new Error(`${selector} was not clicked within 30 s; flags when it was last enabled or disabled ${state.flags}, frame label ${JSON.stringify(state.frame)}`, {cause: error});
   }
-  return page.locator(selector);
 }
 const detail = (page, name) => page.evaluate((name) => [...document.querySelectorAll('#details div')].find((d) => d.firstChild.textContent === name)?.lastChild.textContent, name);
 async function scrubMarker(page, frame) {
@@ -174,8 +175,8 @@ try {
   await page.locator('#speed').selectOption('1');
   await replayFromStart(page);
   await stillDuring(page, 300);
-  await (await whenEnabled(page, '#pause')).click();
-  await (await whenEnabled(page, '#pause')).click();
+  await clickWhenEnabled(page, '#pause');
+  await clickWhenEnabled(page, '#pause');
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search');
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
