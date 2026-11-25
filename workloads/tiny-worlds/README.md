@@ -62,7 +62,9 @@ the header and without `result_sha256`, the draw checkpoints and the duration
 draw's `context`, the fields that differ between two keys making the same
 decisions (the rule `nes-eval` uses). The digest is the SHA-256 of the postcard
 encoding of the records' canonical JSON, concatenated. Two runs of one seed
-under keys that order states alike give equal digests.
+under keys that order states alike give equal digests. These readers, and the
+route and pick summaries, recognize the header by its `schema_version` key and
+refuse a stream whose header names another schema version.
 
 An optional `search` object selects existing campaign policies without changing
 the world: `mixture` accepts the identifiers documented in the searcher

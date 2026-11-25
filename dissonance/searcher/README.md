@@ -59,8 +59,11 @@ Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
 into a completed report. Archive-origin recording and full or prefix replay require
-an `ArchiveSource` built by parsing and hashing one byte stream. Its private report
-and digest cannot be replaced separately, and replay checks that raw-byte digest
+an `ArchiveSource` built by parsing and hashing one byte stream. A report type
+names its archive format through `ArchiveReportFormat`; when it has one, the
+source reads the `format` key first and refuses another or a missing format by
+name before it decodes any entry. Its private report and digest cannot be
+replaced separately, and replay checks that raw-byte digest
 against the recorded origin before deriving resume input or importing evidence.
 Changing only JSON whitespace still changes the source identity. Live archive
 import uses that same sealed source. Each exported archive snapshot also has a

@@ -39,10 +39,10 @@ use crate::{
             StreamIdentity,
         },
         campaign::{
-            ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
-            CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
-            postcard_value_sha256,
+            ArchiveFormat, ArchiveFormatName, ArchiveReportFormat, ArchiveReportState,
+            CampaignActionResult, CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation,
+            InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
         choice::{
             Choice, ChoicePlan, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser,
@@ -1013,6 +1013,10 @@ pub struct NesArchive;
 
 impl ArchiveFormatName for NesArchive {
     const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
+impl ArchiveReportFormat for NesArchiveReport {
+    const FORMAT: Option<&'static str> = Some(ARCHIVE_FORMAT);
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
