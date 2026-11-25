@@ -59,8 +59,11 @@ Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
 into a completed report. Archive-origin recording and full or prefix replay require
-an `ArchiveSource` built by parsing and hashing one byte stream. Its private report
-and digest cannot be replaced separately, and replay checks that raw-byte digest
+an `ArchiveSource` built by parsing and hashing one byte stream. A report type
+names its archive format through `ArchiveReportFormat`; when it has one, the
+source reads the `format` key first and refuses another or a missing format by
+name before it decodes any entry. Its private report and digest cannot be
+replaced separately, and replay checks that raw-byte digest
 against the recorded origin before deriving resume input or importing evidence.
 Changing only JSON whitespace still changes the source identity. Live archive
 import uses that same sealed source. Each exported archive snapshot also has a
@@ -409,8 +412,9 @@ with a parked pause
 fit the campaign's memory budget.
 
 Streams require the current engine `schema_version` in addition to the
-workload's format identifier. Missing or unsupported engine versions are
-rejected before replay. The stateful resource fixture uses a distinct checkpoint
+workload's format identifier. The reader checks both before it decodes the
+rest of the header, so a stream from an older schema is refused with the
+schema message even when its header lacks a field this build requires. The stateful resource fixture uses a distinct checkpoint
 shape and checks that corrupted checkpoint evidence is rejected.
 
 Workloads can expose bounded observation counters through `Reporting::diagnostics`.

@@ -246,7 +246,7 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
 pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
     let parent = saved.path;
-    let original = Manifest::from_record(saved.manifest)?;
+    let original = Manifest::from_record(saved.manifest, &parent)?;
     let resume = request.operation == crate::adapters::Operation::Resume;
     if resume {
         original.record.verify(&parent)?;
@@ -315,9 +315,7 @@ fn resume_start(
 ) -> SearchStart {
     SearchStart::Checkpoint {
         checkpoint,
-        previous: serde_json::from_value(original.record.payload["outcome"].clone())
-            .ok()
-            .map(Box::new),
+        previous: original.report().ok().map(Box::new),
     }
 }
 
@@ -1012,26 +1010,44 @@ mod tests {
     }
 
     #[test]
-    fn resume_passes_the_manifest_copy_of_the_earlier_report_to_the_package() {
+    fn resume_passes_the_unchanged_earlier_report_to_the_package() {
         let mut shared = crate::config::Config::default();
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let report = serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
             "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
             "identity":"runner","seed":0,"workers":1,"ram_mib":1024,"executions":7,
             "bug_found":false,"first_bug_execution":null,"bugs":[],"replays":[],
             "execution_ticks":1,"wall_seconds":1,"execution_failures":0
         });
-        let previous = |outcome: serde_json::Value| {
+        let directory = tempfile::tempdir().unwrap();
+        let previous = |outcome: serde_json::Value, replacement: Option<&[u8]>| {
+            let recorded = if outcome.is_null() {
+                serde_json::Value::Null
+            } else {
+                fs::write(
+                    directory.path().join("report.json"),
+                    serde_json::to_vec(&outcome).unwrap(),
+                )
+                .unwrap();
+                super::super::runs::recorded_outcome(directory.path(), "report.json")
+            };
+            if let Some(bytes) = replacement {
+                fs::write(directory.path().join("report.json"), bytes).unwrap();
+            }
             let mut record = crate::runs::Manifest::new(shared.clone(), "search").unwrap();
             record.payload = serde_json::json!({
-                "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":outcome
+                "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":recorded
             });
             let checkpoint = searcher::search::checkpoint::PinnedCheckpoint {
                 path: "checkpoint".into(),
                 sha256: "digest".into(),
             };
-            match resume_start(checkpoint, &Manifest::from_record(record).unwrap()) {
+            match resume_start(
+                checkpoint,
+                &Manifest::from_record(record, directory.path()).unwrap(),
+            ) {
                 SearchStart::Checkpoint {
                     checkpoint,
                     previous,
@@ -1042,9 +1058,19 @@ mod tests {
                 _ => panic!("resume must start from the checkpoint"),
             }
         };
-        assert_eq!(previous(report).map(|report| report.executions), Some(7));
-        assert!(previous(serde_json::Value::Null).is_none());
-        assert!(previous(serde_json::json!({"bugs":[]})).is_none());
+        assert_eq!(
+            previous(report.clone(), None).map(|report| report.executions),
+            Some(7)
+        );
+        assert!(previous(serde_json::Value::Null, None).is_none());
+        assert!(previous(serde_json::json!({"bugs":[]}), None).is_none());
+        assert!(previous(report.clone(), Some(b"{\"bugs\":[")).is_none());
+        let mut later = report.clone();
+        later["executions"] = 8.into();
+        assert!(previous(report.clone(), Some(&serde_json::to_vec(&later).unwrap())).is_none());
+        let mut old = report;
+        old["format"] = "faults-report-v1".into();
+        assert!(previous(old, None).is_none());
     }
 
     #[test]
@@ -1164,6 +1190,7 @@ mod tests {
         record.save(directory.path()).unwrap();
         let mut manifest = Manifest::read(directory.path()).unwrap();
         let returned: faults_workload::Report = serde_json::from_value(serde_json::json!({
+            "format":faults_workload::REPORT_FORMAT,
             "package":"faults","mode":"search","image_sha256":crate::runtime::digest(b"image"),
             "kernel_sha256":crate::runtime::digest(b"kernel"),"identity":"runner","seed":0,"workers":1,
             "ram_mib":1024,"executions":1,"bug_found":false,
@@ -1207,8 +1234,12 @@ mod tests {
         let saved = Manifest::read(directory.path()).unwrap();
         assert_eq!(saved.status, "complete");
         assert_eq!(
+            saved.outcome().unwrap(),
+            serde_json::to_value(&returned).unwrap()
+        );
+        assert_eq!(
             saved.record.payload["outcome"],
-            serde_json::to_value(returned).unwrap()
+            super::super::runs::recorded_outcome(directory.path(), "report.json")
         );
     }
 
@@ -1257,6 +1288,10 @@ mod tests {
         assert_eq!(finish(directory.path(), &mut manifest, Ok(1)).unwrap(), 1);
         let saved = Manifest::read(directory.path()).unwrap();
         assert_eq!(saved.status, "complete");
-        assert_eq!(saved.record.payload["outcome"], produced);
+        assert_eq!(saved.outcome().unwrap(), produced);
+        assert_eq!(
+            saved.record.payload["outcome"],
+            super::super::runs::recorded_outcome(directory.path(), "run.json")
+        );
     }
 }

@@ -12,7 +12,18 @@ fn saved_fault_run(
     outcome: serde_json::Value,
     status: &str,
 ) {
+    use sha2::{Digest, Sha256};
+
     std::fs::create_dir_all(path).unwrap();
+    let file = if bundle.is_null() {
+        "run.json"
+    } else {
+        "report.json"
+    };
+    let bytes = serde_json::to_vec(&outcome).unwrap();
+    std::fs::write(path.join(file), &bytes).unwrap();
+    let outcome =
+        serde_json::json!({"file": file, "sha256": format!("{:x}", Sha256::digest(&bytes))});
     std::fs::write(
         path.join("manifest.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -38,7 +49,7 @@ fn saved_fault_run(
 }
 
 #[test]
-fn show_uses_saved_faults_outcome_when_command_file_changes() {
+fn show_reads_the_command_outcome_file_and_refuses_it_once_changed() {
     let dir = tempfile::tempdir().unwrap();
     let recorded = serde_json::json!({"application_sha256": "saved"});
     saved_fault_run(
@@ -47,16 +58,13 @@ fn show_uses_saved_faults_outcome_when_command_file_changes() {
         recorded.clone(),
         "complete",
     );
-    std::fs::write(
-        dir.path().join("run.json"),
-        serde_json::to_vec(&serde_json::json!({"application_sha256": "altered"})).unwrap(),
-    )
-    .unwrap();
-
-    let output = harmony()
-        .args(["show", dir.path().to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
+    let show = || {
+        harmony()
+            .args(["show", dir.path().to_str().unwrap(), "--json"])
+            .output()
+            .unwrap()
+    };
+    let output = show();
     assert!(
         output.status.success(),
         "{}",
@@ -64,6 +72,15 @@ fn show_uses_saved_faults_outcome_when_command_file_changes() {
     );
     let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(shown["result"], recorded);
+
+    std::fs::write(
+        dir.path().join("run.json"),
+        serde_json::to_vec(&serde_json::json!({"application_sha256": "altered"})).unwrap(),
+    )
+    .unwrap();
+    let output = show();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recorded run.json has changed"));
 }
 
 #[test]
@@ -115,7 +132,7 @@ fn show_refuses_changed_failed_command_console_with_saved_digest() {
 }
 
 #[test]
-fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
+fn show_timeline_and_logs_read_the_report_file_and_refuse_it_once_changed() {
     use faults_workload::{
         package::{ReplayStep, ReplaySummary},
         target::FaultObservations,
@@ -129,10 +146,12 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         action: None,
         observation,
         console: "saved console".into(),
+        console_dropped: 0,
         settlement: false,
         choices: 0,
     });
     let recorded = serde_json::json!({
+        "format": faults_workload::REPORT_FORMAT,
         "package": "faults", "mode": "search", "image_sha256": "image", "kernel_sha256": "kernel",
         "identity": "runner", "seed": 0, "workers": 1, "ram_mib": 1024, "executions": 1,
         "bug_found": false, "first_bug_execution": null, "bugs": [], "replays": [witness],
@@ -144,6 +163,31 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         recorded.clone(),
         "complete",
     );
+    std::fs::write(dir.path().join("serial.log"), b"planted console\n").unwrap();
+
+    let path = dir.path().to_str().unwrap();
+    let commands = [
+        vec!["show", path, "--json"],
+        vec!["show", path, "--timeline", "--json"],
+        vec!["show", path, "--logs", "--json"],
+    ];
+    let shown: Vec<serde_json::Value> = commands
+        .iter()
+        .map(|args| {
+            let output = harmony().args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).unwrap()
+        })
+        .collect();
+    assert_eq!(shown[0]["result"], recorded);
+    assert_eq!(shown[1], recorded["replays"][0]["timeline"]);
+    assert_eq!(shown[2][0]["step"], 0);
+    assert_eq!(shown[2][0]["lines"], serde_json::json!(["saved console"]));
+
     let mut altered = recorded.clone();
     altered["replays"][0]["timeline"][0]["console"] = "altered console".into();
     std::fs::write(
@@ -151,42 +195,15 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         serde_json::to_vec(&altered).unwrap(),
     )
     .unwrap();
-    std::fs::write(dir.path().join("serial.log"), b"planted console\n").unwrap();
-
-    let path = dir.path().to_str().unwrap();
-    for (args, expected) in [
-        (vec!["show", path, "--json"], recorded.clone()),
-        (
-            vec!["show", path, "--timeline", "--json"],
-            recorded["replays"][0]["timeline"].clone(),
-        ),
-    ] {
+    for args in &commands {
         let output = harmony().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(
-            output.status.success(),
-            "{}",
+            String::from_utf8_lossy(&output.stderr).contains("recorded report.json has changed"),
+            "{args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let actual = if shown.is_array() {
-            shown
-        } else {
-            shown["result"].clone()
-        };
-        assert_eq!(actual, expected);
     }
-    let output = harmony()
-        .args(["show", path, "--logs", "--json"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(shown[0]["step"], 0);
-    assert_eq!(shown[0]["lines"], serde_json::json!(["saved console"]));
 }
 
 #[test]

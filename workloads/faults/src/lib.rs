@@ -55,5 +55,7 @@ pub mod consonance;
 pub mod shrink;
 
 pub use bundle::FaultVocabulary;
-pub use package::{Artifacts, Options, RecordedActions, Report, parse_recorded_input};
+pub use package::{
+    Artifacts, Options, REPORT_FORMAT, RecordedActions, Report, parse_recorded_input,
+};
 pub use target::{FaultAction, FaultOperation};

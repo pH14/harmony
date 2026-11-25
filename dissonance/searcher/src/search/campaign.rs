@@ -971,6 +971,28 @@ pub trait ArchiveFormatName {
     const FORMAT: &'static str;
 }
 
+pub trait ArchiveReportFormat {
+    const FORMAT: Option<&'static str>;
+}
+
+fn archive_format_matches(found: Option<&str>, expected: &str) -> Result<(), String> {
+    match found {
+        Some(format) if format == expected => Ok(()),
+        Some(format) => Err(format!(
+            "archive format is {format}; this build reads {expected}"
+        )),
+        None => Err(format!(
+            "archive names no format; this build reads {expected}"
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct ArchiveFormatProbe {
+    #[serde(default)]
+    format: Option<String>,
+}
+
 pub struct ArchiveFormat<F>(PhantomData<fn() -> F>);
 
 impl<F> Default for ArchiveFormat<F> {
@@ -1009,17 +1031,9 @@ impl<F: ArchiveFormatName> Serialize for ArchiveFormat<F> {
 
 impl<'de, F: ArchiveFormatName> Deserialize<'de> for ArchiveFormat<F> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Option::<String>::deserialize(deserializer)? {
-            Some(format) if format == F::FORMAT => Ok(Self::default()),
-            Some(format) => Err(serde::de::Error::custom(format!(
-                "archive format is {format}; this build reads {}",
-                F::FORMAT
-            ))),
-            None => Err(serde::de::Error::custom(format!(
-                "archive names no format; this build reads {}",
-                F::FORMAT
-            ))),
-        }
+        let format = Option::<String>::deserialize(deserializer)?;
+        archive_format_matches(format.as_deref(), F::FORMAT).map_err(serde::de::Error::custom)?;
+        Ok(Self::default())
     }
 }
 
@@ -1042,12 +1056,25 @@ impl<R: Read> Read for ArchiveHashReader<R> {
     }
 }
 
-impl<R: DeserializeOwned> ArchiveSource<R> {
+impl<R: DeserializeOwned + ArchiveReportFormat> ArchiveSource<R> {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::from_reader(bytes)
+        if let Some(expected) = R::FORMAT {
+            let probe: ArchiveFormatProbe = serde_json::from_slice(bytes)?;
+            archive_format_matches(probe.format.as_deref(), expected)?;
+        }
+        Self::decode(bytes)
     }
 
-    pub fn from_reader(source: impl Read) -> Result<Self, Box<dyn Error>> {
+    pub fn from_reader(mut source: impl Read) -> Result<Self, Box<dyn Error>> {
+        if R::FORMAT.is_some() {
+            let mut bytes = Vec::new();
+            source.read_to_end(&mut bytes)?;
+            return Self::from_bytes(&bytes);
+        }
+        Self::decode(source)
+    }
+
+    fn decode(source: impl Read) -> Result<Self, Box<dyn Error>> {
         let mut reader = BufReader::new(ArchiveHashReader {
             inner: source,
             digest: Sha256::new(),
@@ -1145,6 +1172,14 @@ impl<G: Workload + ?Sized> CampaignConfig<G> {
     pub const fn stops_campaign_on_objective(&self) -> bool {
         self.stop_campaign_on_objective && self.minimize.is_none()
     }
+}
+
+#[derive(Deserialize)]
+struct CampaignStreamVersion {
+    #[serde(default)]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    format: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -5719,11 +5754,20 @@ where
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
-    let header: CampaignStreamHeader<DrawTableHeader> =
-        serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
-    if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
+    let header_line = lines.next().ok_or("campaign stream is empty")?;
+    let version: CampaignStreamVersion = serde_json::from_str(header_line)?;
+    if version.schema_version != Some(CAMPAIGN_SCHEMA_VERSION) {
         return Err("campaign stream schema version is not recognized".into());
     }
+    if version.format.as_deref() != Some(workload.stream_format()) {
+        return Err(format!(
+            "campaign stream format is {}; this build reads {}",
+            version.format.as_deref().unwrap_or("missing"),
+            workload.stream_format()
+        )
+        .into());
+    }
+    let header: CampaignStreamHeader<DrawTableHeader> = serde_json::from_str(header_line)?;
     if header.preference_portfolio != preference_portfolio_identifier(workload.key_shape()) {
         return Err("campaign stream preference portfolio does not match the key".into());
     }
@@ -5735,14 +5779,6 @@ where
     }
     if header.work_budget == Some(0) {
         return Err("recorded work budget must be nonzero".into());
-    }
-    if header.format != workload.stream_format() {
-        return Err(format!(
-            "campaign stream format is {}; this build reads {}",
-            header.format,
-            workload.stream_format()
-        )
-        .into());
     }
     let origin_fields_match = header.origin_checkpoint_policy_changes.is_empty()
         && match header.origin_kind.as_str() {
@@ -7409,6 +7445,10 @@ mod tests {
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
         #[serde(default)]
         marker: u8,
+    }
+
+    impl super::ArchiveReportFormat for TestArchiveReport {
+        const FORMAT: Option<&'static str> = None;
     }
 
     struct TestWorkload {

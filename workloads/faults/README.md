@@ -1022,7 +1022,11 @@ instead of `kernel`. Workload knobs, supervision and interventions belong in
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
-either the bugs found or the replay outcomes.
+either the bugs found or the replay outcomes. Its `format` is
+`faults-report-v2`. Decoding a `Report` refuses another format, or a missing
+one: exact replay and the timeline refuse an old report, and `search --resume`
+discards it and replays its bugs again. The run manifest names `report.json`
+by its SHA-256 instead of holding a copy, so the report is stored once.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
@@ -1385,7 +1389,21 @@ from a cached snapshot. A campaign records its first 64 bugs. After that
 it records a bug only when it violates a property that no recorded bug
 violates, so a campaign records at most 64 bugs plus one for each property
 first violated after the 64th, and a long campaign whose first bugs share one
-property still keeps the input of a later bug of another. Each `bug-N.json`
+property still keeps the input of a later bug of another. A job that runs
+several actions records its bug again at each later action that still
+violates, so `campaign-summary.json` gives `distinct_reports`, the number of
+distinct executions among the `bug-N.json` files. A resumed campaign rewrites
+every earlier report with its original execution number, so the
+`distinct_reports` of the last summary of a resumed chain counts each
+execution once, and adding up the chain's summaries counts earlier ones
+again. The summary also groups the reports into `violation_classes`, with
+their number in `violation_class_count`. A class is the set of reports that
+stopped the same way and violate the same set of properties. A class is
+neither an upper nor a lower bound on the number of distinct failure
+mechanisms: one class can hold reports from two mechanisms, and one mechanism
+can fail different properties in different reports. Counting mechanisms needs
+a replay of each report with a workload-specific probe, such as the first raft
+log index at which the nodes disagree. Each `bug-N.json`
 carries the action list and the
 encoded window list used by the guest, including windows inherited from a
 branch root. At completion, `first-bug-input.json` holds the first confirmed
@@ -1592,9 +1610,22 @@ journal digest into the searcher, which rejects a file swapped after selection.
 
 Fresh scenario executions retain `ReplaySummary::timeline`: the observation,
 recorded action including coverage quantum, and console evidence at each action
-boundary. Recovery-check waits are labeled separately. Both guest backends return a bounded 64 KiB console tail, which can
-overlap adjacent captures. Console evidence is diagnostic and does not enter
-archive identity or scheduling. Branch previews stop at their exact action
+boundary. Recovery-check waits are labeled separately. A step's `console` holds
+only the guest output since the previous step. The session's `console_since`
+cuts it at the byte count the guest console has emitted, so steps do not
+overlap, and a character split across two steps is kept whole in the later
+step. A step keeps at most its newest 64 KiB and counts the rest in
+`console_dropped`. A step that ends inside a
+character holds those bytes in the replay's cursor rather than reading them
+again, and the last step keeps any unfinished character as a replacement
+character. `ReplaySummary::console_through` joins the steps up to a step and
+marks each `console_dropped` gap with a line naming the bytes not kept, so
+text is never joined across a gap. `harmony show --logs` prints that console
+for a selected step, and `harmony show --timeline --json` carries it in the
+selected step's `console`; without a selected step, `show --logs` prints each
+step's own output.
+Console evidence is diagnostic and does not enter archive identity or
+scheduling. Branch previews stop at their exact action
 prefix without adding settlement actions.
 
 `FaultCampaignRun::violations` names the violations a run's objective needs: a

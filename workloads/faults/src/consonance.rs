@@ -1010,11 +1010,13 @@ impl FaultTarget {
         })
     }
 
-    pub fn console_evidence(&self) -> Result<String, String> {
+    pub fn console_since(
+        &self,
+        offset: u64,
+    ) -> Result<consonance_client::session::ConsoleSince, String> {
         with_live(&self.config, |live| {
             live.session
-                .console_tail()
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .console_since(offset)
                 .map_err(|e| e.to_string())
         })
     }
@@ -3358,6 +3360,13 @@ mod tests {
             Ok(Vec::new())
         }
 
+        fn console_since(
+            &mut self,
+            _offset: u64,
+        ) -> Result<consonance_client::session::ConsoleSince, Box<dyn Error>> {
+            Ok(consonance_client::session::ConsoleSince::default())
+        }
+
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
             if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
                 if SHUTDOWN_TELEMETRY_PANIC.with(|value| value.get()) {
@@ -4188,6 +4197,13 @@ mod tests {
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
             Ok(Vec::new())
+        }
+
+        fn console_since(
+            &mut self,
+            _offset: u64,
+        ) -> Result<consonance_client::session::ConsoleSince, Box<dyn Error>> {
+            Ok(consonance_client::session::ConsoleSince::default())
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {

@@ -140,8 +140,8 @@ impl Package for Nested {
     fn accepts(&self, _: &str) -> bool {
         false
     }
-    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
-        stable_report(payload)
+    fn semantic_outcome(&self, _: &Path, payload: &serde_json::Value) -> Result<serde_json::Value> {
+        Ok(stable_report(payload))
     }
     fn normalize(&self, c: &mut Config, base: &Path) -> Result<()> {
         crate::config::resolve_input(&mut c.workload.input, base, false);
