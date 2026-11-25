@@ -12,7 +12,7 @@ use fault_policy::ParkTarget;
 use searcher::search::{
     archive::{ArchiveEntryReport, ProgressPoint, SelectorAccounting, entries_by_suffix},
     assertion::{AssertionKey, StageFalls},
-    campaign::{ArchiveFormat, ArchiveFormatName},
+    campaign::{ArchiveFormat, ArchiveFormatName, ArchiveReportFormat},
     draw_tables::DrawView,
     rand::RomuDuoJrRand,
 };
@@ -447,6 +447,10 @@ pub struct FaultArchive;
 
 impl ArchiveFormatName for FaultArchive {
     const FORMAT: &'static str = ARCHIVE_FORMAT;
+}
+
+impl ArchiveReportFormat for FaultArchiveReport {
+    const FORMAT: Option<&'static str> = Some(ARCHIVE_FORMAT);
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1304,11 +1308,22 @@ mod tests {
                 .expect("the archive is refused")
                 .to_string()
         };
-        let missing = refused("{}");
-        assert!(
-            missing.contains("archive names no format; this build reads faults-archive-v2"),
-            "{missing}"
-        );
+        for text in [
+            "{}",
+            "{\"entries\":[{\"key\":{\"hand_written\":1}}],\"format\":null}",
+            "{\"entries\":[{\"key\":{\"hand_written\":1}}]}",
+        ] {
+            let missing = refused(text);
+            assert_eq!(
+                missing, "archive names no format; this build reads faults-archive-v2",
+                "{text}"
+            );
+            let streamed = ArchiveSource::<FaultArchiveReport>::from_reader(text.as_bytes())
+                .err()
+                .expect("the archive is refused")
+                .to_string();
+            assert_eq!(streamed, missing);
+        }
         let other = refused("{\"format\":\"faults-archive-v0\"}");
         assert!(
             other.contains(

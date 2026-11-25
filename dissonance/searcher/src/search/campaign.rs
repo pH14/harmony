@@ -971,6 +971,28 @@ pub trait ArchiveFormatName {
     const FORMAT: &'static str;
 }
 
+pub trait ArchiveReportFormat {
+    const FORMAT: Option<&'static str>;
+}
+
+fn archive_format_matches(found: Option<&str>, expected: &str) -> Result<(), String> {
+    match found {
+        Some(format) if format == expected => Ok(()),
+        Some(format) => Err(format!(
+            "archive format is {format}; this build reads {expected}"
+        )),
+        None => Err(format!(
+            "archive names no format; this build reads {expected}"
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct ArchiveFormatProbe {
+    #[serde(default)]
+    format: Option<String>,
+}
+
 pub struct ArchiveFormat<F>(PhantomData<fn() -> F>);
 
 impl<F> Default for ArchiveFormat<F> {
@@ -1009,17 +1031,9 @@ impl<F: ArchiveFormatName> Serialize for ArchiveFormat<F> {
 
 impl<'de, F: ArchiveFormatName> Deserialize<'de> for ArchiveFormat<F> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Option::<String>::deserialize(deserializer)? {
-            Some(format) if format == F::FORMAT => Ok(Self::default()),
-            Some(format) => Err(serde::de::Error::custom(format!(
-                "archive format is {format}; this build reads {}",
-                F::FORMAT
-            ))),
-            None => Err(serde::de::Error::custom(format!(
-                "archive names no format; this build reads {}",
-                F::FORMAT
-            ))),
-        }
+        let format = Option::<String>::deserialize(deserializer)?;
+        archive_format_matches(format.as_deref(), F::FORMAT).map_err(serde::de::Error::custom)?;
+        Ok(Self::default())
     }
 }
 
@@ -1042,12 +1056,25 @@ impl<R: Read> Read for ArchiveHashReader<R> {
     }
 }
 
-impl<R: DeserializeOwned> ArchiveSource<R> {
+impl<R: DeserializeOwned + ArchiveReportFormat> ArchiveSource<R> {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::from_reader(bytes)
+        if let Some(expected) = R::FORMAT {
+            let probe: ArchiveFormatProbe = serde_json::from_slice(bytes)?;
+            archive_format_matches(probe.format.as_deref(), expected)?;
+        }
+        Self::decode(bytes)
     }
 
-    pub fn from_reader(source: impl Read) -> Result<Self, Box<dyn Error>> {
+    pub fn from_reader(mut source: impl Read) -> Result<Self, Box<dyn Error>> {
+        if R::FORMAT.is_some() {
+            let mut bytes = Vec::new();
+            source.read_to_end(&mut bytes)?;
+            return Self::from_bytes(&bytes);
+        }
+        Self::decode(source)
+    }
+
+    fn decode(source: impl Read) -> Result<Self, Box<dyn Error>> {
         let mut reader = BufReader::new(ArchiveHashReader {
             inner: source,
             digest: Sha256::new(),
@@ -7418,6 +7445,10 @@ mod tests {
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
         #[serde(default)]
         marker: u8,
+    }
+
+    impl super::ArchiveReportFormat for TestArchiveReport {
+        const FORMAT: Option<&'static str> = None;
     }
 
     struct TestWorkload {

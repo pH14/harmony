@@ -46,21 +46,39 @@ impl SearchSettings {
 
 type StreamRecord = CampaignStreamRecord<serde_json::Value, serde_json::Value>;
 
-fn stream_lines(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
+#[derive(Deserialize)]
+struct StreamLineVersion {
+    #[serde(default)]
+    schema_version: Option<u32>,
+    #[serde(default)]
+    event: Option<serde::de::IgnoredAny>,
+}
+
+fn stream_lines(stream: &[u8]) -> Result<impl Iterator<Item = &[u8]>, Box<dyn Error>> {
     let mut lines = stream
         .split(|&c| c == b'\n')
         .filter(|line| !line.is_empty())
         .peekable();
-    if lines.peek().is_some_and(|line| {
-        serde_json::from_slice::<CampaignStreamHeader<serde_json::Value>>(line).is_ok()
-    }) {
-        lines.next();
+    if let Some(line) = lines.peek() {
+        let probe = serde_json::from_slice::<StreamLineVersion>(line)?;
+        match probe.schema_version.filter(|_| probe.event.is_none()) {
+            Some(CAMPAIGN_SCHEMA_VERSION) => {
+                lines.next();
+            }
+            Some(version) => {
+                return Err(format!(
+                    "campaign stream schema version is {version}; this build reads {CAMPAIGN_SCHEMA_VERSION}"
+                )
+                .into());
+            }
+            None => {}
+        }
     }
-    lines
+    Ok(lines)
 }
 
 fn stream_records(stream: &[u8]) -> Result<Vec<StreamRecord>, Box<dyn Error>> {
-    Ok(stream_lines(stream)
+    Ok(stream_lines(stream)?
         .map(serde_json::from_slice)
         .collect::<Result<_, _>>()?)
 }
@@ -74,7 +92,7 @@ const WORKLOAD_FIELDS: [&str; 3] = [
 fn decision_stream(stream: &[u8]) -> Result<(String, u64), Box<dyn Error>> {
     let mut canonical = Vec::new();
     let mut records = 0;
-    for line in stream_lines(stream) {
+    for line in stream_lines(stream)? {
         let mut record: serde_json::Value = serde_json::from_slice(line)?;
         if let Some(fields) = record.as_object_mut() {
             for field in WORKLOAD_FIELDS {
@@ -144,9 +162,9 @@ use searcher::search::{
         Strategy,
     },
     campaign::{
-        ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
-        CampaignAdmissionDecision, CampaignConfig, CampaignExecutionOptions, CampaignJobResult,
-        CampaignOrigin, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation,
+        ArchiveFormat, ArchiveFormatName, ArchiveReportState, CAMPAIGN_SCHEMA_VERSION,
+        CampaignActionResult, CampaignAdmissionDecision, CampaignConfig, CampaignExecutionOptions,
+        CampaignJobResult, CampaignOrigin, CampaignStreamRecord, CampaignTypes, Evaluation,
         InputPolicy, Reporting, TargetExecution, WorkloadPolicies, postcard_value_sha256,
         replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
     },
@@ -1990,6 +2008,40 @@ fn test_seed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_lines_skip_only_a_current_header_and_refuse_an_older_one() {
+        let record: &[u8] = b"{\"event\":\"x\"}";
+        let current =
+            format!("{{\"schema_version\":{CAMPAIGN_SCHEMA_VERSION},\"format\":\"f\"}}\n");
+        let stream = [current.as_bytes(), record].concat();
+        assert_eq!(
+            stream_lines(&stream).unwrap().collect::<Vec<_>>(),
+            vec![record]
+        );
+        assert_eq!(
+            stream_lines(record).unwrap().collect::<Vec<_>>(),
+            vec![record]
+        );
+        for version in [CAMPAIGN_SCHEMA_VERSION, CAMPAIGN_SCHEMA_VERSION - 1] {
+            let tagged = format!("{{\"event\":\"x\",\"schema_version\":{version}}}");
+            assert_eq!(
+                stream_lines(tagged.as_bytes()).unwrap().collect::<Vec<_>>(),
+                vec![tagged.as_bytes()]
+            );
+        }
+        let older = format!("{{\"schema_version\":{}}}\n", CAMPAIGN_SCHEMA_VERSION - 1);
+        let error = stream_records(&[older.as_bytes(), record].concat())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "campaign stream schema version is {}; this build reads {CAMPAIGN_SCHEMA_VERSION}",
+                CAMPAIGN_SCHEMA_VERSION - 1
+            )
+        );
+    }
 
     #[test]
     fn an_archive_in_another_format_is_refused_with_both_names() {

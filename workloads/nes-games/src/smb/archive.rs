@@ -4,6 +4,7 @@ use std::{cmp::Ordering, error::Error};
 
 use crate::search::{
     archive::{ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix},
+    campaign::ArchiveReportFormat,
     plan::StageProgress,
 };
 
@@ -190,6 +191,10 @@ pub struct SmbArchiveReport {
     pub deaths: u64,
     #[serde(default)]
     pub selector: SelectorAccounting,
+}
+
+impl ArchiveReportFormat for SmbArchiveReport {
+    const FORMAT: Option<&'static str> = None;
 }
 
 pub fn admission_is_viable<M, P>(

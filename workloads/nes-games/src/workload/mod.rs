@@ -39,10 +39,10 @@ use crate::{
             StreamIdentity,
         },
         campaign::{
-            ArchiveFormat, ArchiveFormatName, ArchiveReportState, CampaignActionResult,
-            CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
-            postcard_value_sha256,
+            ArchiveFormat, ArchiveFormatName, ArchiveReportFormat, ArchiveReportState,
+            CampaignActionResult, CampaignCandidate, CampaignJobResult, CampaignTypes, Evaluation,
+            InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
         choice::{
             Choice, ChoicePlan, ChoicePolicy, ChoiceProfiles, ChoiceRecord, ChoiceSite, Chooser,
@@ -1015,6 +1015,10 @@ impl ArchiveFormatName for NesArchive {
     const FORMAT: &'static str = ARCHIVE_FORMAT;
 }
 
+impl ArchiveReportFormat for NesArchiveReport {
+    const FORMAT: Option<&'static str> = Some(ARCHIVE_FORMAT);
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NesArchiveReport {
     pub format: ArchiveFormat<NesArchive>,
@@ -1938,6 +1942,21 @@ mod tests {
                 "archive names no format; this build reads {ARCHIVE_FORMAT}"
             )),
             "{refused}"
+        );
+        let padded = [source.as_slice(), b"\n  "].concat();
+        for bytes in [source.as_slice(), padded.as_slice()] {
+            let direct = ArchiveSource::<NesArchiveReport>::from_bytes(bytes).unwrap();
+            let streamed = ArchiveSource::<NesArchiveReport>::from_reader(bytes).unwrap();
+            assert_eq!(streamed.file_sha256(), direct.file_sha256());
+            assert_eq!(streamed.report(), direct.report());
+        }
+        assert_ne!(
+            ArchiveSource::<NesArchiveReport>::from_reader(padded.as_slice())
+                .unwrap()
+                .file_sha256(),
+            ArchiveSource::<NesArchiveReport>::from_bytes(&source)
+                .unwrap()
+                .file_sha256()
         );
         let mut imports = Vec::new();
         for (label, checkpoint) in [
