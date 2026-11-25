@@ -1943,6 +1943,21 @@ mod tests {
             )),
             "{refused}"
         );
+        let padded = [source.as_slice(), b"\n  "].concat();
+        for bytes in [source.as_slice(), padded.as_slice()] {
+            let direct = ArchiveSource::<NesArchiveReport>::from_bytes(bytes).unwrap();
+            let streamed = ArchiveSource::<NesArchiveReport>::from_reader(bytes).unwrap();
+            assert_eq!(streamed.file_sha256(), direct.file_sha256());
+            assert_eq!(streamed.report(), direct.report());
+        }
+        assert_ne!(
+            ArchiveSource::<NesArchiveReport>::from_reader(padded.as_slice())
+                .unwrap()
+                .file_sha256(),
+            ArchiveSource::<NesArchiveReport>::from_bytes(&source)
+                .unwrap()
+                .file_sha256()
+        );
         let mut imports = Vec::new();
         for (label, checkpoint) in [
             ("replayed import", None),

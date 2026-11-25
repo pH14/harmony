@@ -57,14 +57,15 @@ or the `strategy` text); the report's `shadow` field holds the comparison.
 Scaled runs and root jobs refuse a shadow.
 
 Ordinary reports give `decision_stream_sha256` and `decision_stream_records`
-beside `stream_sha256`. They cover the stream's job and skip records, without
-the header and without `result_sha256`, the draw checkpoints and the duration
+beside `stream_sha256`. They cover the stream's records, without the header and
+without `result_sha256`, the draw checkpoints and the duration
 draw's `context`, the fields that differ between two keys making the same
 decisions (the rule `nes-eval` uses). The digest is the SHA-256 of the postcard
 encoding of the records' canonical JSON, concatenated. Two runs of one seed
-under keys that order states alike give equal digests. These readers, and the
-route and pick summaries, recognize the header by its `schema_version` key and
-refuse a stream whose header names another schema version.
+under keys that order states alike give equal digests. When they read a stream,
+these digests and the route summary take a first line with a `schema_version`
+key and no `event` key as the header, and refuse a header that names another
+schema version.
 
 An optional `search` object selects existing campaign policies without changing
 the world: `mixture` accepts the identifiers documented in the searcher

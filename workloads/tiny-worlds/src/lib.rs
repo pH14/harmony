@@ -50,6 +50,8 @@ type StreamRecord = CampaignStreamRecord<serde_json::Value, serde_json::Value>;
 struct StreamLineVersion {
     #[serde(default)]
     schema_version: Option<u32>,
+    #[serde(default)]
+    event: Option<serde::de::IgnoredAny>,
 }
 
 fn stream_lines(stream: &[u8]) -> Result<impl Iterator<Item = &[u8]>, Box<dyn Error>> {
@@ -58,7 +60,8 @@ fn stream_lines(stream: &[u8]) -> Result<impl Iterator<Item = &[u8]>, Box<dyn Er
         .filter(|line| !line.is_empty())
         .peekable();
     if let Some(line) = lines.peek() {
-        match serde_json::from_slice::<StreamLineVersion>(line)?.schema_version {
+        let probe = serde_json::from_slice::<StreamLineVersion>(line)?;
+        match probe.schema_version.filter(|_| probe.event.is_none()) {
             Some(CAMPAIGN_SCHEMA_VERSION) => {
                 lines.next();
             }
@@ -2020,6 +2023,13 @@ mod tests {
             stream_lines(record).unwrap().collect::<Vec<_>>(),
             vec![record]
         );
+        for version in [CAMPAIGN_SCHEMA_VERSION, CAMPAIGN_SCHEMA_VERSION - 1] {
+            let tagged = format!("{{\"event\":\"x\",\"schema_version\":{version}}}");
+            assert_eq!(
+                stream_lines(tagged.as_bytes()).unwrap().collect::<Vec<_>>(),
+                vec![tagged.as_bytes()]
+            );
+        }
         let older = format!("{{\"schema_version\":{}}}\n", CAMPAIGN_SCHEMA_VERSION - 1);
         let error = stream_records(&[older.as_bytes(), record].concat())
             .unwrap_err()
