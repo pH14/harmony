@@ -872,9 +872,11 @@ command lines used for XSAVE qualification must retain those settings. The
 kernel, pinned runtime re-execution, and admitted workload environment have
 separate checks; default boot arguments alone do not certify an arbitrary image.
 
-Session console diagnostics return the most recent 64 KiB. The VM reader pages
-from the tail offset reported by the guest, so long boot output does not hide
-later failure evidence. UML uses the same bounded-tail contract. Repeated reads
+Session console diagnostics return the most recent 64 KiB. The VM reader first
+asks for the console length with an offset past the end, whose reply carries no
+bytes, then pages from the start of the kept tail. A read therefore transfers at
+most the 64 KiB it keeps, and long boot output does not hide later failure
+evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
 `SearchSession::console_since(offset)` returns the console position, the number
 of bytes the guest has written along its current history, and the bytes after
