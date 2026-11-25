@@ -29,6 +29,25 @@ fn read_outcome(
     supervised: bool,
     recorded: &RecordedOutcome,
 ) -> Result<serde_json::Value> {
+    let outcome = read_outcome_file(directory, supervised, recorded)?;
+    if supervised {
+        check_timelines(directory, &outcome)?;
+    }
+    Ok(outcome)
+}
+
+fn check_timelines(directory: &Path, outcome: &serde_json::Value) -> Result<()> {
+    for bug in faults_workload::Report::deserialize(outcome)?.bugs {
+        bug.witness(directory)?;
+    }
+    Ok(())
+}
+
+fn read_outcome_file(
+    directory: &Path,
+    supervised: bool,
+    recorded: &RecordedOutcome,
+) -> Result<serde_json::Value> {
     let expected = outcome_file(supervised);
     if recorded.file != expected {
         return Err(format!(
@@ -97,19 +116,34 @@ impl Manifest {
         outcome_file(self.bundle.is_some())
     }
 
+    pub fn directory(&self) -> Result<&Path> {
+        Ok(self
+            .directory
+            .as_deref()
+            .ok_or("this faults run manifest was not read from a run directory")?)
+    }
+
     pub fn outcome(&self) -> Result<serde_json::Value> {
         let Some(recorded) = &self.recorded_outcome else {
             return Ok(serde_json::Value::Null);
         };
-        let directory = self
-            .directory
-            .as_ref()
-            .ok_or("this faults run manifest was not read from a run directory")?;
-        read_outcome(directory, self.bundle.is_some(), recorded)
+        read_outcome(self.directory()?, self.bundle.is_some(), recorded)
     }
 
     pub fn report(&self) -> Result<faults_workload::Report> {
         Ok(serde_json::from_value(self.outcome()?)?)
+    }
+
+    pub fn report_hint(&self) -> Result<faults_workload::Report> {
+        let recorded = self
+            .recorded_outcome
+            .as_ref()
+            .ok_or("this faults run records no outcome")?;
+        Ok(serde_json::from_value(read_outcome_file(
+            self.directory()?,
+            self.bundle.is_some(),
+            recorded,
+        )?)?)
     }
 
     fn verify_runtime_outcome(&self, outcome: &serde_json::Value) -> Result<()> {
@@ -209,6 +243,9 @@ impl Manifest {
             );
         }
         self.verify_runtime_outcome(&outcome)?;
+        if self.record.status == "complete" && self.bundle.is_some() {
+            check_timelines(path, &outcome)?;
+        }
         let outcome = written.map(|(bytes, _)| RecordedOutcome {
             file: self.outcome_file().to_owned(),
             sha256: crate::runtime::digest(&bytes),
@@ -854,7 +891,7 @@ mod tests {
             ]
         };
         for error in errors(search_payload(dir.path(), "report.json")) {
-            assert!(error.contains("faults-report-v2"), "{error}");
+            assert!(error.contains(faults_workload::REPORT_FORMAT), "{error}");
         }
         for error in errors(search_payload(dir.path(), "../other/report.json")) {
             assert!(error.contains("names ../other/report.json"), "{error}");

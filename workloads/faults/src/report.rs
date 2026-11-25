@@ -50,12 +50,17 @@ impl BugReport {
         format!("{BUG_REPORT_STEM}{}.json", self.bug)
     }
 
-    pub fn write(&self, directory: &Path) -> Result<(), Box<dyn Error>> {
-        std::fs::write(
-            directory.join(self.file_name()),
-            serde_json::to_vec_pretty(self)?,
-        )?;
-        Ok(())
+    pub fn write(&self, directory: &Path, earlier: Option<&Path>) -> Result<(), Box<dyn Error>> {
+        let bytes = serde_json::to_vec_pretty(self)?;
+        let destination = directory.join(self.file_name());
+        if let Some(earlier) = earlier.map(|earlier| earlier.join(self.file_name()))
+            && std::fs::read(&earlier).is_ok_and(|existing| existing == bytes)
+            && link_or_copy(&earlier, &destination).is_ok()
+            && std::fs::read(&destination).is_ok_and(|linked| linked == bytes)
+        {
+            return Ok(());
+        }
+        replace_file(&destination, &bytes)
     }
 
     pub fn standing_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -79,6 +84,7 @@ pub fn write_bug_reports(
     answers: &[GuestAnswer],
     bugs: &[FaultBugRecord],
     directory: &Path,
+    earlier: Option<&Path>,
 ) -> Result<Vec<BugReport>, Box<dyn Error>> {
     let mut written = Vec::with_capacity(bugs.len());
     for (index, bug) in bugs.iter().enumerate() {
@@ -92,10 +98,46 @@ pub fn write_bug_reports(
             &bug.observations,
         )?;
         report.answers = answers_through(answers, bug.input.actions.len());
-        report.write(directory)?;
+        report.write(directory, earlier)?;
         written.push(report);
     }
     Ok(written)
+}
+
+pub fn link_or_copy(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+    let staging = tempfile::Builder::new().prefix(".link").tempdir_in(
+        destination
+            .parent()
+            .ok_or("link destination needs a parent")?,
+    )?;
+    let staged = staging.path().join("file");
+    let regular = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("cannot read {}: {error}", source.display()))?
+        .file_type()
+        .is_file();
+    let linked = regular
+        && std::fs::hard_link(source, &staged).is_ok()
+        && std::fs::symlink_metadata(&staged)?.file_type().is_file();
+    if !linked {
+        if std::fs::symlink_metadata(&staged).is_ok() {
+            std::fs::remove_file(&staged)?;
+        }
+        std::fs::copy(source, &staged)
+            .map_err(|error| format!("cannot copy {}: {error}", source.display()))?;
+    }
+    std::fs::rename(&staged, destination)?;
+    Ok(())
+}
+
+pub fn replace_file(destination: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    let temp = tempfile::NamedTempFile::new_in(
+        destination
+            .parent()
+            .ok_or("file destination needs a parent")?,
+    )?;
+    std::fs::write(temp.path(), bytes)?;
+    temp.persist(destination)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -384,10 +426,41 @@ mod tests {
     fn reports_are_written_under_their_ordinal() {
         let directory = tempfile::tempdir().expect("temp dir");
         let report = sample();
-        report.write(directory.path()).expect("write");
+        report.write(directory.path(), None).expect("write");
         let text = std::fs::read_to_string(directory.path().join("bug-1.json")).expect("read");
         let decoded: BugReport = serde_json::from_str(&text).expect("decode");
         assert_eq!(decoded, report);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_report_equal_to_the_earlier_chunk_is_linked_and_a_changed_one_is_written() {
+        use std::os::unix::fs::MetadataExt;
+        let earlier = tempfile::tempdir().expect("temp dir");
+        let directory = tempfile::tempdir().expect("temp dir");
+        let report = sample();
+        report.write(earlier.path(), None).expect("write");
+        report
+            .write(directory.path(), Some(earlier.path()))
+            .expect("link");
+        let inode = |path: &Path| {
+            let metadata = std::fs::metadata(path.join("bug-1.json")).expect("metadata");
+            (metadata.dev(), metadata.ino())
+        };
+        assert_eq!(inode(earlier.path()), inode(directory.path()));
+
+        let changed = tempfile::tempdir().expect("temp dir");
+        let mut other = sample();
+        other.execution += 1;
+        other
+            .write(changed.path(), Some(earlier.path()))
+            .expect("write");
+        assert_ne!(inode(earlier.path()), inode(changed.path()));
+        let text = std::fs::read_to_string(changed.path().join("bug-1.json")).expect("read");
+        assert_eq!(
+            serde_json::from_str::<BugReport>(&text).expect("decode"),
+            other
+        );
     }
 
     #[test]
@@ -422,6 +495,7 @@ mod tests {
             &[answer(1), answer(2)],
             &bugs,
             directory.path(),
+            None,
         )
         .expect("write");
         assert_eq!(written[0].answers, vec![answer(1)]);

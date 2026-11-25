@@ -1023,10 +1023,29 @@ instead of `kernel`. Workload knobs, supervision and interventions belong in
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes. Its `format` is
-`faults-report-v2`. Decoding a `Report` refuses another format, or a missing
+`faults-report-v3`. Decoding a `Report` refuses another format, or a missing
 one: exact replay and the timeline refuse an old report, and `search --resume`
 discards it and replays its bugs again. The run manifest names `report.json`
 by its SHA-256 instead of holding a copy, so the report is stored once.
+
+A search report keeps each bug's replay outcome but not its per-step timeline
+(the console and observations at every step), which is most of a bug's
+bytes. Search writes the timeline of bug N to `bug-N-timeline.json` beside
+`bug-N.json`, and the bug's `timeline` field names that file and its SHA-256.
+`BugSummary::witness` is the one reader: it refuses a name that is not a plain
+file name in the run directory, and refuses with the file's path when the file
+is missing or its digest differs. The CLI reads every finding through it
+whenever it reads a search report, so `show`, the timeline, logs, branch,
+shrink, explain, `diff` and exact replay all refuse a run with a missing or
+changed timeline file.
+
+`search --resume` carries a bug unchanged from the earlier chunk when its
+execution, actions and evidence match. It then hard-links the earlier chunk's
+timeline file into the new chunk, checks its digest, and links `bug-N.json`
+when its bytes are unchanged, copying either file when the link fails (for
+example across file systems). Every chunk is still self-contained: deleting an
+earlier chunk leaves the linked files readable. A carried bug whose earlier
+timeline is missing or changed is replayed again instead.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.

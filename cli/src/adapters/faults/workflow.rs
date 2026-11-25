@@ -282,7 +282,7 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
         );
         shared.search.wall_seconds = request.budget.wall_seconds;
         shared.validate()?;
-        resume_start(checkpoint, &original)
+        resume_start(checkpoint, &original, &parent)
     } else {
         SearchStart::Actions(super::investigate::prefix(
             &original,
@@ -312,10 +312,16 @@ pub fn continue_saved(request: crate::adapters::Request, saved: crate::runs::Sav
 fn resume_start(
     checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
     original: &Manifest,
+    parent: &Path,
 ) -> SearchStart {
     SearchStart::Checkpoint {
         checkpoint,
-        previous: original.report().ok().map(Box::new),
+        previous: original.report_hint().ok().map(|report| {
+            Box::new(package::PreviousReport {
+                report,
+                directory: parent.to_path_buf(),
+            })
+        }),
     }
 }
 
@@ -1047,13 +1053,17 @@ mod tests {
             match resume_start(
                 checkpoint,
                 &Manifest::from_record(record, directory.path()).unwrap(),
+                directory.path(),
             ) {
                 SearchStart::Checkpoint {
                     checkpoint,
                     previous,
                 } => {
                     assert_eq!(checkpoint.sha256, "digest");
-                    previous
+                    if let Some(previous) = &previous {
+                        assert_eq!(previous.directory, directory.path());
+                    }
+                    previous.map(|previous| previous.report)
                 }
                 _ => panic!("resume must start from the checkpoint"),
             }
