@@ -363,11 +363,7 @@ fn main() -> Result<()> {
                 nes_workload::workload::write_shadow(shadow.as_ref(), &out)
             }
             "mm2-strategy" => evaluate_watching(
-                nes_workload::workload::configured(
-                    mm2_strategy_workload(&request, &rom, &execution_sha256, &out)?,
-                    &request,
-                    &out,
-                )?,
+                mm2_strategy_workload(&request, &rom, &execution_sha256, &out)?,
                 nes_games::workload::NesRun,
                 &rom,
                 &request,
@@ -651,18 +647,53 @@ fn mm2_strategy_workload(
         &request.core_sha256,
         execution_sha256,
     )?;
-    if game.stage().is_none() || request.strategy.is_some() {
-        return Ok(workload);
-    }
-    let strategy = game.strategy();
+    let Some(strategy) = mm2_stage_strategy(game, request.strategy.as_deref())? else {
+        return nes_workload::workload::configured(workload, request, out);
+    };
     fs::create_dir_all(out)?;
     fs::write(out.join(nes_workload::workload::STRATEGY_FILE), &strategy)?;
-    workload.with_strategy(&strategy)
+    let request = Request {
+        strategy: None,
+        ..request.clone()
+    };
+    nes_workload::workload::configured(workload.with_strategy(&strategy)?, &request, out)
+}
+
+fn mm2_stage_strategy(game: MegaMan2, given: Option<&Path>) -> Result<Option<String>> {
+    if game.stage().is_none() {
+        return Ok(None);
+    }
+    Ok(Some(match given {
+        Some(path) => game.strategy_from(&fs::read_to_string(path)?),
+        None => game.strategy(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_given_ending_strategy_runs_a_stage_start_with_that_stage_goal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("given.toml");
+        let given = MegaMan2::WHOLE_GAME
+            .strategy()
+            .replacen("capacity = 1", "capacity = 2", 1);
+        assert!(given.starts_with("goal = \"ending\"\n"));
+        fs::write(&path, &given).unwrap();
+        let air = MegaMan2::at_stage(1).unwrap();
+        let strategy = mm2_stage_strategy(air, Some(&path)).unwrap().unwrap();
+        assert_eq!(
+            strategy,
+            given.replacen("goal = \"ending\"", "goal = \"air_defeated\"", 1)
+        );
+        assert_eq!(mm2_stage_strategy(air, None).unwrap(), Some(air.strategy()));
+        assert_eq!(
+            mm2_stage_strategy(MegaMan2::WHOLE_GAME, Some(&path)).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn only_the_games_that_take_a_root_accept_root_input() {

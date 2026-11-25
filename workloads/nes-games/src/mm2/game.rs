@@ -820,14 +820,33 @@ impl MegaMan2 {
 
     #[must_use]
     pub fn strategy(self) -> String {
-        match self.stage {
-            None => Self::STRATEGY.to_owned(),
-            Some(stage) => Self::STRATEGY.replacen(
-                "goal = \"ending\"",
-                &format!("goal = \"{}\"", DEFEATED[usize::from(stage)]),
-                1,
-            ),
+        self.strategy_from(Self::STRATEGY)
+    }
+
+    #[must_use]
+    pub fn strategy_from(self, given: &str) -> String {
+        let Some(stage) = self.stage else {
+            return given.to_owned();
+        };
+        let goal = format!("goal = \"{}\"", DEFEATED[usize::from(stage)]);
+        let mut lines: Vec<&str> = given.lines().collect();
+        let top = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with('['))
+            .unwrap_or(lines.len());
+        match lines[..top].iter().position(|line| {
+            line.trim_start()
+                .strip_prefix("goal")
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        }) {
+            Some(index) => lines[index] = &goal,
+            None => lines.insert(0, &goal),
         }
+        let mut text = lines.join("\n");
+        if given.ends_with('\n') {
+            text.push('\n');
+        }
+        text
     }
 
     pub fn drive(self, mv: Drive, state: &Mm2State) -> Option<Step<Drive>> {
@@ -1228,6 +1247,31 @@ mod tests {
         }
         assert!(MegaMan2::at_stage(ROBOT_MASTERS).is_err());
         assert_eq!(MegaMan2::WHOLE_GAME.strategy(), MegaMan2::STRATEGY);
+    }
+
+    #[test]
+    fn a_given_strategy_at_a_stage_start_wins_at_that_robot_master() {
+        let given = MegaMan2::STRATEGY.replacen("capacity = 1", "capacity = 2", 1);
+        assert_ne!(given, MegaMan2::STRATEGY);
+        assert!(given.starts_with("goal = \"ending\"\n"));
+        assert_eq!(MegaMan2::WHOLE_GAME.strategy_from(&given), given);
+        for stage in 0..ROBOT_MASTERS {
+            let game = MegaMan2::at_stage(stage).unwrap();
+            let strategy = game.strategy_from(&given);
+            let goal = format!("goal = \"{}\"", DEFEATED[usize::from(stage)]);
+            assert_eq!(strategy, given.replacen("goal = \"ending\"", &goal, 1));
+            assert_eq!(game.strategy_from(&strategy), strategy);
+            Lowered::new(game, &strategy).unwrap();
+        }
+        let heat = MegaMan2::at_stage(0).unwrap();
+        assert_eq!(
+            heat.strategy_from("goal   =  \"wily1_defeated\"\n[[stage]]\ngoal = \"x\"\n"),
+            "goal = \"heat_defeated\"\n[[stage]]\ngoal = \"x\"\n"
+        );
+        assert_eq!(
+            heat.strategy_from("capacity = 1\n[[stage]]\ngoal = \"x\""),
+            "goal = \"heat_defeated\"\ncapacity = 1\n[[stage]]\ngoal = \"x\""
+        );
     }
 
     #[test]
