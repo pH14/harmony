@@ -690,7 +690,13 @@ impl Guest {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn sync_console(&mut self) -> io::Result<()> {
-        self.collect_console(None)
+        if self.reader.as_ref().is_none_or(JoinHandle::is_finished) {
+            return Ok(());
+        }
+        match self.collect_console(None) {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1740,6 +1746,29 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]).process_group(0);
         Guest::start(command, work, launch).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn a_sync_after_the_collector_stopped_keeps_the_collected_console() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "printf done");
+        while !guest.reader.as_ref().is_some_and(JoinHandle::is_finished) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        guest.sync_console().unwrap();
+        assert_eq!(guest.console_since(0), (4, b"done".to_vec()));
+        let reason = loop {
+            if let Some(reason) = guest.stopped().unwrap() {
+                break reason;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        guest.finish(reason).unwrap();
+        guest.sync_console().unwrap();
+        assert_eq!(guest.console_since(2), (4, b"ne".to_vec()));
     }
 
     #[test]

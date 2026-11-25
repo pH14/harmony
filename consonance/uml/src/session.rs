@@ -1480,13 +1480,15 @@ mod tests {
             .copy_from_slice(&(oversized_len as u64).to_le_bytes());
         oversized.resize(request_field + 8 + oversized_len, 0);
         oversized[request_field + 8..request_field + 16].copy_from_slice(&400_u64.to_le_bytes());
+        short.extend_from_slice(&0_u64.to_le_bytes());
+        oversized.extend_from_slice(&0_u64.to_le_bytes());
         let mut behind = sidecar.clone();
         behind[request_field + 8..request_field + 16].copy_from_slice(&89_u64.to_le_bytes());
-        for (name, malformed) in [
-            ("trailing", trailing),
-            ("short request", short),
-            ("oversized request", oversized),
-            ("backward request", behind),
+        for (name, malformed, reason) in [
+            ("trailing", trailing, "trailing bytes"),
+            ("short request", short, "pending request length"),
+            ("oversized request", oversized, "pending request length"),
+            ("backward request", behind, "behind the recorded services"),
         ] {
             assert!(
                 matches!(
@@ -1497,9 +1499,9 @@ mod tests {
                         &malformed,
                         &nominal_factory(),
                     ),
-                    Err(SessionError::Protocol(_))
+                    Err(SessionError::Protocol(message)) if message.contains(reason)
                 ),
-                "{name} sidecar was accepted"
+                "{name} sidecar was not refused for {reason}"
             );
         }
     }
