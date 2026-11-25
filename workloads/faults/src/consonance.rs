@@ -577,6 +577,7 @@ struct LiveTelemetry {
 }
 
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
+const REPLAY_LINKS: usize = 2;
 const PUBLISH_SPACING_WARMUP: u64 = 64;
 const MAX_PUBLISH_SPACING: usize = 16;
 const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v2";
@@ -1427,6 +1428,9 @@ impl FaultTarget {
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
+            if kind == RunKind::Replay && live.chain.shared().is_none() {
+                live.shed_to(REPLAY_LINKS)?;
+            }
             self.action_choices = std::mem::take(&mut live.choices);
             observation.keep_parks_after(self.history.receipt().moment());
             Ok((
@@ -2045,6 +2049,17 @@ impl Live {
             if dropped.is_empty() {
                 self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT);
                 return Ok(());
+            }
+            self.drop_snapshots(dropped)?;
+        }
+        Ok(())
+    }
+
+    fn shed_to(&mut self, links: usize) -> Result<(), String> {
+        while self.chain.links() > links {
+            let dropped = self.chain.shed(links);
+            if dropped.is_empty() {
+                break;
             }
             self.drop_snapshots(dropped)?;
         }
@@ -5165,6 +5180,41 @@ mod tests {
         assert_eq!(links, 3);
         assert_eq!(after.actions - before.actions, 0);
         assert_eq!(target.history.receipt(), endpoint.history.receipt());
+    }
+
+    #[test]
+    fn a_replay_without_a_snapshot_cache_keeps_two_links_and_reaches_the_same_endpoint() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let actions = crate::chain::CHAIN_LIMIT + 4;
+        let run = |replayed: bool| {
+            let (mut target, _) = keyed_target(FOLDING);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&vec![1; actions])));
+            let mut most = 0;
+            for _ in 0..actions {
+                if replayed {
+                    target.apply_replayed(action);
+                } else {
+                    target.apply(action);
+                }
+                assert!(!target.failed());
+                most = most.max(LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()));
+            }
+            let ended = (
+                most,
+                target.history.receipt().clone(),
+                target.observation().clone(),
+                target.state_hash_current().unwrap(),
+            );
+            LIVE.with(|slot| slot.borrow_mut().take());
+            ended
+        };
+        let (kept, receipt, observation, hash) = run(true);
+        let (grown, unshed_receipt, unshed_observation, unshed_hash) = run(false);
+        assert_eq!(kept, REPLAY_LINKS);
+        assert!(grown > REPLAY_LINKS);
+        assert_eq!(receipt, unshed_receipt);
+        assert_eq!(observation, unshed_observation);
+        assert_eq!(hash, unshed_hash);
     }
 
     #[test]
