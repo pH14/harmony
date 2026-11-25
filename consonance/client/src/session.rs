@@ -1601,6 +1601,29 @@ mod tests {
 
         let reply = drain_console_pages(|_| Ok(Reply::Unit)).expect_err("reply failure");
         assert!(reply.to_string().contains("console diagnostic"));
+
+        let after_length = |page: Result<Reply, Box<dyn Error>>| {
+            let mut page = Some(page);
+            move |offset| {
+                if offset == u32::MAX {
+                    Ok(Reply::Console {
+                        total: 10,
+                        chunk: Vec::new(),
+                    })
+                } else {
+                    page.take().expect("one data request")
+                }
+            }
+        };
+        let transport = console_pages_since(
+            0,
+            after_length(Err(std::io::Error::other("transport").into())),
+        )
+        .expect_err("transport failure on a data page");
+        assert_eq!(transport.to_string(), "transport");
+        let reply = console_pages_since(0, after_length(Ok(Reply::Unit)))
+            .expect_err("reply failure on a data page");
+        assert!(reply.to_string().contains("console since"));
     }
 
     #[test]
