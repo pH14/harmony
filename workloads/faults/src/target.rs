@@ -1097,6 +1097,10 @@ impl SdkDecoder {
                     + id.capacity()
                     + outcome.message.capacity()
                     + outcome.location.capacity()
+                    + outcome
+                        .failure_details
+                        .as_ref()
+                        .map_or(0, crate::assertion::FailureDetails::capacity)
             })
             .sum::<usize>();
         bytes += self
@@ -1234,7 +1238,7 @@ impl SdkDecoder {
 }
 
 #[cfg(feature = "consonance")]
-const OBSERVATION_CHECKPOINT_VERSION: u16 = 2;
+const OBSERVATION_CHECKPOINT_VERSION: u16 = 3;
 
 #[cfg(feature = "consonance")]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1317,6 +1321,7 @@ fn declare_sdk_catalog(bytes: &[u8], assertions: &mut Assertions) -> Result<bool
                 passed: false,
                 failed: false,
                 holds: None,
+                failure_details: None,
             },
         );
     }
@@ -1347,6 +1352,7 @@ fn record_sdk_assertion(
             passed,
             failed: !passed,
             holds: (kind == AssertionKind::Sometimes).then_some(passed),
+            failure_details: None,
         },
     );
     Ok(())

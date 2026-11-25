@@ -329,6 +329,7 @@ mod tests {
                         passed: true,
                         failed: true,
                         holds: None,
+                        failure_details: None,
                     },
                 );
             }

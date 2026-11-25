@@ -392,7 +392,9 @@ the `harness-check` output also lists the undecided assertions.
 
 The supervisor gives every child `ANTITHESIS_OUTPUT_DIR=/run/antithesis`,
 where `sdk.jsonl` links to `/dev/harmony`. Each record is one `write`.
-Assertion ids are the messages.
+Assertion ids are the messages. The host keeps the `details` of an
+assertion's first failing record in the finding, so `harmony show --finding N`
+prints the values the check wrote.
 
 ## Network faults
 

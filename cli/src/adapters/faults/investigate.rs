@@ -413,6 +413,19 @@ fn undecided_line(undecided: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(feature = "frontend")]
+fn violation_lines(replay: &serde_json::Value, details: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    for violation in replay["violations"].as_array().into_iter().flatten() {
+        let violation = violation.as_str().unwrap_or_default();
+        lines.push(format!("  violation: {violation}"));
+        if let Some(details) = details.get(violation) {
+            lines.push(format!("    details: {details}"));
+        }
+    }
+    lines
+}
+
+#[cfg(feature = "frontend")]
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
@@ -448,7 +461,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
         if let Some(error) = &manifest.error {
             println!("error: {error}");
         }
-        let show_replay = |replay: &serde_json::Value| {
+        let show_replay = |replay: &serde_json::Value, details: &serde_json::Value| {
             println!(
                 "actions: {}; recovery actions: {}; stop: {}; state: {}",
                 replay["actions_applied"],
@@ -460,8 +473,8 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                     replay["state_hash"].to_string()
                 }
             );
-            for violation in replay["violations"].as_array().into_iter().flatten() {
-                println!("  violation: {}", violation.as_str().unwrap_or_default());
+            for line in violation_lines(replay, details) {
+                println!("{line}");
             }
             if let Some(keys) = replay["check"]["undecided_keys"]
                 .as_u64()
@@ -475,7 +488,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                 "finding {bug}: confirmed={}; execution={}",
                 selected["confirmed"], selected["execution"]
             );
-            show_replay(&selected["replay"]);
+            show_replay(&selected["replay"], &selected["violation_details"]);
             println!(
                 "timeline: harmony show {} --timeline --finding {bug}\nbranch: harmony branch {} --finding {bug}",
                 path.display(),
@@ -498,7 +511,7 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                 );
             }
             for replay in selected["replays"].as_array().into_iter().flatten() {
-                show_replay(replay);
+                show_replay(replay, &serde_json::Value::Null);
             }
             for assertion in selected["never_satisfied"].as_array().into_iter().flatten() {
                 println!("unmet Sometimes or Reachable assertion: {assertion}");
@@ -697,6 +710,24 @@ mod tests {
             None
         );
         assert_eq!(undecided_line(&serde_json::Value::Null), None);
+    }
+
+    #[test]
+    fn a_finding_shows_the_details_after_each_violation_that_has_them() {
+        let replay = serde_json::json!({"violations": ["highest", "acked"]});
+        let details = serde_json::json!({"highest": {"node": "n1", "answer": 333}});
+        assert_eq!(
+            violation_lines(&replay, &details),
+            [
+                "  violation: highest",
+                "    details: {\"answer\":333,\"node\":\"n1\"}",
+                "  violation: acked",
+            ]
+        );
+        assert_eq!(
+            violation_lines(&replay, &serde_json::Value::Null),
+            ["  violation: highest", "  violation: acked"]
+        );
     }
 
     #[test]
@@ -962,6 +993,7 @@ mod tests {
             actions: Vec::new(),
             stop: FaultStop::Assertion { point: 2 },
             violations: vec!["2".into()],
+            violation_details: Default::default(),
             sometimes: Vec::new(),
             state_hash: String::new(),
             state_hash_encoding: StateHashEncoding::EnginePageDigest,
@@ -1077,6 +1109,7 @@ mod tests {
             actions: Vec::new(),
             stop: FaultStop::Assertion { point: 2 },
             violations: vec!["2".into()],
+            violation_details: Default::default(),
             sometimes: Vec::new(),
             state_hash: String::new(),
             state_hash_encoding: StateHashEncoding::EnginePageDigest,

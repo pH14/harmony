@@ -815,7 +815,14 @@ Assertions arrive as Antithesis SDK JSON records written to `/dev/harmony`.
 The host keys each assertion by its `id` (the message when the id is empty)
 and keeps its kind, message, and source location. An Always or
 AlwaysOrUnreachable assertion evaluated false, or an Unreachable assertion that
-was reached, is a violation and marks the execution as a bug. The set of
+was reached, is a violation and marks the execution as a bug. The host keeps
+the `details` object of the first record that violates an assertion as that
+assertion's `failure_details`, so a finding names the values the guest saw;
+passing records and null details keep nothing. Details whose JSON is longer
+than 4096 bytes (`FAILURE_DETAILS_LIMIT_BYTES`) are replaced by
+`{"truncated_bytes": N, "prefix": "..."}` holding the first 1024 bytes
+(`FAILURE_DETAILS_PREFIX_BYTES`), so one large payload cannot bloat every
+report and snapshot that carries the observation. The set of
 Sometimes and Reachable assertions that passed enters the archive key as a
 count plus a digest of the sorted ids, so the key has no limit on how many
 distinct assertions a workload declares. Every process's records feed the key.
@@ -1023,10 +1030,14 @@ instead of `kernel`. Workload knobs, supervision and interventions belong in
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes. Its `format` is
-`faults-report-v3`. Decoding a `Report` refuses another format, or a missing
+`faults-report-v4`. Decoding a `Report` refuses another format, or a missing
 one: exact replay and the timeline refuse an old report, and `search --resume`
 discards it and replays its bugs again. The run manifest names `report.json`
 by its SHA-256 instead of holding a copy, so the report is stored once.
+Each bug's `violation_details` maps a violated assertion's id to its
+`failure_details`, and is omitted when no violated assertion has details;
+`bug-N.json` carries the same field on each assertion of its observations.
+`harmony show --finding N` prints the details on the line after each violation.
 
 A search report keeps each bug's replay outcome but not its per-step timeline
 (the console and observations at every step), which is most of a bug's
@@ -1201,7 +1212,7 @@ preserve the last tuple moment and repeated observations preserve action evidenc
 Branch and replay install a checkpoint from the selected actual captured Link;
 rollback, new sessions and failures cannot reuse another lineage's cursor.
 
-Captured observation attachments use `fault-observations-v2`, included in the exact
+Captured observation attachments use `fault-observations-v3`, included in the exact
 cache namespace. Imported decoder checkpoints remain untrusted. When a pending
 checkpoint is retained, the normal required machine replay or branch reconstructs
 the full actual SDK history and compares all decoder state, including hidden maps
@@ -1565,7 +1576,7 @@ before its certified endpoint ends the requested action with stop
 `Unexpected`; that action has no endpoint, so the target folds nothing, and
 the state has no key and counts no stage fall. A target without the
 strategy's keys also folds nothing and gives each action endpoint no key. The snapshot codec
-`fault-history-dag-v5` and the campaign stream and checkpoint formats carry
+`fault-history-dag-v6` and the campaign stream and checkpoint formats carry
 both. A rooted search (`search --from BRANCH`) starts the accumulator at the
 root: a branch root carries only its endpoint observation, so its accumulator
 is that observation folded into a fresh accumulator, as at genesis.
@@ -1758,7 +1769,7 @@ extending the receipt. A relabelled endpoint proof refuses even when its other
 binding fields are unchanged. The combined worker protocol requires host hello5;
 both incompatible hello4 schemas and all older versions are refused.
 
-The shared history codec is `fault-history-dag-v5`, whose endpoint frame also
+The shared history codec is `fault-history-dag-v6`, whose endpoint frame also
 carries the snapshot's accumulator and observed key. Every receipt frame retains
 its ordinary-unqualified `assurance_identity`, includes it in the semantic node
 root, and validates it before encoding/deduplication and after decoding.

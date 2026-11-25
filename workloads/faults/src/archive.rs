@@ -543,6 +543,7 @@ mod tests {
                     passed: true,
                     failed: false,
                     holds: Some(true),
+                    failure_details: None,
                 },
             );
         }

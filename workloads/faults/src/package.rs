@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, error::Error, fs, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::assertion::FailureDetails;
 use crate::guest::{ActionChoice, GuestAnswer};
 use crate::target::{FaultAction, FaultObservations, FaultOperation, FaultStop};
 
 pub const PACKAGE: &str = "faults";
-pub const REPORT_FORMAT: &str = "faults-report-v3";
+pub const REPORT_FORMAT: &str = "faults-report-v4";
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReportFormat;
@@ -81,6 +82,8 @@ pub struct BugSummary {
     pub actions: Vec<FaultAction>,
     pub stop: FaultStop,
     pub violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub violation_details: BTreeMap<String, FailureDetails>,
     pub sometimes: Vec<String>,
     pub state_hash: String,
     #[serde(default)]
@@ -455,6 +458,7 @@ fn bug_summaries(
         .map(|bug| {
             let violations: Vec<String> = bug.observations.violations().into_iter().collect();
             let sometimes: Vec<String> = bug.observations.sometimes().into_iter().collect();
+            let violation_details = bug.observations.assertions.violation_details();
             if let Some(previous) = previous
                 && let Some(carried) =
                     carried_bug(Some(&previous.report), bug, &violations, &sometimes)
@@ -467,6 +471,7 @@ fn bug_summaries(
                 {
                     Ok(timeline) => {
                         return Ok(BugSummary {
+                            violation_details,
                             timeline: Some(timeline),
                             ..carried.clone()
                         });
@@ -504,6 +509,7 @@ fn bug_summaries(
                 actions: bug.actions.clone(),
                 stop: bug.observations.stop,
                 violations,
+                violation_details,
                 sometimes,
                 state_hash: witness
                     .as_ref()
@@ -1966,6 +1972,7 @@ mod tests {
             actions: vec![FaultOperation::Hook(3, std::num::NonZeroU16::new(50).unwrap()).into()],
             stop: FaultStop::Assertion { point: 2 },
             violations: ids(&[2]),
+            violation_details: BTreeMap::new(),
             sometimes: ids(&[24]),
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
@@ -2232,7 +2239,7 @@ mod tests {
             .to_string();
         assert!(
             error.contains(
-                "faults report format is faults-report-v1; this build reads faults-report-v3"
+                "faults report format is faults-report-v1; this build reads faults-report-v4"
             ),
             "{error}"
         );
@@ -2260,6 +2267,48 @@ mod tests {
         assert_eq!(
             written["park_aims"],
             serde_json::json!({"armed": 3, "landings": 2, "sites": {"64": 2}})
+        );
+    }
+
+    #[test]
+    fn a_report_entry_names_the_details_of_each_violated_assertion() {
+        let (id, outcome) = crate::assertion::decode_json_event(
+            br#"{"antithesis_assert":{"assert_type":"always","id":"highest","message":"highest","hit":true,"condition":false,"details":{"node":"n1","highest":482,"answer":333}}}"#,
+        )
+        .and_then(|event| event.assertion)
+        .unwrap();
+        let mut violated = crash_report(1, 4, 0);
+        violated.observations.stop = FaultStop::Assertion { point: 2 };
+        violated.observations.assertions.record(id, outcome);
+        let directory = tempfile::tempdir().unwrap();
+        let mut report = search_report("identity");
+        report.bugs = bug_summaries(
+            &[violated, crash_report(2, 9, 1)],
+            None,
+            &report,
+            false,
+            directory.path(),
+            |_| Ok(with_console(replay_summary(true, FaultStop::Crash, &[]))),
+        )
+        .unwrap();
+        report.write(directory.path()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.path().join("report.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            written["bugs"][0]["violation_details"],
+            serde_json::json!({"highest": {"node": "n1", "highest": 482, "answer": 333}})
+        );
+        assert!(
+            written["bugs"][1]
+                .as_object()
+                .unwrap()
+                .get("violation_details")
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::from_value::<Report>(written).unwrap().bugs,
+            report.bugs
         );
     }
 
