@@ -664,7 +664,7 @@ fn mm2_stage_strategy(game: MegaMan2, given: Option<&Path>) -> Result<Option<Str
         return Ok(None);
     }
     Ok(Some(match given {
-        Some(path) => game.strategy_from(&fs::read_to_string(path)?),
+        Some(path) => game.strategy_from(&fs::read_to_string(path)?)?,
         None => game.strategy(),
     }))
 }

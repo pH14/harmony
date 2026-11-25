@@ -587,7 +587,7 @@ fn main() -> Result<()> {
             let given = args.strategy.as_deref().map(fs::read_to_string).transpose()?;
             let workload = match (game.stage(), given) {
                 (None, None) => workload,
-                (_, Some(given)) => workload.with_strategy(&game.strategy_from(&given))?,
+                (_, Some(given)) => workload.with_strategy(&game.strategy_from(&given)?)?,
                 (Some(_), None) => workload.with_strategy(&game.strategy())?,
             };
             anchored(workload, &args, identity)
