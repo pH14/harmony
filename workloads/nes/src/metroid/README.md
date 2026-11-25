@@ -169,7 +169,16 @@ Each stage climbs one integer:
   climbed past `(30,29)` within 50,000 executions and left the hideout within
   120,000 each. Three searches without the row-30 cells were still at
   `(30,27)` or `(30,28)` when they stopped, two at a budget of 1,000,000
-  executions and one at 763,600, and none had left the hideout. Back in
+  executions and one at 763,600, and none had left the hideout. The route to
+  Ridley's door takes the same rooms the other way: east from the elevator
+  along row 25 to `(30,25)`, down column 30 to `(30,28)`, row 30 from `(20,30)`
+  east to `(30,30)`, then `(30,29)` and west along row 29 to `(18,29)`. The
+  energy stage before the door can end anywhere; in three power-on runs it
+  ended in the row-30 rooms, where they farmed, and the door's stage climbs
+  east from there. Those runs had the shortest path west along row 25 in
+  their table and each reached the door this way instead, with the stage's
+  credit at `(25,25)` until `(22,29)`, a plateau of 745,600 to 1,392,000
+  executions. Back in
   Brinstar before the Tourian
   elevator, the strategy refills missiles to capacity first and then energy to
   within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
@@ -204,7 +213,8 @@ leaves sideways only through a door; every door flips the scroll direction.
 Blast tiles (`$80` to `$9F`) are open going up, since Samus shoots up, and
 open going down only once the route's stage holds bombs. The missile route
 avoids red doors, since they open only to missiles. Each route is a shortest
-path in that graph except three: the route to Kraid's door, the walk to the
+path in that graph except four: the route to Kraid's door, the route to
+Ridley's door, which follows the path power-on runs took, the walk to the
 refill rooms after Ridley, which follows the path a probe search took, and
 the route out of Ridley's hideout, whose table puts the row-30 cells ahead
 of its shortest path from Ridley's room. Elevators join Brinstar
