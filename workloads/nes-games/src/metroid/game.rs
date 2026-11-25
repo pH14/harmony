@@ -684,6 +684,29 @@ mod tests {
     }
 
     #[test]
+    fn the_way_to_ridleys_door_climbs_east_along_row_30_and_west_along_row_29() {
+        let route = table("to_ridley");
+        let at = |cell: u32| route.iter().position(|kept| *kept == cell).unwrap();
+        for (index, cell) in route.iter().enumerate() {
+            assert!(!route[..index].contains(cell), "{cell}");
+        }
+        assert!(walks(&route[at(202_525)..=at(203_028)]));
+        assert!(walks(&route[at(202_030)..=at(203_030)]));
+        assert!(walks(&route[at(203_030)..]));
+        assert_eq!(at(203_028) + 1, at(202_030));
+        assert_eq!(route.last(), Some(&201_829));
+        let mut path: Vec<u32> = (24..=30).map(|x| 200_030 + x * 100).collect();
+        path.extend((19..=29).rev().map(|x| 200_029 + x * 100));
+        let (credit, _) = route_credit(&stage_alone("ridley_door"), &path);
+        assert!(
+            credit.windows(2).all(|pair| pair[0] < pair[1]),
+            "{credit:?}"
+        );
+        let (credit, _) = route_credit(&stage_alone("ridley_door"), &[202_430, 202_030]);
+        assert!(credit[1] < credit[0], "{credit:?}");
+    }
+
+    #[test]
     fn missiles_then_energy_refill_before_the_tourian_elevator() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();

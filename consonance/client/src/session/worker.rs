@@ -50,7 +50,7 @@ const MAX_FDS: usize = crate::import_layout::PROTOCOL_REFERENCE_LIMIT;
 const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
-const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v5";
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v6";
 const IMAGE_HELLO_LIMIT: usize = 512;
 const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -75,6 +75,7 @@ const SDK_EVENTS: u8 = 14;
 const STORE_BYTES: u8 = 15;
 const RUN_RESOLVING: u8 = 16;
 const ENDPOINT: u8 = 20;
+const CONSOLE_SINCE: u8 = 21;
 
 const OK: u8 = 0;
 const OK_RETIRED: u8 = 3;
@@ -122,6 +123,7 @@ pub trait SearchSession: std::fmt::Debug {
         self.import_cached(index, lease, self.setup_handle().0)
     }
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>>;
     fn telemetry_counters(&self) -> Vec<(String, u64)>;
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64>;
     fn store_bytes(&self) -> Option<u64>;
@@ -242,6 +244,10 @@ impl SearchSession for Session {
 
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
         Session::console_tail(self)
+    }
+
+    fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>> {
+        Session::console_since(self, offset)
     }
 
     fn telemetry_counters(&self) -> Vec<(String, u64)> {
@@ -1746,6 +1752,15 @@ impl SearchSession for WorkerSession {
         self.call(&Out::measured(CONSOLE_TAIL, &self.copies), &[])
     }
 
+    fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>> {
+        let reply = self.call(Out::measured(CONSOLE_SINCE, &self.copies).u64(offset), &[])?;
+        let mut input = In(&reply);
+        let total = input.u64()?;
+        let bytes = input.bytes()?.to_vec();
+        input.finish()?;
+        Ok(super::ConsoleSince { total, bytes })
+    }
+
     fn telemetry_counters(&self) -> Vec<(String, u64)> {
         let decode = |reply: Vec<u8>| -> io::Result<Vec<(String, u64)>> {
             let mut input = In(&reply);
@@ -2112,6 +2127,12 @@ impl Served {
             CONSOLE_TAIL => {
                 input.finish()?;
                 out.0 = session.console_tail()?;
+            }
+            CONSOLE_SINCE => {
+                let offset = input.u64()?;
+                input.finish()?;
+                let since = session.console_since(offset)?;
+                out.u64(since.total).bytes(&since.bytes);
             }
             TELEMETRY => {
                 input.finish()?;
@@ -2663,6 +2684,20 @@ mod tests {
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
             Ok(b"tail".to_vec())
+        }
+
+        fn console_since(
+            &mut self,
+            offset: u64,
+        ) -> Result<super::super::ConsoleSince, Box<dyn Error>> {
+            let tail = b"tail";
+            let start = usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(tail.len());
+            Ok(super::super::ConsoleSince {
+                total: tail.len() as u64,
+                bytes: tail[start..].to_vec(),
+            })
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
@@ -4954,6 +4989,8 @@ mod tests {
         let held = session.store_bytes().expect("store bytes");
         assert!(held > 0);
         assert_eq!(session.console_tail().unwrap(), b"tail");
+        let since = session.console_since(2).unwrap();
+        assert_eq!((since.total, since.bytes.as_slice()), (4, b"il".as_slice()));
         session
             .branch_with_service(
                 SnapId(1),
@@ -6766,12 +6803,13 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn descriptor_table_import_requires_the_new_host_hello_version() {
-        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v5");
+        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v6");
         for version in [
             b"harmony-session-worker-image-v1".as_slice(),
             b"harmony-session-worker-image-v2".as_slice(),
             b"harmony-session-worker-image-v3".as_slice(),
             b"harmony-session-worker-image-v4".as_slice(),
+            b"harmony-session-worker-image-v5".as_slice(),
         ] {
             let mut hello = Out::default();
             hello.bytes(version).bytes(b"fixture");

@@ -796,6 +796,65 @@ where
     Ok(console)
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ConsoleSince {
+    pub total: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl ConsoleSince {
+    #[must_use]
+    pub fn start(&self) -> u64 {
+        self.total.saturating_sub(self.bytes.len() as u64)
+    }
+}
+
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn console_pages_since<F>(offset: u64, mut request: F) -> Result<ConsoleSince, Box<dyn Error>>
+where
+    F: FnMut(u32) -> Result<Reply, Box<dyn Error>>,
+{
+    let mut page = |at: u64| -> Result<(u64, Vec<u8>), Box<dyn Error>> {
+        match request(u32::try_from(at).unwrap_or(u32::MAX))? {
+            Reply::Console { total, chunk } => Ok((u64::from(total), chunk)),
+            reply => Err(SessionError::Reply {
+                operation: "console since",
+                reply,
+            }
+            .into()),
+        }
+    };
+    let (total, first) = page(offset)?;
+    let start = offset
+        .min(total)
+        .max(total.saturating_sub(MAX_CONSOLE_DIAGNOSTIC as u64));
+    let wanted = usize::try_from(total - start)?;
+    let mut chunk = if start == offset {
+        first
+    } else {
+        page(start)?.1
+    };
+    let mut bytes = Vec::with_capacity(wanted);
+    while !chunk.is_empty() && bytes.len() < wanted {
+        let take = chunk.len().min(wanted - bytes.len());
+        bytes.extend_from_slice(&chunk[..take]);
+        if bytes.len() < wanted {
+            chunk = page(start + bytes.len() as u64)?.1;
+        }
+    }
+    Ok(ConsoleSince {
+        total: start + bytes.len() as u64,
+        bytes,
+    })
+}
+
 #[cfg(all(
     any(
         all(
@@ -1451,6 +1510,47 @@ mod tests {
         assert_eq!(bounded, serial[serial.len() - CAP..]);
         assert_eq!(offsets[1] as usize, serial.len() - CAP);
         assert!(bounded.ends_with(b"late failure"));
+    }
+
+    fn serve_console(serial: &[u8]) -> impl FnMut(u32) -> Result<Reply, Box<dyn Error>> + '_ {
+        |offset| {
+            let start = (offset as usize).min(serial.len());
+            let end = (start + 8192).min(serial.len());
+            Ok(Reply::Console {
+                total: serial.len() as u32,
+                chunk: serial[start..end].to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn console_since_returns_the_bytes_after_the_offset() {
+        let serial = b"boot\nready\nready\n".repeat(1000);
+        let since = console_pages_since(5, serve_console(&serial)).expect("console since");
+        assert_eq!(since.total, serial.len() as u64);
+        assert_eq!(since.bytes, serial[5..]);
+        assert_eq!(since.start(), 5);
+        let none = console_pages_since(serial.len() as u64, serve_console(&serial)).unwrap();
+        assert_eq!(none.total, serial.len() as u64);
+        assert!(none.bytes.is_empty());
+    }
+
+    #[test]
+    fn console_since_keeps_the_newest_bounded_bytes() {
+        const CAP: usize = 64 * 1024;
+        let serial = [vec![b'x'; CAP], vec![b'y'; CAP], b"late".to_vec()].concat();
+        let since = console_pages_since(3, serve_console(&serial)).expect("console since");
+        assert_eq!(since.total, serial.len() as u64);
+        assert_eq!(since.bytes, serial[serial.len() - CAP..]);
+        assert_eq!(since.start(), (serial.len() - CAP) as u64);
+    }
+
+    #[test]
+    fn console_since_an_offset_past_the_end_reads_nothing() {
+        let serial = b"short".to_vec();
+        let since = console_pages_since(99, serve_console(&serial)).expect("console since");
+        assert_eq!(since.total, 5);
+        assert!(since.bytes.is_empty());
     }
 
     #[test]

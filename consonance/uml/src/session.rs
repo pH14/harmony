@@ -33,7 +33,7 @@ const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
-const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP3";
+const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP4";
 #[cfg(test)]
 static TEST_HOLD_TERMINAL_POLL: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -45,11 +45,12 @@ fn checked_sidecar(
     sidecar: &[u8],
     expected_physical_bytes: u64,
 ) -> Result<(u64, Reader<'_>), SessionError> {
-    let mut reader = Reader(
-        sidecar
-            .strip_prefix(SIDECAR_MAGIC)
-            .ok_or_else(|| SessionError::Protocol("checkpoint sidecar: magic".into()))?,
-    );
+    let mut reader = Reader(sidecar.strip_prefix(SIDECAR_MAGIC).ok_or_else(|| {
+        SessionError::Protocol(format!(
+            "checkpoint sidecar has an unknown format; this build reads {}",
+            String::from_utf8_lossy(SIDECAR_MAGIC)
+        ))
+    })?);
     let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
     if image_bytes > crate::memory::IMAGE_BYTES as u64 {
         return Err(MemoryError::ImageTooLarge(image_bytes).into());
@@ -127,6 +128,7 @@ pub struct Checkpoint {
     memory: Snapshot,
     services: Services,
     request: Vec<u8>,
+    console: u64,
 }
 
 enum Ack {
@@ -207,6 +209,7 @@ impl Checkpoint {
             memory: self.memory.share(),
             services: other.services.clone(),
             request: other.request.clone(),
+            console: self.console,
         }
     }
 
@@ -229,6 +232,7 @@ impl Checkpoint {
         out.extend_from_slice(&services);
         out.extend_from_slice(&(self.request.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.request);
+        out.extend_from_slice(&self.console.to_le_bytes());
         Ok(out)
     }
 }
@@ -260,6 +264,7 @@ impl Checkpoints {
             memory: self.zero()?,
             services: near.services.clone(),
             request: near.request.clone(),
+            console: near.console,
         };
         self.import(&base, near, pages, sidecar, factory)
     }
@@ -304,6 +309,7 @@ impl Checkpoints {
         let request = length(&mut reader)
             .and_then(|request| reader.take(request).map_err(SessionError::Protocol))?
             .to_vec();
+        let console = reader.u64().map_err(SessionError::Protocol)?;
         if !reader.0.is_empty() {
             return Err(malformed("trailing bytes"));
         }
@@ -318,6 +324,7 @@ impl Checkpoints {
             memory,
             services,
             request,
+            console,
         })
     }
 }
@@ -424,6 +431,11 @@ impl Session {
     pub fn console_tail(&self) -> String {
         let tail = self.guest.console_tail();
         String::from_utf8_lossy(&tail[tail.len().saturating_sub(4096)..]).into_owned()
+    }
+
+    pub fn console_since(&mut self, offset: u64) -> Result<(u64, Vec<u8>), SessionError> {
+        self.guest.sync_console()?;
+        Ok(self.guest.console_since(offset))
     }
 
     pub fn events(&self) -> &[Event] {
@@ -663,10 +675,12 @@ impl Session {
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
         check_host_guard(self.host_guard)?;
+        self.guest.sync_console()?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
             request,
+            console: self.guest.console_position(),
         })
     }
 
@@ -762,7 +776,7 @@ impl Session {
         };
         self.services = checkpoint.services.clone();
         self.pending = Some(checkpoint.request.clone());
-        self.guest.reset_console()?;
+        self.guest.reset_console(checkpoint.console)?;
         Ok(())
     }
 
@@ -1251,6 +1265,7 @@ mod tests {
             memory,
             services,
             request: moment.map_or_else(Vec::new, |moment| moment.to_le_bytes().to_vec()),
+            console: 0,
         }
     }
 
@@ -1424,6 +1439,18 @@ mod tests {
         assert_eq!(imported.moment(), 400);
         assert_eq!(imported.events(), target.events());
 
+        let mut previous_format = sidecar.clone();
+        previous_format[..SIDECAR_MAGIC.len()].copy_from_slice(b"HUMLCKP3");
+        assert!(matches!(
+            subscriber.import(
+                &subscriber_base,
+                &subscriber_base,
+                &borrowed,
+                &previous_format[..previous_format.len() - 8],
+                &nominal_factory(),
+            ),
+            Err(SessionError::Protocol(message)) if message.contains("unknown format")
+        ));
         for malformed in [
             &b"HUMLCKP1"[..],
             &sidecar[..SIDECAR_MAGIC.len()],
@@ -1444,7 +1471,7 @@ mod tests {
 
         let mut trailing = sidecar.clone();
         trailing.push(0x5a);
-        let request_field = sidecar.len() - STAMP_LEN - 8;
+        let request_field = sidecar.len() - STAMP_LEN - 16;
         let mut short = sidecar[..request_field + 9].to_vec();
         short[request_field..request_field + 8].copy_from_slice(&1_u64.to_le_bytes());
         let mut oversized = sidecar[..request_field + 8].to_vec();
@@ -1453,13 +1480,15 @@ mod tests {
             .copy_from_slice(&(oversized_len as u64).to_le_bytes());
         oversized.resize(request_field + 8 + oversized_len, 0);
         oversized[request_field + 8..request_field + 16].copy_from_slice(&400_u64.to_le_bytes());
+        short.extend_from_slice(&0_u64.to_le_bytes());
+        oversized.extend_from_slice(&0_u64.to_le_bytes());
         let mut behind = sidecar.clone();
         behind[request_field + 8..request_field + 16].copy_from_slice(&89_u64.to_le_bytes());
-        for (name, malformed) in [
-            ("trailing", trailing),
-            ("short request", short),
-            ("oversized request", oversized),
-            ("backward request", behind),
+        for (name, malformed, reason) in [
+            ("trailing", trailing, "trailing bytes"),
+            ("short request", short, "pending request length"),
+            ("oversized request", oversized, "pending request length"),
+            ("backward request", behind, "behind the recorded services"),
         ] {
             assert!(
                 matches!(
@@ -1470,9 +1499,9 @@ mod tests {
                         &malformed,
                         &nominal_factory(),
                     ),
-                    Err(SessionError::Protocol(_))
+                    Err(SessionError::Protocol(message)) if message.contains(reason)
                 ),
-                "{name} sidecar was accepted"
+                "{name} sidecar was not refused for {reason}"
             );
         }
     }
@@ -2379,6 +2408,7 @@ mod tests {
             memory: snapshot(&checkpoints, None, &[(0, 1)]),
             services,
             request,
+            console: 41,
         };
         let factory: ServiceFactory = std::sync::Arc::new(|config| {
             if config.identity != b"waiting-handler" || !config.configuration.is_empty() {
@@ -2390,6 +2420,7 @@ mod tests {
             .import(&held, &held, &[], &held.sidecar().unwrap(), &factory)
             .unwrap();
         assert_eq!(imported.digest().unwrap(), held.digest().unwrap());
+        assert_eq!(imported.console, 41);
         let answer = environment::channel::Answer::Data(vec![42]).encode();
         let (original_services, original_reply) = held
             .services
@@ -2497,6 +2528,7 @@ mod tests {
                 memory: store.adopt(id),
                 services: Services::new(7),
                 request: 0_u64.to_le_bytes().to_vec(),
+                console: 0,
             }
         }
         let first = Checkpoints::new();

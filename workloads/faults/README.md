@@ -1013,7 +1013,11 @@ instead of `kernel`. Workload knobs, supervision and interventions belong in
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
-either the bugs found or the replay outcomes.
+either the bugs found or the replay outcomes. Its `format` is
+`faults-report-v2`. Decoding a `Report` refuses another format, or a missing
+one: exact replay and the timeline refuse an old report, and `search --resume`
+discards it and replays its bugs again. `harmony show --json` prints the
+manifest's copy unchanged.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
@@ -1597,9 +1601,22 @@ journal digest into the searcher, which rejects a file swapped after selection.
 
 Fresh scenario executions retain `ReplaySummary::timeline`: the observation,
 recorded action including coverage quantum, and console evidence at each action
-boundary. Recovery-check waits are labeled separately. Both guest backends return a bounded 64 KiB console tail, which can
-overlap adjacent captures. Console evidence is diagnostic and does not enter
-archive identity or scheduling. Branch previews stop at their exact action
+boundary. Recovery-check waits are labeled separately. A step's `console` holds
+only the guest output since the previous step. The session's `console_since`
+cuts it at the byte count the guest console has emitted, so steps do not
+overlap, and a character split across two steps is kept whole in the later
+step. A step keeps at most its newest 64 KiB and counts the rest in
+`console_dropped`. A step that ends inside a
+character holds those bytes in the replay's cursor rather than reading them
+again, and the last step keeps any unfinished character as a replacement
+character. `ReplaySummary::console_through` joins the steps up to a step and
+marks each `console_dropped` gap with a line naming the bytes not kept, so
+text is never joined across a gap. `harmony show --logs` prints that console
+for a selected step, and `harmony show --timeline --json` carries it in the
+selected step's `console`; without a selected step, `show --logs` prints each
+step's own output.
+Console evidence is diagnostic and does not enter archive identity or
+scheduling. Branch previews stop at their exact action
 prefix without adding settlement actions.
 
 `FaultCampaignRun::violations` names the violations a run's objective needs: a
