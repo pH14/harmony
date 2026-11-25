@@ -44,6 +44,15 @@ async function stillDuring(page, ms) {
   assert.ok(during.length >= 4, 'The replay keeps playing while the counter is sampled');
   assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
+async function whenEnabled(page, selector) {
+  try {
+    await page.waitForFunction((selector) => !document.querySelector(selector).disabled, selector, {timeout: 30000});
+  } catch (error) {
+    const state = await page.evaluate((selector) => ({flags: document.querySelector(selector).dataset.flags, frame: document.querySelector('#frame-label').textContent}), selector);
+    throw new Error(`${selector} stayed disabled for 30 s; flags at the last control update ${state.flags}, frame label ${JSON.stringify(state.frame)}`, {cause: error});
+  }
+  return page.locator(selector);
+}
 const detail = (page, name) => page.evaluate((name) => [...document.querySelectorAll('#details div')].find((d) => d.firstChild.textContent === name)?.lastChild.textContent, name);
 async function scrubMarker(page, frame) {
   await page.evaluate((frame) => {
@@ -165,8 +174,8 @@ try {
   await page.locator('#speed').selectOption('1');
   await replayFromStart(page);
   await stillDuring(page, 300);
-  await page.locator('#pause').click();
-  await page.locator('#pause').click();
+  await (await whenEnabled(page, '#pause')).click();
+  await (await whenEnabled(page, '#pause')).click();
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Resume Search');
   await page.locator('#close-inspector').click();
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');

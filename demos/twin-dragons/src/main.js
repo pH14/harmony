@@ -2821,6 +2821,7 @@ function updateBranchControls() {
     button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
   $("pause").disabled = !ready || branchBusy || controlMode || !!stats.stopped;
+  $("pause").dataset.flags = JSON.stringify({ ready, branchBusy, controlMode, stopped: !!stats.stopped });
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
     button.disabled = controlMode || branchBusy;
