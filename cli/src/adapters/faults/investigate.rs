@@ -13,9 +13,7 @@ use crate::selection::Point;
 pub use crate::selection::Selection;
 
 pub(super) fn recorded_report(manifest: &Manifest) -> Result<Report> {
-    Ok(serde_json::from_value(
-        manifest.record.payload["outcome"].clone(),
-    )?)
+    manifest.report()
 }
 
 fn bug_index(bug: usize, length: usize) -> Result<usize> {
@@ -117,12 +115,12 @@ fn same_end_evidence(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
         && expected.timeline == actual.timeline
 }
 
-fn command_replay_matches(original: &Manifest, actual: serde_json::Value) -> bool {
-    crate::oci::equivalent_record(
-        original.record.payload["outcome"].clone(),
+fn command_replay_matches(original: &Manifest, actual: serde_json::Value) -> Result<bool> {
+    Ok(crate::oci::equivalent_record(
+        original.outcome()?,
         actual,
         original.config.backend,
-    )
+    ))
 }
 
 #[cfg(feature = "frontend")]
@@ -141,7 +139,7 @@ pub fn replay_saved(
         return Err("repeat must be positive".into());
     }
     let source = saved.path;
-    let original = Manifest::from_record(saved.manifest)?;
+    let original = Manifest::from_record(saved.manifest, &source)?;
     original.verify(&source)?;
     if original.status != "complete" {
         return Err("a failed or incomplete recording cannot certify exact replay".into());
@@ -200,7 +198,7 @@ pub fn replay_saved(
                 false,
             )?;
             manifest.pin_outcome(&new)?;
-            if !command_replay_matches(&original, new) {
+            if !command_replay_matches(&original, new)? {
                 Err("replay diverged from the recorded command execution".into())
             } else {
                 Ok(0)
@@ -266,7 +264,7 @@ fn shifted_answers(answers: &[GuestAnswer], cut: usize, offset: usize) -> Vec<Gu
 pub fn branch_saved(request: crate::adapters::Request, saved: crate::runs::Saved) -> Result<u8> {
     let selection = request.selection.ok_or("select a search or branch")?;
     let source = saved.path;
-    let original = Manifest::from_record(saved.manifest)?;
+    let original = Manifest::from_record(saved.manifest, &source)?;
     original.verify(&source)?;
     let Some(bundle) = original.bundle.as_deref() else {
         return Err("branching requires a supervised application scenario".into());
@@ -415,7 +413,7 @@ fn undecided_line(undecided: &serde_json::Value) -> Option<String> {
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
-    let report = manifest.record.payload["outcome"].clone();
+    let report = manifest.outcome()?;
     let selected = if let Some(bug) = selection.finding {
         let bugs = report["bugs"]
             .as_array()
@@ -594,7 +592,7 @@ pub fn logs(
         }
         let serial = fs::read(path.join("serial.log"))?;
         if manifest.bundle.is_none() {
-            if let Some(expected) = manifest.record.payload["outcome"]["serial_sha256"].as_str() {
+            if let Some(expected) = manifest.outcome()?["serial_sha256"].as_str() {
                 if crate::runtime::digest(&serial) != expected {
                     return Err("recorded serial.log has changed".into());
                 }
@@ -819,7 +817,7 @@ mod tests {
         record.status = status.into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
-            "outcome":serde_json::to_value(&report).unwrap()
+            "outcome":super::super::runs::recorded_outcome(path, "report.json")
         });
         record.save(path).unwrap();
     }
@@ -899,7 +897,8 @@ mod tests {
         config.workload.package = "faults".into();
         let mut manifest = crate::runs::Manifest::new(config, "command").unwrap();
         manifest.payload = serde_json::json!({
-            "bundle": null, "actions": [], "settle": true, "outcome": recorded
+            "bundle": null, "actions": [], "settle": true,
+            "outcome": super::super::runs::recorded_outcome(dir.path(), "run.json")
         });
         manifest.save(dir.path()).unwrap();
         let original = Manifest::read(dir.path()).unwrap();
@@ -911,11 +910,11 @@ mod tests {
         )
         .unwrap();
         assert!(original.verify(dir.path()).is_err());
-        assert!(!command_replay_matches(&original, replacement));
+        assert!(command_replay_matches(&original, replacement).is_err());
     }
 
     #[test]
-    fn finding_selection_uses_the_report_from_the_verified_manifest() {
+    fn finding_selection_refuses_a_report_changed_after_the_manifest() {
         use faults_workload::{
             package::{BugSummary, Report},
             target::{FaultObservations, FaultStop},
@@ -971,13 +970,19 @@ mod tests {
         let mut manifest = crate::runs::Manifest::new(config, "search").unwrap();
         manifest.payload = serde_json::json!({
             "bundle": "node app \"/bin/app\"\n", "actions": [], "settle": true,
-            "outcome": serde_json::to_value(&report).unwrap()
+            "outcome": super::super::runs::recorded_outcome(dir.path(), "report.json")
         });
         manifest.save(dir.path()).unwrap();
         let original = Manifest::read(dir.path()).unwrap();
         original.verify(dir.path()).unwrap();
 
         let recorded_hash = report.bugs[0].replay.as_ref().unwrap().state_hash.clone();
+        assert!(!recorded_report(&original).unwrap().bugs[0].confirmed);
+        assert!(selected_actions(&original, Some(1)).unwrap().is_empty());
+        assert_eq!(
+            recorded_witness(&original, Some(1)).unwrap().state_hash,
+            recorded_hash
+        );
         report.bugs[0].confirmed = true;
         report.bugs[0]
             .actions
@@ -988,12 +993,17 @@ mod tests {
         report.bugs[0].replay.as_mut().unwrap().state_hash = "changed".into();
         report.write(dir.path()).unwrap();
         assert!(original.verify(dir.path()).is_err());
-        assert!(!recorded_report(&original).unwrap().bugs[0].confirmed);
-        assert!(selected_actions(&original, Some(1)).unwrap().is_empty());
-        assert_eq!(
-            recorded_witness(&original, Some(1)).unwrap().state_hash,
-            recorded_hash
-        );
+        for error in [
+            recorded_report(&original).map(drop).unwrap_err(),
+            selected_actions(&original, Some(1)).map(drop).unwrap_err(),
+            recorded_witness(&original, Some(1)).map(drop).unwrap_err(),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .contains("recorded report.json has changed")
+            );
+        }
     }
 
     #[test]
@@ -1056,7 +1066,7 @@ mod tests {
         record.status = "complete".into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
-            "outcome":serde_json::to_value(&report).unwrap()
+            "outcome":super::super::runs::recorded_outcome(dir.path(), "report.json")
         });
         record.save(dir.path()).unwrap();
 
@@ -1078,7 +1088,7 @@ mod tests {
 
         report.bugs[0].confirmed = true;
         report.write(dir.path()).unwrap();
-        record.payload["outcome"] = serde_json::to_value(&report).unwrap();
+        record.payload["outcome"] = super::super::runs::recorded_outcome(dir.path(), "report.json");
         record.save(dir.path()).unwrap();
         let later_error = replay(
             Selection {

@@ -1016,8 +1016,8 @@ image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes. Its `format` is
 `faults-report-v2`. Decoding a `Report` refuses another format, or a missing
 one: exact replay and the timeline refuse an old report, and `search --resume`
-discards it and replays its bugs again. `harmony show --json` prints the
-manifest's copy unchanged.
+discards it and replays its bugs again. The run manifest names `report.json`
+by its SHA-256 instead of holding a copy, so the report is stored once.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.

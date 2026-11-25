@@ -129,12 +129,13 @@ pub fn list(json: bool) -> Result<u8> {
     Ok(0)
 }
 pub fn diff(left: &str, right: &str) -> Result<u8> {
-    let left = Manifest::read(&locate(left)?)?;
-    let right = Manifest::read(&locate(right)?)?;
-    let left_outcome =
-        crate::adapters::select(&left.config.workload)?.semantic_outcome(&left.payload);
-    let right_outcome =
-        crate::adapters::select(&right.config.workload)?.semantic_outcome(&right.payload);
+    let (left_path, right_path) = (locate(left)?, locate(right)?);
+    let left = Manifest::read(&left_path)?;
+    let right = Manifest::read(&right_path)?;
+    let left_outcome = crate::adapters::select(&left.config.workload)?
+        .semantic_outcome(&left_path, &left.payload)?;
+    let right_outcome = crate::adapters::select(&right.config.workload)?
+        .semantic_outcome(&right_path, &right.payload)?;
     let mut changes = serde_json::Map::new();
     for (name, a, b) in [
         (

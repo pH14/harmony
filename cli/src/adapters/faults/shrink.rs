@@ -59,7 +59,7 @@ pub struct Source {
 
 pub fn source(saved: crate::runs::Saved, finding: Option<usize>, verb: &str) -> Result<Source> {
     let path = saved.path;
-    let manifest = Manifest::from_record(saved.manifest)?;
+    let manifest = Manifest::from_record(saved.manifest, &path)?;
     manifest.verify(&path)?;
     if manifest.bundle.is_none() {
         return Err(format!("{verb} requires a supervised application scenario").into());
