@@ -183,6 +183,7 @@ pub struct Guest {
     work: Option<TempDir>,
     console: Arc<Mutex<ConsoleTail>>,
     over_limit: Arc<AtomicBool>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     console_closed: Arc<AtomicBool>,
     reader: Option<JoinHandle<io::PipeReader>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
