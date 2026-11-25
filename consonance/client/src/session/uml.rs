@@ -664,11 +664,15 @@ impl SearchSession for UmlSession {
     }
 
     fn console_since(&mut self, offset: u64) -> Result<super::ConsoleSince, Box<dyn Error>> {
-        let (total, mut bytes) = self
+        let read = self
             .session
-            .as_ref()
-            .map(|session| session.console_since(offset))
-            .unwrap_or_default();
+            .as_mut()
+            .map(|session| session.console_since(offset));
+        let (total, mut bytes) = match read {
+            Some(Ok(read)) => read,
+            Some(Err(error)) => return Err(self.abandon(error)),
+            None => (0, Vec::new()),
+        };
         bytes.drain(..bytes.len().saturating_sub(super::MAX_CONSOLE_DIAGNOSTIC));
         Ok(super::ConsoleSince { total, bytes })
     }

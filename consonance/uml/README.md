@@ -165,8 +165,11 @@
   byte count still enforces the host output limit. Each `Checkpoint` also
   records the console position, the number of bytes the guest had written
   along its own history, and a restore sets the position back to it, as a VM
-  restore does with its serial capture. `Session::console_since(offset)`
-  returns that position and the kept bytes written after `offset`. Bytes
+  restore does with its serial capture. A capture and
+  `Session::console_since(offset)` first have the collector take in all output
+  already in the pipe, so neither depends on collector timing.
+  `Session::console_since(offset)` returns the position and the kept bytes
+  written after `offset`. Bytes
   written before the restored checkpoint are no longer kept, so a read from
   an offset behind the checkpoint returns fewer bytes than the position
   implies.

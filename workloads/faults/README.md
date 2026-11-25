@@ -1014,8 +1014,10 @@ instead of `kernel`. Workload knobs, supervision and interventions belong in
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes. Its `format` is
-`faults-report-v2`; a report of another format, or with none, is refused when
-read.
+`faults-report-v2`. Decoding a `Report` refuses another format, or a missing
+one, so resume, exact replay and the timeline reject an old report. `harmony
+show` without a timeline or log selection still prints the manifest's copy as
+plain JSON.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_page_digest"`.
@@ -1604,9 +1606,15 @@ only the guest output since the previous step. The session's `console_since`
 cuts it at the byte count the guest console has emitted, so steps do not
 overlap, and a character split across two steps is kept whole in the later
 step. A step keeps at most its newest 64 KiB and counts the rest in
-`console_dropped`. `ReplaySummary::console_through` joins the steps up to a
-step, which `harmony show --timeline` and `harmony show --logs` print for a
-selected step; without one, `show --logs` prints each step's own output.
+`console_dropped`. A step that ends inside a
+character holds those bytes in the replay's cursor rather than reading them
+again, and the last step keeps any unfinished character as a replacement
+character. `ReplaySummary::console_through` joins the steps up to a step and
+marks each `console_dropped` gap with a line naming the bytes not kept, so
+text is never joined across a gap. `harmony show --logs` prints that console
+for a selected step, and `harmony show --timeline --json` carries it in the
+selected step's `console`; without a selected step, `show --logs` prints each
+step's own output.
 Console evidence is diagnostic and does not enter archive identity or
 scheduling. Branch previews stop at their exact action
 prefix without adding settlement actions.

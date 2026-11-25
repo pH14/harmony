@@ -45,11 +45,12 @@ fn checked_sidecar(
     sidecar: &[u8],
     expected_physical_bytes: u64,
 ) -> Result<(u64, Reader<'_>), SessionError> {
-    let mut reader = Reader(
-        sidecar
-            .strip_prefix(SIDECAR_MAGIC)
-            .ok_or_else(|| SessionError::Protocol("checkpoint sidecar: magic".into()))?,
-    );
+    let mut reader = Reader(sidecar.strip_prefix(SIDECAR_MAGIC).ok_or_else(|| {
+        SessionError::Protocol(format!(
+            "checkpoint sidecar has an unknown format; this build reads {}",
+            String::from_utf8_lossy(SIDECAR_MAGIC)
+        ))
+    })?);
     let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
     if image_bytes > crate::memory::IMAGE_BYTES as u64 {
         return Err(MemoryError::ImageTooLarge(image_bytes).into());
@@ -432,9 +433,9 @@ impl Session {
         String::from_utf8_lossy(&tail[tail.len().saturating_sub(4096)..]).into_owned()
     }
 
-    #[must_use]
-    pub fn console_since(&self, offset: u64) -> (u64, Vec<u8>) {
-        self.guest.console_since(offset)
+    pub fn console_since(&mut self, offset: u64) -> Result<(u64, Vec<u8>), SessionError> {
+        self.guest.sync_console()?;
+        Ok(self.guest.console_since(offset))
     }
 
     pub fn events(&self) -> &[Event] {
@@ -674,6 +675,7 @@ impl Session {
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
         check_host_guard(self.host_guard)?;
+        self.guest.sync_console()?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
@@ -1437,6 +1439,18 @@ mod tests {
         assert_eq!(imported.moment(), 400);
         assert_eq!(imported.events(), target.events());
 
+        let mut previous_format = sidecar.clone();
+        previous_format[..SIDECAR_MAGIC.len()].copy_from_slice(b"HUMLCKP3");
+        assert!(matches!(
+            subscriber.import(
+                &subscriber_base,
+                &subscriber_base,
+                &borrowed,
+                &previous_format[..previous_format.len() - 8],
+                &nominal_factory(),
+            ),
+            Err(SessionError::Protocol(message)) if message.contains("unknown format")
+        ));
         for malformed in [
             &b"HUMLCKP1"[..],
             &sidecar[..SIDECAR_MAGIC.len()],

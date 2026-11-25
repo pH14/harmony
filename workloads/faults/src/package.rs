@@ -213,37 +213,65 @@ impl ReplaySummary {
 impl ReplaySummary {
     #[must_use]
     pub fn console_through(&self, step: u64) -> String {
-        self.timeline
-            .iter()
-            .take_while(|entry| entry.step <= step)
-            .map(|entry| entry.console.as_str())
-            .collect()
+        let mut console = String::new();
+        for entry in self.timeline.iter().take_while(|entry| entry.step <= step) {
+            if entry.console_dropped > 0 {
+                if !console.is_empty() && !console.ends_with('\n') {
+                    console.push('\n');
+                }
+                console.push_str(&format!(
+                    "[{} console bytes not kept]\n",
+                    entry.console_dropped
+                ));
+            }
+            console.push_str(&entry.console);
+        }
+        console
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConsoleCursor {
     offset: u64,
+    pending: Vec<u8>,
 }
 
 impl ConsoleCursor {
     pub fn take(&mut self, start: u64, bytes: &[u8]) -> (String, u64) {
-        let dropped = start.saturating_sub(self.offset);
-        let whole = match std::str::from_utf8(bytes) {
-            Err(error) if error.error_len().is_none() => error.valid_up_to(),
-            _ => bytes.len(),
-        };
-        self.offset = start.saturating_add(whole as u64);
-        (
-            String::from_utf8_lossy(&bytes[..whole]).into_owned(),
-            dropped,
-        )
+        let mut dropped = start.saturating_sub(self.offset);
+        let mut joined = std::mem::take(&mut self.pending);
+        if start != self.offset {
+            if dropped > 0 {
+                dropped = dropped.saturating_add(joined.len() as u64);
+            }
+            joined.clear();
+        }
+        joined.extend_from_slice(bytes);
+        let whole = joined.len() - incomplete_suffix(&joined);
+        self.pending = joined.split_off(whole);
+        self.offset = start.saturating_add(bytes.len() as u64);
+        (String::from_utf8_lossy(&joined).into_owned(), dropped)
+    }
+
+    pub fn finish(&mut self) -> String {
+        String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned()
     }
 
     #[must_use]
     pub fn offset(&self) -> u64 {
         self.offset
     }
+}
+
+fn incomplete_suffix(bytes: &[u8]) -> usize {
+    (1..=bytes.len().min(3))
+        .find(|&length| {
+            matches!(
+                std::str::from_utf8(&bytes[bytes.len() - length..]),
+                Err(error) if error.valid_up_to() == 0 && error.error_len().is_none()
+            )
+        })
+        .unwrap_or(0)
 }
 
 #[must_use]
@@ -1257,6 +1285,9 @@ mod live {
             actions_applied,
             target.guest_horizons_run(),
         );
+        if let Some(last) = timeline.last_mut() {
+            last.console.push_str(&cursor.finish());
+        }
         summary.timeline = timeline;
         summary.choices = choices;
         summary.settle_actions = settle_actions;
@@ -1925,7 +1956,7 @@ mod tests {
     fn console_steps(outputs: &[&[u8]], cap: usize) -> Vec<ReplayStep> {
         let mut serial = Vec::new();
         let mut cursor = ConsoleCursor::default();
-        outputs
+        let mut steps: Vec<ReplayStep> = outputs
             .iter()
             .enumerate()
             .map(|(step, output)| {
@@ -1945,7 +1976,11 @@ mod tests {
                     choices: 0,
                 }
             })
-            .collect()
+            .collect();
+        if let Some(last) = steps.last_mut() {
+            last.console.push_str(&cursor.finish());
+        }
+        steps
     }
 
     #[test]
@@ -2006,6 +2041,49 @@ mod tests {
                 .collect::<String>(),
             text
         );
+    }
+
+    #[test]
+    fn an_invalid_byte_before_a_split_character_keeps_the_character_whole() {
+        let outputs: [&[u8]; 2] = [b"x\xff\xc3", b"\xa9!"];
+        let steps = console_steps(&outputs, 1 << 16);
+        assert_eq!(steps[0].console, "x\u{fffd}");
+        assert_eq!(steps[1].console, "\u{e9}!");
+    }
+
+    #[test]
+    fn the_last_step_keeps_an_unfinished_character() {
+        let outputs: [&[u8]; 2] = [b"ok\n", b"end\xe2\x82"];
+        let steps = console_steps(&outputs, 1 << 16);
+        assert_eq!(steps[1].console, "end\u{fffd}");
+    }
+
+    #[test]
+    fn a_held_back_byte_is_not_read_again() {
+        let mut cursor = ConsoleCursor::default();
+        let (first, _) = cursor.take(0, b"caf\xc3");
+        assert_eq!(first, "caf");
+        assert_eq!(cursor.offset(), 4);
+        let (second, dropped) = cursor.take(4, b"\xa9");
+        assert_eq!(second, "\u{e9}");
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn the_rebuilt_console_marks_where_bytes_were_not_kept() {
+        let outputs: [&[u8]; 2] = [b"result: ", b"0123456789OK\nmore!"];
+        let summary = ReplaySummary {
+            timeline: console_steps(&outputs, 8),
+            ..ReplaySummary::from_observation(&FaultObservations::default(), None, 0, 0)
+        };
+        assert_eq!(summary.timeline[0].console, "result: ");
+        assert_eq!(summary.timeline[1].console, "OK\nmore!");
+        assert_eq!(summary.timeline[1].console_dropped, 10);
+        assert_eq!(
+            summary.console_through(1),
+            "result: \n[10 console bytes not kept]\nOK\nmore!"
+        );
+        assert!(!summary.console_through(1).contains("result: OK"));
     }
 
     #[test]
