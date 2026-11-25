@@ -527,9 +527,9 @@ damage and is done on `ridley_defeated`, the Ridley bit at `$687C`. After
 Ridley come the route to the refill rooms (`to_ridley_refill`, scored like the
 Tourian elevator stage below by the cell a state is in), energy (96), the route
 out of the hideout, energy (80), the route
-back through Norfair, full missiles, energy of at least
-`100 * energy_tanks + 90`, the route to the Tourian
-elevator and the route to the Zebetite door. The norfair_return objective is
+back through Norfair, full missiles, the route to the Tourian elevator room
+`(3,3)`, energy of at least `100 * energy_tanks + 90`, the ride to Tourian
+and the route to the Zebetite door. The norfair_return objective is
 the last `to_ending` index a kept state stood on, Ridley's area included, so
 the climb out of the hideout earns credit room by room; with no credit in
 Ridley's area, one power-on run held the stage for over 4M executions without

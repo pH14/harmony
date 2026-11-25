@@ -137,6 +137,12 @@ goal = "action_end and missiles >= missile_capacity and not dead"
 latch = true
 
 [[stage]]
+name = "tourian_elevator_room"
+objective = "if in(cell, to_ending) then index(cell, to_ending) else 0"
+goal = "action_end and cell == 160303 and not dead"
+latch = true
+
+[[stage]]
 name = "energy_before_tourian"
 objective = "health / 10"
 goal = "action_end and health / 10 >= 100 * energy_tanks + 90 and not dead"

@@ -672,15 +672,23 @@ mod tests {
     }
 
     #[test]
-    fn missiles_then_energy_refill_before_the_tourian_elevator() {
+    fn missiles_then_the_elevator_room_then_energy_before_the_tourian_elevator() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();
         let at = |name: &str| names.iter().position(|stage| *stage == name).unwrap();
         assert_eq!(
             at("missiles_before_tourian") + 1,
-            at("energy_before_tourian")
+            at("tourian_elevator_room")
         );
+        assert_eq!(at("tourian_elevator_room") + 1, at("energy_before_tourian"));
         assert_eq!(at("energy_before_tourian") + 1, at("tourian_elevator"));
+        assert_eq!(
+            stage_goal("tourian_elevator_room"),
+            "action_end and cell == 160303 and not dead"
+        );
+        let route = table("to_ending");
+        let room = route.iter().position(|cell| *cell == 160_303).unwrap();
+        assert_eq!(route[room + 1], 190_303);
         let full = MetroidMechanicalState {
             area: 0x10,
             map_x: 20,

@@ -179,18 +179,19 @@ Each stage climbs one integer:
   their table and each reached the door this way instead, with the stage's
   credit at `(25,25)` until `(22,29)`, a plateau of 745,600 to 1,392,000
   executions. Back in
-  Brinstar before the Tourian
-  elevator, the strategy refills missiles to capacity first and then energy to
-  within 9.9 of full for the energy tanks held (`100 * energy_tanks + 90`, so
-  390 of 399.9 with three tanks), in that order
-  because farming missiles costs energy and an energy stage stays done after
-  the loss. The `tanks` term counts missile tanks as well as energy tanks, so
+  Brinstar the strategy refills missiles to capacity, walks to the Tourian
+  elevator room `(3,3)`, and only there refills energy to within 9.9 of full
+  for the energy tanks held (`100 * energy_tanks + 90`, so 390 of 399.9 with
+  three tanks), because farming missiles costs energy and an energy stage
+  stays done after the loss. Two rooted searches that refilled energy before
+  the walk lost 118 and 167 of 199 energy on the way to the elevator, along
+  row 11, and entered Tourian with 75.0 and 24.4. The `tanks` term counts missile tanks as well as energy tanks, so
   energy goals use `energy_tanks`; the preferences below use `tanks` on
   purpose, to rank by tanks collected of either kind. Past Kraid a route stage
   that leaves its route keeps the index of the last route cell it stood on at
-  an action end, except the walk to the refill rooms after Ridley and the
-  Tourian elevator stage, which score the cell they are in and 0 off the
-  route. On those two walks the off-route rooms are detours, so crediting
+  an action end, except the walk to the refill rooms after Ridley and the two
+  Tourian elevator stages, which score the cell they are in and 0 off the
+  route. On those walks the off-route rooms are detours, so crediting
   them would spread the stage's draws over dead ends. The way from Kraid back to the Norfair elevator needs
   the other rule: it crosses `(7,24)` in Kraid's hideout only by a loop
   through off-route rooms to the south and west that re-enters `(7,24)` from
