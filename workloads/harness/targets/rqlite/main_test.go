@@ -151,7 +151,7 @@ func TestStatusAnswersCompareWithTheHighestThatArrivedBeforeTheRequest(t *testin
 func TestStatusAnswersKeepOnlyTheHighsAPendingRequestCanUse(t *testing.T) {
 	answers, got := recordingAnswers()
 	for applied := uint64(1); applied <= 1000; applied++ {
-		answer1(answers, "n1", indexed(applied, applied, "a"))
+		answer1(answers, "n1", indexed(applied, "a"))
 	}
 	h := answers.high[lifetime{node: "n1", started: "a"}]
 	if len(h.rises) != 1 {
@@ -159,7 +159,7 @@ func TestStatusAnswersKeepOnlyTheHighsAPendingRequestCanUse(t *testing.T) {
 	}
 	slow := answers.tick()
 	for applied := uint64(1001); applied <= 1010; applied++ {
-		answer1(answers, "n1", indexed(applied, applied, "a"))
+		answer1(answers, "n1", indexed(applied, "a"))
 	}
 	answers.observe("n1", slow, indexed(999, "a"), time.Unix(100, 0))
 	failed := failures(*got)
@@ -227,9 +227,9 @@ func TestStatusDecodesTheAppliedIndexAndTheStartTime(t *testing.T) {
 	if status != indexed(482, "2026-11-21T19:30:01.5Z") {
 		t.Fatalf("status %+v", status)
 	}
-	server, _ := leaderServer(t, answer(http.StatusOK, `{"node":{"start_time":"2026-11-21T19:30:01.5Z"},"store":{"open":false}}`))
-	c := newClient(server.URL)
-	status, err := c.indexes(context.Background())
+	server, _ = leaderServer(t, answer(http.StatusOK, `{"node":{"start_time":"2026-11-21T19:30:01.5Z"},"store":{"open":false}}`))
+	c = newClient(server.URL)
+	status, err = c.indexes(context.Background())
 	c.Close()
 	if err != nil {
 		t.Fatal(err)
