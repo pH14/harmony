@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::error::Error;
+
 use serde::{Deserialize, Serialize};
+use toml_edit::{DocumentMut, Item, Value};
 
 use crate::{
     chord::{ChordVocabulary, LONG_HOLD_FRAMES, NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES},
@@ -8,7 +11,7 @@ use crate::{
         SWITCH_FRAME_LIMIT, SWITCH_ODDS, SWITCH_PLANNED_FRAMES, WeaponSwitch, weapon_menu_row,
     },
     search::{
-        assertion::{Assertion, Declarations, Number},
+        assertion::{Assertion, Declarations, Number, Strategy},
         choice::{CERTAIN, ChoiceSite},
     },
     workload::{Game, Moves, Offer, Play, Step},
@@ -830,6 +833,31 @@ impl MegaMan2 {
         }
     }
 
+    pub fn strategy_from(self, given: &str) -> Result<String, Box<dyn Error>> {
+        let Some(stage) = self.stage else {
+            return Ok(given.to_owned());
+        };
+        let goal = DEFEATED[usize::from(stage)];
+        Strategy::parse(given)?;
+        let mut document: DocumentMut = given.parse()?;
+        match document.get_mut("goal").and_then(Item::as_value_mut) {
+            Some(value) => {
+                let decor = value.decor().clone();
+                *value = Value::from(goal);
+                *value.decor_mut() = decor;
+            }
+            None => document["goal"] = toml_edit::value(goal),
+        }
+        let text = document.to_string();
+        if Strategy::parse(&text)?.define.contains_key(goal) {
+            return Err(format!(
+                "the strategy defines {goal}, the goal of Mega Man 2 stage {stage}, so the stage start would not win at its Robot Master"
+            )
+            .into());
+        }
+        Ok(text)
+    }
+
     pub fn drive(self, mv: Drive, state: &Mm2State) -> Option<Step<Drive>> {
         match mv {
             Drive::Award { stage, chunks } => {
@@ -1151,6 +1179,7 @@ impl Game for MegaMan2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::assertion::Accumulator;
     use crate::workload::Lowered;
 
     fn drive_frames(mut mv: Drive, state: &Mm2State) -> (u64, u8) {
@@ -1228,6 +1257,120 @@ mod tests {
         }
         assert!(MegaMan2::at_stage(ROBOT_MASTERS).is_err());
         assert_eq!(MegaMan2::WHOLE_GAME.strategy(), MegaMan2::STRATEGY);
+    }
+
+    fn goal_holds(lowered: &Lowered<MegaMan2>, state: &Mm2State) -> bool {
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(true);
+        lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal
+    }
+
+    #[test]
+    fn a_given_strategy_at_a_stage_start_wins_at_that_robot_master() {
+        let given = MegaMan2::STRATEGY.replacen("capacity = 1", "capacity = 2", 1);
+        assert_eq!(MegaMan2::WHOLE_GAME.strategy_from(&given).unwrap(), given);
+        for stage in 0..ROBOT_MASTERS {
+            let game = MegaMan2::at_stage(stage).unwrap();
+            let goal = format!("goal = \"{}\"", DEFEATED[usize::from(stage)]);
+            let strategy = game.strategy_from(&given).unwrap();
+            assert_eq!(strategy, given.replacen("goal = \"ending\"", &goal, 1));
+            assert_eq!(game.strategy_from(&strategy).unwrap(), strategy);
+            let lowered = Lowered::new(game, &strategy).unwrap();
+            let other = (stage + 1) % ROBOT_MASTERS;
+            for (bit, wins) in [(stage, true), (other, false)] {
+                let state = Mm2State {
+                    weapons_obtained: 1 << bit,
+                    ..Mm2State::default()
+                };
+                assert_eq!(goal_holds(&lowered, &state), wins, "{stage} {bit}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stage_start_changes_only_the_goal_line_of_every_shipped_strategy() {
+        let heat = MegaMan2::at_stage(0).unwrap();
+        let shipped = [
+            include_str!("../donkey_kong/donkey_kong.toml"),
+            include_str!("../famidash/famidash.toml"),
+            include_str!("../famidash/lucky_draw.toml"),
+            include_str!("../ice_climbers/ice_climbers.toml"),
+            include_str!("../joust/joust.toml"),
+            include_str!("../metroid/metroid.toml"),
+            include_str!("../metroid/position.toml"),
+            include_str!("../mm2/mega_man.toml"),
+            include_str!("../pac_man/pac_man.toml"),
+            include_str!("../punchout/punchout.toml"),
+            include_str!("../smb/smb.toml"),
+            include_str!("../smb/smb_warps.toml"),
+            include_str!("../twin_dragons/twin_dragons.toml"),
+            include_str!("../zelda/zelda.toml"),
+        ];
+        for (index, given) in shipped.into_iter().enumerate() {
+            let edited = heat.strategy_from(given).unwrap();
+            let mut parsed = Strategy::parse(&edited).unwrap();
+            assert_eq!(parsed.goal.as_deref(), Some("heat_defeated"), "{index}");
+            let original = Strategy::parse(given).unwrap();
+            parsed.goal.clone_from(&original.goal);
+            assert_eq!(parsed, original, "{index}");
+            let before: Vec<&str> = given.lines().collect();
+            let after: Vec<&str> = edited.lines().collect();
+            assert_eq!(before.len(), after.len(), "{index}");
+            let changed: Vec<usize> = (0..before.len())
+                .filter(|&line| before[line] != after[line])
+                .collect();
+            assert_eq!(changed.len(), 1, "{index}");
+            assert!(before[changed[0]].starts_with("goal = "), "{index}");
+            assert_eq!(after[changed[0]], "goal = \"heat_defeated\"", "{index}");
+        }
+    }
+
+    #[test]
+    fn a_stage_start_sets_the_top_level_goal_of_any_strategy_text() {
+        let heat = MegaMan2::at_stage(0).unwrap();
+        let tail = "capacity = 1\ntier = [\"robot_masters\"]\n";
+        for (given, edited) in [
+            (
+                "define.note = '''\ngoal = \"example\"\n'''\ngoal = \"ending\"\n",
+                "define.note = '''\ngoal = \"example\"\n'''\ngoal = \"heat_defeated\"\n",
+            ),
+            (
+                "'goal' = \"ending\" # the win\n",
+                "'goal' = \"heat_defeated\" # the win\n",
+            ),
+            ("goal = '''\nending '''\n", "goal = \"heat_defeated\"\n"),
+            ("", "goal = \"heat_defeated\"\n"),
+        ] {
+            let strategy = heat.strategy_from(&format!("{given}{tail}")).unwrap();
+            let first = if given.is_empty() {
+                format!("{tail}{edited}")
+            } else {
+                format!("{edited}{tail}")
+            };
+            assert_eq!(strategy, first, "{given:?}");
+            assert_eq!(
+                Strategy::parse(&strategy).unwrap().goal.as_deref(),
+                Some("heat_defeated")
+            );
+        }
+        let error = heat
+            .strategy_from(
+                "goal = \"ending\"\ndefine.heat_defeated = \"ending\"\ncapacity = 1\ntier = [\"robot_masters\"]\n",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("the strategy defines heat_defeated"),
+            "{error}"
+        );
+        for invalid in ["goal.x = \"ending\"\n", "goal = { x = \"ending\" }\n"] {
+            let given = format!("{invalid}{tail}");
+            assert!(Strategy::parse(&given).is_err(), "{invalid:?}");
+            assert!(heat.strategy_from(&given).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]

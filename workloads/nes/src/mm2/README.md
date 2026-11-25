@@ -31,8 +31,15 @@ A stage search, `MegaMan2::at_stage`, starts from the power-on menus selecting
 one Robot Master stage and plays that stage's cursor path and arrival wait,
 under the identity `mm2-stage-N-v1`. Its strategy replaces the `ending` goal
 with that Robot Master's defeat, which holds once the weapon award sets its
-bit, so the win ends there instead of after the walk to the next stage. Its
-result is an independent stage clear. The Crash stage start plays the
+bit, so the win ends there instead of after the walk to the next stage. A
+strategy file given to a stage start, through `nes-eval`'s `strategy` field or
+`nes-film --strategy`, gets the same goal (`MegaMan2::strategy_from`). The
+file's top-level `goal` value is replaced in place, and a file with no
+top-level `goal` gains one. The run's `strategy.toml` keeps the given file's
+comments and other lines, except that `toml_edit` writes the dotted keys of one
+parent together, turns CRLF line endings into LF and ends the file with a
+newline. A file that is not a valid strategy, or whose `define` names the stage
+goal, is refused. Its result is an independent stage clear. The Crash stage start plays the
 whole-game setup under its own identity.
 
 Gameplay inside a stage is searched. No route, weapon choice, obstacle target

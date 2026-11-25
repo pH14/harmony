@@ -181,7 +181,14 @@ fn rooted<G: Game>(
     args: &Args,
     identity: Value,
 ) -> Result<()> {
-    let game = strategic(make()?, args)?;
+    anchored(strategic(make()?, args)?, args, identity)
+}
+
+fn anchored<G: Game>(
+    game: NesWorkload<G, QuickNesMachine>,
+    args: &Args,
+    identity: Value,
+) -> Result<()> {
     let game = match &args.root_input {
         Some(path) => {
             let root: Input<ButtonChord> = serde_json::from_slice(&fs::read(path)?)?;
@@ -570,23 +577,20 @@ fn main() -> Result<()> {
                 Some(stage) => MegaMan2::at_stage(stage)?,
                 None => MegaMan2::WHOLE_GAME,
             };
-            rooted(
-                || {
-                    let workload = Mm2Workload::new(
-                        game,
-                        &rom,
-                        &args.core,
-                        &args.core_sha256,
-                        &execution_sha256,
-                    )?;
-                    match game.stage() {
-                        Some(_) => workload.with_strategy(&game.strategy()),
-                        None => Ok(workload),
-                    }
-                },
-                &args,
-                identity,
-            )
+            let workload = Mm2Workload::new(
+                game,
+                &rom,
+                &args.core,
+                &args.core_sha256,
+                &execution_sha256,
+            )?;
+            let given = args.strategy.as_deref().map(fs::read_to_string).transpose()?;
+            let workload = match (game.stage(), given) {
+                (None, None) => workload,
+                (_, Some(given)) => workload.with_strategy(&game.strategy_from(&given)?)?,
+                (Some(_), None) => workload.with_strategy(&game.strategy())?,
+            };
+            anchored(workload, &args, identity)
         }
         "metroid-strategy" => {
             if args.ai.is_some() {
