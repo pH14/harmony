@@ -838,6 +838,7 @@ impl MegaMan2 {
             return Ok(given.to_owned());
         };
         let goal = DEFEATED[usize::from(stage)];
+        Strategy::parse(given)?;
         let mut document: DocumentMut = given.parse()?;
         match document.get_mut("goal").and_then(Item::as_value_mut) {
             Some(value) => {
@@ -1178,6 +1179,7 @@ impl Game for MegaMan2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::assertion::Accumulator;
     use crate::workload::Lowered;
 
     fn drive_frames(mut mv: Drive, state: &Mm2State) -> (u64, u8) {
@@ -1257,6 +1259,15 @@ mod tests {
         assert_eq!(MegaMan2::WHOLE_GAME.strategy(), MegaMan2::STRATEGY);
     }
 
+    fn goal_holds(lowered: &Lowered<MegaMan2>, state: &Mm2State) -> bool {
+        let (mut record, _) = lowered.record(state);
+        record.set_action_end(true);
+        lowered
+            .compiled
+            .observe(&record, &mut Accumulator::default())
+            .goal
+    }
+
     #[test]
     fn a_given_strategy_at_a_stage_start_wins_at_that_robot_master() {
         let given = MegaMan2::STRATEGY.replacen("capacity = 1", "capacity = 2", 1);
@@ -1267,7 +1278,15 @@ mod tests {
             let strategy = game.strategy_from(&given).unwrap();
             assert_eq!(strategy, given.replacen("goal = \"ending\"", &goal, 1));
             assert_eq!(game.strategy_from(&strategy).unwrap(), strategy);
-            Lowered::new(game, &strategy).unwrap();
+            let lowered = Lowered::new(game, &strategy).unwrap();
+            let other = (stage + 1) % ROBOT_MASTERS;
+            for (bit, wins) in [(stage, true), (other, false)] {
+                let state = Mm2State {
+                    weapons_obtained: 1 << bit,
+                    ..Mm2State::default()
+                };
+                assert_eq!(goal_holds(&lowered, &state), wins, "{stage} {bit}");
+            }
         }
     }
 
@@ -1347,6 +1366,11 @@ mod tests {
             error.starts_with("the strategy defines heat_defeated"),
             "{error}"
         );
+        for invalid in ["goal.x = \"ending\"\n", "goal = { x = \"ending\" }\n"] {
+            let given = format!("{invalid}{tail}");
+            assert!(Strategy::parse(&given).is_err(), "{invalid:?}");
+            assert!(heat.strategy_from(&given).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]
