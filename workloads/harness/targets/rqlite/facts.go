@@ -392,6 +392,14 @@ type raftView struct {
 	commit   uint64
 	last     uint64
 	snapshot uint64
+	trailing uint64
+}
+
+func (v raftView) compactedThrough() uint64 {
+	if v.last <= v.trailing {
+		return 0
+	}
+	return min(v.snapshot, v.last-v.trailing)
 }
 
 func raftViewOf(ctx context.Context, base string) raftView {
@@ -411,6 +419,7 @@ func raftViewOf(ctx context.Context, base string) raftView {
 			Leader struct {
 				NodeID string `json:"node_id"`
 			} `json:"leader"`
+			Trailing *raftStat `json:"trailing_logs"`
 		} `json:"store"`
 	}
 	if c.status(ctx, &status) != nil {
@@ -420,8 +429,12 @@ func raftViewOf(ctx context.Context, base string) raftView {
 	if r.State == "" || r.Term == nil || r.Commit == nil || r.Last == nil || r.Snapshot == nil {
 		return raftView{}
 	}
-	return raftView{answered: true, state: r.State, leader: status.Store.Leader.NodeID, term: uint64(*r.Term),
+	view := raftView{answered: true, state: r.State, leader: status.Store.Leader.NodeID, term: uint64(*r.Term),
 		commit: uint64(*r.Commit), last: uint64(*r.Last), snapshot: uint64(*r.Snapshot)}
+	if status.Store.Trailing != nil {
+		view.trailing = uint64(*status.Store.Trailing)
+	}
+	return view
 }
 
 func (v raftView) staleTail() uint64 {

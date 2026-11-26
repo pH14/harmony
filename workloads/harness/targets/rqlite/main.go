@@ -836,6 +836,37 @@ func runStepdown() error {
 	return errors.Join(stepdownFrom(via, target, retries, wait, out, newStepdownFacts()), out.Close())
 }
 
+func runStepdownOldest() error {
+	views := make([]raftView, len(nodes))
+	for at, base := range nodes {
+		views[at] = raftViewOf(context.Background(), base)
+	}
+	via := int(sdk.Below("rqlite.stepdown.via", uint64(len(nodes))))
+	retries := int(sdk.Below("rqlite.stepdown.retries", stepdownRetryChoices))
+	out, err := os.OpenFile(stepdownLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	wait := func() time.Duration {
+		return time.Duration(sdk.Below("rqlite.stepdown.wait", stepdownWaitChoices)) * stepdownWaitStep
+	}
+	return errors.Join(stepdownFrom(via, oldestFollower(views), retries, wait, out, newStepdownFacts()), out.Close())
+}
+
+func oldestFollower(views []raftView) string {
+	target := ""
+	var oldest uint64
+	for at, view := range views {
+		if !view.answered || view.state != "Follower" {
+			continue
+		}
+		if target == "" || view.compactedThrough() < oldest {
+			target, oldest = nodeNames[at], view.compactedThrough()
+		}
+	}
+	return target
+}
+
 func runLeader() error {
 	name, ok := leaderName(context.Background())
 	if !ok {
@@ -956,6 +987,8 @@ func main() {
 		switch os.Args[1] {
 		case "stepdown":
 			run = runStepdown
+		case "stepdown-oldest":
+			run = runStepdownOldest
 		case "snapshot":
 			run = runSnapshot
 		case "leader":

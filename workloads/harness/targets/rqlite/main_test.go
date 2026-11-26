@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/bits"
 	"net/http"
@@ -454,5 +455,71 @@ func TestSnapshotTrailingLogsAreLogUniformFromOneTo1023(t *testing.T) {
 	}
 	if len(seen) < 500 {
 		t.Fatalf("%d distinct counts", len(seen))
+	}
+}
+
+func TestOldestFollowerIsTheFollowerThatCompactedTheFewestEntries(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 474, last: 590, trailing: 80},
+		{answered: true, state: "Leader", snapshot: 128, last: 590, trailing: 80},
+		{answered: true, state: "Follower", snapshot: 399, last: 588, trailing: 80},
+	}
+	if got := oldestFollower(views); got != "n3" {
+		t.Fatalf("oldestFollower = %q, want n3", got)
+	}
+}
+
+func TestOldestFollowerCountsTheTrailingLogsAfterTheSnapshot(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 100, last: 1000, trailing: 200},
+		{answered: true, state: "Leader", snapshot: 200, last: 1000, trailing: 200},
+		{answered: true, state: "Follower", snapshot: 200, last: 205, trailing: 200},
+	}
+	if got := oldestFollower(views); got != "n3" {
+		t.Fatalf("oldestFollower = %q, want n3", got)
+	}
+}
+
+func TestCompactedThroughIsZeroWhileTheLogFitsInTheTrailingLogs(t *testing.T) {
+	view := raftView{answered: true, state: "Follower", snapshot: 64, last: 70, trailing: 80}
+	if got := view.compactedThrough(); got != 0 {
+		t.Fatalf("compactedThrough = %d, want 0", got)
+	}
+}
+
+func TestOldestFollowerSkipsNodesThatDidNotAnswer(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 474, last: 590, trailing: 80},
+		{answered: true, state: "Leader", snapshot: 481, last: 590, trailing: 80},
+		{state: "Follower"},
+	}
+	if got := oldestFollower(views); got != "n1" {
+		t.Fatalf("oldestFollower = %q, want n1", got)
+	}
+}
+
+func TestOldestFollowerWithoutAFollowerLeavesTheTargetToRqlite(t *testing.T) {
+	views := []raftView{{answered: true, state: "Leader"}, {}, {answered: true, state: "Candidate"}}
+	if got := oldestFollower(views); got != "" {
+		t.Fatalf("oldestFollower = %q, want no target", got)
+	}
+}
+
+func TestRaftViewReadsTheStoreTrailingLogs(t *testing.T) {
+	n := fakeNodes(t)
+	status := func(trailing string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, `{"store":{%s"raft":{"state":"Follower","term":"3","commit_index":"900","last_log_index":"900","last_snapshot_index":"832"},"leader":{"node_id":"n2"}}}`, trailing)
+		}
+	}
+	n[0].handle("/status", status(`"trailing_logs":80,`))
+	n[1].handle("/status", status(""))
+	with := raftViewOf(context.Background(), nodes[0])
+	if !with.answered || with.trailing != 80 || with.compactedThrough() != 820 {
+		t.Fatalf("view %+v compacted through %d, want trailing 80 and 820", with, with.compactedThrough())
+	}
+	without := raftViewOf(context.Background(), nodes[1])
+	if !without.answered || without.trailing != 0 || without.compactedThrough() != 832 {
+		t.Fatalf("view %+v compacted through %d, want trailing 0 and 832", without, without.compactedThrough())
 	}
 }
