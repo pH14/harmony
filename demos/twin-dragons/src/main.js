@@ -1766,6 +1766,7 @@ function startSearch(level = bootLevel) {
           routePreviews.clear();
         }
         ready = true;
+        stats = { ...stats, stopped: !!data.stopped };
         if (activeSearch !== data.active) camera.targets = new Map();
         activeSearch = data.active;
         const fresh = activateSearchView(activeSearch),
@@ -1791,7 +1792,7 @@ function startSearch(level = bootLevel) {
         updateStats();
         $("status").textContent = "Exploring";
         updateSearchControl();
-        setPause(data.stopped);
+        setPause(pauseBlocked());
         $("reset").disabled = false;
         const state = data.state;
         stateCache.set(state.id, state);
