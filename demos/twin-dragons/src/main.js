@@ -1791,7 +1791,7 @@ function startSearch(level = bootLevel) {
         updateStats();
         $("status").textContent = "Exploring";
         updateSearchControl();
-        setPause(false);
+        setPause(data.stopped);
         $("reset").disabled = false;
         const state = data.state;
         stateCache.set(state.id, state);
