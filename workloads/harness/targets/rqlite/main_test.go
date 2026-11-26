@@ -456,3 +456,32 @@ func TestSnapshotTrailingLogsAreLogUniformFromOneTo1023(t *testing.T) {
 		t.Fatalf("%d distinct counts", len(seen))
 	}
 }
+
+func TestOldestFollowerIsTheFollowerWithTheLowestSnapshotIndex(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 474},
+		{answered: true, state: "Leader", snapshot: 128},
+		{answered: true, state: "Follower", snapshot: 399},
+	}
+	if got := oldestFollower(views); got != "n3" {
+		t.Fatalf("oldestFollower = %q, want n3", got)
+	}
+}
+
+func TestOldestFollowerSkipsNodesThatDidNotAnswer(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 474},
+		{answered: true, state: "Leader", snapshot: 481},
+		{state: "Follower"},
+	}
+	if got := oldestFollower(views); got != "n1" {
+		t.Fatalf("oldestFollower = %q, want n1", got)
+	}
+}
+
+func TestOldestFollowerWithoutAFollowerLeavesTheTargetToRqlite(t *testing.T) {
+	views := []raftView{{answered: true, state: "Leader"}, {}, {answered: true, state: "Candidate"}}
+	if got := oldestFollower(views); got != "" {
+		t.Fatalf("oldestFollower = %q, want no target", got)
+	}
+}

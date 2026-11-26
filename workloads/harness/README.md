@@ -705,7 +705,13 @@ after its window closes. The supervisor also holds that heal until every
 running cut hook exits, so a stepdown still waiting on an answer when the last
 cut window closes keeps an overlapping partition, isolation or delay in force
 until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
-first. Build the image with
+first. Hook 6, `rqlite-harness stepdown-oldest`, sends the same request with
+the same retries, but its target is the voter whose log reaches furthest
+back: among the nodes whose `/status` answers as a follower, the one with the
+lowest `last_snapshot_index`, which has compacted the fewest entries. When no
+follower answers, the body is empty. A new leader that still holds the
+entries a lagging follower is missing repairs it with appends rather than a
+snapshot. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
 
 `bundle-leader` is `bundle` with a `role` line,
