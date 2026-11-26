@@ -1316,7 +1316,8 @@ mod live {
         settle: bool,
         visit: &mut Visit<'_>,
     ) -> Result<ReplaySummary, Box<dyn Error>> {
-        let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
+        let mut target =
+            FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?.linear();
         replay_on(
             &mut target,
             config.uml().is_some(),

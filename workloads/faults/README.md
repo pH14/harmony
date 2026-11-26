@@ -624,7 +624,14 @@ to the action's horizon deadline, and snapshots the exact stopped endpoint. A te
 with its original stop and has no successor. If a continuable endpoint cannot
 be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
-most 32 past the setup snapshot. A session publishes sealed prefixes to the
+most 32 past the setup snapshot. The replay that confirms a finding and
+writes its timeline runs on a linear target (`FaultTarget::linear`), which
+keeps only the setup snapshot and the newest prefix. That replay never returns
+to an earlier prefix, and each action branches from its parent, so the replay
+is unchanged. It runs in the search's own process while the search's snapshot
+cache is still resident, and its retained prefixes each hold the pages that
+their action dirtied and a copy of the event log, so keeping the whole chain
+could exhaust the search's memory. A session publishes sealed prefixes to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
 For its first 64 captures it publishes every prefix. After that it publishes
 only prefixes whose depth is a multiple of a spacing `n`, a power of two up to

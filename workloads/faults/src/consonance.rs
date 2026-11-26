@@ -577,6 +577,7 @@ struct LiveTelemetry {
 }
 
 const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
+const LINEAR_LINKS: usize = 2;
 const PUBLISH_SPACING_WARMUP: u64 = 64;
 const MAX_PUBLISH_SPACING: usize = 16;
 const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v3";
@@ -780,6 +781,7 @@ pub struct FaultTarget {
     keys: Option<Arc<FaultKeys>>,
     accumulator: Accumulator,
     observed: Observed,
+    linear: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -851,7 +853,14 @@ impl FaultTarget {
             keys: None,
             accumulator: Accumulator::default(),
             observed: UNOBSERVED,
+            linear: false,
         })
+    }
+
+    #[must_use]
+    pub fn linear(mut self) -> Self {
+        self.linear = true;
+        self
     }
 
     #[must_use]
@@ -1424,9 +1433,13 @@ impl FaultTarget {
             return None;
         }
         self.action_observations.clear();
+        let linear = self.linear;
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let (mut observation, receipt) = live.advance(&self.history, action, kind)?;
+            if linear {
+                live.shed_to(LINEAR_LINKS)?;
+            }
             self.action_choices = std::mem::take(&mut live.choices);
             observation.keep_parks_after(self.history.receipt().moment());
             Ok((
@@ -2045,6 +2058,17 @@ impl Live {
             if dropped.is_empty() {
                 self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT);
                 return Ok(());
+            }
+            self.drop_snapshots(dropped)?;
+        }
+        Ok(())
+    }
+
+    fn shed_to(&mut self, links: usize) -> Result<(), String> {
+        while self.chain.links() > links {
+            let dropped = self.chain.shed(links);
+            if dropped.is_empty() {
+                break;
             }
             self.drop_snapshots(dropped)?;
         }
@@ -3074,6 +3098,7 @@ mod tests {
             keys: None,
             accumulator: Accumulator::default(),
             observed: UNOBSERVED,
+            linear: false,
         }
         .with_keys(Arc::new(crate::campaign::fixture_keys()))
     }
@@ -5170,6 +5195,41 @@ mod tests {
         assert_eq!(links, 3);
         assert_eq!(after.actions - before.actions, 0);
         assert_eq!(target.history.receipt(), endpoint.history.receipt());
+    }
+
+    #[test]
+    fn a_linear_replay_drops_all_but_two_links_and_reaches_the_same_endpoint() {
+        let action: FaultAction = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let actions = crate::chain::CHAIN_LIMIT + 4;
+        let run = |linear: bool| {
+            let (target, _) = keyed_target(FOLDING);
+            let mut target = if linear { target.linear() } else { target };
+            LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_runs_live(&vec![1; actions])));
+            let mut most = 0;
+            for _ in 0..actions {
+                target.apply_replayed(action);
+                assert!(!target.failed());
+                most = most.max(LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()));
+            }
+            let evictions = LIVE.with(|slot| slot.borrow().as_ref().unwrap().telemetry.evictions);
+            let ended = (
+                most,
+                evictions,
+                target.history.receipt().clone(),
+                target.observation().clone(),
+                target.state_hash_current().unwrap(),
+            );
+            LIVE.with(|slot| slot.borrow_mut().take());
+            ended
+        };
+        let (kept, dropped, receipt, observation, hash) = run(true);
+        let (grown, _, unshed_receipt, unshed_observation, unshed_hash) = run(false);
+        assert_eq!(kept, LINEAR_LINKS);
+        assert_eq!(dropped, (actions + 1 - LINEAR_LINKS) as u64);
+        assert!(grown > LINEAR_LINKS);
+        assert_eq!(receipt, unshed_receipt);
+        assert_eq!(observation, unshed_observation);
+        assert_eq!(hash, unshed_hash);
     }
 
     #[test]
