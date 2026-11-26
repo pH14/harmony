@@ -457,21 +457,39 @@ func TestSnapshotTrailingLogsAreLogUniformFromOneTo1023(t *testing.T) {
 	}
 }
 
-func TestOldestFollowerIsTheFollowerWithTheLowestSnapshotIndex(t *testing.T) {
+func TestOldestFollowerIsTheFollowerThatCompactedTheFewestEntries(t *testing.T) {
 	views := []raftView{
-		{answered: true, state: "Follower", snapshot: 474},
-		{answered: true, state: "Leader", snapshot: 128},
-		{answered: true, state: "Follower", snapshot: 399},
+		{answered: true, state: "Follower", snapshot: 474, last: 590, trailing: 80},
+		{answered: true, state: "Leader", snapshot: 128, last: 590, trailing: 80},
+		{answered: true, state: "Follower", snapshot: 399, last: 588, trailing: 80},
 	}
 	if got := oldestFollower(views); got != "n3" {
 		t.Fatalf("oldestFollower = %q, want n3", got)
 	}
 }
 
+func TestOldestFollowerCountsTheTrailingLogsAfterTheSnapshot(t *testing.T) {
+	views := []raftView{
+		{answered: true, state: "Follower", snapshot: 100, last: 1000, trailing: 200},
+		{answered: true, state: "Leader", snapshot: 200, last: 1000, trailing: 200},
+		{answered: true, state: "Follower", snapshot: 200, last: 205, trailing: 200},
+	}
+	if got := oldestFollower(views); got != "n3" {
+		t.Fatalf("oldestFollower = %q, want n3", got)
+	}
+}
+
+func TestCompactedThroughIsZeroWhileTheLogFitsInTheTrailingLogs(t *testing.T) {
+	view := raftView{answered: true, state: "Follower", snapshot: 64, last: 70, trailing: 80}
+	if got := view.compactedThrough(); got != 0 {
+		t.Fatalf("compactedThrough = %d, want 0", got)
+	}
+}
+
 func TestOldestFollowerSkipsNodesThatDidNotAnswer(t *testing.T) {
 	views := []raftView{
-		{answered: true, state: "Follower", snapshot: 474},
-		{answered: true, state: "Leader", snapshot: 481},
+		{answered: true, state: "Follower", snapshot: 474, last: 590, trailing: 80},
+		{answered: true, state: "Leader", snapshot: 481, last: 590, trailing: 80},
 		{state: "Follower"},
 	}
 	if got := oldestFollower(views); got != "n1" {

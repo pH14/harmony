@@ -860,8 +860,8 @@ func oldestFollower(views []raftView) string {
 		if !view.answered || view.state != "Follower" {
 			continue
 		}
-		if target == "" || view.snapshot < oldest {
-			target, oldest = nodeNames[at], view.snapshot
+		if target == "" || view.compactedThrough() < oldest {
+			target, oldest = nodeNames[at], view.compactedThrough()
 		}
 	}
 	return target
