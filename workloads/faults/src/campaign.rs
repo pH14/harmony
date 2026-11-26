@@ -2407,6 +2407,7 @@ mod tests {
                                 passed: false,
                                 failed: true,
                                 holds: None,
+                                failure_details: None,
                             },
                         )
                     })
@@ -2676,6 +2677,7 @@ mod tests {
                     passed: false,
                     failed: true,
                     holds: None,
+                    failure_details: None,
                 },
             );
             FaultObservations {

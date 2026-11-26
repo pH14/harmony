@@ -57,6 +57,7 @@ fn observation(rand: &mut RomuDuoJrRand, nodes: u16, edges: &[u64]) -> FaultObse
                 passed,
                 failed: !passed,
                 holds: (kind == AssertionKind::Sometimes).then_some(passed),
+                failure_details: None,
             },
         );
     }
@@ -242,6 +243,7 @@ fn fact_record(observations: &mut FaultObservations, id: &str, holds: bool) {
             passed: holds,
             failed: !holds,
             holds: Some(holds),
+            failure_details: None,
         },
     );
 }
@@ -447,6 +449,7 @@ fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservat
                 passed: true,
                 failed: false,
                 holds: Some(true),
+                failure_details: None,
             },
         );
     }

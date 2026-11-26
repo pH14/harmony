@@ -3,8 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use process_proto::events::ParkedOutcome;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
+
+pub const FAILURE_DETAILS_LIMIT_BYTES: usize = 4096;
+pub const FAILURE_DETAILS_PREFIX_BYTES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AssertionKind {
@@ -28,7 +31,66 @@ impl AssertionKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailureDetails(String);
+
+impl FailureDetails {
+    #[must_use]
+    pub fn of(value: &serde_json::Value) -> Option<Self> {
+        if value.is_null() {
+            return None;
+        }
+        let text = value.to_string();
+        if text.len() <= FAILURE_DETAILS_LIMIT_BYTES {
+            return Some(Self(text));
+        }
+        let mut end = FAILURE_DETAILS_PREFIX_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Some(Self(
+            serde_json::json!({"truncated_bytes": text.len(), "prefix": &text[..end]}).to_string(),
+        ))
+    }
+
+    fn unreadable(error: &serde_json::Error) -> Self {
+        Self(serde_json::json!({ "unreadable": error.to_string() }).to_string())
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
+impl Serialize for FailureDetails {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for FailureDetails {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.len() > FAILURE_DETAILS_LIMIT_BYTES {
+            return Err(D::Error::custom(format!(
+                "assertion failure details are {} bytes, above the {FAILURE_DETAILS_LIMIT_BYTES}-byte limit",
+                text.len()
+            )));
+        }
+        serde_json::from_str::<serde::de::IgnoredAny>(&text).map_err(|error| {
+            D::Error::custom(format!("assertion failure details are not JSON: {error}"))
+        })?;
+        Ok(Self(text))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct AssertionOutcome {
     pub kind: AssertionKind,
     pub message: String,
@@ -36,6 +98,28 @@ pub struct AssertionOutcome {
     pub passed: bool,
     pub failed: bool,
     pub holds: Option<bool>,
+    #[serde(default)]
+    pub failure_details: Option<FailureDetails>,
+}
+
+impl Serialize for AssertionOutcome {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let omit_details = serializer.is_human_readable() && self.failure_details.is_none();
+        let mut state =
+            serializer.serialize_struct("AssertionOutcome", if omit_details { 6 } else { 7 })?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("message", &self.message)?;
+        state.serialize_field("location", &self.location)?;
+        state.serialize_field("passed", &self.passed)?;
+        state.serialize_field("failed", &self.failed)?;
+        state.serialize_field("holds", &self.holds)?;
+        if omit_details {
+            state.skip_field("failure_details")?;
+        } else {
+            state.serialize_field("failure_details", &self.failure_details)?;
+        }
+        state.end()
+    }
 }
 
 impl AssertionOutcome {
@@ -66,10 +150,14 @@ impl AssertionOutcome {
     }
 
     pub fn merge(&mut self, other: &Self) {
+        let first_violation = !self.violated() && other.violated();
         self.passed |= other.passed;
         self.failed |= other.failed;
         if other.holds.is_some() {
             self.holds = other.holds;
+        }
+        if first_violation {
+            self.failure_details.clone_from(&other.failure_details);
         }
     }
 }
@@ -113,6 +201,15 @@ impl Assertions {
             .iter()
             .filter(|(_, outcome)| outcome.violated())
             .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn violation_details(&self) -> BTreeMap<String, FailureDetails> {
+        self.0
+            .iter()
+            .filter(|(_, outcome)| outcome.violated())
+            .filter_map(|(id, outcome)| Some((id.clone(), outcome.failure_details.clone()?)))
             .collect()
     }
 
@@ -246,6 +343,24 @@ struct RawAssert {
     location: Option<RawLocation>,
 }
 
+#[derive(Deserialize)]
+struct RawDetailsEvent {
+    antithesis_assert: RawDetails,
+}
+
+#[derive(Deserialize)]
+struct RawDetails {
+    #[serde(default)]
+    details: serde_json::Value,
+}
+
+fn failure_details(bytes: &[u8]) -> Option<FailureDetails> {
+    match serde_json::from_slice::<RawDetailsEvent>(bytes) {
+        Ok(event) => FailureDetails::of(&event.antithesis_assert.details),
+        Err(error) => Some(FailureDetails::unreadable(&error)),
+    }
+}
+
 fn must_hit_default() -> bool {
     true
 }
@@ -295,17 +410,19 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
             AssertionKind::Reachable | AssertionKind::Unreachable => (record.hit, false),
             _ => (passed, failed),
         };
-        Some((
-            id,
-            AssertionOutcome {
-                kind,
-                message,
-                location,
-                passed,
-                failed,
-                holds: (kind == AssertionKind::Sometimes && record.hit).then_some(record.condition),
-            },
-        ))
+        let mut outcome = AssertionOutcome {
+            kind,
+            message,
+            location,
+            passed,
+            failed,
+            holds: (kind == AssertionKind::Sometimes && record.hit).then_some(record.condition),
+            failure_details: None,
+        };
+        if outcome.violated() {
+            outcome.failure_details = failure_details(bytes);
+        }
+        Some((id, outcome))
     });
     let setup_complete = raw.antithesis_setup.is_some_and(|setup| {
         setup
@@ -498,5 +615,163 @@ mod tests {
         cleared.record(id.clone(), false_now);
         assertions.merge(&cleared);
         assert_eq!(holds(&assertions), (true, Some(false)));
+    }
+
+    fn detailed(condition: bool, details: &str) -> Vec<u8> {
+        format!(
+            r#"{{"antithesis_assert":{{"assert_type":"always","message":"m","id":"m","hit":true,"must_hit":true,"condition":{condition},"details":{details}}}}}"#
+        )
+        .into_bytes()
+    }
+
+    fn parsed(details: &FailureDetails) -> serde_json::Value {
+        serde_json::from_str(details.text()).unwrap()
+    }
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn a_failed_record_keeps_its_details_and_a_passing_one_keeps_none() {
+        let (_, failed) = decode(&detailed(
+            false,
+            r#"{"node":"n1","highest":482,"answer":333}"#,
+        ));
+        let details = failed.failure_details.expect("details");
+        assert_eq!(
+            parsed(&details),
+            serde_json::json!({"node": "n1", "highest": 482, "answer": 333})
+        );
+        assert_eq!(
+            details.text(),
+            r#"{"answer":333,"highest":482,"node":"n1"}"#
+        );
+        let (_, passed) = decode(&detailed(true, r#"{"node":"n1"}"#));
+        assert_eq!(passed.failure_details, None);
+        let (_, null) = decode(&detailed(false, "null"));
+        assert_eq!(null.failure_details, None);
+        let (_, sometimes) = decode(&record("sometimes", true, true, false));
+        assert_eq!(sometimes.failure_details, None);
+        let (_, absent) = decode(
+            br#"{"antithesis_assert":{"assert_type":"always","id":"m","hit":true,"condition":false}}"#,
+        );
+        assert!(absent.violated());
+        assert_eq!(absent.failure_details, None);
+    }
+
+    #[test]
+    fn details_too_deep_to_read_still_record_the_violation() {
+        let (_, failed) = decode(&detailed(false, &format!(r#"{{"deep":{}}}"#, nested(130))));
+        assert!(failed.violated());
+        let details = parsed(&failed.failure_details.expect("details"));
+        assert!(
+            details["unreadable"]
+                .as_str()
+                .unwrap()
+                .contains("recursion limit")
+        );
+    }
+
+    #[test]
+    fn merging_keeps_the_details_of_the_first_failure() {
+        let mut assertions = Assertions::default();
+        let (id, declared) = decode(&record("always", true, false, false));
+        let (_, first) = decode(&detailed(false, r#"{"try":1}"#));
+        let (_, second) = decode(&detailed(false, r#"{"try":2}"#));
+        assertions.record(id.clone(), declared);
+        assertions.record(id.clone(), first);
+        assertions.record(id.clone(), second.clone());
+        let mut later = Assertions::default();
+        later.record(id.clone(), second.clone());
+        assertions.merge(&later);
+        assert_eq!(
+            assertions.violation_details(),
+            BTreeMap::from([(
+                id.clone(),
+                FailureDetails::of(&serde_json::json!({"try": 1})).unwrap()
+            )])
+        );
+        let mut bare_first = Assertions::default();
+        bare_first.record(id.clone(), decode(&detailed(false, "null")).1);
+        bare_first.record(id.clone(), second);
+        assert_eq!(bare_first.violation_details(), BTreeMap::new());
+    }
+
+    #[test]
+    fn oversize_details_are_replaced_by_a_counted_prefix() {
+        let large = serde_json::json!({ "log": "\u{e9}".repeat(FAILURE_DETAILS_LIMIT_BYTES) });
+        let serialized = large.to_string();
+        let details = parsed(&FailureDetails::of(&large).unwrap());
+        assert_eq!(details["truncated_bytes"], serialized.len());
+        let prefix = details["prefix"].as_str().unwrap();
+        assert!(prefix.len() <= FAILURE_DETAILS_PREFIX_BYTES);
+        assert!(prefix.len() > FAILURE_DETAILS_PREFIX_BYTES - 4);
+        assert!(serialized.starts_with(prefix));
+        let small = serde_json::json!({ "log": "x".repeat(16) });
+        assert_eq!(parsed(&FailureDetails::of(&small).unwrap()), small);
+    }
+
+    #[test]
+    fn details_round_trip_as_json_and_as_postcard_without_changing_their_text() {
+        let (id, failed) = decode(&detailed(
+            false,
+            &format!(
+                r#"{{"node":"n1","ok":[1,2.5,null,37e-23],"deep":{}}}"#,
+                nested(124)
+            ),
+        ));
+        let text = failed
+            .failure_details
+            .clone()
+            .expect("details")
+            .text()
+            .to_owned();
+        let (other, plain) = decode(&record("always", true, true, true));
+        let assertions = Assertions(BTreeMap::from([(id, failed), (other, plain)]));
+        let json = serde_json::to_string(&assertions).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["m"]["failure_details"],
+            serde_json::Value::String(text.clone())
+        );
+        assert!(
+            value["id always true"]
+                .as_object()
+                .unwrap()
+                .get("failure_details")
+                .is_none()
+        );
+        let from_json = serde_json::from_str::<Assertions>(&json).unwrap();
+        assert_eq!(from_json, assertions);
+        let bytes = postcard::to_allocvec(&assertions).unwrap();
+        let from_postcard = postcard::from_bytes::<Assertions>(&bytes).unwrap();
+        assert_eq!(from_postcard, assertions);
+        assert_eq!(
+            from_postcard.0["m"]
+                .failure_details
+                .as_ref()
+                .unwrap()
+                .text(),
+            text
+        );
+        assert_eq!(postcard::to_allocvec(&from_postcard).unwrap(), bytes);
+    }
+
+    #[test]
+    fn stored_details_must_be_json_within_the_limit() {
+        let outcome = |details: &str| {
+            serde_json::json!({"kind": "Always", "message": "m", "location": "", "passed": false,
+                "failed": true, "holds": null, "failure_details": details})
+        };
+        let oversized = format!("[{}0]", "0,".repeat(FAILURE_DETAILS_LIMIT_BYTES / 2));
+        assert!(serde_json::from_str::<serde_json::Value>(&oversized).is_ok());
+        for bad in ["{not json", "", oversized.as_str()] {
+            assert!(serde_json::from_value::<AssertionOutcome>(outcome(bad)).is_err());
+            let bytes = postcard::to_allocvec(&FailureDetails(bad.to_owned())).unwrap();
+            assert!(postcard::from_bytes::<FailureDetails>(&bytes).is_err());
+        }
+        let good = serde_json::from_value::<AssertionOutcome>(outcome(r#"{"try":1}"#)).unwrap();
+        assert_eq!(good.failure_details.unwrap().text(), r#"{"try":1}"#);
     }
 }

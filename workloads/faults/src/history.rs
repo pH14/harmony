@@ -20,7 +20,7 @@ pub fn replay_certificate(
     failed: bool,
 ) -> Result<[u8; 32], String> {
     postcard::to_allocvec(&(
-        "fault-replay-endpoint-v5",
+        "fault-replay-endpoint-v6",
         execution_contract::Assurance::ordinary().identity(),
         control_proto::EventHistory::VERSION,
         hash,
@@ -440,6 +440,9 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
             budget.array::<u8>(name.capacity())?;
             budget.array::<u8>(outcome.message.capacity())?;
             budget.array::<u8>(outcome.location.capacity())?;
+            if let Some(details) = &outcome.failure_details {
+                budget.array::<u8>(details.capacity())?;
+            }
         }
         for node in self.history.nodes() {
             if !budget.shared(
@@ -471,7 +474,7 @@ struct SnapshotEndpoint {
 impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapshot>
     for FaultSnapshotCodec
 {
-    const FORMAT: &'static str = "fault-history-dag-v5";
+    const FORMAT: &'static str = "fault-history-dag-v6";
     type DecodeState = std::collections::BTreeMap<[u8; 32], FaultHistory>;
     fn encode(
         snapshot: &crate::target::FaultSnapshot,
@@ -939,6 +942,7 @@ mod tests {
                     passed: true,
                     failed: false,
                     holds: None,
+                    failure_details: None,
                 },
             );
         }
@@ -1038,7 +1042,7 @@ mod tests {
         let mut input = &bytes[8..];
         let (_, codec, entries): (String, String, u64) =
             postcard::from_bytes(&frame(&mut input)).unwrap();
-        assert_eq!(codec, "fault-history-dag-v5");
+        assert_eq!(codec, "fault-history-dag-v6");
         assert_eq!(entries, 132);
         let mut rows = std::collections::BTreeSet::new();
         let mut endpoints = 0;
@@ -1367,7 +1371,7 @@ mod tests {
         let hash = [17; 32];
         let history = (0, [0; 32]);
         let expected = postcard::to_allocvec(&(
-            "fault-replay-endpoint-v5",
+            "fault-replay-endpoint-v6",
             execution_contract::Assurance::ordinary().identity(),
             control_proto::EventHistory::VERSION,
             hash,
