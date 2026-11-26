@@ -1060,7 +1060,7 @@ function renderBranches() {
         action.onclick = () => deleteSearch(search.id);
       }
       action.disabled = branchBusy || controlMode || !ready;
-      if (play === pauseControl) setPause(action.disabled);
+      if (play === pauseControl) setPause(pauseBlocked());
       else play.disabled = action.disabled;
       actions.append(play, action);
       row.append(actions);
@@ -2822,10 +2822,13 @@ function updateBranchControls() {
   for (const button of $("branch-tree").querySelectorAll("button[data-search],button[data-resume-search],button[data-delete-search]"))
     button.disabled = branchBusy || controlMode;
   $("sound").disabled = !current;
-  setPause(!ready || branchBusy || controlMode || !!stats.stopped);
+  setPause(pauseBlocked());
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
     button.disabled = controlMode || branchBusy;
+}
+function pauseBlocked() {
+  return !ready || branchBusy || controlMode || !!stats.stopped;
 }
 function setPause(disabled) {
   $("pause").disabled = disabled;
