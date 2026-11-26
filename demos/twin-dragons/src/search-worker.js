@@ -56,7 +56,7 @@ function choices() {
     parent: s.parent ?? null,
   }));
 }
-function ready(paused = false, deleted) {
+function ready(paused = false, deleted, stopped = false) {
   postMessage({
     type: "ready",
     deleted,
@@ -64,6 +64,7 @@ function ready(paused = false, deleted) {
     searches: choices(),
     state: stateFor(active, 0),
     paused,
+    stopped,
   });
 }
 function updateMemory(batch, search) {
@@ -366,7 +367,7 @@ onmessage = async ({ data }) => {
       const stats = searches.get(active).stats;
       if (stats) updateMemory(stats, searches.get(active));
       const stopped = !!stats?.stopped || memoryLimit();
-      ready(stopped);
+      ready(stopped, undefined, stopped);
       if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
       if (stopped) postMessage({ type: "limit", won: !!stats?.won });
       else resume();
@@ -384,7 +385,7 @@ onmessage = async ({ data }) => {
       if (stats) updateMemory(stats, search);
       const stopped = !!stats?.stopped || memoryLimit();
       const paused = stopped || (!wasActive && !!data.paused);
-      ready(paused, data.id);
+      ready(paused, data.id, stopped);
       if (stats) postMessage({ type: "batch", active, ...stats, points: [] });
       if (stopped) postMessage({ type: "limit", won: !!stats?.won });
       else if (!paused) resume();
