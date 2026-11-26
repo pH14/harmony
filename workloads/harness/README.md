@@ -705,10 +705,14 @@ after its window closes. The supervisor also holds that heal until every
 running cut hook exits, so a stepdown still waiting on an answer when the last
 cut window closes keeps an overlapping partition, isolation or delay in force
 until it exits, unless a drawn `Hook` action for the heal hook lifts the fault
-first. Hook 6, `rqlite-harness stepdown-oldest`, sends the same request with
-the same retries, but its target is the voter whose log reaches furthest
-back: among the nodes whose `/status` answers as a follower, the one with the
-lowest compaction bound. The bound is the lower of `last_snapshot_index` and
+first. Build the image with `--build-arg HARNESS_BUNDLE=bundle-stepdown` to
+select it.
+
+`bundle-stepdown-oldest` is `bundle-stepdown` with hook 6,
+`rqlite-harness stepdown-oldest`, which sends the same request with the same
+retries, but its target is the voter whose log reaches furthest back: among
+the nodes whose `/status` answers as a follower, the one with the lowest
+compaction bound. The bound is the lower of `last_snapshot_index` and
 `last_log_index` less the store's `trailing_logs`, or 0 while the log holds no
 more than `trailing_logs` entries; it follows the compaction rule described
 under `bundle-admin` below. It uses the current last index, so it is an upper
@@ -717,8 +721,12 @@ bound on what the node has deleted, and a node whose `/status` has no
 after another with the 1-second status timeout each, so the hook can run about
 3 seconds longer than hook 5. When no follower answers, the body is empty. A
 new leader that still holds the entries a lagging follower is missing repairs
-it with appends rather than a snapshot. Build the image with
-`--build-arg HARNESS_BUNDLE=bundle-stepdown` to select it.
+it with appends rather than a snapshot, so the hook is meant to make the
+append repair after a failed snapshot restore more frequent. Two searches with
+it, one on rqlite v10.3.0 and v10.3.1 and one on v10.2.7, did not show it
+raising the rate of that repair, which is why it has its own bundle and the
+other bundles do not spend draws on it. Build the image with
+`--build-arg HARNESS_BUNDLE=bundle-stepdown-oldest` to select it.
 
 `bundle-leader` is `bundle` with a `role` line,
 `role /opt/harmony/rqlite-harness leader`, so every pause the search draws,
@@ -732,12 +740,13 @@ one read saw. The whole search shares one 1-second status timeout, and
 it exits 1 when no node reports a leader, which makes the pause a wait of the
 same length ([supervisor README](../../consonance/harmony-linux/supervisor/README.md#role-pause)).
 Kills, restarts, disk and clock faults keep their drawn node. `bundle`,
-`bundle-forward`, `bundle-stepdown`, `bundle-stepdown-facts`, `bundle-admin`
-and `bundle-admin-facts` draw node-indexed pauses. Build the image with
+`bundle-forward`, `bundle-stepdown`, `bundle-stepdown-oldest`,
+`bundle-stepdown-facts`, `bundle-admin` and `bundle-admin-facts` draw
+node-indexed pauses. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-leader` to select it.
 
 `bundle-stepdown-facts` is `bundle-stepdown` with `HARNESS_RQLITE_FACTS=1` on
-both stepdown hooks and the workload, which then write four `Sometimes`
+the stepdown hook and the workload, which then write four `Sometimes`
 assertions of ours through the JSON record, each evaluated with its condition,
 true or false, every time it is checked. Before each request the hook reads
 the `/status` of the node drawn at `rqlite.stepdown.via` and, when that node

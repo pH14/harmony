@@ -13,7 +13,6 @@ hook 2 /opt/harmony/harness-net isolate
 hook 3 /opt/harmony/harness-net delay
 hook 4 /opt/harmony/harness-net heal
 hook 5 /opt/harmony/rqlite-harness stepdown
-hook 6 /opt/harmony/rqlite-harness stepdown-oldest
 heal 4
 ready /opt/harmony/rqlite-harness ready
 workload /opt/harmony/rqlite-harness drive
