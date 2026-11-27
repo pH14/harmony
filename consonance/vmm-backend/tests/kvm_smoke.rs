@@ -57,10 +57,21 @@ fn new_backend_or_explain() -> KvmBackend {
     })
 }
 
+fn long_mode_cpuid() -> CpuidModel {
+    CpuidModel {
+        entries: vec![CpuidEntry {
+            leaf: 0x8000_0001,
+            edx: 1 << 29,
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
 fn configure(backend: &mut KvmBackend) {
     backend
         .set_policy(&X86Policy {
-            cpuid: CpuidModel::default(),
+            cpuid: long_mode_cpuid(),
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {
                     base: 0x174,
@@ -1023,7 +1034,7 @@ fn save_restore_round_trips_on_real_kvm() {
     let mut aliases = new_backend_or_explain();
     aliases
         .set_policy(&X86Policy {
-            cpuid: CpuidModel::default(),
+            cpuid: long_mode_cpuid(),
             msr_filter: MsrFilter {
                 allow_inkernel: vec![
                     MsrRange {
