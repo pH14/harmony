@@ -11,6 +11,7 @@ use std::{
 
 use consonance_client::{cache::CacheIndex, session::WorkerLauncher};
 
+use fault_policy::StandingWindow;
 use searcher::{
     search::{
         archive::{KeyShape, RetentionPolicy},
@@ -49,15 +50,15 @@ use crate::{
     assertion::Assertions,
     bundle::FaultVocabulary,
     consonance::{
-        FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
-        validate_snapshot_prefix_certificates,
+        FaultConfig, FaultTarget, identity, replay_endpoint_certificate, root_standing,
+        snapshot_memory_charge, validate_snapshot_prefix_certificates,
     },
     guest::{GUEST_SITE, GuestChoices},
     key::FaultKeys,
     shrink::{fault_cost, settle_tail, simpler_fault_actions},
     target::{
-        FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
-        held_aim_sites,
+        ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation,
+        FaultSnapshot, held_aims_at,
     },
 };
 
@@ -115,11 +116,61 @@ pub struct FaultWorkload {
     config: FaultConfig,
     identity: String,
     root_seal: OnceLock<u64>,
+    root_windows: OnceLock<Result<Vec<StandingWindow>, String>>,
     snapshot_cache: Option<Arc<dyn CacheIndex>>,
     session_worker: Option<WorkerLauncher>,
 }
 
 impl FaultWorkload {
+    fn root_windows(&self) -> Result<&[StandingWindow], Box<dyn Error>> {
+        self.root_windows
+            .get_or_init(|| {
+                self.config
+                    .root
+                    .as_ref()
+                    .map(|root| root_standing(root).map_err(|error| error.to_string()))
+                    .transpose()
+                    .map(Option::unwrap_or_default)
+            })
+            .as_deref()
+            .map_err(|error| error.clone().into())
+    }
+
+    fn may_land_held(
+        &self,
+        evidence: &FaultCampaignEvidence,
+        action: &FaultCampaignActionResult,
+    ) -> Result<bool, Box<dyn Error>> {
+        if !self.config.hold_hooks || self.root_seal().is_none() {
+            return Ok(false);
+        }
+        let windows = self.root_windows()?;
+        Ok(action
+            .observations
+            .iter()
+            .flat_map(|observation| &observation.parks)
+            .any(|park| {
+                evidence.exact_aims.contains(&park.site)
+                    || windows.iter().any(|open| {
+                        matches!(
+                            fault_policy::decode_process_target(&open.target),
+                            Some((_, fault_policy::Fault::ProcEventPark {
+                                target: Some(target),
+                                ..
+                            })) if target.end - target.start == 1 && target.start == park.site
+                        )
+                    })
+            }))
+    }
+
+    fn held_aims(&self, actions: &[FaultAction]) -> Result<Vec<(u64, u64)>, Box<dyn Error>> {
+        let windows = ActionWindows {
+            root_seal: self.root_seal().ok_or("the root seal is not known")?,
+            hold_hooks: true,
+        };
+        Ok(held_aims_at(windows, self.root_windows()?, actions)?)
+    }
+
     fn materialize<F>(
         &self,
         evidence: &FaultCampaignEvidence,
@@ -148,6 +199,7 @@ impl FaultWorkload {
             config: config.clone(),
             identity: identity(kernel, initramfs, config)?,
             root_seal: OnceLock::new(),
+            root_windows: OnceLock::new(),
             snapshot_cache: None,
             session_worker: None,
         })
@@ -212,6 +264,8 @@ pub struct FaultCampaignEvidence {
     park_thresholds: BTreeMap<u32, ParkThresholds>,
     #[serde(default)]
     park_aims: ParkAims,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    exact_aims: BTreeSet<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     site_incidence: BTreeMap<u64, u64>,
     #[serde(default)]
@@ -1662,6 +1716,22 @@ impl Evaluation for FaultWorkload {
         );
         evidence.assertions.merge(&target.observation().assertions);
         evidence.root_actions = target.actions().to_vec();
+        if self.config.hold_hooks {
+            evidence
+                .exact_aims
+                .extend(
+                    evidence
+                        .root_actions
+                        .iter()
+                        .filter_map(|action| match action.operation {
+                            FaultOperation::EventPark {
+                                target: Some(target),
+                                ..
+                            } if target.end - target.start == 1 => Some(target.start),
+                            _ => None,
+                        }),
+                );
+        }
         Ok(())
     }
 
@@ -1731,22 +1801,25 @@ impl Evaluation for FaultWorkload {
         if aimed {
             evidence.park_aims.armed += 1;
         }
+        if self.config.hold_hooks
+            && ran
+            && let FaultOperation::EventPark {
+                target: Some(target),
+                ..
+            } = action.action.operation
+            && target.end - target.start == 1
+        {
+            evidence.exact_aims.insert(target.start);
+        }
         let mut input = Some(input);
         let mut prefix = None;
-        let held = if self.config.hold_hooks
-            && ran
-            && !aimed
-            && action
-                .observations
-                .iter()
-                .any(|observation| !observation.parks.is_empty())
-        {
+        let held = if ran && self.may_land_held(evidence, action)? {
             let materialized = self.materialize(evidence, input.take())?;
-            let sites = held_aim_sites(&materialized.actions)?;
+            let held = self.held_aims(&materialized.actions)?;
             prefix = Some(materialized);
-            sites
+            held
         } else {
-            BTreeSet::new()
+            Vec::new()
         };
         let parked = matches!(action.action.operation, FaultOperation::PauseParked { .. });
         if ran {
@@ -1764,7 +1837,9 @@ impl Evaluation for FaultWorkload {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
                 *evidence.park_sites.entry(park.site).or_default() += 1;
-                let later = held.contains(&park.site);
+                let later = held
+                    .iter()
+                    .any(|&(site, end)| site == park.site && park.moment < end);
                 if aimed || later {
                     evidence.park_aims.landings += 1;
                     *evidence.park_aims.sites.entry(park.site).or_default() += 1;
@@ -1958,6 +2033,7 @@ pub(crate) fn fixture_workload(
         config: config.clone(),
         identity,
         root_seal: OnceLock::new(),
+        root_windows: OnceLock::new(),
         snapshot_cache: None,
         session_worker: None,
     }
@@ -2764,8 +2840,7 @@ mod tests {
         assert_eq!(evidence.park_sites, BTreeMap::from([(0x40, 1), (0x80, 1)]));
     }
 
-    #[test]
-    fn a_held_aim_landing_in_a_later_action_counts_as_an_aim_landing() {
+    fn held_game() -> FaultWorkload {
         let game = fixture_workload(
             b"kernel",
             b"initramfs",
@@ -2774,36 +2849,43 @@ mod tests {
                 ..config(&[])
             },
         );
-        let ticks = std::num::NonZeroU16::new(4).unwrap();
-        let held = FaultAction::from(FaultOperation::EventPark {
-            node: 0,
+        game.root_seal.set(1_000).unwrap();
+        game
+    }
+
+    fn held_aim(node: u16, site: u64, ticks: u16, bits: u64) -> FaultAction {
+        FaultAction::from(FaultOperation::EventPark {
+            node,
             edges: 1,
             hold_us: 10_000,
-            ticks,
-            target: fault_policy::ParkTarget::new(0x40, 0x41),
+            ticks: std::num::NonZeroU16::new(ticks).unwrap(),
+            target: fault_policy::ParkTarget::new(site, site + 1),
         })
-        .with_choice(7 << 61);
-        let wait = FaultAction::from(FaultOperation::Wait(ticks));
-        let kill = FaultAction::from(FaultOperation::Kill(0, ticks));
-        let landing = |site| FaultObservations {
-            parks: vec![crate::target::ParkLanding {
-                moment: 1,
-                site,
-                edges: 1,
-            }],
-            ..FaultObservations::default()
-        };
+        .with_choice(bits << 61)
+    }
+
+    fn merge_held(
+        game: &FaultWorkload,
+        steps: Vec<(FaultAction, Vec<(u64, u64)>)>,
+    ) -> FaultCampaignEvidence {
         let mut evidence = FaultCampaignEvidence::default();
         let mut prefix = Vec::new();
-        for (action, observations) in [
-            (held, vec![FaultObservations::default()]),
-            (wait, vec![landing(0x40)]),
-            (wait, vec![landing(0x80)]),
-            (kill, vec![FaultObservations::default()]),
-            (wait, vec![landing(0x40)]),
-        ] {
+        let mut start = 1_000;
+        for (action, landings) in steps {
             prefix.push(action);
             let actions = prefix.clone();
+            let observations = vec![FaultObservations {
+                parks: landings
+                    .into_iter()
+                    .map(|(offset, site)| crate::target::ParkLanding {
+                        moment: start + offset,
+                        site,
+                        edges: 1,
+                    })
+                    .collect(),
+                ..FaultObservations::default()
+            }];
+            start += action.ticks() * crate::target::SUPERVISOR_TICK_NANOS;
             let result = FaultCampaignActionResult {
                 action,
                 observations,
@@ -2820,16 +2902,50 @@ mod tests {
             game.merge_action_evidence(&mut evidence, &result, 0, || Ok(FaultInput { actions }))
                 .unwrap();
         }
+        evidence
+    }
+
+    #[test]
+    fn a_held_aim_landing_in_a_later_action_counts_as_an_aim_landing() {
+        let ticks = std::num::NonZeroU16::new(4).unwrap();
+        let wait = FaultAction::from(FaultOperation::Wait(ticks));
+        let kill = FaultAction::from(FaultOperation::Kill(0, ticks));
+        let evidence = merge_held(
+            &held_game(),
+            vec![
+                (held_aim(0, 0x40, 4, 7), vec![]),
+                (wait, vec![(1, 0x40)]),
+                (wait, vec![(1, 0x80)]),
+                (held_aim(1, 0x50, 4, 0), vec![(1, 0x40)]),
+                (kill, vec![]),
+                (wait, vec![(1, 0x40)]),
+            ],
+        );
         assert_eq!(
             evidence.park_aims,
             ParkAims {
-                armed: 1,
-                landings: 1,
-                held_landings: 1,
-                sites: BTreeMap::from([(0x40, 1)]),
+                armed: 2,
+                landings: 2,
+                held_landings: 2,
+                sites: BTreeMap::from([(0x40, 2)]),
             }
         );
-        assert_eq!(evidence.park_sites, BTreeMap::from([(0x40, 2), (0x80, 1)]));
+        assert_eq!(evidence.park_sites, BTreeMap::from([(0x40, 3), (0x80, 1)]));
+    }
+
+    #[test]
+    fn a_landing_after_a_held_aim_expires_mid_action_is_not_counted() {
+        let tick = crate::target::SUPERVISOR_TICK_NANOS;
+        let wait = FaultAction::from(FaultOperation::Wait(std::num::NonZeroU16::new(8).unwrap()));
+        let evidence = merge_held(
+            &held_game(),
+            vec![
+                (held_aim(0, 0x40, 4, 1), vec![]),
+                (wait, vec![(2 * tick, 0x40), (6 * tick, 0x40)]),
+            ],
+        );
+        assert_eq!(evidence.park_aims.held_landings, 1);
+        assert_eq!(evidence.park_aims.landings, 1);
     }
 
     #[test]

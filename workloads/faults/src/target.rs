@@ -657,14 +657,13 @@ impl ActionWindows {
         action_delta(action, window, self.hold_hooks)
     }
 
-    pub fn push_standing(
-        self,
-        standing: &mut Vec<StandingWindow>,
-        action: FaultAction,
-        window: (u64, u64),
-    ) {
+    pub fn push_standing(self, standing: &mut Standing, action: FaultAction, window: (u64, u64)) {
         if matches!(action.operation, FaultOperation::EndFaults(_)) {
-            for open in standing.iter_mut().filter(|open| open.end > window.0) {
+            for open in standing
+                .windows
+                .iter_mut()
+                .filter(|open| open.end > window.0)
+            {
                 if let Some((ROLE_NODE, Fault::ProcPause(Span(length)))) =
                     fault_policy::decode_process_target(&open.target)
                 {
@@ -675,21 +674,87 @@ impl ActionWindows {
                 }
                 open.end = window.0;
             }
-            standing.retain(|open| open.start < open.end);
+            standing.windows.retain(|open| open.start < open.end);
+            standing.held.clear();
         }
-        if let Some(ended) = ends_held_aims(action.operation) {
-            for open in standing.iter_mut().filter(|open| open.end > window.0) {
-                if let Some((node, Fault::ProcEventPark { .. })) =
-                    fault_policy::decode_process_target(&open.target)
-                    && (ended == EVERY_NODE || node == ended)
-                {
-                    open.end = window.0;
-                }
+        let windows = &mut standing.windows;
+        let ended = ends_held_aims(action.operation);
+        let mut emptied = false;
+        standing.held.retain(|&(index, node)| {
+            let open = &mut windows[index];
+            if open.end <= window.0 {
+                return false;
             }
-            standing.retain(|open| open.start < open.end);
+            if ended.is_some_and(|ended| ended == EVERY_NODE || ended == node) {
+                open.end = window.0;
+                emptied |= open.start >= open.end;
+                return false;
+            }
+            true
+        });
+        if emptied {
+            standing.windows.retain(|open| open.start < open.end);
+            standing.held = held_aims(self, &standing.windows);
         }
-        standing.extend(self.delta(action, window).standing);
+        let first = standing.windows.len();
+        standing.windows.extend(self.delta(action, window).standing);
+        if let FaultOperation::EventPark { node, target, .. } = action.operation
+            && self.hold_hooks
+            && held_aim(target)
+        {
+            standing.held.push((first, node));
+        }
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Standing {
+    pub windows: Vec<StandingWindow>,
+    held: Vec<(usize, u16)>,
+}
+
+impl Standing {
+    #[must_use]
+    pub fn new(windows: ActionWindows, inherited: &[StandingWindow]) -> Self {
+        Self {
+            windows: inherited.to_vec(),
+            held: held_aims(windows, inherited),
+        }
+    }
+
+    #[must_use]
+    pub fn held_at(&self, moment: u64) -> Vec<(u64, u64)> {
+        self.held
+            .iter()
+            .map(|&(index, _)| &self.windows[index])
+            .filter(|open| open.start < moment && open.end > moment)
+            .filter_map(|open| exact_aim(open).map(|(_, site)| (site, open.end)))
+            .collect()
+    }
+}
+
+fn exact_aim(open: &StandingWindow) -> Option<(u16, u64)> {
+    match fault_policy::decode_process_target(&open.target) {
+        Some((
+            node,
+            Fault::ProcEventPark {
+                target: Some(target),
+                ..
+            },
+        )) if held_aim(Some(target)) => Some((node, target.start)),
+        _ => None,
+    }
+}
+
+fn held_aims(windows: ActionWindows, standing: &[StandingWindow]) -> Vec<(usize, u16)> {
+    if !windows.hold_hooks {
+        return Vec::new();
+    }
+    standing
+        .iter()
+        .enumerate()
+        .filter_map(|(index, open)| exact_aim(open).map(|(node, _)| (index, node)))
+        .collect()
 }
 
 #[must_use]
@@ -961,31 +1026,19 @@ pub fn action_deltas(
         .collect()
 }
 
-pub fn held_aim_sites(actions: &[FaultAction]) -> Result<BTreeSet<u64>, String> {
-    let windows = ActionWindows {
-        root_seal: 0,
-        hold_hooks: true,
-    };
-    let Some(last) = actions.len().checked_sub(1) else {
-        return Ok(BTreeSet::new());
-    };
-    let (start, _) = windows.window(actions, last)?;
-    Ok(standing_windows(windows, &[], actions)?
-        .iter()
-        .filter(|open| open.start < start && open.end > start)
-        .filter_map(
-            |open| match fault_policy::decode_process_target(&open.target) {
-                Some((
-                    _,
-                    Fault::ProcEventPark {
-                        target: Some(target),
-                        ..
-                    },
-                )) if held_aim(Some(target)) => Some(target.start),
-                _ => None,
-            },
-        )
-        .collect())
+pub fn held_aims_at(
+    windows: ActionWindows,
+    inherited: &[StandingWindow],
+    actions: &[FaultAction],
+) -> Result<Vec<(u64, u64)>, String> {
+    let mut standing = Standing::new(windows, inherited);
+    let mut last = windows.root_seal;
+    for (action, window) in actions.iter().zip(windows.iter(actions)) {
+        let window = window?;
+        windows.push_standing(&mut standing, *action, window);
+        last = window.0;
+    }
+    Ok(standing.held_at(last))
 }
 
 pub fn standing_windows(
@@ -993,11 +1046,11 @@ pub fn standing_windows(
     inherited: &[StandingWindow],
     actions: &[FaultAction],
 ) -> Result<Vec<StandingWindow>, String> {
-    let mut standing = inherited.to_vec();
+    let mut standing = Standing::new(windows, inherited);
     for (action, window) in actions.iter().zip(windows.iter(actions)) {
         windows.push_standing(&mut standing, *action, window?);
     }
-    Ok(standing)
+    Ok(standing.windows)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -2868,6 +2921,29 @@ mod tests {
                 park_spans(HELD, &[held, wait, other.into()]),
                 [(1, ROOT, ROOT + 32 * 50 * TICK)]
             );
+        }
+    }
+
+    #[test]
+    fn a_held_aim_standing_at_an_exported_root_is_held_after_it() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        let actions = [aim(1, 50, 0x40, 0x41, 6), wait, wait, wait];
+        let whole = held_aims_at(HELD, &[], &actions).unwrap();
+        assert_eq!(whole, [(0x40, ROOT + 64 * 50 * TICK)]);
+        for split in 1..actions.len() {
+            let seal = HELD.window(&actions, split).unwrap().0;
+            let mut exported = standing_windows(HELD, &[], &actions[..split]).unwrap();
+            exported.retain(|open| open.start <= seal);
+            let root = ActionWindows {
+                root_seal: seal,
+                hold_hooks: true,
+            };
+            assert_eq!(
+                held_aims_at(root, &exported, &actions[split..]).unwrap(),
+                whole
+            );
+            let kill = FaultAction::from(FaultOperation::Kill(1, ticks(50)));
+            assert_eq!(held_aims_at(root, &exported, &[kill, wait]).unwrap(), []);
         }
     }
 

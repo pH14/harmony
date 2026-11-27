@@ -47,7 +47,7 @@ use crate::history::{FaultHistory, HistoryReceipt};
 use crate::key::{FaultKeys, UNOBSERVED};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
+    FaultStop, ObservationCheckpoint, SdkDecoder, Standing, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -416,7 +416,7 @@ impl ActionPlan {
         inherited: &[StandingWindow],
         actions: &[FaultAction],
     ) -> Result<Self, Box<dyn Error>> {
-        let mut standing = inherited.to_vec();
+        let mut standing = Standing::new(windows, inherited);
         let mut coverage = Vec::with_capacity(actions.len());
         let mut deadline = windows.root_seal;
         for (action, window) in actions.iter().zip(windows.iter(actions)) {
@@ -425,6 +425,7 @@ impl ActionPlan {
             coverage.push((start, end, action.coverage_quantum));
             deadline = end;
         }
+        let standing = standing.windows;
         let configuration = encode_configuration(&encode_windows(&standing)?, &coverage)?;
         let rows = coverage
             .iter()

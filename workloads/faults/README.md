@@ -934,10 +934,13 @@ unchanged.
 `park_aims` in `campaign-summary.json` and `report.json` covers only the
 `EventPark` actions drawn with a target: `armed` counts those the guest ran,
 `landings` their landings, and `sites` those landings by site. A landing in a
-later action, at the site of a held aim that still stands over that action,
-is counted there as the held aim's landing and also in `held_landings`. Park
+later action of any kind, at the site of a held aim and before that aim's
+window ends, is counted there as the held aim's landing, once, and also in
+`held_landings`. The held windows are computed from the branch root's standing
+windows and seal and the recorded actions, as the guest's plan is, and only
+for an action with a landing at a site some exact-site aim has targeted. Park
 landings carry no node, so a landing of another park at the same site in that
-action is counted the same way. An unaimed park
+time is counted the same way. An unaimed park
 that draws `edges` 1 is not counted there. Each job record's
 `draw_checkpoint_before.weighted_sites` is the number of sites with a weight
 when the job was drawn, so the stream shows the record from which fresh draws
