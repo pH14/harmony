@@ -45,9 +45,7 @@ and fifth words give an optional target: a half-open range of module offsets,
 with `(0, 0)` for none. With a target, only edges whose site falls in the range
 count toward `k`, and an empty range makes the command invalid. A park armed
 by the command keeps the visit share, except under a target one offset wide,
-where every visit counts one: a single site visited many times before the arm
-would otherwise need its visit count to grow about e-fold before the park
-holds. A park adopted from the park page,
+where each visit counts one. A park adopted from the park page,
 described below, counts from its arming instead: each counted edge counts one
 whatever its site's visit count, so the `k`-th counted edge after the resume is
 held. Before the hold the runtime writes one JSON line through `fuzz_json_data`:

@@ -27,7 +27,8 @@ A park window's at-resume flag (flag bit 2 beside the target flag) marks a
 park that the supervisor delivers through the park page when it resumes a
 paused node, and never over the event channel. A park delivered that way
 counts one per edge from its arming; a park armed by command keeps each edge's
-share of its site's visits. A page record with zero edges clears the park the
+share of its site's visits unless its target is one offset wide, when each edge
+counts one. A page record with zero edges clears the park the
 page delivered, and a disarm command leaves that park armed.
 
 The `registers` module owns the reserved lifecycle-register IDs published by
