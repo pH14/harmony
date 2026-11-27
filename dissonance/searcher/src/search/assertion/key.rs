@@ -98,6 +98,10 @@ impl ArchiveKey for AssertionKey {
         self.identity
     }
 
+    fn progress_number(progress: u32) -> Option<u64> {
+        Some(u64::from(progress))
+    }
+
     fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
         if self.scope != other.scope {
             return self.across.cmp(&other.across);

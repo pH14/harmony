@@ -4,6 +4,8 @@ use std::{collections::BTreeMap, error::Error};
 
 use serde::{Deserialize, Serialize};
 
+use crate::search::archive::StageWeightRule;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Lines {
@@ -116,6 +118,8 @@ pub struct Strategy {
     pub tier: Option<Lines>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stage: Vec<StageLines>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_weight: Option<StageWeightRule>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub table: BTreeMap<String, Vec<i64>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

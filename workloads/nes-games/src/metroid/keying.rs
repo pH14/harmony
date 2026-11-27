@@ -152,7 +152,8 @@ mod tests {
             KeyShape {
                 capacity: 1,
                 preferences: 1,
-                ties_above: 0
+                ties_above: 0,
+                stage_weight: None,
             }
         );
         let mut rand = RomuDuoJrRand::with_seed(0x6d65_7472);
