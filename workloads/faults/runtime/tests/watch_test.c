@@ -25,6 +25,7 @@ static char json_report[128];
 static size_t json_reports;
 static void record_json(const char *data, size_t size);
 #define HARMONY_JSON(data, size) record_json((data), (size))
+#define HARMONY_SITE_JSON(data, size) ((void)(data), (void)(size))
 #include "../fault_runtime.c"
 #include "../fault_runtime_shim.c"
 

@@ -196,6 +196,10 @@ pub struct FaultCampaignEvidence {
     park_thresholds: BTreeMap<u32, ParkThresholds>,
     #[serde(default)]
     park_aims: ParkAims,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    site_incidence: BTreeMap<u64, u64>,
+    #[serde(default)]
+    site_actions: u64,
     undecided_checks: UndecidedChecks,
     undecided_execution: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -969,6 +973,8 @@ impl Reporting for FaultWorkload {
             park_reads: evidence.park_reads.clone(),
             park_thresholds: evidence.park_thresholds.clone(),
             park_aims: evidence.park_aims.clone(),
+            site_incidence: evidence.site_incidence.clone(),
+            site_actions: evidence.site_actions,
             undecided_checks: evidence.undecided_checks,
             stage_falls: evidence.stage_falls(self.keys.compiled()),
             parked_pauses: evidence.parked_pauses.clone(),
@@ -1145,7 +1151,46 @@ const PARK_FEEDBACK_SCALE: u128 = 1024;
 
 const PARK_FEEDBACK_PRIOR_LANDINGS: u128 = 10;
 
+const PARK_FEEDBACK_PRIOR_INCIDENCE: u128 = 1;
+const SITE_INCIDENCE_LIMIT: usize = 1 << 18;
+
 fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
+    let mut weights = park_read_feedback(evidence);
+    for (site, weight) in park_incidence_feedback(evidence) {
+        let entry = weights.entry(site).or_default();
+        *entry = entry.saturating_add(weight);
+    }
+    weights
+}
+
+fn note_site_incidence(site_incidence: &mut BTreeMap<u64, u64>, site: u64) {
+    if let Some(count) = site_incidence.get_mut(&site) {
+        *count += 1;
+    } else if site_incidence.len() < SITE_INCIDENCE_LIMIT {
+        site_incidence.insert(site, 1);
+    }
+}
+
+fn park_incidence_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
+    let actions = u128::from(evidence.site_actions).saturating_add(PARK_FEEDBACK_PRIOR_INCIDENCE);
+    evidence
+        .site_incidence
+        .iter()
+        .map(|(site, incidence)| {
+            let landings = u128::from(evidence.park_sites.get(site).copied().unwrap_or(0));
+            let numerator = PARK_FEEDBACK_SCALE
+                .saturating_mul(actions)
+                .saturating_mul(PARK_FEEDBACK_PRIOR_LANDINGS);
+            let denominator = u128::from(*incidence)
+                .saturating_add(PARK_FEEDBACK_PRIOR_INCIDENCE)
+                .saturating_mul(landings.saturating_add(PARK_FEEDBACK_PRIOR_LANDINGS));
+            let weight = u64::try_from(numerator / denominator).unwrap_or(u64::MAX);
+            (*site, weight.max(1))
+        })
+        .collect()
+}
+
+fn park_read_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
     let all_reads: u128 = evidence.park_reads.values().copied().map(u128::from).sum();
     let all_landings: u128 = evidence
         .park_sites
@@ -1671,6 +1716,17 @@ impl Evaluation for FaultWorkload {
             evidence.park_aims.armed += 1;
         }
         let parked = matches!(action.action.operation, FaultOperation::PauseParked { .. });
+        if ran {
+            evidence.site_actions += 1;
+            let crossed = action
+                .observations
+                .iter()
+                .flat_map(|observation| observation.edge_sites.iter().map(|entry| entry.site))
+                .collect::<BTreeSet<_>>();
+            for site in crossed {
+                note_site_incidence(&mut evidence.site_incidence, site);
+            }
+        }
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
@@ -2286,6 +2342,28 @@ mod tests {
     }
 
     #[test]
+    fn park_feedback_puts_a_site_crossed_once_in_a_thousand_actions_above_one_crossed_by_all() {
+        let mut evidence = FaultCampaignEvidence {
+            site_actions: 1000,
+            site_incidence: BTreeMap::from([(1, 1), (2, 1000), (3, 1)]),
+            park_sites: BTreeMap::from([(3, 90)]),
+            ..FaultCampaignEvidence::default()
+        };
+        let weights = park_feedback(&evidence);
+        assert_eq!(
+            weights,
+            BTreeMap::from([(1, 512_512), (2, 1024), (3, 51_251)])
+        );
+        assert!(weights[&1] > weights[&3] && weights[&3] > weights[&2]);
+        evidence.park_reads = BTreeMap::from([(1, 1), (4, 1)]);
+        let reads = park_read_feedback(&evidence);
+        let combined = park_feedback(&evidence);
+        assert_eq!(combined[&1], reads[&1] + 512_512);
+        assert_eq!(combined[&4], reads[&4]);
+        assert_eq!(combined[&2], 1024);
+    }
+
+    #[test]
     fn hang_evidence_records_the_rooted_input_and_stops_at_its_bound() {
         let game = game();
         let root = FaultAction::from(FaultOperation::Kill(0, std::num::NonZeroU16::MIN));
@@ -2468,6 +2546,18 @@ mod tests {
     }
 
     #[test]
+    fn site_incidence_admits_no_new_site_once_full_and_keeps_counting_admitted_ones() {
+        let mut incidence = (0..SITE_INCIDENCE_LIMIT as u64)
+            .map(|site| (site, 1))
+            .collect::<BTreeMap<_, _>>();
+        note_site_incidence(&mut incidence, SITE_INCIDENCE_LIMIT as u64);
+        note_site_incidence(&mut incidence, 7);
+        assert_eq!(incidence.len(), SITE_INCIDENCE_LIMIT);
+        assert_eq!(incidence.get(&(SITE_INCIDENCE_LIMIT as u64)), None);
+        assert_eq!(incidence.get(&7), Some(&2));
+    }
+
+    #[test]
     fn park_evidence_counts_parks_the_guest_ran_and_each_landing_and_read_once() {
         let game = game();
         let mut evidence = FaultCampaignEvidence::default();
@@ -2514,6 +2604,23 @@ mod tests {
                     outcome: process_proto::events::ParkedOutcome::Unadopted,
                 },
             ],
+            edge_sites: vec![
+                crate::target::EdgeSite {
+                    moment: 1,
+                    site: 40,
+                },
+                crate::target::EdgeSite {
+                    moment: 2,
+                    site: 41,
+                },
+            ],
+            ..FaultObservations::default()
+        };
+        let crossed_again = FaultObservations {
+            edge_sites: vec![crate::target::EdgeSite {
+                moment: 5,
+                site: 40,
+            }],
             ..FaultObservations::default()
         };
         let cutoff = FaultObservations {
@@ -2526,7 +2633,7 @@ mod tests {
                 .get("parked_pauses")
                 .is_none()
         );
-        for observations in [vec![landed], vec![]] {
+        for observations in [vec![landed, crossed_again], vec![]] {
             game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
                 Err("no input".into())
             })
@@ -2554,6 +2661,8 @@ mod tests {
         );
         assert_eq!(evidence.park_sites.get(&9), Some(&1));
         assert_eq!(evidence.park_reads.get(&9), Some(&1));
+        assert_eq!(evidence.site_actions, 1);
+        assert_eq!(evidence.site_incidence, BTreeMap::from([(40, 1), (41, 1)]));
         assert_eq!(
             evidence.parked_pauses,
             BTreeMap::from([("fired".to_owned(), 1), ("unadopted".to_owned(), 1)])

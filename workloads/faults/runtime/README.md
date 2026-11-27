@@ -197,6 +197,19 @@ hash independent of where the loader placed the module. Slots are chosen by
 address, so which sites share a slot can change with placement. Another 512 KiB
 of bucket bytes holds the levels.
 
+A crossing into bucket 1 is the process's first visit to that slot, so the
+runtime also keeps the site's module offset, or its address when no listed
+module holds it, in a list of new sites. After the control thread answers each
+command it takes the list, releases the callback lock, and writes it through
+`fuzz_json_data` as lines of the form `{"harmony_sites":[S,...]}` of at most
+2,048 bytes, below the SDK device's limit on one JSON write. The list holds at
+most 65,536 sites between two commands; later new sites in that interval are
+dropped. A forked child stops keeping the list, because it has no control
+thread to send it. A runtime started where `/dev/harmony` cannot be opened for
+writing keeps no list, so a process outside a Harmony guest writes no site
+lines. The fault workload counts these lists per action to weight park sites by
+rarity (see the fault workload README).
+
 `tests/language_park_launcher.c` runs a language fixture, parks one of its
 threads at a coverage site, and requires the callback count to grow while the
 hold lasts. A fixture can print `HARMONY_LANGUAGE_PARK_RANGE start end` to

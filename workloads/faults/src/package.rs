@@ -1097,6 +1097,8 @@ mod live {
             "park_reads": archive.park_reads,
             "park_thresholds": archive.park_thresholds,
             "park_aims": archive.park_aims,
+            "site_actions": archive.site_actions,
+            "site_incidence": archive.site_incidence,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),

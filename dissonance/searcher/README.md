@@ -160,7 +160,9 @@ and keeps the table versions a serial replay still needs. The tables also hold
 workload feedback: weights keyed by `u64` that a workload computes from its
 campaign evidence. Feedback changes only at a table update, enters the table
 hash when nonempty, keeps at most the 4,096 heaviest keys, and reaches each draw
-through `DrawView` with the table version the draw names. Workloads identify
+through `DrawView` with the table version the draw names. Keys tied at the
+cutoff are ordered by a hash of the key and the table's record count, so each
+update admits a different share of them instead of always the lowest keys. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
 The worker pool starts before the bootstrap. The coordinator bootstraps while

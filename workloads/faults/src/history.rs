@@ -429,6 +429,7 @@ impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::Fau
         budget.array::<crate::target::ParkRead>(self.observation.park_reads.capacity())?;
         budget.array::<crate::target::ParkedPause>(self.observation.parked_pauses.capacity())?;
         budget.array::<crate::target::RolePause>(self.observation.role_pauses.capacity())?;
+        budget.array::<crate::target::EdgeSite>(self.observation.edge_sites.capacity())?;
         if let Some(check) = &self.observation.check {
             budget.array::<String>(check.points.capacity())?;
             for point in &check.points {
@@ -474,7 +475,7 @@ struct SnapshotEndpoint {
 impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapshot>
     for FaultSnapshotCodec
 {
-    const FORMAT: &'static str = "fault-history-dag-v6";
+    const FORMAT: &'static str = "fault-history-dag-v7";
     type DecodeState = std::collections::BTreeMap<[u8; 32], FaultHistory>;
     fn encode(
         snapshot: &crate::target::FaultSnapshot,
@@ -912,13 +913,15 @@ mod tests {
         snapshot.observation.park_reads = Vec::with_capacity(47);
         snapshot.observation.parked_pauses = Vec::with_capacity(13);
         snapshot.observation.role_pauses = Vec::with_capacity(17);
+        snapshot.observation.edge_sites = Vec::with_capacity(19);
         snapshot.observation.check = Some(crate::target::CheckEvidence {
             points: Vec::with_capacity(11),
             ..Default::default()
         });
         let pauses = snapshot.observation.parked_pauses.capacity()
             * size_of::<crate::target::ParkedPause>()
-            + snapshot.observation.role_pauses.capacity() * size_of::<crate::target::RolePause>();
+            + snapshot.observation.role_pauses.capacity() * size_of::<crate::target::RolePause>()
+            + snapshot.observation.edge_sites.capacity() * size_of::<crate::target::EdgeSite>();
         let points = &mut snapshot.observation.check.as_mut().unwrap().points;
         let mut point = String::with_capacity(8192);
         point.push_str("check point");
@@ -1042,7 +1045,7 @@ mod tests {
         let mut input = &bytes[8..];
         let (_, codec, entries): (String, String, u64) =
             postcard::from_bytes(&frame(&mut input)).unwrap();
-        assert_eq!(codec, "fault-history-dag-v6");
+        assert_eq!(codec, "fault-history-dag-v7");
         assert_eq!(entries, 132);
         let mut rows = std::collections::BTreeSet::new();
         let mut endpoints = 0;

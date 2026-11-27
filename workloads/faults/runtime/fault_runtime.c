@@ -43,6 +43,12 @@
 void fuzz_json_data(const char *data, size_t size);
 #define HARMONY_JSON(data, size) fuzz_json_data((data), (size))
 #endif
+#ifndef HARMONY_SITE_JSON
+#define HARMONY_SITE_JSON(data, size) HARMONY_JSON((data), (size))
+#endif
+#ifndef HARMONY_SITES_AVAILABLE
+#define HARMONY_SITES_AVAILABLE() (access("/dev/harmony", W_OK) == 0)
+#endif
 
 #define HARMONY_FAULT_MODULE_LIMIT 4096
 #define HARMONY_FAULT_PARK_WEIGHT_SHIFT 20
@@ -52,6 +58,8 @@ void fuzz_json_data(const char *data, size_t size);
 #define HARMONY_FAULT_WATCH_PAGE_LIMIT 256
 #define HARMONY_FAULT_WATCH_PENDING_LIMIT 4
 #define HARMONY_FAULT_WATCH_MAPS_LIMIT ((size_t)1 << 16)
+#define HARMONY_FAULT_NEW_SITE_LIMIT ((size_t)1 << 16)
+#define HARMONY_FAULT_SITE_LINE_BYTES 2048
 #define HARMONY_FAULT_WATCH_UNKNOWN_WIDTH 16
 
 static void harmony_fault_after_fork(void);
@@ -95,6 +103,10 @@ struct harmony_fault_event_state {
     struct harmony_fault_crossing *deferred;
     size_t deferred_count;
     size_t deferred_capacity;
+    uint64_t *new_sites;
+    size_t new_site_count;
+    size_t new_site_capacity;
+    uint32_t new_sites_off;
     uint64_t site_visits[HARMONY_FAULT_EVENT_SITE_TABLE_SIZE];
     uint8_t site_bucket[HARMONY_FAULT_EVENT_SITE_TABLE_SIZE];
 };
@@ -427,6 +439,27 @@ static int harmony_fault_crossing_defer(uint64_t site, uint8_t bucket)
     return 0;
 }
 
+static void harmony_fault_new_site(uint64_t offset)
+{
+    if (harmony_fault_events.new_sites_off != 0 ||
+        harmony_fault_events.new_site_count == HARMONY_FAULT_NEW_SITE_LIMIT)
+        return;
+    if (harmony_fault_events.new_site_count ==
+        harmony_fault_events.new_site_capacity) {
+        size_t capacity = harmony_fault_events.new_site_capacity == 0
+                              ? 256
+                              : harmony_fault_events.new_site_capacity * 2;
+        uint64_t *grown = realloc(harmony_fault_events.new_sites,
+                                  capacity * sizeof(*grown));
+        if (grown == NULL)
+            return;
+        harmony_fault_events.new_sites = grown;
+        harmony_fault_events.new_site_capacity = capacity;
+    }
+    harmony_fault_events.new_sites[harmony_fault_events.new_site_count++] =
+        offset;
+}
+
 static void harmony_fault_crossings_resolve(void)
 {
     size_t index;
@@ -434,8 +467,12 @@ static void harmony_fault_crossings_resolve(void)
     for (index = 0; index < harmony_fault_events.deferred_count; index++) {
         const struct harmony_fault_crossing *crossing =
             &harmony_fault_events.deferred[index];
-        harmony_fault_events.coverage_digest += harmony_fault_crossing_hash(
-            harmony_fault_site_offset(crossing->site), crossing->bucket);
+        uint64_t offset = harmony_fault_site_offset(crossing->site);
+
+        harmony_fault_events.coverage_digest +=
+            harmony_fault_crossing_hash(offset, crossing->bucket);
+        if (crossing->bucket == 1)
+            harmony_fault_new_site(offset);
     }
     harmony_fault_events.deferred_count = 0;
 }
@@ -448,13 +485,65 @@ static void harmony_fault_event_note_crossing(uint64_t site, uint8_t bucket)
     if (harmony_fault_lock() != 0)
         return;
     harmony_fault_events.coverage_crossings++;
-    if (resolved != 0)
+    if (resolved != 0) {
         harmony_fault_events.coverage_digest +=
             harmony_fault_crossing_hash(offset, bucket);
-    else if (harmony_fault_crossing_defer(site, bucket) != 0)
+        if (bucket == 1)
+            harmony_fault_new_site(offset);
+    } else if (harmony_fault_crossing_defer(site, bucket) != 0) {
         harmony_fault_events.coverage_digest +=
             harmony_fault_crossing_hash(site, bucket);
+        if (bucket == 1)
+            harmony_fault_new_site(site);
+    }
     harmony_fault_unlock();
+}
+
+static void harmony_fault_new_sites_flush(void)
+{
+    static const char prefix[] = "{\"harmony_sites\":[";
+    static const char suffix[] = "]}\n";
+    char line[HARMONY_FAULT_SITE_LINE_BYTES];
+    uint64_t *sites;
+    size_t count;
+    size_t index;
+    size_t length = 0;
+
+    if (harmony_fault_lock() != 0)
+        return;
+    sites = harmony_fault_events.new_sites;
+    count = harmony_fault_events.new_site_count;
+    harmony_fault_events.new_sites = NULL;
+    harmony_fault_events.new_site_count = 0;
+    harmony_fault_events.new_site_capacity = 0;
+    harmony_fault_unlock();
+    for (index = 0; index < count; index++) {
+        char number[24];
+        int width = snprintf(number, sizeof(number), "%llu",
+                             (unsigned long long)sites[index]);
+
+        if (width <= 0)
+            continue;
+        if (length != 0 && length + 1 + (size_t)width + sizeof(suffix) >
+                               sizeof(line)) {
+            memcpy(line + length, suffix, sizeof(suffix) - 1);
+            HARMONY_SITE_JSON(line, length + sizeof(suffix) - 1);
+            length = 0;
+        }
+        if (length == 0) {
+            memcpy(line, prefix, sizeof(prefix) - 1);
+            length = sizeof(prefix) - 1;
+        } else {
+            line[length++] = ',';
+        }
+        memcpy(line + length, number, (size_t)width);
+        length += (size_t)width;
+    }
+    if (length != 0) {
+        memcpy(line + length, suffix, sizeof(suffix) - 1);
+        HARMONY_SITE_JSON(line, length + sizeof(suffix) - 1);
+    }
+    free(sites);
 }
 
 static void harmony_fault_page_park_clear(void)
@@ -633,6 +722,7 @@ static void *harmony_fault_event_control(void *arg)
             break;
         }
         harmony_fault_unlock();
+        harmony_fault_new_sites_flush();
     }
     if (harmony_fault_lock() == 0) {
         harmony_fault_events.kill_armed = 0;
@@ -662,6 +752,7 @@ static void harmony_fault_event_start(void)
     harmony_fault_events.page = page;
     harmony_fault_events.page_fd = page_fd;
     harmony_fault_events.page_seen = 0;
+    harmony_fault_events.new_sites_off = HARMONY_SITES_AVAILABLE() ? 0 : 1;
     if (pthread_create(&thread, NULL, harmony_fault_event_control,
                        &harmony_fault_events.control_fd) != 0) {
         harmony_fault_events.control_fd = -1;
@@ -1091,6 +1182,10 @@ static void harmony_fault_watch_edge(void)
 
 static void harmony_fault_after_fork(void)
 {
+    harmony_fault_events.new_sites = NULL;
+    harmony_fault_events.new_site_count = 0;
+    harmony_fault_events.new_site_capacity = 0;
+    harmony_fault_events.new_sites_off = 1;
     if (harmony_fault_events.page != NULL) {
         harmony_fault_events.page = NULL;
         (void)fcntl(harmony_fault_events.page_fd, F_SETFD, FD_CLOEXEC);

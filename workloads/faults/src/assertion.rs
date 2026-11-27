@@ -273,6 +273,7 @@ pub struct JsonEvent {
     pub parked_pause: Option<ParkedPauseReport>,
     pub role_pause: Option<RolePauseReport>,
     pub undecided_keys: Option<u64>,
+    pub sites: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -323,6 +324,8 @@ struct RawEvent {
     harmony_parked_pause: Option<ParkedPauseReport>,
     harmony_role_pause: Option<RolePauseReport>,
     harmony_check: Option<RawCheck>,
+    #[serde(default)]
+    harmony_sites: Vec<u64>,
 }
 
 #[derive(Deserialize)]
@@ -441,6 +444,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
         parked_pause: raw.harmony_parked_pause,
         role_pause: raw.harmony_role_pause,
         undecided_keys: raw.harmony_check.map(|check| check.undecided_keys),
+        sites: raw.harmony_sites,
     })
 }
 
