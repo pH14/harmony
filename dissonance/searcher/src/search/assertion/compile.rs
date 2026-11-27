@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
+    num::NonZeroU64,
 };
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use super::{
     key::{AssertionKey, MAX_PREFERENCES, Wide},
     strategy::{Lines, Shared, StageLines, Steps, Strategy},
 };
-use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY};
+use crate::search::archive::{KeyShape, MAX_ENTRIES_PER_KEY, StageWeight};
 
 pub const MAX_AGGREGATES: usize = 8;
 pub const OBJECTIVE_WIDTH: usize = 4;
@@ -1506,6 +1507,14 @@ impl Compiled {
             }
         };
         check_scope(strategy, &lines, &progress, catalog)?;
+        let stage_weight = match (strategy.stage_weight, &progress) {
+            (None, _) => None,
+            (Some(rule), Progress::Stages { radix, .. }) => Some(StageWeight {
+                rule,
+                radix: NonZeroU64::new(*radix).ok_or("the stage radix is zero")?,
+            }),
+            (Some(_), _) => return Err("stage_weight needs [[stage]] tables".into()),
+        };
         let holds_objective = compiler.aggregates.iter().any(|aggregate| {
             aggregate
                 .value
@@ -1533,6 +1542,7 @@ impl Compiled {
                     .enumerate()
                     .filter(|(_, above)| **above)
                     .fold(0, |marks, (index, _)| marks | 1 << index),
+                stage_weight,
             },
             signals: catalog.signals().len(),
             tables,

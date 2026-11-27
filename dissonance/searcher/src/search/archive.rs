@@ -153,6 +153,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn place(self) -> Self::Place;
     fn progress(self) -> Self::Progress;
     fn identity(self) -> Self::Identity;
+    fn progress_number(_progress: Self::Progress) -> Option<u64> {
+        None
+    }
     fn capacity() -> usize {
         MAX_ENTRIES_PER_KEY
     }
@@ -172,6 +175,27 @@ pub struct KeyShape {
     pub capacity: usize,
     pub preferences: usize,
     pub ties_above: u8,
+    #[serde(default)]
+    pub stage_weight: Option<StageWeight>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageWeightRule {
+    TenthPerStageBelowTop,
+    HalfToTopStage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StageWeight {
+    pub rule: StageWeightRule,
+    pub radix: NonZeroU64,
+}
+
+impl StageWeight {
+    fn stage<K: ArchiveKey>(self, progress: K::Progress) -> Option<u64> {
+        K::progress_number(progress).map(|number| number / self.radix)
+    }
 }
 
 impl KeyShape {
@@ -181,6 +205,7 @@ impl KeyShape {
             capacity: K::capacity(),
             preferences: K::preferences(),
             ties_above: 0,
+            stage_weight: None,
         }
     }
 
@@ -312,6 +337,14 @@ const TIER_RANK_SHIFT: u32 = 3;
 const DRY_GAP_FACTOR: u64 = 8;
 
 const _: () = assert!(TIER_RANK_SHIFT * (TIER_RANK_CAP as u32) < u64::BITS);
+
+const STAGE_DISTANCE_CAP: u32 = 11;
+
+const _: () = assert!(
+    10_u128.pow(STAGE_DISTANCE_CAP)
+        * ((2_u128 << (TIER_RANK_SHIFT * TIER_RANK_CAP as u32)) + MAX_ARCHIVE_ENTRIES as u128)
+        < u64::MAX as u128
+);
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
@@ -3538,8 +3571,47 @@ where
         &self,
         rand: &mut RomuDuoJrRand,
     ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
-        let tiers = self.tiers.len();
-        let mut ranked = self.tiers.keys().rev().copied().peekable();
+        let Some(stage_weight) = self.shape.stage_weight else {
+            return self.draw_ranked_tier(rand, self.tiers.len(), |_| 1);
+        };
+        let top_stage = self
+            .tiers
+            .keys()
+            .next_back()
+            .and_then(|progress| stage_weight.stage::<K>(*progress));
+        match stage_weight.rule {
+            StageWeightRule::TenthPerStageBelowTop => {
+                self.draw_ranked_tier(rand, self.tiers.len(), |progress| {
+                    let distance = top_stage
+                        .zip(stage_weight.stage::<K>(progress))
+                        .map_or(0, |(top, stage)| top.saturating_sub(stage))
+                        .min(u64::from(STAGE_DISTANCE_CAP));
+                    10_u64.pow(STAGE_DISTANCE_CAP - u32::try_from(distance).unwrap_or(0))
+                })
+            }
+            StageWeightRule::HalfToTopStage => {
+                if rand.below(NonZeroUsize::new(2).unwrap()) == 0 {
+                    let top_tiers = self
+                        .tiers
+                        .keys()
+                        .rev()
+                        .take_while(|progress| stage_weight.stage::<K>(**progress) == top_stage)
+                        .count();
+                    self.draw_ranked_tier(rand, top_tiers, |_| 1)
+                } else {
+                    self.draw_ranked_tier(rand, self.tiers.len(), |_| 1)
+                }
+            }
+        }
+    }
+
+    fn draw_ranked_tier(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        tiers: usize,
+        scale: impl Fn(K::Progress) -> u64,
+    ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
+        let mut ranked = self.tiers.keys().rev().take(tiers).copied().peekable();
         let mut floor = 0_usize;
         let mut halvings = 0;
         while let Some(progress) = ranked.next() {
@@ -3550,13 +3622,20 @@ where
             floor += 1;
         }
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
-        let weights = (0..tiers).map(|rank| {
-            if rank <= floor {
-                floor_weight
-            } else {
-                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
-            }
-        });
+        let weights = self
+            .tiers
+            .keys()
+            .rev()
+            .take(tiers)
+            .enumerate()
+            .map(|(rank, progress)| {
+                let weight = if rank <= floor {
+                    floor_weight
+                } else {
+                    tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                };
+                weight.saturating_mul(scale(*progress))
+            });
         let index = draw_weighted(rand, weights)?;
         let progress = self
             .tiers
@@ -4498,6 +4577,45 @@ where
         Ok(suffix.iter().take(longest_tail).cloned().collect())
     }
 
+    fn draw_tier_reference(
+        &self,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<(K::Progress, u8, bool), Box<dyn Error>> {
+        let tiers = self.tiers.len();
+        let mut ranked = self.tiers.keys().rev().copied().peekable();
+        let mut floor = 0_usize;
+        let mut halvings = 0;
+        while let Some(progress) = ranked.next() {
+            halvings = self.tier_halvings(progress, ranked.peek().copied());
+            if halvings < TIER_RANK_SHIFT || ranked.peek().is_none() {
+                break;
+            }
+            floor += 1;
+        }
+        let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
+        let weights = (0..tiers).map(|rank| {
+            if rank <= floor {
+                floor_weight
+            } else {
+                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+            }
+        });
+        let index = draw_weighted(rand, weights)?;
+        let progress = self
+            .tiers
+            .keys()
+            .rev()
+            .nth(index)
+            .copied()
+            .ok_or("tier draw chose an absent tier")?;
+        let fall_through = (floor > 0 || halvings > 0) && index <= floor;
+        Ok((
+            progress,
+            u8::try_from(index).unwrap_or(u8::MAX),
+            fall_through,
+        ))
+    }
+
     fn select_parent_candidates_reference(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -4649,9 +4767,10 @@ mod tests {
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellDraws, CellIntervalRow, CellMembers,
         CellState, HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
-        MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        SharedAllocation, SharedSnapshotMemory, SnapshotRetention, TIER_RANK_SHIFT, TierCells,
-        WeightedSet, slot_of_key, tier_weight,
+        KeyShape, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, STAGE_DISTANCE_CAP, SelectorAccounting,
+        SelectorDraw, SelectorPath, SharedAllocation, SharedSnapshotMemory, SnapshotRetention,
+        StageWeight, StageWeightRule, TIER_RANK_SHIFT, TierCells, TierRuns, WeightedSet,
+        slot_of_key, tier_weight,
     };
     use crate::search::{cost::ShrinkCost, draw::SUFFIX_DOUBLING_LIMIT, heap, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -6533,6 +6652,227 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct StagedTierKey(u32);
+
+    impl ArchiveKey for StagedTierKey {
+        type Place = ();
+        type Progress = u32;
+        type Identity = ();
+        type Lineage = ();
+        fn place(self) {}
+        fn progress(self) -> u32 {
+            self.0
+        }
+        fn identity(self) {}
+        fn progress_number(progress: u32) -> Option<u64> {
+            Some(u64::from(progress))
+        }
+        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+        fn record(_: &mut Self::Lineage, _: Self) {}
+    }
+
+    const STAGE_RADIX: u32 = 100;
+
+    fn staged_tiers(
+        rule: Option<StageWeightRule>,
+        stages: &[(u32, u32)],
+        stalled: bool,
+    ) -> Archive<u8, StagedTierKey, (), ()> {
+        let mut archive = Archive::<u8, StagedTierKey, (), ()>::with_shape(KeyShape {
+            stage_weight: rule.map(|rule| StageWeight {
+                rule,
+                radix: std::num::NonZeroU64::new(u64::from(STAGE_RADIX)).unwrap(),
+            }),
+            ..KeyShape::of::<StagedTierKey>()
+        });
+        for (stage, tiers) in stages {
+            for objective in 0..*tiers {
+                let progress = stage * STAGE_RADIX + objective;
+                archive.tiers.insert(progress, TierCells::default());
+                if stalled {
+                    archive.selector_accounting.tier_runs.insert(
+                        format!("{progress:?}"),
+                        TierRuns {
+                            current: 1_000,
+                            dry: 1_000,
+                            ..TierRuns::default()
+                        },
+                    );
+                }
+            }
+        }
+        archive
+    }
+
+    fn rule_weights(
+        archive: &Archive<u8, StagedTierKey, (), ()>,
+        tiers: usize,
+    ) -> (Vec<u64>, Option<usize>) {
+        let ranked = archive
+            .tiers
+            .keys()
+            .rev()
+            .take(tiers)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut floor = 0;
+        let mut halvings = 0;
+        for (rank, progress) in ranked.iter().enumerate() {
+            halvings = archive.tier_halvings(*progress, ranked.get(rank + 1).copied());
+            if halvings < TIER_RANK_SHIFT || rank + 1 == ranked.len() {
+                break;
+            }
+            floor += 1;
+        }
+        let weights = (0..ranked.len())
+            .map(|rank| {
+                if rank <= floor {
+                    (tier_weight(u8::try_from(floor).unwrap()) >> halvings).max(1)
+                } else {
+                    tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                }
+            })
+            .collect();
+        (weights, (floor > 0 || halvings > 0).then_some(floor))
+    }
+
+    fn top_stage_share(
+        archive: &Archive<u8, StagedTierKey, (), ()>,
+        top_tiers: usize,
+        draws: usize,
+    ) -> f64 {
+        let mut rand = RomuDuoJrRand::with_seed(0x5747);
+        let top = (0..draws)
+            .filter(|_| usize::from(archive.draw_tier(&mut rand).unwrap().1) < top_tiers)
+            .count();
+        top as f64 / draws as f64
+    }
+
+    #[test]
+    fn absent_stage_weight_draws_exactly_as_the_unstaged_rule() {
+        for stalled in [false, true] {
+            for stages in [
+                &[(0, 1)][..],
+                &[(0, 40), (1, 3)],
+                &[(0, 9), (2, 5), (3, 200)],
+            ] {
+                let archive = staged_tiers(None, stages, stalled);
+                for seed in 0..16 {
+                    let mut actual = RomuDuoJrRand::with_seed(seed);
+                    let mut reference = actual;
+                    for _ in 0..512 {
+                        assert_eq!(
+                            archive.draw_tier(&mut actual).unwrap(),
+                            archive.draw_tier_reference(&mut reference).unwrap()
+                        );
+                        assert_eq!(
+                            postcard::to_stdvec(&actual).unwrap(),
+                            postcard::to_stdvec(&reference).unwrap()
+                        );
+                    }
+                }
+            }
+        }
+        let archive = staged_tiers(None, &[(0, 4)], false);
+        assert_eq!(archive.shape(), KeyShape::of::<StagedTierKey>());
+    }
+
+    #[test]
+    fn tenth_per_stage_scales_each_tier_by_its_stage_distance_from_the_top() {
+        let stages = [(0, 30), (1, 40), (13, 3), (15, 2), (16, 3)];
+        for stalled in [false, true] {
+            let archive = staged_tiers(
+                Some(StageWeightRule::TenthPerStageBelowTop),
+                &stages,
+                stalled,
+            );
+            let ranked = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
+            let (weights, fall_floor) = rule_weights(&archive, ranked.len());
+            let weights = weights
+                .iter()
+                .zip(&ranked)
+                .map(|(weight, progress)| {
+                    let distance = (16 - progress / STAGE_RADIX).min(STAGE_DISTANCE_CAP);
+                    weight * 10_u64.pow(STAGE_DISTANCE_CAP - distance)
+                })
+                .collect::<Vec<_>>();
+            assert!(weights.iter().all(|weight| *weight > 0));
+            let mut actual = RomuDuoJrRand::with_seed(17);
+            let mut reference = actual;
+            for _ in 0..4_096 {
+                let index = materialized_weighted_reference(&mut reference, &weights).unwrap();
+                assert_eq!(
+                    archive.draw_tier(&mut actual).unwrap(),
+                    (
+                        ranked[index],
+                        u8::try_from(index).unwrap(),
+                        fall_floor.is_some_and(|floor| index <= floor)
+                    )
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&actual).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+            }
+        }
+        let flat = staged_tiers(
+            Some(StageWeightRule::TenthPerStageBelowTop),
+            &[(0, 40), (1, 3)],
+            true,
+        );
+        let share = top_stage_share(&flat, 3, 100_000);
+        assert!((share - 3.0 / 7.0).abs() < 0.01, "{share}");
+        let unweighted = top_stage_share(&staged_tiers(None, &[(0, 40), (1, 3)], true), 3, 100_000);
+        assert!((unweighted - 3.0 / 43.0).abs() < 0.01, "{unweighted}");
+    }
+
+    #[test]
+    fn half_to_top_stage_draws_the_top_stage_alone_on_half_the_draws() {
+        let stages = [(0, 40), (1, 3)];
+        for stalled in [false, true] {
+            let archive = staged_tiers(Some(StageWeightRule::HalfToTopStage), &stages, stalled);
+            let ranked = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
+            let all = rule_weights(&archive, ranked.len());
+            let top = rule_weights(&archive, 3);
+            assert!(top.0.iter().all(|weight| *weight > 0));
+            assert!(all.0.iter().all(|weight| *weight > 0));
+            let mut actual = RomuDuoJrRand::with_seed(23);
+            let mut reference = actual;
+            for _ in 0..4_096 {
+                let weights = if reference.below(std::num::NonZeroUsize::new(2).unwrap()) == 0 {
+                    &top
+                } else {
+                    &all
+                };
+                let index = materialized_weighted_reference(&mut reference, &weights.0).unwrap();
+                assert_eq!(
+                    archive.draw_tier(&mut actual).unwrap(),
+                    (
+                        ranked[index],
+                        u8::try_from(index).unwrap(),
+                        weights.1.is_some_and(|floor| index <= floor)
+                    )
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&actual).unwrap(),
+                    postcard::to_stdvec(&reference).unwrap()
+                );
+            }
+        }
+        let stalled = staged_tiers(Some(StageWeightRule::HalfToTopStage), &stages, true);
+        let share = top_stage_share(&stalled, 3, 100_000);
+        assert!((share - (0.5 + 0.5 * 3.0 / 43.0)).abs() < 0.01, "{share}");
+        let mut rand = RomuDuoJrRand::with_seed(29);
+        let mut drawn = BTreeSet::new();
+        for _ in 0..20_000 {
+            drawn.insert(stalled.draw_tier(&mut rand).unwrap().0);
+        }
+        assert_eq!(drawn.len(), stalled.tiers.len());
     }
 
     #[test]

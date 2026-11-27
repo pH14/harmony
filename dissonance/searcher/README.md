@@ -747,6 +747,7 @@ catalog names:
 | `reject` | Named conditions; the first that holds is reported by index. A record one of them matches gets no key and leaves the accumulator as it was, unless the `goal` holds. |
 | `[table]`, `[define]` | Integer tables for `in`, `index` and `bucket`, and named sub-expressions. |
 | `every_stage` | Lines every stage inherits unless it gives its own. |
+| `stage_weight` | How the tier draw weighs the plan's stages: `tenth_per_stage_below_top` or `half_to_top_stage` (see Search evaluation policies). Absent, the tier draw ignores stages. A strategy without `[[stage]]` tables that declares it fails to compile. |
 | `goal` | The campaign objective: a declared `sometimes` name (a `sometimes_all` holds when every term holds) or a condition. |
 
 Expressions have integers, `none`, names (quote a name with spaces as
@@ -1083,6 +1084,27 @@ rejects impossible ranks without claiming to
 reconstruct every selector draw.
 Replay also rejects a best-holder preference index outside the workload key's
 compiled portfolio; otherwise selector accounting would silently ignore it.
+
+A plan with stages can also weigh the tier draw by stage. A tier's stage is the
+stage of the strategy's `[[stage]]` tables that its progress value encodes:
+`ArchiveKey::progress_number` gives the progress as an integer, and the
+compiled strategy puts its stage radix in `KeyShape::stage_weight` beside the
+rule its `stage_weight` line names, so the stage is the progress number divided
+by the radix. The top stage is the stage of the deepest tier. Under
+`tenth_per_stage_below_top`, each tier's rank weight, with the fall-back walk
+described below and ranks counted over all tiers, is multiplied by `0.1^(top stage - stage)`, with the
+stage distance capped at 11 so the weights stay integers and every tier keeps
+a nonzero weight. This is Go-Explore's level weight, `0.1^(MaxLevel - Level)`
+(Ecoffet et al., "Go-Explore", 2019, and "First return, then explore", Nature
+2021). Under `half_to_top_stage`, which is ours, half of the tier draws use the
+rank weights over the tiers of the top stage alone, with ranks and the fall-back
+walk counted within them, and the other half use the rank weights over all tiers.
+The top stage's tiers are the deepest ranks, so under either rule the recorded
+rank is the drawn tier's rank among all tiers. A key without a progress number,
+or a shape without a stage weight, draws by the rank weights alone, with the same
+draws and RNG use. The rule is part of the strategy, so it changes the
+`assertion_key_` policy identifier and the archive's `KeyShape`, and a
+checkpoint resumes only under the same rule.
 
 The leading tier gives up weight while it makes no progress. A tier makes
 progress when a parent drawn from it opens a cell at a deeper progress value;
@@ -1708,7 +1730,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is `dissonance-search-checkpoint-v24`. A
+match. The search checkpoint format is `dissonance-search-checkpoint-v25`. A
 checkpoint of another format is refused with an error that names the format it
 has and the format the build reads, and a checkpoint from another executable is
 refused before the new stream is written. Within that same

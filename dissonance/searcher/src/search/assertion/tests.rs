@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 
 use super::*;
-use crate::search::archive::{ArchiveKey, KeyShape};
+use crate::search::archive::{ArchiveKey, KeyShape, StageWeight, StageWeightRule};
 use crate::search::choice::{Choice, ChoiceRecord};
 
 #[derive(Clone, Copy, Default)]
@@ -157,7 +157,8 @@ fn a_tier_spread_and_preference_pack_in_order() {
         KeyShape {
             capacity: 1,
             preferences: 1,
-            ties_above: 0
+            ties_above: 0,
+            stage_weight: None,
         }
     );
     let key = |state: Walk| compiled.key(&record(state)).unwrap();
@@ -259,6 +260,71 @@ fn expressions_cover_tables_conditionals_and_popcount() {
         }),
         [NONE, 0, 0, 2, 0, 0, 1]
     );
+}
+
+#[test]
+fn a_stage_weight_reaches_the_shape_with_the_stage_radix() {
+    let catalog = catalog();
+    let staged = r#"
+        spread = "position"
+        [[stage]]
+        goal = "far room"
+        objective = "'far room.gap'"
+        [[stage]]
+        name = "sword"
+        goal = "'items.sword'"
+        [[stage]]
+        goal = "items"
+        "#;
+    let plain = Compiled::parse(staged, &catalog).unwrap();
+    assert_eq!(plain.shape().stage_weight, None);
+    let mut accumulator = Accumulator::default();
+    let key = plain
+        .observe(
+            &record(Walk {
+                room: 6,
+                items: 0b001,
+                ..Walk::default()
+            }),
+            &mut accumulator,
+        )
+        .key
+        .unwrap();
+    assert_eq!(plain.view(key).stage.as_deref(), Some("items"));
+    for (name, rule) in [
+        (
+            "tenth_per_stage_below_top",
+            StageWeightRule::TenthPerStageBelowTop,
+        ),
+        ("half_to_top_stage", StageWeightRule::HalfToTopStage),
+    ] {
+        let weighted =
+            Compiled::parse(&format!("stage_weight = \"{name}\"\n{staged}"), &catalog).unwrap();
+        let Some(StageWeight { rule: drawn, radix }) = weighted.shape().stage_weight else {
+            panic!("the stage weight is missing from the shape");
+        };
+        assert_eq!(drawn, rule);
+        assert_eq!(
+            KeyShape {
+                stage_weight: None,
+                ..weighted.shape()
+            },
+            plain.shape()
+        );
+        assert_eq!(
+            AssertionKey::progress_number(key.progress()).map(|number| number / radix),
+            Some(2)
+        );
+        assert_ne!(weighted.policy_identifier(), plain.policy_identifier());
+    }
+    for unstaged in [
+        "stage_weight = \"half_to_top_stage\"\ntier = \"position\"",
+        "stage_weight = \"half_to_top_stage\"\nspread = \"position\"",
+    ] {
+        let error = Compiled::parse(unstaged, &catalog).err().unwrap();
+        assert!(error.to_string().contains("stage_weight"), "{error}");
+    }
+    assert!(Compiled::parse(&format!("stage_weight = \"tenth\"\n{staged}"), &catalog).is_err());
 }
 
 #[test]
