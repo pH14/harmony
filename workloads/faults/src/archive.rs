@@ -514,6 +514,8 @@ pub struct ParkThresholds {
 pub struct ParkAims {
     pub armed: u64,
     pub landings: u64,
+    #[serde(default)]
+    pub held_landings: u64,
     pub sites: BTreeMap<u64, u64>,
 }
 

@@ -739,8 +739,11 @@ fn ends_held_aims(operation: FaultOperation) -> Option<u16> {
         | FaultOperation::Restart(node, _)
         | FaultOperation::PowerLoss(node, _)
         | FaultOperation::DiskCorrupt(node, _)
-        | FaultOperation::EventPark { node, .. }
-        | FaultOperation::PauseParked { node, .. } => Some(node),
+        | FaultOperation::EventPark { node, .. } => Some(node),
+        FaultOperation::PauseParked {
+            node: ROLE_NODE, ..
+        } => Some(EVERY_NODE),
+        FaultOperation::PauseParked { node, .. } => Some(node),
         FaultOperation::KillAll(_) | FaultOperation::PowerLossAll(_) => Some(EVERY_NODE),
         _ => None,
     }
@@ -956,6 +959,33 @@ pub fn action_deltas(
         .zip(windows.iter(actions))
         .map(|(action, window)| window.map(|window| windows.delta(*action, window)))
         .collect()
+}
+
+pub fn held_aim_sites(actions: &[FaultAction]) -> Result<BTreeSet<u64>, String> {
+    let windows = ActionWindows {
+        root_seal: 0,
+        hold_hooks: true,
+    };
+    let Some(last) = actions.len().checked_sub(1) else {
+        return Ok(BTreeSet::new());
+    };
+    let (start, _) = windows.window(actions, last)?;
+    Ok(standing_windows(windows, &[], actions)?
+        .iter()
+        .filter(|open| open.start < start && open.end > start)
+        .filter_map(
+            |open| match fault_policy::decode_process_target(&open.target) {
+                Some((
+                    _,
+                    Fault::ProcEventPark {
+                        target: Some(target),
+                        ..
+                    },
+                )) if held_aim(Some(target)) => Some(target.start),
+                _ => None,
+            },
+        )
+        .collect())
 }
 
 pub fn standing_windows(
@@ -2784,9 +2814,25 @@ mod tests {
             FaultOperation::Kill(1, ticks(50)),
             FaultOperation::Restart(1, ticks(50)),
             FaultOperation::KillAll(ticks(50)),
+            FaultOperation::PowerLoss(1, ticks(50)),
+            FaultOperation::PowerLossAll(ticks(50)),
+            FaultOperation::DiskCorrupt(1, ticks(50)),
+            FaultOperation::EndFaults(ticks(50)),
         ] {
             let spans = park_spans(HELD, &[held, wait, ender.into()]);
             assert_eq!(spans, [(1, ROOT, end_of_wait)]);
+        }
+        for node in [1, ROLE_NODE] {
+            let pause = FaultAction::from(FaultOperation::PauseParked {
+                node,
+                edges: 1,
+                hold_us: 10_000,
+                ticks: ticks(50),
+                target: None,
+            });
+            let spans = park_spans(HELD, &[held, wait, pause]);
+            assert_eq!(spans[0], (1, ROOT, end_of_wait));
+            assert!(spans[1..].iter().all(|&(_, start, _)| start >= end_of_wait));
         }
         let later = aim(1, 50, 0x90, 0x91, 0);
         assert_eq!(
@@ -2801,6 +2847,28 @@ mod tests {
             park_spans(HELD, &[held, wait, other]),
             [(1, ROOT, ROOT + 32 * 50 * TICK)]
         );
+    }
+
+    #[test]
+    fn a_pause_clock_disk_error_or_hook_leaves_a_held_aim_standing() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        let held = aim(1, 50, 0x40, 0x41, 5);
+        for other in [
+            FaultOperation::Pause(1, ticks(50)),
+            FaultOperation::Clock {
+                node: 1,
+                offset_ms: 5,
+                rate_ppm: 0,
+                ticks: ticks(50),
+            },
+            FaultOperation::DiskError(1, ticks(50)),
+            FaultOperation::Hook(1, ticks(50)),
+        ] {
+            assert_eq!(
+                park_spans(HELD, &[held, wait, other.into()]),
+                [(1, ROOT, ROOT + 32 * 50 * TICK)]
+            );
+        }
     }
 
     #[test]

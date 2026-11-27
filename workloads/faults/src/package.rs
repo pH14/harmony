@@ -2259,6 +2259,7 @@ mod tests {
         report.park_aims = crate::archive::ParkAims {
             armed: 3,
             landings: 2,
+            held_landings: 1,
             sites: std::collections::BTreeMap::from([(0x40, 2)]),
         };
         let directory = tempfile::tempdir().expect("temp dir");
@@ -2269,7 +2270,7 @@ mod tests {
         .expect("report is JSON");
         assert_eq!(
             written["park_aims"],
-            serde_json::json!({"armed": 3, "landings": 2, "sites": {"64": 2}})
+            serde_json::json!({"armed": 3, "landings": 2, "held_landings": 1, "sites": {"64": 2}})
         );
     }
 
