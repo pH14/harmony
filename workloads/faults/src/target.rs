@@ -22,6 +22,8 @@ pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
 pub const ROLE_LEAD_TICKS: u64 = 128;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 const HOOK_HOLD_CHOICE_SHIFT: u32 = 62;
+const PARK_HOLD_CHOICE_SHIFT: u32 = 61;
+pub const PARK_HOLD_LIMIT_NANOS: u64 = 300_000_000_000;
 const NOMINAL_COVERAGE_QUANTUM: NonZeroU16 = NonZeroU16::new(1024).unwrap();
 const NS_SHIFT: u32 = 24;
 const JSON_EVENT_ID: u32 = 0;
@@ -675,6 +677,17 @@ impl ActionWindows {
             }
             standing.retain(|open| open.start < open.end);
         }
+        if let Some(ended) = ends_held_aims(action.operation) {
+            for open in standing.iter_mut().filter(|open| open.end > window.0) {
+                if let Some((node, Fault::ProcEventPark { .. })) =
+                    fault_policy::decode_process_target(&open.target)
+                    && (ended == EVERY_NODE || node == ended)
+                {
+                    open.end = window.0;
+                }
+            }
+            standing.retain(|open| open.start < open.end);
+        }
         standing.extend(self.delta(action, window).standing);
     }
 }
@@ -703,12 +716,34 @@ fn restart_end(start: u64, horizon: u64) -> u64 {
     start.saturating_add((horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS))
 }
 
-fn hook_hold_steps(choice: u64) -> u64 {
-    1 << (choice >> HOOK_HOLD_CHOICE_SHIFT)
+fn hold_steps(choice: u64, shift: u32) -> u64 {
+    1 << (choice >> shift)
 }
 
 fn hook_end(start: u64, horizon: u64, choice: u64) -> u64 {
-    start.saturating_add(horizon.saturating_mul(hook_hold_steps(choice)))
+    start.saturating_add(horizon.saturating_mul(hold_steps(choice, HOOK_HOLD_CHOICE_SHIFT)))
+}
+
+fn park_end(start: u64, horizon: u64, choice: u64) -> u64 {
+    let held = horizon.saturating_mul(hold_steps(choice, PARK_HOLD_CHOICE_SHIFT));
+    start.saturating_add(held.min(PARK_HOLD_LIMIT_NANOS.max(horizon)))
+}
+
+fn held_aim(target: Option<ParkTarget>) -> bool {
+    target.is_some_and(|target| target.end - target.start == 1)
+}
+
+fn ends_held_aims(operation: FaultOperation) -> Option<u16> {
+    match operation {
+        FaultOperation::Kill(node, _)
+        | FaultOperation::Restart(node, _)
+        | FaultOperation::PowerLoss(node, _)
+        | FaultOperation::DiskCorrupt(node, _)
+        | FaultOperation::EventPark { node, .. }
+        | FaultOperation::PauseParked { node, .. } => Some(node),
+        FaultOperation::KillAll(_) | FaultOperation::PowerLossAll(_) => Some(EVERY_NODE),
+        _ => None,
+    }
 }
 
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
@@ -762,7 +797,18 @@ fn action_delta(action: FaultAction, window: (u64, u64), hold_hooks: bool) -> Ac
             hold_us,
             target,
             ..
-        } => event_park_delta(node, edges, hold_us, target, false, window),
+        } => event_park_delta(
+            node,
+            edges,
+            hold_us,
+            target,
+            false,
+            if hold_hooks && held_aim(target) {
+                (start, park_end(start, horizon, action.choice))
+            } else {
+                window
+            },
+        ),
         FaultOperation::PauseParked {
             node,
             edges,
@@ -2654,6 +2700,136 @@ mod tests {
             decode_process_target(&fault.target),
             Some((0, Fault::RunHook(9)))
         );
+    }
+
+    fn aim(node: u16, duration: u16, start: u64, end: u64, hold_bits: u64) -> FaultAction {
+        FaultAction::from(FaultOperation::EventPark {
+            node,
+            edges: 1,
+            hold_us: 10_000,
+            ticks: ticks(duration),
+            target: ParkTarget::new(start, end),
+        })
+        .with_choice((hold_bits << PARK_HOLD_CHOICE_SHIFT) | 0x1234)
+    }
+
+    fn park_spans(windows: ActionWindows, actions: &[FaultAction]) -> Vec<(u16, u64, u64)> {
+        standing_windows(windows, &[], actions)
+            .unwrap()
+            .into_iter()
+            .filter_map(|fault| match decode_process_target(&fault.target) {
+                Some((node, Fault::ProcEventPark { .. })) => Some((node, fault.start, fault.end)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_held_exact_site_aim_stands_over_the_actions_after_it() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        for bits in 0..8_u64 {
+            let mut actions = vec![aim(1, 50, 0x40, 0x41, bits)];
+            actions.extend([wait; 200]);
+            let steps = 1_u64 << bits;
+            assert_eq!(
+                park_spans(HELD, &actions),
+                [(1, ROOT, ROOT + steps * 50 * TICK)]
+            );
+            assert_eq!(park_spans(WINDOWS, &actions), [(1, ROOT, ROOT + 50 * TICK)]);
+            if bits > 0 {
+                let later = WINDOWS.window(&actions, 1).unwrap();
+                let (_, start, end) = park_spans(HELD, &actions)[0];
+                assert!(start < later.0 && later.1 <= end);
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_aim_or_an_unaimed_park_is_never_held() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        let unaimed = FaultAction::from(FaultOperation::EventPark {
+            node: 1,
+            edges: 1,
+            hold_us: 10_000,
+            ticks: ticks(50),
+            target: None,
+        })
+        .with_choice(7 << PARK_HOLD_CHOICE_SHIFT);
+        for park in [
+            aim(1, 50, 0x40, 0x42, 7),
+            aim(1, 50, 0x00, 0x81, 7),
+            unaimed,
+        ] {
+            assert_eq!(
+                park_spans(HELD, &[park, wait, wait]),
+                [(1, ROOT, ROOT + 50 * TICK)]
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_aim_stands_at_most_three_hundred_guest_seconds() {
+        let spans = park_spans(HELD, &[aim(1, 1024, 0x40, 0x41, 7)]);
+        assert_eq!(spans, [(1, ROOT, ROOT + PARK_HOLD_LIMIT_NANOS)]);
+        let spans = park_spans(HELD, &[aim(1, 1024, 0x40, 0x41, 4)]);
+        assert_eq!(spans, [(1, ROOT, ROOT + 16 * 1024 * TICK)]);
+    }
+
+    #[test]
+    fn a_kill_restart_or_later_park_on_the_node_ends_a_held_aim() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        let held = aim(1, 50, 0x40, 0x41, 5);
+        let end_of_wait = ROOT + 100 * TICK;
+        for ender in [
+            FaultOperation::Kill(1, ticks(50)),
+            FaultOperation::Restart(1, ticks(50)),
+            FaultOperation::KillAll(ticks(50)),
+        ] {
+            let spans = park_spans(HELD, &[held, wait, ender.into()]);
+            assert_eq!(spans, [(1, ROOT, end_of_wait)]);
+        }
+        let later = aim(1, 50, 0x90, 0x91, 0);
+        assert_eq!(
+            park_spans(HELD, &[held, wait, later]),
+            [
+                (1, ROOT, end_of_wait),
+                (1, end_of_wait, end_of_wait + 50 * TICK)
+            ]
+        );
+        let other = FaultAction::from(FaultOperation::Kill(2, ticks(50)));
+        assert_eq!(
+            park_spans(HELD, &[held, wait, other]),
+            [(1, ROOT, ROOT + 32 * 50 * TICK)]
+        );
+    }
+
+    #[test]
+    fn a_held_aim_replays_the_same_from_a_branch_of_its_prefix() {
+        let wait = FaultAction::from(FaultOperation::Wait(ticks(50)));
+        let actions = [
+            aim(1, 50, 0x40, 0x41, 6),
+            wait,
+            wait,
+            FaultAction::from(FaultOperation::Pause(1, ticks(50))),
+            wait,
+            FaultAction::from(FaultOperation::Restart(1, ticks(50))),
+            aim(2, 50, 0x50, 0x51, 3),
+            wait,
+        ];
+        let whole = standing_windows(HELD, &[], &actions).unwrap();
+        assert_eq!(whole, standing_windows(HELD, &[], &actions).unwrap());
+        for split in 1..actions.len() {
+            let inherited = standing_windows(HELD, &[], &actions[..split]).unwrap();
+            let seal = HELD.window(&actions, split).unwrap().0;
+            let suffix = ActionWindows {
+                root_seal: seal,
+                hold_hooks: true,
+            };
+            assert_eq!(
+                standing_windows(suffix, &inherited, &actions[split..]).unwrap(),
+                whole
+            );
+        }
     }
 
     fn hook_with_hold(id: u32, duration: u16, hold_bits: u64) -> FaultAction {

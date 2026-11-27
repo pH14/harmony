@@ -2852,7 +2852,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Resul
         return Ok(format!(
             "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
-             action=standing-fault-delta-v5;snapshot=uml-checkpoint-v3",
+             action=standing-fault-delta-v6;snapshot=uml-checkpoint-v3",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
@@ -2862,7 +2862,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Resul
     }
     Ok(format!(
         "faults-consonance-whole-vm-v2;session={};\
-         action=standing-fault-delta-v5;snapshot=portable-prefix-to-vm-snapshot-v3",
+         action=standing-fault-delta-v6;snapshot=portable-prefix-to-vm-snapshot-v3",
         identity_with_config(kernel, initramfs, &config.session_config())?,
     ))
 }

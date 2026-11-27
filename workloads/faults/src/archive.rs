@@ -327,9 +327,14 @@ fn park_target(
     let Some(site) = view.pick_feedback(rand)? else {
         return Ok(None);
     };
-    let level = u32::try_from(
-        rand.below(NonZeroUsize::new(PARK_TARGET_LEVELS).ok_or("empty park target levels")?),
-    )?;
+    let level =
+        if rand.below(NonZeroUsize::MIN.saturating_add(1)) == 0 {
+            0
+        } else {
+            u32::try_from(rand.below(
+                NonZeroUsize::new(PARK_TARGET_LEVELS - 1).ok_or("empty park target levels")?,
+            ))? + 1
+        };
     let radius = if level == 0 {
         0
     } else {
@@ -781,6 +786,11 @@ mod tests {
             .filter_map(|(edges, target)| target.map(|target| (*edges, target)))
             .collect::<Vec<_>>();
         assert!(aimed.len() * 3 > drawn.len() && aimed.len() * 3 < drawn.len() * 2);
+        let exact = aimed
+            .iter()
+            .filter(|(_, target)| target.end - target.start == 1)
+            .count();
+        assert!(exact * 5 > aimed.len() * 2 && exact * 5 < aimed.len() * 3);
         let mut widths = BTreeSet::new();
         for (edges, target) in aimed {
             assert_eq!(edges, 1);

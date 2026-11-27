@@ -232,7 +232,7 @@ timing:
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EndFaults(ticks)` | every standing window still open at the action's start closes there, including each `EventKill` window, fired or not, which disarms a kill that has not fired; the workload then runs undisturbed; never drawn, only applied by the settle phase |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window |
+| `EventPark(node, edges, hold, ticks, target)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold, then counts again from zero until the window closes; each edge counts one over its site's visit count, and an optional target range of module offsets limits the count to edges whose site falls in it; `edges` is drawn log-uniform from 1 through `(1 << 14) - 1`, and the hold is drawn log-uniform in whole ticks from one tick through the window; with the `hold_hooks` option, a park aimed at a single site stands for its duration times 1 through 128, set by the top three bits of the action's `choice`, at most 300 seconds, as described below |
 | `Kill(node, ticks)` | the node is killed when the window opens and started when it closes |
 | `KillAll(ticks)` | every node goes down, as in a host crash, and every node starts when the window closes; drawn only for bundles with more than one node |
 | `PowerLoss(node, ticks)` | the node goes down for the window as in `Kill`, and its disk keeps only the writes that reached it before its last cache flush, plus a prefix of the later writes chosen by the action's `choice`; drawn only for a node with a `disk` line |
@@ -343,7 +343,8 @@ long they stand. Each is off unless the workload sets it to `true`:
 - `hooks_replace_waits` gives the `Wait` weight to `Hook` in half of the jobs,
   as described above.
 - `hold_hooks` lets a `Hook` window last 1, 2, 4 or 8 times its action's
-  duration.
+  duration, and a park aimed at a single site stand for 1 through 128 times
+  its action's duration, at most 300 seconds.
 
 The search records each option that is on in its vocabulary identifier, and a
 run records the same vocabulary, so a resumed search and a search from a
@@ -896,8 +897,36 @@ their first hit-count bucket in any process, because they share a counter slot
 with a hotter site, are never listed and get no weight. The weights change at
 each draw-table update. Once any site has a weight, half of the drawn
 parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
-range that is the site alone or the site plus or minus `2^k` bytes for `k` from
-6 through 12, each of the eight widths equally likely.
+range that is the site alone in half of the aims, and otherwise the site plus
+or minus `2^k` bytes for `k` from 6 through 12, each of those seven widths
+equally likely.
+With the `hold_hooks` option, a park aimed at a single site is held (ours): its
+window lasts its action's duration times `2^j`, with `j` from 0 through 7 in
+the top three bits of the action's `choice`, at most 300 guest seconds, while
+the timeline still advances by each action's own duration. This is the held
+`Hook` window applied to an aim. A site crossed in about one action in a
+thousand, such as rqlite's snapshot install, rarely falls inside one action,
+and a held aim gives it up to a few hundred seconds to come. Antithesis's
+documented fault model, where each fault is a window that expires on its own,
+is what the held window follows; aiming a park at a site and holding it is
+ours. A wider aim is never held, because it fires again and again on the more
+common sites in its range. The held window stands over the actions after it:
+- a later `Kill`, `Restart`, `PowerLoss` or `DiskCorrupt` of the aimed node,
+  a later `KillAll` or `PowerLossAll`, and a later `EventPark` or
+  `PauseParked` on the aimed node end it at that action's start, so a node
+  has at most one park standing and a process started by a drawn fault is not
+  re-armed;
+- `EndFaults` ends it as it ends every standing window;
+- every other action coexists with it. A pause stops the node and its count
+  with it. A node that restarts on its own or by an event kill is re-armed by
+  the supervisor, as it re-arms any park window still open when a node
+  starts.
+The window is computed from the recorded actions alone, so a replay or a
+branch of a recorded input stands the same windows and gives the same
+landings. The target identity's action semantics are
+`standing-fault-delta-v6`, so snapshots cached under earlier semantics are not
+shared with held aims; the action encoding and the snapshot codec are
+unchanged.
 `park_aims` in `campaign-summary.json` and `report.json` covers only the
 `EventPark` actions drawn with a target: `armed` counts those the guest ran,
 `landings` their landings, and `sites` those landings by site. An unaimed park
