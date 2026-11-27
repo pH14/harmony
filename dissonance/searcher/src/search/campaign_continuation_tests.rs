@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
-use crate::search::archive::{SelectorAccounting, entries_by_suffix};
+use crate::search::archive::{SelectorAccounting, StageWeight, StageWeightRule, entries_by_suffix};
 use crate::search::choice::{CERTAIN, ChoiceProfile, ChoiceProfiles};
 use crate::search::rollout::ExecutionDisposition;
 
@@ -96,6 +96,7 @@ thread_local! {
     static TEST_CHOICE_POLICY: std::cell::Cell<Option<ChoicePolicy>> = const { std::cell::Cell::new(None) };
     static TEST_UNTRIED_SITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_PERMUTED_SITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_STAGE_WEIGHT: std::cell::Cell<Option<StageWeightRule>> = const { std::cell::Cell::new(None) };
 }
 
 const TEST_ASK: u8 = 200;
@@ -305,6 +306,18 @@ impl<const CHOICES: bool> TargetExecution for ChoiceTestWorkload<CHOICES> {
 }
 
 impl<const CHOICES: bool> Evaluation for ChoiceTestWorkload<CHOICES> {
+    fn key_shape(&self) -> KeyShape {
+        KeyShape {
+            stage_weight: TEST_STAGE_WEIGHT
+                .with(std::cell::Cell::get)
+                .map(|rule| StageWeight {
+                    rule,
+                    radix: NonZeroU64::new(16).unwrap(),
+                }),
+            ..KeyShape::of::<TestKey>()
+        }
+    }
+
     fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
         ExecutionDisposition::Runnable
     }
@@ -1841,6 +1854,64 @@ fn campaign_counters_with_an_import_round_trip_through_postcard() {
     assert_eq!(decoded.tree_import, counters.tree_import);
     assert_eq!(decoded.job_execution_work, 7);
     assert_eq!(decoded.duplicates_skipped, 11);
+}
+
+#[test]
+fn a_resume_refuses_a_checkpoint_under_another_stage_weight() {
+    let directory = checkpoint_directory("stage-weight");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    TEST_STAGE_WEIGHT.with(|rule| rule.set(Some(StageWeightRule::TenthPerStageBelowTop)));
+    let mut stream = Vec::new();
+    run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: NonZeroU64::new(1),
+                on_marks: false,
+                on_top_progress: false,
+                on_stall: false,
+                checkpoint_owner: None,
+                max_image_bytes: 64 << 20,
+                before_write: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    config.execution_budget = 12;
+    let origin = CampaignOrigin::SearchCheckpoint {
+        path: directory.join("000000000008-final.ckpt"),
+        expected_sha256: None,
+    };
+    let mut matching_stream = Vec::new();
+    run_campaign_checkpointed(&TestWorkload, &config, &origin, &mut matching_stream, None).unwrap();
+    let mut refusals = Vec::new();
+    for rule in [Some(StageWeightRule::HalfToTopStage), None] {
+        TEST_STAGE_WEIGHT.with(|cell| cell.set(rule));
+        let mut resumed_stream = Vec::new();
+        let resume =
+            run_campaign_checkpointed(&TestWorkload, &config, &origin, &mut resumed_stream, None)
+                .err()
+                .map(|error| error.to_string());
+        refusals.push((rule, resume));
+    }
+    TEST_STAGE_WEIGHT.with(|rule| rule.set(None));
+    for (rule, resume) in refusals {
+        assert!(
+            resume
+                .as_deref()
+                .is_some_and(|error| error.contains("key shape differs")),
+            "a checkpoint under one stage weight resumed under {rule:?}: {resume:?}"
+        );
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

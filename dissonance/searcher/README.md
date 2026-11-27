@@ -1092,19 +1092,23 @@ compiled strategy puts its stage radix in `KeyShape::stage_weight` beside the
 rule its `stage_weight` line names, so the stage is the progress number divided
 by the radix. The top stage is the stage of the deepest tier. Under
 `tenth_per_stage_below_top`, each tier's rank weight, with the fall-back walk
-described below and ranks counted over all tiers, is multiplied by `0.1^(top stage - stage)`, with the
-stage distance capped at 11 so the weights stay integers and every tier keeps
-a nonzero weight. This is Go-Explore's level weight, `0.1^(MaxLevel - Level)`
+described below and ranks counted over all tiers, is multiplied by
+`0.1^(top stage - stage)`, with the stage distance capped at 11 so the weights
+stay integers and every tier keeps a nonzero weight. This is Go-Explore's level weight, `0.1^(MaxLevel - Level)`
 (Ecoffet et al., "Go-Explore", 2019, and "First return, then explore", Nature
-2021). Under `half_to_top_stage`, which is ours, half of the tier draws use the
-rank weights over the tiers of the top stage alone, with ranks and the fall-back
-walk counted within them, and the other half use the rank weights over all tiers.
-The top stage's tiers are the deepest ranks, so under either rule the recorded
-rank is the drawn tier's rank among all tiers. A key without a progress number,
-or a shape without a stage weight, draws by the rank weights alone, with the same
-draws and RNG use. The rule is part of the strategy, so it changes the
-`assertion_key_` policy identifier and the archive's `KeyShape`, and a
-checkpoint resumes only under the same rule.
+2021). The stage factor multiplies the weights the fall-back walk has already
+set, so when the walk passes a stage boundary, a stalled top-stage tier keeps
+about ten times the weight of the tier below it. Under `half_to_top_stage`,
+which is ours, half of the tier draws use the rank weights over the tiers of the
+top stage alone, with ranks and the fall-back walk counted within them, and the
+other half use the rank weights over all tiers. In the top-stage half the
+fall-back walk stays within the top stage's tiers, so a top stage with one tier
+keeps at least half of all tier draws however long it stalls. The top stage's
+tiers are the deepest ranks, so under either rule the recorded rank is the
+drawn tier's rank among all tiers. A shape without a stage weight draws by the
+rank weights alone, with the same draws and RNG use. The rule is part of the
+strategy, so it changes the `assertion_key_` policy identifier and the
+archive's `KeyShape`, and a checkpoint resumes only under the same rule.
 
 The leading tier gives up weight while it makes no progress. A tier makes
 progress when a parent drawn from it opens a cell at a deeper progress value;
