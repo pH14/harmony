@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include <assert.h>
+#include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <stddef.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,10 +15,18 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#endif
 
 static volatile unsigned char *shared;
 static size_t hold_write_at;
 static unsigned char hold_write_value;
+static void (*hold_action)(void);
 
 static int writing_sleep(const struct timespec *request, struct timespec *remaining);
 #define HARMONY_NANOSLEEP(request, remaining) writing_sleep((request), (remaining))
@@ -50,6 +60,8 @@ static int writing_sleep(const struct timespec *request, struct timespec *remain
     if (request->tv_sec != 0 || request->tv_nsec != HOLD_NANOS)
         return nanosleep(request, remaining);
     shared[hold_write_at] = hold_write_value;
+    if (hold_action != NULL)
+        hold_action();
     return 0;
 }
 
@@ -107,6 +119,75 @@ static void assert_read_report(uint64_t site, uint64_t edge)
 static void *read_from_another_thread(void *offset)
 {
     return (void *)(uintptr_t)shared[(size_t)(uintptr_t)offset];
+}
+
+static size_t page_bytes;
+static unsigned char *gone;
+static unsigned char *shrunk;
+
+static void replace_mappings(void)
+{
+    assert(munmap(gone, 2 * page_bytes) == 0);
+    assert(munmap(shrunk, 2 * page_bytes) == 0);
+    assert(mmap(shrunk, page_bytes, PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == shrunk);
+}
+
+static void hold_over_replaced_mappings(size_t offset, unsigned char value)
+{
+    uint64_t site;
+
+    gone = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
+                -1, 0);
+    shrunk = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
+                  -1, 0);
+    assert(gone != MAP_FAILED && shrunk != MAP_FAILED);
+    memset(gone, 1, 2 * page_bytes);
+    memset(shrunk, 1, 2 * page_bytes);
+    hold_action = replace_mappings;
+    site = land(offset, value);
+    hold_action = NULL;
+    assert(shared[offset] == value);
+    edges(1);
+    assert_read_report(site, 1);
+    assert(munmap(shrunk, page_bytes) == 0);
+}
+
+static void read_mapped_and_unmapped(void)
+{
+    unsigned char got[HARMONY_FAULT_WATCH_CHUNK];
+    unsigned char *pair = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    assert(pair != MAP_FAILED);
+    memset(pair, 0x5a, 2 * page_bytes);
+    assert(munmap(pair + page_bytes, page_bytes) == 0);
+    assert(harmony_fault_watch_read(got, (uintptr_t)pair, sizeof(got)) == 0);
+    assert(got[0] == 0x5a && got[sizeof(got) - 1] == 0x5a);
+    assert(harmony_fault_watch_read(got, (uintptr_t)(pair + page_bytes), sizeof(got)) != 0);
+    assert(harmony_fault_watch_read(got, (uintptr_t)(pair + page_bytes - 16), 32) != 0);
+    assert(munmap(pair, page_bytes) == 0);
+}
+
+static void refuse_self_reads(void)
+{
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_process_vm_readv, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {(unsigned short)(sizeof(filter) / sizeof(filter[0])),
+                                 filter};
+    unsigned char from = 1;
+    unsigned char to = 0;
+    struct iovec local = {&to, 1};
+    struct iovec remote = {&from, 1};
+
+    assert(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0);
+    assert(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0);
+    errno = 0;
+    assert(process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == -1 && errno == ENOSYS);
 }
 
 static void foreign_fault(int signo, siginfo_t *info, void *context)
@@ -218,6 +299,15 @@ int main(void)
         (void)*(volatile unsigned char *)hole;
     assert(foreign_faults == 2);
     assert(sigaction(SIGSEGV, &before, NULL) == 0);
+
+    page_bytes = page;
+    read_mapped_and_unmapped();
+    hold_over_replaced_mappings(700, 4);
+    assert(harmony_fault_watch.self_read_refused == 0);
+    refuse_self_reads();
+    read_mapped_and_unmapped();
+    assert(harmony_fault_watch.self_read_refused == 1);
+    hold_over_replaced_mappings(800, 5);
     return 0;
 }
 #else

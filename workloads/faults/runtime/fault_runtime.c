@@ -22,6 +22,7 @@
 
 #if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
 #define HARMONY_FAULT_WATCH_SUPPORTED 1
+#include <sys/uio.h>
 #include <ucontext.h>
 #else
 #define HARMONY_FAULT_WATCH_SUPPORTED 0
@@ -61,6 +62,7 @@ void fuzz_json_data(const char *data, size_t size);
 #define HARMONY_FAULT_NEW_SITE_LIMIT ((size_t)1 << 16)
 #define HARMONY_FAULT_SITE_LINE_BYTES 2048
 #define HARMONY_FAULT_WATCH_UNKNOWN_WIDTH 16
+#define HARMONY_FAULT_WATCH_CHUNK ((size_t)4096)
 
 static void harmony_fault_after_fork(void);
 
@@ -826,6 +828,10 @@ struct harmony_fault_watch_range {
     uintptr_t start;
     size_t size;
     size_t copy_at;
+    unsigned long offset;
+    unsigned long inode;
+    unsigned int major;
+    unsigned int minor;
 };
 
 static struct {
@@ -841,6 +847,7 @@ static struct {
     size_t copied;
     size_t page_count;
     size_t pending_count;
+    int self_read_refused;
     struct sigaction previous;
     struct harmony_fault_watch_range ranges[HARMONY_FAULT_WATCH_RANGE_LIMIT];
     uintptr_t pages[HARMONY_FAULT_WATCH_PAGE_LIMIT];
@@ -849,6 +856,7 @@ static struct {
     char maps[HARMONY_FAULT_WATCH_MAPS_LIMIT];
     unsigned char copy[HARMONY_FAULT_WATCH_COPY_LIMIT];
     unsigned char changed[HARMONY_FAULT_WATCH_COPY_LIMIT / 8];
+    unsigned char now[HARMONY_FAULT_WATCH_CHUNK];
 } harmony_fault_watch;
 
 static void harmony_fault_watch_protect_all(int protection)
@@ -875,28 +883,124 @@ static int harmony_fault_watch_owned(void)
            pthread_equal(harmony_fault_watch.owner, pthread_self()) != 0;
 }
 
-static void harmony_fault_watch_add_range(uintptr_t start, uintptr_t end)
+static int harmony_fault_watch_pipe_read(void *to, uintptr_t from, size_t size)
+{
+    int fds[2];
+    int result = 0;
+    size_t done = 0;
+
+    if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0)
+        return -1;
+    while (done < size && result == 0) {
+        size_t want = size - done < HARMONY_FAULT_WATCH_CHUNK ? size - done
+                                                              : HARMONY_FAULT_WATCH_CHUNK;
+        ssize_t put = write(fds[1], (const void *)(from + done), want);
+        size_t got = 0;
+
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put <= 0)
+            result = -1;
+        while (put > 0 && got < (size_t)put) {
+            ssize_t step = read(fds[0], (unsigned char *)to + done + got, (size_t)put - got);
+
+            if (step < 0 && errno == EINTR)
+                continue;
+            if (step <= 0) {
+                result = -1;
+                break;
+            }
+            got += (size_t)step;
+        }
+        if (put > 0 && (size_t)put < want)
+            result = -1;
+        done += want;
+    }
+    (void)close(fds[0]);
+    (void)close(fds[1]);
+    return result;
+}
+
+static int harmony_fault_watch_read(void *to, uintptr_t from, size_t size)
+{
+    if (__atomic_load_n(&harmony_fault_watch.self_read_refused, __ATOMIC_RELAXED) == 0) {
+        struct iovec local = {to, size};
+        struct iovec remote = {(void *)from, size};
+        ssize_t got = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+
+        if (got == (ssize_t)size)
+            return 0;
+        if (got < 0 && errno != EFAULT)
+            __atomic_store_n(&harmony_fault_watch.self_read_refused, 1, __ATOMIC_RELAXED);
+    }
+    return harmony_fault_watch_pipe_read(to, from, size);
+}
+
+static int harmony_fault_watch_load_maps(void)
+{
+    size_t used = 0;
+    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0)
+        return -1;
+    while (used + 1 < sizeof(harmony_fault_watch.maps)) {
+        ssize_t got = read(fd, harmony_fault_watch.maps + used,
+                           sizeof(harmony_fault_watch.maps) - 1 - used);
+
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            break;
+        used += (size_t)got;
+    }
+    (void)close(fd);
+    harmony_fault_watch.maps[used] = '\0';
+    return 0;
+}
+
+static const char *harmony_fault_watch_next_shared(const char *line,
+                                                   struct harmony_fault_watch_range *found)
+{
+    for (;;) {
+        const char *next = strchr(line, '\n');
+        unsigned long start = 0;
+        unsigned long end = 0;
+        char perms[5];
+
+        if (next == NULL)
+            return NULL;
+        if (sscanf(line, "%lx-%lx %4s %lx %x:%x %lu", &start, &end, perms,
+                   &found->offset, &found->major, &found->minor, &found->inode) == 7 &&
+            strcmp(perms, "rw-s") == 0 && end > start) {
+            found->start = (uintptr_t)start;
+            found->size = (size_t)(end - start);
+            return next + 1;
+        }
+        line = next + 1;
+    }
+}
+
+static void harmony_fault_watch_add_range(const struct harmony_fault_watch_range *found)
 {
     struct harmony_fault_watch_range *range;
-    size_t size = (size_t)(end - start);
 
     if (harmony_fault_watch.range_count == HARMONY_FAULT_WATCH_RANGE_LIMIT ||
-        size > HARMONY_FAULT_WATCH_COPY_LIMIT - harmony_fault_watch.copied)
+        found->size > HARMONY_FAULT_WATCH_COPY_LIMIT - harmony_fault_watch.copied)
+        return;
+    if (harmony_fault_watch_read(harmony_fault_watch.copy + harmony_fault_watch.copied,
+                                 found->start, found->size) != 0)
         return;
     range = &harmony_fault_watch.ranges[harmony_fault_watch.range_count++];
-    range->start = start;
-    range->size = size;
+    *range = *found;
     range->copy_at = harmony_fault_watch.copied;
-    memcpy(harmony_fault_watch.copy + range->copy_at, (const void *)start, size);
-    harmony_fault_watch.copied += size;
+    harmony_fault_watch.copied += found->size;
 }
 
 static int harmony_fault_watch_snapshot(void)
 {
     int expected = 0;
-    size_t used = 0;
-    char *line;
-    int fd;
+    struct harmony_fault_watch_range found;
+    const char *line;
 
     if (harmony_fault_watch_owned())
         harmony_fault_watch_stop();
@@ -911,40 +1015,13 @@ static int harmony_fault_watch_snapshot(void)
         if (size > 0)
             harmony_fault_watch.page_size = (uintptr_t)size;
     }
-    fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
-    if (harmony_fault_watch.page_size == 0 || fd < 0) {
-        if (fd >= 0)
-            (void)close(fd);
+    if (harmony_fault_watch.page_size == 0 || harmony_fault_watch_load_maps() != 0) {
         __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
         return 0;
     }
-    while (used + 1 < sizeof(harmony_fault_watch.maps)) {
-        ssize_t got = read(fd, harmony_fault_watch.maps + used,
-                           sizeof(harmony_fault_watch.maps) - 1 - used);
-
-        if (got < 0 && errno == EINTR)
-            continue;
-        if (got <= 0)
-            break;
-        used += (size_t)got;
-    }
-    (void)close(fd);
-    harmony_fault_watch.maps[used] = '\0';
     line = harmony_fault_watch.maps;
-    for (;;) {
-        char *next = strchr(line, '\n');
-        unsigned long start = 0;
-        unsigned long end = 0;
-        char perms[5];
-
-        if (next == NULL)
-            break;
-        *next = '\0';
-        if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) == 3 &&
-            strcmp(perms, "rw-s") == 0 && end > start)
-            harmony_fault_watch_add_range((uintptr_t)start, (uintptr_t)end);
-        line = next + 1;
-    }
+    while ((line = harmony_fault_watch_next_shared(line, &found)) != NULL)
+        harmony_fault_watch_add_range(&found);
     if (harmony_fault_watch.range_count == 0) {
         __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
         return 0;
@@ -1070,40 +1147,90 @@ static void harmony_fault_watch_fault(int signo, siginfo_t *info,
     harmony_fault_watch_forward(signo, info, context);
 }
 
+static int harmony_fault_watch_same(const struct harmony_fault_watch_range *range,
+                                    const struct harmony_fault_watch_range *found)
+{
+    return range->start == found->start && range->size == found->size &&
+           range->offset == found->offset && range->inode == found->inode &&
+           range->major == found->major && range->minor == found->minor;
+}
+
+static void harmony_fault_watch_keep_unchanged_mappings(void)
+{
+    size_t index;
+
+    if (harmony_fault_watch_load_maps() != 0) {
+        for (index = 0; index < harmony_fault_watch.range_count; index++)
+            harmony_fault_watch.ranges[index].size = 0;
+        return;
+    }
+    for (index = 0; index < harmony_fault_watch.range_count; index++) {
+        struct harmony_fault_watch_range *range = &harmony_fault_watch.ranges[index];
+        struct harmony_fault_watch_range found;
+        const char *line = harmony_fault_watch.maps;
+        int kept = 0;
+
+        while (kept == 0 && (line = harmony_fault_watch_next_shared(line, &found)) != NULL)
+            kept = harmony_fault_watch_same(range, &found);
+        if (kept == 0)
+            range->size = 0;
+    }
+}
+
+static int harmony_fault_watch_mark_range(const struct harmony_fault_watch_range *range)
+{
+    const unsigned char *then = harmony_fault_watch.copy + range->copy_at;
+    size_t page;
+
+    for (page = 0; page < range->size; page += harmony_fault_watch.page_size) {
+        size_t chunk;
+        int changed = 0;
+
+        for (chunk = page; chunk < page + harmony_fault_watch.page_size;
+             chunk += HARMONY_FAULT_WATCH_CHUNK) {
+            const unsigned char *now = harmony_fault_watch.now;
+            size_t offset;
+
+            if (harmony_fault_watch_read(harmony_fault_watch.now, range->start + chunk,
+                                         HARMONY_FAULT_WATCH_CHUNK) != 0)
+                return -1;
+            if (memcmp(now, then + chunk, HARMONY_FAULT_WATCH_CHUNK) == 0)
+                continue;
+            for (offset = 0; offset < HARMONY_FAULT_WATCH_CHUNK; offset++) {
+                size_t bit = range->copy_at + chunk + offset;
+
+                if (now[offset] == then[chunk + offset])
+                    continue;
+                harmony_fault_watch.changed[bit / 8] = (unsigned char)(
+                    harmony_fault_watch.changed[bit / 8] | (1u << (bit % 8)));
+                changed = 1;
+            }
+        }
+        if (changed != 0 &&
+            harmony_fault_watch.page_count < HARMONY_FAULT_WATCH_PAGE_LIMIT)
+            harmony_fault_watch.pages[harmony_fault_watch.page_count++] =
+                range->start + page;
+    }
+    return 0;
+}
+
 static void harmony_fault_watch_mark_changes(void)
 {
     size_t index;
 
     memset(harmony_fault_watch.changed, 0, (harmony_fault_watch.copied + 7) / 8);
     harmony_fault_watch.page_count = 0;
+    harmony_fault_watch_keep_unchanged_mappings();
     for (index = 0; index < harmony_fault_watch.range_count; index++) {
-        const struct harmony_fault_watch_range *range =
-            &harmony_fault_watch.ranges[index];
-        const unsigned char *now = (const unsigned char *)range->start;
-        const unsigned char *then = harmony_fault_watch.copy + range->copy_at;
-        size_t page;
+        struct harmony_fault_watch_range *range = &harmony_fault_watch.ranges[index];
+        size_t pages_before = harmony_fault_watch.page_count;
 
-        for (page = 0; page < range->size; page += harmony_fault_watch.page_size) {
-            size_t offset;
-            int changed = 0;
-
-            if (memcmp(now + page, then + page, harmony_fault_watch.page_size) == 0)
-                continue;
-            for (offset = page; offset < page + harmony_fault_watch.page_size;
-                 offset++) {
-                size_t bit = range->copy_at + offset;
-
-                if (now[offset] == then[offset])
-                    continue;
-                harmony_fault_watch.changed[bit / 8] = (unsigned char)(
-                    harmony_fault_watch.changed[bit / 8] | (1u << (bit % 8)));
-                changed = 1;
-            }
-            if (changed != 0 &&
-                harmony_fault_watch.page_count < HARMONY_FAULT_WATCH_PAGE_LIMIT)
-                harmony_fault_watch.pages[harmony_fault_watch.page_count++] =
-                    range->start + page;
-        }
+        if (range->size == 0 || harmony_fault_watch_mark_range(range) == 0)
+            continue;
+        memset(harmony_fault_watch.changed + range->copy_at / 8, 0,
+               (range->size + 7) / 8);
+        harmony_fault_watch.page_count = pages_before;
+        range->size = 0;
     }
 }
 

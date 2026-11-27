@@ -65,8 +65,31 @@ On Linux on x86_64 and arm64, a park also records whether the held thread,
 once released, reads shared memory that another process changed during the
 hold. Before the hold, the runtime copies every `rw-s` mapping listed in
 `/proc/self/maps`, up to 16 mappings and 1 MiB in total. After the hold it
-compares each mapping with its copy and removes all access to the pages that
-changed, up to 256 pages, then installs a `SIGSEGV` handler. When the released
+reads `/proc/self/maps` again and keeps only the mappings whose start, end,
+file offset, device and inode are unchanged; another thread can unmap, shrink
+or replace a mapping while the parked thread sleeps. It compares each kept
+mapping with its copy and removes all access to the pages that changed, up to
+256 pages, then installs a `SIGSEGV` handler. A dropped mapping reports
+nothing: its changed bytes do not count as changes, and a hold whose mappings
+are all dropped is not watched.
+
+The copy and the comparison never touch a recorded mapping through a pointer.
+A thread can unmap a mapping between the second read of `/proc/self/maps` and
+the comparison, and a load from an unmapped address raises `SIGSEGV` inside
+the instrumented thread, which ends the node as if the program had crashed.
+The runtime instead reads mapped memory with `process_vm_readv` on its own
+process ID, which returns `EFAULT` or a short count for an unmapped range. The
+kernel always allows a thread group to read itself, whatever the Yama ptrace
+scope or the no-new-privileges flag, so only a seccomp filter or a kernel
+without the call can refuse it. When the call does not read the whole range,
+the runtime writes the range into a fresh pipe and reads it back, 4096 bytes
+at a time; `write` from an unmapped address returns `EFAULT` instead of
+faulting. After an error other than `EFAULT` the runtime stops calling
+`process_vm_readv` for the rest of the process and uses the pipe alone. A
+range that the pipe cannot carry in full is dropped as above. The x86_64 KVM
+guest kernel starts from `allnoconfig` without `CONFIG_CROSS_MEMORY_ATTACH`,
+so `process_vm_readv` returns `ENOSYS` there and guest nodes use the pipe from
+their first watched hold. When the released
 thread faults on one of those pages, the handler decodes whether the access
 is a read from the fault context. On arm64 the syndrome register also gives
 the access width; an access of unknown width, and every access on x86_64,
