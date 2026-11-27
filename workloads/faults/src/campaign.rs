@@ -1152,6 +1152,7 @@ const PARK_FEEDBACK_SCALE: u128 = 1024;
 const PARK_FEEDBACK_PRIOR_LANDINGS: u128 = 10;
 
 const PARK_FEEDBACK_PRIOR_INCIDENCE: u128 = 1;
+const SITE_INCIDENCE_LIMIT: usize = 1 << 18;
 
 fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
     let mut weights = park_read_feedback(evidence);
@@ -1160,6 +1161,14 @@ fn park_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
         *entry = entry.saturating_add(weight);
     }
     weights
+}
+
+fn note_site_incidence(site_incidence: &mut BTreeMap<u64, u64>, site: u64) {
+    if let Some(count) = site_incidence.get_mut(&site) {
+        *count += 1;
+    } else if site_incidence.len() < SITE_INCIDENCE_LIMIT {
+        site_incidence.insert(site, 1);
+    }
 }
 
 fn park_incidence_feedback(evidence: &FaultCampaignEvidence) -> BTreeMap<u64, u64> {
@@ -1715,7 +1724,7 @@ impl Evaluation for FaultWorkload {
                 .flat_map(|observation| observation.edge_sites.iter().map(|entry| entry.site))
                 .collect::<BTreeSet<_>>();
             for site in crossed {
-                *evidence.site_incidence.entry(site).or_default() += 1;
+                note_site_incidence(&mut evidence.site_incidence, site);
             }
         }
         for observation in &action.observations {
@@ -2534,6 +2543,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(evidence.bugs.len(), MAX_RECORDED_BUGS + 1);
+    }
+
+    #[test]
+    fn site_incidence_admits_no_new_site_once_full_and_keeps_counting_admitted_ones() {
+        let mut incidence = (0..SITE_INCIDENCE_LIMIT as u64)
+            .map(|site| (site, 1))
+            .collect::<BTreeMap<_, _>>();
+        note_site_incidence(&mut incidence, SITE_INCIDENCE_LIMIT as u64);
+        note_site_incidence(&mut incidence, 7);
+        assert_eq!(incidence.len(), SITE_INCIDENCE_LIMIT);
+        assert_eq!(incidence.get(&(SITE_INCIDENCE_LIMIT as u64)), None);
+        assert_eq!(incidence.get(&7), Some(&2));
     }
 
     #[test]
