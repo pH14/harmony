@@ -10,7 +10,7 @@ use crate::search::{
         EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTableRef,
         EmpiricalStepTables,
     },
-    rand::RomuDuoJrRand,
+    rand::{RomuDuoJrRand, splitmix64},
 };
 
 pub const DRAW_TABLE_POLICY_FIELD: &str = "draw_table_policy";
@@ -249,7 +249,18 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             .map(|(key, weight)| (key, weight.min(MAX_FEEDBACK_WEIGHT)))
             .collect::<Vec<_>>();
         if weights.len() > MAX_FEEDBACK_ENTRIES {
-            weights.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+            let records = self.tables.records();
+            let tie = |key: u64| {
+                let mut state = key ^ records.rotate_left(32);
+                splitmix64(&mut state)
+            };
+            weights.sort_by(|left, right| {
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| tie(left.0).cmp(&tie(right.0)))
+                    .then(left.0.cmp(&right.0))
+            });
             weights.truncate(MAX_FEEDBACK_ENTRIES);
         }
         let feedback = weights.into_iter().collect::<BTreeMap<_, _>>();
@@ -462,6 +473,40 @@ mod tests {
         };
         assert!(replay.draw(Some(&tampered), true, |_| Ok(())).is_err());
         assert!(replay.draw(None, true, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn feedback_beyond_the_limit_keeps_the_heaviest_and_rotates_tied_sites_between_updates() {
+        let mut tables = DrawTables::<u8>::new(EmpiricalStepParameters {
+            update_every_records: 1,
+            hash_every_records: 1,
+            ..DEFAULT_DRAW_TABLE_PARAMETERS
+        })
+        .expect("valid parameters");
+        let tied = 3 * MAX_FEEDBACK_ENTRIES as u64;
+        let mut weights = (0..tied).map(|key| (key, 5)).collect::<BTreeMap<_, _>>();
+        weights.insert(tied, 9);
+        let mut kept = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..8 {
+            tables
+                .finish_record_with_feedback(&[], || weights.clone())
+                .expect("finish a record");
+            let feedback = tables
+                .draw(None, false, |view| Ok(view.feedback.clone()))
+                .expect("read the feedback");
+            assert_eq!(feedback.len(), MAX_FEEDBACK_ENTRIES);
+            assert_eq!(feedback.get(&tied), Some(&9));
+            assert!(
+                feedback
+                    .keys()
+                    .any(|key| *key >= 2 * MAX_FEEDBACK_ENTRIES as u64)
+            );
+            seen.extend(feedback.keys().copied());
+            kept.push(feedback);
+        }
+        assert!(kept.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(seen.len() > 2 * MAX_FEEDBACK_ENTRIES);
     }
 
     #[test]

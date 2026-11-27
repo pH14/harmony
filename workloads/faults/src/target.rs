@@ -950,6 +950,37 @@ pub struct SdkCapture {
     pub parked_pauses: Vec<ParkedPause>,
     #[serde(default)]
     pub role_pauses: Vec<RolePause>,
+    #[serde(default)]
+    pub edge_sites: Vec<EdgeSite>,
+}
+
+pub const EDGE_SITE_LIMIT: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EdgeSite {
+    pub moment: u64,
+    pub site: u64,
+}
+
+impl EdgeSite {
+    fn rank(self) -> u64 {
+        let mut value = self.site ^ self.moment.rotate_left(32) ^ 0x9e37_79b9_7f4a_7c15;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    }
+}
+
+fn add_edge_sites(edge_sites: &mut Vec<EdgeSite>, moment: u64, sites: &[u64]) {
+    if sites.is_empty() {
+        return;
+    }
+    edge_sites.extend(sites.iter().map(|&site| EdgeSite { moment, site }));
+    if edge_sites.len() > EDGE_SITE_LIMIT {
+        edge_sites.sort_unstable_by_key(|entry| (entry.rank(), entry.moment, entry.site));
+        edge_sites.truncate(EDGE_SITE_LIMIT);
+    }
+    edge_sites.sort_unstable_by_key(|entry| (entry.moment, entry.site));
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -994,6 +1025,7 @@ impl SdkCapture {
         self.park_reads.retain(|read| read.moment > moment);
         self.parked_pauses.retain(|pause| pause.moment > moment);
         self.role_pauses.retain(|pause| pause.moment > moment);
+        self.edge_sites.retain(|entry| entry.moment > moment);
     }
 
     fn note_completed_check(
@@ -1120,6 +1152,7 @@ impl SdkDecoder {
         bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
         bytes += capture.parked_pauses.capacity() * std::mem::size_of::<ParkedPause>();
         bytes += capture.role_pauses.capacity() * std::mem::size_of::<RolePause>();
+        bytes += capture.edge_sites.capacity() * std::mem::size_of::<EdgeSite>();
         if let Some(check) = &capture.completed_check {
             bytes += check.points.capacity() * std::mem::size_of::<String>();
             bytes += check.points.iter().map(String::capacity).sum::<usize>();
@@ -1175,6 +1208,9 @@ impl SdkDecoder {
                             moment: *moment,
                             node: pause.node,
                         });
+                    }
+                    if state.action_after.is_none_or(|after| *moment > after) {
+                        add_edge_sites(&mut capture.edge_sites, *moment, &event.sites);
                     }
                     if let Some((id, outcome)) = event.assertion {
                         if let Some(pid) = event.pid
@@ -1403,6 +1439,7 @@ fn decode_sdk_events_reference(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapt
                         node: pause.node,
                     });
                 }
+                add_edge_sites(&mut capture.edge_sites, *moment, &event.sites);
                 if let Some((id, outcome)) = event.assertion {
                     if let Some(pid) = event.pid
                         && outcome.feeds_the_key()
@@ -1528,6 +1565,8 @@ pub struct FaultObservations {
     #[serde(default)]
     pub role_pauses: Vec<RolePause>,
     #[serde(default)]
+    pub edge_sites: Vec<EdgeSite>,
+    #[serde(default)]
     pub fault_free_checks_started: u64,
     #[serde(default)]
     pub fault_free_checks_finished: u64,
@@ -1585,6 +1624,7 @@ impl FaultObservations {
             park_reads: capture.park_reads.clone(),
             parked_pauses: capture.parked_pauses.clone(),
             role_pauses: capture.role_pauses.clone(),
+            edge_sites: capture.edge_sites.clone(),
             fault_free_checks_started: value(reg::FAULT_FREE_CHECKS_STARTED),
             fault_free_checks_finished: value(reg::FAULT_FREE_CHECKS_FINISHED),
             faults_in_force: value(reg::FAULTS_IN_FORCE) != 0,
@@ -1599,6 +1639,7 @@ impl FaultObservations {
         self.park_reads.retain(|read| read.moment > moment);
         self.parked_pauses.retain(|pause| pause.moment > moment);
         self.role_pauses.retain(|pause| pause.moment > moment);
+        self.edge_sites.retain(|entry| entry.moment > moment);
     }
 
     pub fn clear_parks(&mut self) {
@@ -1606,6 +1647,7 @@ impl FaultObservations {
         self.park_reads.clear();
         self.parked_pauses.clear();
         self.role_pauses.clear();
+        self.edge_sites.clear();
     }
 
     #[must_use]
@@ -3087,6 +3129,56 @@ mod tests {
             }]
         );
         assert!(capture.assertions.0.is_empty());
+    }
+
+    #[test]
+    fn new_site_lists_keep_a_bounded_sample_whatever_the_batches() {
+        let line = |first: u64, count: u64| {
+            let sites = (first..first + count)
+                .map(|site| site.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{\"harmony_sites\":[{sites}]}}\n").into_bytes()
+        };
+        let events = (0..40_u64)
+            .map(|index| (index + 1, JSON_EVENT_ID, line(index * 200, 200)))
+            .collect::<Vec<_>>();
+        let capture = decode_sdk_events(&events).unwrap();
+        assert_eq!(capture.edge_sites.len(), EDGE_SITE_LIMIT);
+        assert_eq!(capture, decode_sdk_events_reference(&events).unwrap());
+        let mut split = SdkDecoder::default();
+        for event in &events {
+            split.append(std::slice::from_ref(event)).unwrap();
+        }
+        assert_eq!(split.capture().edge_sites, capture.edge_sites);
+        assert!(
+            capture
+                .edge_sites
+                .windows(2)
+                .all(|pair| (pair[0].moment, pair[0].site) < (pair[1].moment, pair[1].site))
+        );
+        assert!(
+            capture
+                .edge_sites
+                .iter()
+                .all(|entry| entry.site / 200 + 1 == entry.moment)
+        );
+        let early = capture
+            .edge_sites
+            .iter()
+            .filter(|entry| entry.moment <= 20)
+            .count();
+        assert!(early > EDGE_SITE_LIMIT / 4 && early < EDGE_SITE_LIMIT * 3 / 4);
+        let small = decode_sdk_events(&events[..3]).unwrap();
+        assert_eq!(small.edge_sites.len(), 600);
+        let mut observation = FaultObservations::new(40, &capture, FaultStop::Deadline);
+        assert_eq!(observation.edge_sites, capture.edge_sites);
+        observation.keep_parks_after(20);
+        assert_eq!(observation.edge_sites.len(), EDGE_SITE_LIMIT - early);
+        let mut decoder = SdkDecoder::default();
+        decoder.begin_action(38);
+        decoder.append(&events).unwrap();
+        assert_eq!(decoder.capture().edge_sites.len(), 400);
     }
 
     #[test]

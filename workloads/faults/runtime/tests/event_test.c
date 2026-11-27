@@ -27,6 +27,9 @@ static char json_report[128];
 static size_t json_reports;
 static void record_json(const char *data, size_t size);
 #define HARMONY_JSON(data, size) record_json((data), (size))
+static void record_sites(const char *data, size_t size);
+#define HARMONY_SITE_JSON(data, size) record_sites((data), (size))
+#define HARMONY_SITES_AVAILABLE() 1
 #include "../fault_runtime.c"
 #include "../fault_runtime_shim.c"
 
@@ -36,6 +39,113 @@ static void record_json(const char *data, size_t size)
     memcpy(json_report, data, size);
     json_report[size] = '\0';
     json_reports++;
+}
+
+static void exchange(int fd, uint64_t kind, uint64_t first, uint64_t second,
+                     unsigned char *response);
+
+static uint64_t *site_reports;
+static size_t site_report_count;
+static size_t site_report_capacity;
+static size_t site_lines;
+
+static void record_sites(const char *data, size_t size)
+{
+    static const char prefix[] = "{\"harmony_sites\":[";
+    static const char suffix[] = "]}\n";
+    char line[HARMONY_FAULT_SITE_LINE_BYTES + 1];
+    char *cursor;
+
+    assert(size <= HARMONY_FAULT_SITE_LINE_BYTES);
+    memcpy(line, data, size);
+    line[size] = '\0';
+    assert(strncmp(line, prefix, sizeof(prefix) - 1) == 0);
+    assert(strcmp(line + size - (sizeof(suffix) - 1), suffix) == 0);
+    cursor = line + sizeof(prefix) - 1;
+    for (;;) {
+        char *end;
+        uint64_t site = strtoull(cursor, &end, 10);
+
+        assert(end != cursor);
+        if (site_report_count == site_report_capacity) {
+            site_report_capacity = site_report_capacity == 0 ? 1024 : site_report_capacity * 2;
+            site_reports = realloc(site_reports, site_report_capacity * sizeof(*site_reports));
+            assert(site_reports != NULL);
+        }
+        site_reports[site_report_count++] = site;
+        if (*end == ']')
+            break;
+        assert(*end == ',');
+        cursor = end + 1;
+    }
+    site_lines++;
+}
+
+static size_t sites_reported(uint64_t site)
+{
+    size_t count = 0;
+    size_t index;
+
+    for (index = 0; index < site_report_count; index++)
+        count += site_reports[index] == site;
+    return count;
+}
+
+static int compare_sites(const void *left, const void *right)
+{
+    uint64_t a = *(const uint64_t *)left;
+    uint64_t b = *(const uint64_t *)right;
+
+    return (a > b) - (a < b);
+}
+
+static void check_new_site_lines(int control_fd, unsigned char *response)
+{
+    const uint64_t base = UINT64_C(1) << 60;
+    const size_t candidates = HARMONY_FAULT_NEW_SITE_LIMIT + HARMONY_FAULT_NEW_SITE_LIMIT / 2;
+    unsigned char *taken = calloc(HARMONY_FAULT_EVENT_SITE_TABLE_SIZE, 1);
+    size_t fresh = 0;
+    int late_fresh;
+    size_t before;
+    size_t index;
+
+    assert(taken != NULL);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    assert(sites_reported(9) == 1);
+    assert(sites_reported(12) == 1);
+    assert(sites_reported(21) == 1);
+    before = site_report_count;
+    for (index = 0; index < candidates; index++) {
+        size_t slot = harmony_fault_event_site_start(base + index);
+
+        if (harmony_fault_events.site_bucket[slot] == 0 && !taken[slot]) {
+            taken[slot] = 1;
+            fresh++;
+        }
+    }
+    assert(fresh > HARMONY_FAULT_NEW_SITE_LIMIT);
+    for (index = 0; index < candidates; index++)
+        harmony_instrumentation_event(base + index);
+    for (index = 0; index < candidates; index++)
+        harmony_instrumentation_event(base + index);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    assert(site_report_count - before == HARMONY_FAULT_NEW_SITE_LIMIT);
+    assert(site_lines > 1);
+    qsort(site_reports + before, site_report_count - before, sizeof(*site_reports),
+          compare_sites);
+    for (index = before; index < site_report_count; index++) {
+        assert(site_reports[index] >= base && site_reports[index] < base + candidates);
+        assert(index == before || site_reports[index] != site_reports[index - 1]);
+    }
+    late_fresh = harmony_fault_events.site_bucket[harmony_fault_event_site_start(
+                     base + candidates)] == 0;
+    harmony_instrumentation_event(base + candidates);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    exchange(control_fd, HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    assert(sites_reported(base + candidates) == (late_fresh ? 1U : 0U));
+    free(taken);
 }
 
 static pthread_mutex_t sleep_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -505,6 +615,8 @@ int main(void)
         exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
         assert(get_word(response, 24) == callbacks + 1);
     }
+
+    check_new_site_lines(control[1], response);
 
     send_frame(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 22, 22);
     for (;;) {

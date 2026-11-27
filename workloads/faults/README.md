@@ -871,8 +871,27 @@ The campaign turns these counts into draw feedback: each site with a read
 weighs `1024 * (reads + 10 * r) / (landings + 10)`, at least 1, where `r` is
 the campaign's reads per landing across all sites. A site with few landings
 weighs close to the campaign rate, so one read in one landing counts for less
-than several reads in a few dozen landings. The weights change at each
-draw-table update. Once any site has a weight, half of the drawn
+than several reads in a few dozen landings.
+The runtime also lists the sites each node process crosses for the first time
+(see the runtime README). The host keeps at most 4,096 of them per action: when
+an action lists more, it keeps the 4,096 whose hash of site and report moment
+is smallest, so every listed site has the same chance to be kept and a site
+listed in many actions is kept in about that share of them. Each action the
+guest ran adds one to `site_actions`, and each site any of its observations
+kept adds one to that site's `site_incidence`; both are in
+`campaign-summary.json`. Each site with an incidence weighs
+`1024 * (A + 1) / (incidence + 1) * 10 / (landings + 10)`, at least 1, where `A`
+is `site_actions` and `landings` is the site's count in `park_sites` (ours).
+This is the rarity weighting that libFuzzer's default Entropic schedule and
+AFLFast's FAST schedule use to pick inputs, applied here to pick a park site: a
+site crossed in one action out of a thousand weighs about 500 times a site
+every action crosses. The second factor halves a site's weight after ten
+landings, so a site that holds parks without changing what the search finds
+gives way to others, as AFLFast lowers an input's energy the more often it is
+chosen. A site that adds both weights gets their sum. Sites that never enter
+their first hit-count bucket in any process, because they share a counter slot
+with a hotter site, are never listed and get no weight. The weights change at
+each draw-table update. Once any site has a weight, half of the drawn
 parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
 range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 6 through 12, each of the eight widths equally likely.

@@ -487,6 +487,10 @@ pub struct FaultArchiveReport {
     pub park_thresholds: BTreeMap<u32, ParkThresholds>,
     #[serde(default)]
     pub park_aims: ParkAims,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub site_incidence: BTreeMap<u64, u64>,
+    #[serde(default)]
+    pub site_actions: u64,
     #[serde(default)]
     pub undecided_checks: UndecidedChecks,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

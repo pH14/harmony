@@ -2804,6 +2804,13 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .capacity()
                 .saturating_mul(size_of::<crate::target::RolePause>()),
         )
+        .saturating_add(
+            snapshot
+                .observation
+                .edge_sites
+                .capacity()
+                .saturating_mul(size_of::<crate::target::EdgeSite>()),
+        )
 }
 
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {

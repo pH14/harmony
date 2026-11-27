@@ -16,6 +16,7 @@
 static int json_fd = -1;
 static void forward_json(const char *data, size_t size);
 #define HARMONY_JSON(data, size) forward_json((data), (size))
+#define HARMONY_SITE_JSON(data, size) ((void)(data), (void)(size))
 #include "../fault_runtime.c"
 #include "../fault_runtime_shim.c"
 
