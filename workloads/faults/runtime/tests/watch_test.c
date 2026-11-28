@@ -45,7 +45,7 @@ static void record_json(const char *data, size_t size);
 
 static int control_fd;
 static uint64_t next_site = 0x1000;
-static sigjmp_buf foreign_return;
+static __thread sigjmp_buf foreign_return;
 static volatile sig_atomic_t foreign_faults;
 
 static void record_json(const char *data, size_t size)
@@ -292,31 +292,127 @@ static void replace_during_page_watch(void)
     assert(harmony_fault_watch.active == 1);
     assert(*(volatile unsigned char *)watched_page == 0);
     assert(foreign_faults == faults);
+    edges(HARMONY_FAULT_WATCH_EDGES);
     if (sigsetjmp(foreign_return, 1) == 0)
         *(volatile unsigned char *)watched_page = 1;
     assert(foreign_faults == faults + 1);
-    assert(harmony_fault_watch.active == 1);
-    edges(HARMONY_FAULT_WATCH_EDGES);
     assert(munmap(watched_page, page_bytes) == 0);
+}
+
+static unsigned char *land_on_page(void)
+{
+    unsigned char *page = shared_pages(1);
+
+    hold_target = page;
+    (void)land(8, 3);
+    hold_target = NULL;
+    assert(watched(page));
+    return page;
 }
 
 static void restricted_page_during_page_watch(void)
 {
-    unsigned char *watched_page = shared_pages(1);
+    unsigned char *page = land_on_page();
     sig_atomic_t faults = foreign_faults;
 
-    hold_target = watched_page;
-    (void)land(8, 3);
-    hold_target = NULL;
-    assert(mprotect(watched_page, page_bytes, PROT_READ) == 0);
+    assert(mprotect(page, page_bytes, PROT_READ) == 0);
+    edges(HARMONY_FAULT_WATCH_EDGES);
+    assert(((volatile unsigned char *)page)[8] == 3);
     if (sigsetjmp(foreign_return, 1) == 0)
-        *(volatile unsigned char *)watched_page = 1;
+        *(volatile unsigned char *)page = 1;
+    assert(foreign_faults == faults + 1);
+    assert(munmap(page, page_bytes) == 0);
+
+    page = land_on_page();
+    assert(mprotect(page, page_bytes, PROT_READ) == 0);
+    *(volatile unsigned char *)page = 1;
     assert(foreign_faults == faults + 1);
     edges(HARMONY_FAULT_WATCH_EDGES);
-    if (sigsetjmp(foreign_return, 1) == 0)
-        *(volatile unsigned char *)watched_page = 1;
-    assert(foreign_faults == faults + 2);
-    assert(munmap(watched_page, page_bytes) == 0);
+    assert(munmap(page, page_bytes) == 0);
+}
+
+static void *touch_page(void *page)
+{
+    if (sigsetjmp(foreign_return, 1) != 0)
+        return (void *)(uintptr_t)0xff;
+    return (void *)(uintptr_t)*(volatile unsigned char *)page;
+}
+
+static int released(const void *page)
+{
+    size_t index;
+
+    for (index = 0; index < harmony_fault_watch.page_count; index++)
+        if (harmony_fault_watch.pages[index] == (uintptr_t)page)
+            return harmony_fault_watch.released[index];
+    return -1;
+}
+
+static void released_page_protected_again(void)
+{
+    unsigned char *page = land_on_page();
+    sig_atomic_t faults = foreign_faults;
+    pthread_t other;
+    void *value;
+
+    assert(pthread_create(&other, NULL, touch_page, page + 100) == 0);
+    assert(pthread_join(other, &value) == 0);
+    assert((uintptr_t)value == 1 && released(page) == 1);
+    assert(mprotect(page, page_bytes, PROT_NONE) == 0);
+    assert((uintptr_t)touch_page(page + 100) == 1);
+    assert(mprotect(page, page_bytes, PROT_NONE) == 0);
+    edges(HARMONY_FAULT_WATCH_EDGES);
+    assert(harmony_fault_watch.active == 0);
+    assert((uintptr_t)touch_page(page + 100) == 1);
+    assert(foreign_faults == faults);
+    assert(munmap(page, page_bytes) == 0);
+}
+
+static pthread_barrier_t touch_barrier;
+
+static void *touch_after_barrier(void *page)
+{
+    (void)pthread_barrier_wait(&touch_barrier);
+    return touch_page(page);
+}
+
+static void two_threads_fault_on_one_page(void)
+{
+    sig_atomic_t faults = foreign_faults;
+    size_t round;
+
+    for (round = 0; round < 32; round++) {
+        unsigned char *page = land_on_page();
+        pthread_t first;
+        pthread_t second;
+        void *first_value;
+        void *second_value;
+
+        assert(pthread_barrier_init(&touch_barrier, NULL, 2) == 0);
+        assert(pthread_create(&first, NULL, touch_after_barrier, page + 100) == 0);
+        assert(pthread_create(&second, NULL, touch_after_barrier, page + 200) == 0);
+        assert(pthread_join(first, &first_value) == 0);
+        assert(pthread_join(second, &second_value) == 0);
+        assert(pthread_barrier_destroy(&touch_barrier) == 0);
+        assert((uintptr_t)first_value == 1 && (uintptr_t)second_value == 1);
+        edges(HARMONY_FAULT_WATCH_EDGES);
+        assert(munmap(page, page_bytes) == 0);
+    }
+    assert(foreign_faults == faults);
+}
+
+static void park_keeps_errno(void)
+{
+    uint64_t site = next_site++;
+
+    hold_write_at = 900;
+    hold_write_value = 6;
+    exchange(HARMONY_FAULT_EVENT_CMD_PARK, 1, HOLD_NANOS);
+    errno = EDOM;
+    harmony_instrumentation_event(site);
+    assert(errno == EDOM);
+    exchange(HARMONY_FAULT_EVENT_CMD_PARK, 0, 0);
+    edges(HARMONY_FAULT_WATCH_EDGES);
 }
 
 static void sent_signal_ends_process(void)
@@ -520,10 +616,13 @@ int main(void)
     unmap_during_page_watch();
     replace_during_page_watch();
     restricted_page_during_page_watch();
+    released_page_protected_again();
+    two_threads_fault_on_one_page();
     assert(sigaction(SIGSEGV, &before, NULL) == 0);
     sent_signal_ends_process();
     fork_during_pipe_read();
     refuse_self_reads();
+    park_keeps_errno();
     read_mapped_and_unmapped();
     assert(harmony_fault_watch.self_read_refused == 1);
     hold_over_changed_mappings(800, 5);

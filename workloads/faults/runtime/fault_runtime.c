@@ -836,6 +836,7 @@ struct harmony_fault_watch_range {
 
 struct harmony_fault_watch_maps {
     int fd;
+    int failed;
     size_t used;
     size_t at;
     char buffer[256];
@@ -872,6 +873,7 @@ static int harmony_fault_watch_maps_open(struct harmony_fault_watch_maps *maps)
 {
     maps->used = 0;
     maps->at = 0;
+    maps->failed = 0;
     maps->fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
     return maps->fd < 0 ? -1 : 0;
 }
@@ -884,6 +886,8 @@ static int harmony_fault_watch_maps_char(struct harmony_fault_watch_maps *maps)
         do
             got = read(maps->fd, maps->buffer, sizeof(maps->buffer));
         while (got < 0 && errno == EINTR);
+        if (got < 0)
+            maps->failed = 1;
         if (got <= 0)
             return -1;
         maps->used = (size_t)got;
@@ -984,6 +988,8 @@ static void harmony_fault_watch_check_pages(size_t first, size_t end, int watchi
             if (harmony_fault_watch_holds(&line, index, watching))
                 ours[index - first] = 1;
     (void)close(maps.fd);
+    if (maps.failed != 0)
+        memset(ours, unknown, end - first);
 }
 
 static void harmony_fault_watch_restore(void)
@@ -993,8 +999,7 @@ static void harmony_fault_watch_restore(void)
 
     harmony_fault_watch_check_pages(0, harmony_fault_watch.page_count, 1, 1, ours);
     for (index = 0; index < harmony_fault_watch.page_count; index++)
-        if (__atomic_load_n(&harmony_fault_watch.released[index], __ATOMIC_ACQUIRE) == 0 &&
-            ours[index] != 0)
+        if (ours[index] != 0)
             (void)mprotect((void *)harmony_fault_watch.pages[index],
                            (size_t)harmony_fault_watch.page_size, PROT_READ | PROT_WRITE);
 }
@@ -1197,6 +1202,7 @@ static void harmony_fault_watch_forward(int signo, siginfo_t *info,
 {
     struct sigaction previous = harmony_fault_watch.previous;
     sigset_t mask;
+    size_t index;
 
     if (previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN) {
         if ((previous.sa_flags & SA_NODEFER) == 0)
@@ -1209,8 +1215,15 @@ static void harmony_fault_watch_forward(int signo, siginfo_t *info,
         (void)pthread_sigmask(SIG_SETMASK, &mask, NULL);
         return;
     }
-    harmony_fault_watch_restore();
+    if (previous.sa_handler == SIG_IGN && info->si_code <= 0)
+        return;
+    __atomic_store_n(&harmony_fault_watch.active, 0, __ATOMIC_RELEASE);
+    for (index = 0; index < harmony_fault_watch.page_count; index++)
+        (void)mprotect((void *)harmony_fault_watch.pages[index],
+                       (size_t)harmony_fault_watch.page_size, PROT_READ | PROT_WRITE);
     (void)sigaction(SIGSEGV, &previous, NULL);
+    __atomic_store_n(&harmony_fault_watch.installed, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&harmony_fault_watch.claimed, 0, __ATOMIC_RELEASE);
     if (info->si_code <= 0)
         (void)raise(signo);
 }
@@ -1224,18 +1237,11 @@ static void harmony_fault_watch_fault(int signo, siginfo_t *info,
     size_t index;
 
     for (index = 0; index < harmony_fault_watch.page_count; index++) {
-        unsigned char ours = 0;
-
         if (harmony_fault_watch.pages[index] != page)
             continue;
-        if (info->si_code == SEGV_ACCERR &&
-            __atomic_load_n(&harmony_fault_watch.released[index], __ATOMIC_ACQUIRE) == 0)
-            harmony_fault_watch_check_pages(index, index + 1, 1, 1, &ours);
-        if (ours == 0 || mprotect((void *)page, (size_t)harmony_fault_watch.page_size,
-                                  PROT_READ | PROT_WRITE) != 0) {
-            __atomic_store_n(&harmony_fault_watch.released[index], 1, __ATOMIC_RELEASE);
+        if (mprotect((void *)page, (size_t)harmony_fault_watch.page_size,
+                     PROT_READ | PROT_WRITE) != 0)
             break;
-        }
         if (harmony_fault_watch_owned()) {
             int write;
             size_t width;
@@ -1432,7 +1438,7 @@ static void harmony_fault_event_sleep(uint64_t hold_nanos)
     }
 }
 
-void harmony_fault_runtime_event(uint64_t site)
+static void harmony_fault_runtime_event_at(uint64_t site)
 {
     uint64_t before;
     uint8_t kill_rarity = 0;
@@ -1520,4 +1526,12 @@ void harmony_fault_runtime_event(uint64_t site)
             harmony_fault_unlock();
         }
     }
+}
+
+void harmony_fault_runtime_event(uint64_t site)
+{
+    int saved_errno = errno;
+
+    harmony_fault_runtime_event_at(site);
+    errno = saved_errno;
 }
