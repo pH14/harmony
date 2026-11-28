@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, error::Error, num::NonZeroUsize, rc::Rc};
+use std::{cmp::Reverse, collections::BTreeMap, error::Error, num::NonZeroUsize, rc::Rc};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -15,7 +15,7 @@ use crate::search::{
 
 pub const DRAW_TABLE_POLICY_FIELD: &str = "draw_table_policy";
 
-const DRAW_TABLE_PREFIX: &str = "retained_suffix_table_v2:";
+const DRAW_TABLE_PREFIX: &str = "retained_suffix_table_v3:";
 
 pub const DEFAULT_DRAW_TABLE_PARAMETERS: EmpiricalStepParameters = EmpiricalStepParameters {
     prefix_steps: 0,
@@ -112,6 +112,7 @@ impl DrawVersionSchedule {
 
 struct DrawTableVersion<A> {
     checkpoint: EmpiricalStepCheckpoint,
+    steps_sha256: String,
     history_len: usize,
     history_ends: Rc<Vec<(A, usize)>>,
     feedback: Rc<BTreeMap<u64, u64>>,
@@ -243,27 +244,7 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
     }
 
     fn set_feedback(&mut self, feedback: BTreeMap<u64, u64>) -> Result<(), Box<dyn Error>> {
-        let mut weights = feedback
-            .into_iter()
-            .filter(|(_, weight)| *weight > 0)
-            .map(|(key, weight)| (key, weight.min(MAX_FEEDBACK_WEIGHT)))
-            .collect::<Vec<_>>();
-        if weights.len() > MAX_FEEDBACK_ENTRIES {
-            let records = self.tables.records();
-            let tie = |key: u64| {
-                let mut state = key ^ records.rotate_left(32);
-                splitmix64(&mut state)
-            };
-            weights.sort_by(|left, right| {
-                right
-                    .1
-                    .cmp(&left.1)
-                    .then_with(|| tie(left.0).cmp(&tie(right.0)))
-                    .then(left.0.cmp(&right.0))
-            });
-            weights.truncate(MAX_FEEDBACK_ENTRIES);
-        }
-        let feedback = weights.into_iter().collect::<BTreeMap<_, _>>();
+        let feedback = heaviest_feedback(feedback, self.tables.records());
         if feedback == *self.feedback {
             return Ok(());
         }
@@ -297,14 +278,7 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             let folded = input.get(*parent_actions..).unwrap_or(&[]);
             self.tables.fold_retained(folded)?;
         }
-        if self
-            .tables
-            .records()
-            .saturating_add(1)
-            .is_multiple_of(self.tables.parameters().update_every_records)
-        {
-            self.set_feedback(feedback())?;
-        }
+        self.set_feedback(feedback())?;
         Ok(self
             .tables
             .finish_record()?
@@ -348,11 +322,12 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
         if !schedule.is_required(records) {
             return Ok(());
         }
-        let checkpoint = self.checkpoint()?;
+        let steps = self.tables.checkpoint()?;
+        let steps_sha256 = steps.table_sha256.clone();
+        let checkpoint = self.with_feedback(steps);
         let history_len = self.tables.history_len();
         let reusable = self.versions.last_key_value().filter(|(_, last)| {
-            last.checkpoint.table_sha256 == checkpoint.table_sha256
-                && last.history_len == history_len
+            last.steps_sha256 == steps_sha256 && last.history_len == history_len
         });
         let history_ends = reusable
             .map(|(_, last)| Rc::clone(&last.history_ends))
@@ -361,6 +336,7 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
             records,
             DrawTableVersion {
                 checkpoint,
+                steps_sha256,
                 history_len,
                 history_ends,
                 feedback: Rc::clone(&self.feedback),
@@ -373,6 +349,29 @@ impl<A: Copy + Ord + Serialize> DrawTables<A> {
         self.versions
             .retain(|version, _| !schedule.expired(*version, record));
     }
+}
+
+fn heaviest_feedback(feedback: BTreeMap<u64, u64>, records: u64) -> BTreeMap<u64, u64> {
+    let mut weights = feedback
+        .into_iter()
+        .filter(|(_, weight)| *weight > 0)
+        .map(|(key, weight)| {
+            let mut state = key ^ records.rotate_left(32);
+            (
+                Reverse(weight.min(MAX_FEEDBACK_WEIGHT)),
+                splitmix64(&mut state),
+                key,
+            )
+        })
+        .collect::<Vec<_>>();
+    if weights.len() > MAX_FEEDBACK_ENTRIES {
+        weights.select_nth_unstable(MAX_FEEDBACK_ENTRIES - 1);
+        weights.truncate(MAX_FEEDBACK_ENTRIES);
+    }
+    weights
+        .into_iter()
+        .map(|(Reverse(weight), _, key)| (key, weight))
+        .collect()
 }
 
 pub fn biased_step<A: Copy + Ord>(
@@ -406,9 +405,10 @@ mod tests {
             DEFAULT_DRAW_TABLE_PARAMETERS
         );
         for bad in [
-            "retained_suffix_table_v2:0,64",
-            "retained_suffix_table_v2:0,64,1024,7",
-            "retained_suffix_table_v2:0,0,1024",
+            "retained_suffix_table_v3:0,64",
+            "retained_suffix_table_v3:0,64,1024,7",
+            "retained_suffix_table_v3:0,0,1024",
+            "retained_suffix_table_v2:0,64,1024",
             "retained_suffix_table_v1:0,128,3,1,64,1024",
             "unknown_table_v2:0,64,1024",
         ] {
@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn feedback_beyond_the_limit_keeps_the_heaviest_and_rotates_tied_sites_between_updates() {
+    fn feedback_beyond_the_limit_keeps_the_heaviest_and_rotates_tied_sites_between_records() {
         let mut tables = DrawTables::<u8>::new(EmpiricalStepParameters {
             update_every_records: 1,
             hash_every_records: 1,
@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn feedback_lands_at_a_table_update_and_replays_with_its_version() {
+    fn feedback_lands_at_every_record_and_replays_with_its_version() {
         let mut live = DrawTables::<u8>::new(EmpiricalStepParameters {
             update_every_records: 2,
             hash_every_records: 1,
@@ -523,8 +523,8 @@ mod tests {
             .finish_record_with_feedback(&[], || weights.clone())
             .expect("finish a record")
             .expect("hash every record");
-        assert_eq!(first.table_sha256, untouched.table_sha256);
-        assert_eq!((untouched.weighted_sites, first.weighted_sites), (0, 0));
+        assert_ne!(first.table_sha256, untouched.table_sha256);
+        assert_eq!((untouched.weighted_sites, first.weighted_sites), (0, 2));
         let second = live
             .finish_record_with_feedback(&[], || weights.clone())
             .expect("finish a record")
@@ -593,6 +593,207 @@ mod tests {
     }
 
     #[test]
+    fn feedback_lands_at_the_first_record_while_the_steps_wait_for_their_update() {
+        let mut live =
+            DrawTables::<u8>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("valid parameters");
+        live.finish_record_with_feedback(&[(0, [4_u8, 5].as_slice())], || BTreeMap::from([(7, 2)]))
+            .expect("finish a record");
+        let (feedback, steps) = live
+            .draw(None, false, |view| {
+                Ok((view.feedback.clone(), view.steps.mixed_len()))
+            })
+            .expect("read the draw view");
+        assert_eq!(feedback, BTreeMap::from([(7, 2)]));
+        assert_eq!(steps, 0);
+        let mut rand = RomuDuoJrRand::with_seed(3);
+        assert_eq!(
+            live.draw(None, false, |view| view.pick_feedback(&mut rand))
+                .expect("pick a key"),
+            Some(7)
+        );
+        for _ in 1..DEFAULT_DRAW_TABLE_PARAMETERS.update_every_records {
+            live.finish_record_with_feedback(&[], || BTreeMap::from([(7, 2)]))
+                .expect("finish a record");
+        }
+        assert_eq!(
+            live.draw(None, false, |view| Ok(view.steps.mixed_len()))
+                .expect("read the steps"),
+            2
+        );
+    }
+
+    #[test]
+    fn a_version_keeps_the_steps_of_the_previous_one_when_only_the_feedback_changed() {
+        let mut replay =
+            DrawTables::<u8>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("valid parameters");
+        let mut schedule = DrawVersionSchedule::default();
+        schedule.require(1, 3);
+        schedule.require(2, 3);
+        replay
+            .finish_record_with_feedback(&[], || BTreeMap::from([(7, 1)]))
+            .expect("finish a record");
+        replay.remember_version(&schedule).expect("keep a version");
+        replay
+            .finish_record_with_feedback(&[], || BTreeMap::from([(9, 1)]))
+            .expect("finish a record");
+        replay.remember_version(&schedule).expect("keep a version");
+        let first = &replay.versions[&1];
+        let second = &replay.versions[&2];
+        assert!(Rc::ptr_eq(&first.history_ends, &second.history_ends));
+        assert_ne!(
+            first.checkpoint.table_sha256,
+            second.checkpoint.table_sha256
+        );
+        assert_ne!(first.feedback, second.feedback);
+    }
+
+    #[test]
+    fn the_cutoff_keeps_the_keys_a_full_sort_keeps() {
+        let mut rand = RomuDuoJrRand::with_seed(17);
+        let weights = (0..3 * MAX_FEEDBACK_ENTRIES as u64)
+            .map(|key| {
+                (
+                    key * 7 + 3,
+                    u64::try_from(rand.below(NonZeroUsize::new(6).expect("six"))).expect("small")
+                        + 1,
+                )
+            })
+            .chain([(5, MAX_FEEDBACK_WEIGHT + 9), (9, 0)])
+            .collect::<BTreeMap<_, _>>();
+        for records in [0u64, 5, 1 << 40] {
+            let tie = |key: u64| {
+                let mut state = key ^ records.rotate_left(32);
+                splitmix64(&mut state)
+            };
+            let mut sorted = weights
+                .iter()
+                .filter(|(_, weight)| **weight > 0)
+                .map(|(key, weight)| (*key, (*weight).min(MAX_FEEDBACK_WEIGHT)))
+                .collect::<Vec<_>>();
+            sorted.sort_by(|left, right| {
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| tie(left.0).cmp(&tie(right.0)))
+                    .then(left.0.cmp(&right.0))
+            });
+            sorted.truncate(MAX_FEEDBACK_ENTRIES);
+            assert_eq!(
+                heaviest_feedback(weights.clone(), records),
+                sorted.into_iter().collect::<BTreeMap<_, _>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_step_update_between_two_versions_gives_the_second_a_fresh_history() {
+        let mut replay = tables();
+        let mut schedule = DrawVersionSchedule::default();
+        schedule.require(1, 3);
+        schedule.require(2, 3);
+        replay
+            .finish_record(&[(0, [1_u8].as_slice())])
+            .expect("finish a record");
+        replay.remember_version(&schedule).expect("keep a version");
+        replay
+            .finish_record(&[(0, [2_u8].as_slice())])
+            .expect("finish a record");
+        replay.remember_version(&schedule).expect("keep a version");
+        let first = &replay.versions[&1];
+        let second = &replay.versions[&2];
+        assert!(!Rc::ptr_eq(&first.history_ends, &second.history_ends));
+        assert!(second.history_len > first.history_len);
+    }
+
+    #[test]
+    fn a_replay_draw_reads_its_version_feedback_after_the_live_feedback_moves_on() {
+        let mut replay =
+            DrawTables::<u8>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("valid parameters");
+        let mut schedule = DrawVersionSchedule::default();
+        schedule.require(1, 5);
+        schedule.require(2, 5);
+        for key in [7, 9] {
+            replay
+                .finish_record_with_feedback(&[], || BTreeMap::from([(key, 1)]))
+                .expect("finish a record");
+            replay.remember_version(&schedule).expect("keep a version");
+        }
+        replay
+            .finish_record_with_feedback(&[], || BTreeMap::from([(11, 1)]))
+            .expect("finish a record");
+        assert_eq!(
+            replay
+                .draw(None, false, |view| Ok(view.feedback.clone()))
+                .expect("read the live feedback"),
+            BTreeMap::from([(11, 1)])
+        );
+        for (version, key) in [(1, 7), (2, 9)] {
+            let checkpoint = replay.versions[&version].checkpoint.clone();
+            assert_eq!(
+                replay
+                    .draw(Some(&checkpoint), true, |view| Ok(view.feedback.clone()))
+                    .expect("read the recorded feedback"),
+                BTreeMap::from([(key, 1)])
+            );
+        }
+    }
+
+    #[test]
+    fn a_resume_between_step_updates_matches_a_run_that_never_stopped() {
+        let parameters = EmpiricalStepParameters {
+            update_every_records: 4,
+            hash_every_records: 1,
+            ..DEFAULT_DRAW_TABLE_PARAMETERS
+        };
+        let record = |tables: &mut DrawTables<u8>, index: u8| {
+            tables
+                .finish_record_with_feedback(&[(0, [index, index + 1].as_slice())], || {
+                    BTreeMap::from([(u64::from(index), u64::from(index) + 1), (100, 2)])
+                })
+                .expect("finish a record")
+                .map(|checkpoint| {
+                    (
+                        checkpoint.records,
+                        checkpoint.retained_successes,
+                        checkpoint.weighted_sites,
+                    )
+                })
+        };
+        let mut live = DrawTables::<u8>::new(parameters).expect("valid parameters");
+        for index in 0..6 {
+            record(&mut live, index);
+        }
+        let mut resumed =
+            DrawTables::<u8>::from_resume_bytes(&live.to_resume_bytes().expect("save the tables"))
+                .expect("resume the tables");
+        assert_eq!(
+            resumed.checkpoint().expect("checkpoint"),
+            live.checkpoint().expect("checkpoint")
+        );
+        for index in 6..13 {
+            assert_eq!(record(&mut resumed, index), record(&mut live, index));
+        }
+        let view = |tables: &DrawTables<u8>| {
+            tables
+                .draw(None, false, |view| {
+                    Ok((
+                        view.feedback.clone(),
+                        (0..view.steps.mixed_len())
+                            .map(|index| *view.steps.mixed_step(index).expect("a step"))
+                            .collect::<Vec<_>>(),
+                    ))
+                })
+                .expect("read the draw view")
+        };
+        assert_eq!(view(&resumed), view(&live));
+        assert!(!view(&live).1.is_empty());
+        assert_ne!(
+            resumed.checkpoint().expect("checkpoint").table_sha256,
+            live.checkpoint().expect("checkpoint").table_sha256
+        );
+    }
+
+    #[test]
     fn a_version_is_dropped_once_its_last_record_has_replayed() {
         let mut schedule = DrawVersionSchedule::default();
         schedule.require(1, 5);
@@ -609,6 +810,7 @@ mod tests {
                     table_sha256: String::new(),
                     weighted_sites: 0,
                 },
+                steps_sha256: String::new(),
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
@@ -623,6 +825,7 @@ mod tests {
                     table_sha256: String::new(),
                     weighted_sites: 0,
                 },
+                steps_sha256: String::new(),
                 history_len: 0,
                 history_ends: Rc::new(Vec::new()),
                 feedback: Rc::new(BTreeMap::new()),
