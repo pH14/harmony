@@ -539,7 +539,9 @@ stage climbs 8 per screen of the route to Mother Brain's room plus the columns
 reading destroyed, so a hit on a column is a new place through
 `zebetite_hits_left` but ranks no higher: a column heals a hit every 64 frames,
 and only a broken column, or the screen past it, lasts. The mother_brain stage
-climbs 256 per destroyed column plus boss damage and is done on
+climbs one per destroyed column while she reads no damage and is 5 plus boss
+damage once she does, so a column growing back never ranks a state that reads
+damage below one that reads less, and is done on
 `mother_brain_defeated`, and the escape stage climbs the escape shaft's route
 and is done on the ending. A strategy holds at most 8 aggregates, and a
 stage-scoped `last` is one per stage, so the two Ridley routes share the table
