@@ -350,3 +350,77 @@ func TestRegisterGeneratorDrawsLoadsAndLearnsTheirValues(t *testing.T) {
 		t.Fatalf("op %+v", next)
 	}
 }
+
+func TestRegisterReadMissingAShownLoadOnAnotherKeyIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterIndeterminateLoadShownOnOneKeyAndMissedOnAnotherIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.load(1, "t", 3, history.Info, 0)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	b.read(3, "k1", "b", 9, 10)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterWriteAfterOrDuringALoadOverwritesItsValue(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.write(4, "k2", "c", 2, history.OK, 9)
+	b.load(1, "t", 3, history.OK, 4)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.write(0, "k1", "d", 7, history.OK, 8)
+	b.read(3, "k1", "d", 10, 11)
+	b.read(3, "k2", "c", 12, 13)
+	report := Register{Loads: 8}.Check(b.build())
+	expectKinds(t, report)
+	if report.Undecided[RegisterLoadAtomic] {
+		t.Fatalf("report %+v", report)
+	}
+}
+
+func TestRegisterCASExpectingThePreLoadValueAcrossALoadFails(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.cas(2, "k0", "a", "x", 3, history.Fail, 8)
+	b.load(1, "t", 4, history.OK, 5)
+	b.read(3, "k0", LoadValue("t", "k0"), 9, 10)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
+}
+
+func TestRegisterLoadsAndWatchesAreRefusedTogether(t *testing.T) {
+	if err := Validate(Register{Watch: 4, Loads: 8}); err == nil {
+		t.Fatal("loads with watches validated")
+	}
+	for _, r := range []Register{{}, {Watch: 4}, {Loads: 8}} {
+		if err := Validate(r); err != nil {
+			t.Fatalf("%+v: %v", r, err)
+		}
+	}
+}
+
+func TestRegisterGeneratorWithoutLoadsDrawsNoLoadSite(t *testing.T) {
+	var sites []string
+	state := uint64(1)
+	generator := Register{}.Generator(0)
+	for range 200 {
+		op := generator.Next(func(site string, n uint64) uint64 {
+			sites = append(sites, site)
+			state = state*6364136223846793005 + 1442695040888963407
+			return (state >> 33) % n
+		}, func() string { return fmt.Sprintf("v%d", len(sites)) })
+		generator.Observe(op, history.OK, nil)
+	}
+	for _, site := range sites {
+		if site != "register.key" && site != "register.op" {
+			t.Fatalf("draw sites %v", sites)
+		}
+	}
+}

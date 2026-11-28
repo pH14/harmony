@@ -49,6 +49,17 @@ type Family interface {
 	Check(h *history.History) Report
 }
 
+type Validator interface {
+	Validate() error
+}
+
+func Validate(f Family) error {
+	if v, ok := f.(Validator); ok {
+		return v.Validate()
+	}
+	return nil
+}
+
 func ByName(name string) (Family, error) {
 	switch name {
 	case "log":

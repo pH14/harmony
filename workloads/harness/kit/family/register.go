@@ -4,6 +4,7 @@ package family
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -21,6 +22,7 @@ const (
 	RegisterWritesLinear = "register: each key's writes and compare-and-swaps are linearizable"
 	RegisterMonotonic    = "register: no client reads a value older than one it read before"
 	RegisterWriteAcked   = "register: a write was acknowledged"
+	RegisterLoadAtomic   = "register: no read misses a load that a completed read of another key showed"
 )
 
 type ReadConsistency int
@@ -64,7 +66,17 @@ func (r Register) Kinds() []string {
 	if r.Watch > 0 {
 		kinds = append(kinds, watchKinds()...)
 	}
+	if r.Loads > 0 && r.Reads == LinearizableReads {
+		kinds = append(kinds, RegisterLoadAtomic)
+	}
 	return kinds
+}
+
+func (r Register) Validate() error {
+	if r.Watch > 0 && r.Loads > 0 {
+		return errors.New("register: loads and watches cannot both be on")
+	}
+	return nil
 }
 
 func (r Register) linearKind() string {
@@ -380,12 +392,114 @@ func (r Register) Check(h *history.History) Report {
 			})
 		}
 	}
+	if r.Loads > 0 && r.Reads == LinearizableReads {
+		r.checkLoadAtomic(h, byKey, &report, &found)
+	}
 	r.checkReplicas(h, byKey, &report, &found)
 	if r.Watch > 0 {
 		r.checkWatches(h, &report, &found)
 	}
 	report.Violations = found.result()
 	return report
+}
+
+// A read that completed with a load's value on one key shows the load took
+// effect before that read returned, so every read of another key that starts
+// afterwards must see the load or a write that took effect after it. A value
+// whose write was acknowledged before the load was invoked took effect before
+// the load, so such a read missed the load on its key.
+func (r Register) checkLoadAtomic(h *history.History, byKey map[string][]registerOp, report *Report, found *collector) {
+	type shown struct {
+		key      string
+		complete int64
+	}
+	type load struct {
+		op      *history.Op
+		witness []shown
+	}
+	var loads []*load
+	byToken := map[string]*load{}
+	for index := range h.Ops {
+		op := &h.Ops[index]
+		var token string
+		if op.F != RegisterLoad || op.Type == history.Fail || json.Unmarshal(op.Input, &token) != nil || token == "" {
+			continue
+		}
+		l := &load{op: op}
+		loads = append(loads, l)
+		for key := range byKey {
+			byToken[LoadValue(token, key)] = l
+		}
+	}
+	if len(loads) == 0 {
+		return
+	}
+	for key, ops := range byKey {
+		for _, op := range ops {
+			if op.input.f != RegisterReadF || op.op.Type != history.OK {
+				continue
+			}
+			if l, ok := byToken[op.output.value]; ok && op.output.value == LoadValue(tokenOf(l.op), key) {
+				l.witness = append(l.witness, shown{key: key, complete: op.op.Complete})
+			}
+		}
+	}
+	for _, l := range loads {
+		if len(l.witness) > 0 {
+			report.Decided = true
+			delete(report.Undecided, RegisterLoadAtomic)
+			break
+		}
+	}
+	for _, key := range sortedKeys(byKey) {
+		ops := byKey[key]
+		acknowledged := map[string]*history.Op{}
+		for _, op := range ops {
+			if op.input.f != RegisterReadF && op.op.Type == history.OK {
+				acknowledged[op.input.value] = op.op
+			}
+		}
+	reads:
+		for _, read := range ops {
+			if read.input.f != RegisterReadF || read.op.Type != history.OK {
+				continue
+			}
+			before := int64(-1 << 63)
+			if read.output.value != "" {
+				source, ok := acknowledged[read.output.value]
+				if !ok {
+					continue
+				}
+				before = source.Complete
+			}
+			for _, l := range loads {
+				if before >= l.op.Invoke {
+					continue
+				}
+				for _, w := range l.witness {
+					if w.key == key || w.complete >= read.op.Invoke {
+						continue
+					}
+					found.add(RegisterLoadAtomic, func() map[string]any {
+						details := map[string]any{"key": key, "read": describe(read.op), "load": describe(l.op), "shown_on": w.key}
+						if read.output.value == "" {
+							details["value"] = nil
+						} else {
+							details["value"] = read.output.value
+						}
+						return details
+					})
+					continue reads
+				}
+			}
+		}
+	}
+}
+
+func tokenOf(op *history.Op) string {
+	var token string
+	_ = json.Unmarshal(op.Input, &token)
+	return token
 }
 
 func withoutReads(ops []registerOp) []registerOp {

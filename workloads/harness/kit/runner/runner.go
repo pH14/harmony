@@ -109,6 +109,9 @@ const abandonGrace = time.Second
 
 func Run(ctx context.Context, adapter Adapter, config Config) error {
 	fam := adapter.Family()
+	if err := family.Validate(fam); err != nil {
+		return err
+	}
 	journal, err := history.Create(config.Dir, "drive", sdk.Random)
 	if err != nil {
 		return err

@@ -357,8 +357,24 @@ value to every key at once: each key's linearizability check, the stale-read
 checks and the replica comparison see a load as a write of its value to that
 key, a load that ended indeterminately as a write that may or may not have
 taken effect, and a failed load as no write. Watches report changes by
-revision, which a load does not produce, so a target turns on loads or
-watches, not both.
+revision, which a load does not produce, so `Register.Validate` refuses loads
+and watches together, and the runner refuses such a family before it drives or
+checks.
+
+Those per-key checks pass a load that took effect on some keys and not others,
+so with loads on and linearizable reads the check adds
+`register: no read misses a load that a completed read of another key showed`.
+A successful read that returned a load's value on one key shows the load took
+effect before that read completed. Any later-starting successful read of
+another key that returns no value, or a value whose write or `cas` was
+acknowledged before the load was invoked, missed the load on that key and is a
+violation. A value written by an operation that overlaps or follows the load,
+or by one that ended indeterminately, is never counted, since that write can
+correctly replace the load's value. The property catches a load that applied
+to part of the store once a read has shown it; it does not catch a partial load
+that no read on a loaded key ever shows, or one that only pinned reads or reads
+under `MonotonicReads` see, since those reads may lag. It is decided once some
+read shows a load.
 
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
@@ -741,7 +757,7 @@ other bundles do not spend draws on it. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown-oldest` to select it.
 
 `bundle-stepdown-load` is `bundle-stepdown` with `HARNESS_RQLITE_LOAD=50` on
-the workload, which turns on the register family's loads (`Register.Loads`) at
+the workload and the check, which turns on the register family's loads (`Register.Loads`) at
 about one operation in 50. A load sends `POST /db/load` with a SQLite database
 file to the client's node without `redirect`, so a follower forwards it to the
 leader, and rqlite applies it as one Raft command that replaces every node's

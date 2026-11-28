@@ -90,6 +90,9 @@ func pinnedNodes(adapter Adapter) []string {
 
 func Check(ctx context.Context, adapter Adapter, config Config) (CheckResult, error) {
 	fam := adapter.Family()
+	if err := family.Validate(fam); err != nil {
+		return CheckResult{}, err
+	}
 	Declare(fam)
 	nodes := pinnedNodes(adapter)
 	if len(nodes) > 0 {

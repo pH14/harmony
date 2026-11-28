@@ -16,4 +16,4 @@ hook 5 /opt/harmony/rqlite-harness stepdown
 heal 4
 ready /opt/harmony/rqlite-harness ready
 workload /usr/bin/env HARNESS_RQLITE_LOAD=50 /opt/harmony/rqlite-harness drive
-check /opt/harmony/rqlite-harness check
+check /usr/bin/env HARNESS_RQLITE_LOAD=50 /opt/harmony/rqlite-harness check
