@@ -4,6 +4,7 @@ package family
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"harmony.local/harness/kit/history"
@@ -381,8 +382,11 @@ func TestRegisterWriteAfterOrDuringALoadOverwritesItsValue(t *testing.T) {
 	b.read(3, "k2", "c", 12, 13)
 	report := Register{Loads: 8}.Check(b.build())
 	expectKinds(t, report)
-	if report.Undecided[RegisterLoadAtomic] {
+	if _, undecided := report.Undecided[RegisterLoadAtomic]; undecided || !report.Decided {
 		t.Fatalf("report %+v", report)
+	}
+	if !slices.Contains(Register{Loads: 8}.Kinds(), RegisterLoadAtomic) {
+		t.Fatal("loads add no cross-key kind")
 	}
 }
 
@@ -423,4 +427,39 @@ func TestRegisterGeneratorWithoutLoadsDrawsNoLoadSite(t *testing.T) {
 			t.Fatalf("draw sites %v", sites)
 		}
 	}
+}
+
+func TestRegisterReadWithNoValueAfterAShownLoadIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "t", 1, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 3, 4)
+	b.read(3, "k1", nil, 5, 6)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterReadOfTheEarlierOfTwoLoadsAfterTheLaterIsShownIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "s", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", LoadValue("s", "k1"), 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterReadOfTheLaterOfTwoLoadsIsAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "s", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", LoadValue("t", "k1"), 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
+}
+
+func TestRegisterValueOfAnIndeterminateWriteIsNotCountedAgainstALoad(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.Info, 0)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
 }

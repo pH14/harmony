@@ -680,6 +680,9 @@ host_history = "harness-check -family register -reads monotonic @/tmp/harness/jo
 Pass `-reads monotonic` to check the history the way the nats-kv adapter does. Pass
 `-watches` to add the register watch and member history checks, as a target
 with `Register.Watch` set does.
+Pass `-loads` to add the cross-key load check, as a target with
+`Register.Loads` set does; without it, a journal with loads still gets each
+key's checks, which model a load as a write to every key.
 `harness-check` checks the clients' operations without the check's final read.
 It prints the journal files, the operation count, the facts and the violations
 as JSON, and exits 3 when it finds violations.
