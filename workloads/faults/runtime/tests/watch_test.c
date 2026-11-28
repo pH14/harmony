@@ -24,6 +24,7 @@
 #endif
 
 static volatile unsigned char *shared;
+static volatile unsigned char *hold_target;
 static size_t hold_write_at;
 static unsigned char hold_write_value;
 static void (*hold_action)(void);
@@ -59,7 +60,7 @@ static int writing_sleep(const struct timespec *request, struct timespec *remain
 {
     if (request->tv_sec != 0 || request->tv_nsec != HOLD_NANOS)
         return nanosleep(request, remaining);
-    shared[hold_write_at] = hold_write_value;
+    (hold_target != NULL ? hold_target : shared)[hold_write_at] = hold_write_value;
     if (hold_action != NULL)
         hold_action();
     return 0;
@@ -123,34 +124,103 @@ static void *read_from_another_thread(void *offset)
 
 static size_t page_bytes;
 static unsigned char *gone;
+static unsigned char *replaced;
 static unsigned char *shrunk;
+static unsigned char *truncated;
+static int truncated_fd;
 
-static void replace_mappings(void)
+static int kept(const volatile void *start)
 {
-    assert(munmap(gone, 2 * page_bytes) == 0);
-    assert(munmap(shrunk, 2 * page_bytes) == 0);
-    assert(mmap(shrunk, page_bytes, PROT_READ | PROT_WRITE,
-                MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == shrunk);
+    size_t index;
+
+    for (index = 0; index < harmony_fault_watch.range_count; index++)
+        if (harmony_fault_watch.ranges[index].start == (uintptr_t)start)
+            return harmony_fault_watch.ranges[index].kept;
+    return -1;
 }
 
-static void hold_over_replaced_mappings(size_t offset, unsigned char value)
+static unsigned char *shared_pages(size_t count)
+{
+    unsigned char *pages = mmap(NULL, count * page_bytes, PROT_READ | PROT_WRITE,
+                                MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+    assert(pages != MAP_FAILED);
+    memset(pages, 1, count * page_bytes);
+    return pages;
+}
+
+static void change_mappings(void)
+{
+    assert(kept(gone) == 1 && kept(replaced) == 1 && kept(shrunk) == 1 && kept(truncated) == 1);
+    assert(munmap(gone, 2 * page_bytes) == 0);
+    assert(munmap(replaced, 2 * page_bytes) == 0);
+    assert(mmap(replaced, page_bytes, PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == replaced);
+    assert(munmap(shrunk + page_bytes, page_bytes) == 0);
+    assert(ftruncate(truncated_fd, 0) == 0);
+}
+
+static void hold_over_changed_mappings(size_t offset, unsigned char value)
 {
     uint64_t site;
 
-    gone = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
-                -1, 0);
-    shrunk = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS,
-                  -1, 0);
-    assert(gone != MAP_FAILED && shrunk != MAP_FAILED);
-    memset(gone, 1, 2 * page_bytes);
-    memset(shrunk, 1, 2 * page_bytes);
-    hold_action = replace_mappings;
+    gone = shared_pages(2);
+    replaced = shared_pages(2);
+    shrunk = shared_pages(2);
+    truncated_fd = memfd_create("watch-test", MFD_CLOEXEC);
+    assert(truncated_fd >= 0);
+    assert(ftruncate(truncated_fd, (off_t)(2 * page_bytes)) == 0);
+    truncated = mmap(NULL, 2 * page_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, truncated_fd, 0);
+    assert(truncated != MAP_FAILED);
+    memset(truncated, 1, 2 * page_bytes);
+    hold_action = change_mappings;
     site = land(offset, value);
     hold_action = NULL;
+    assert(kept(gone) == 0 && kept(replaced) == 0 && kept(shrunk) == 0 && kept(truncated) == 0);
+    assert(kept(shared) == 1);
     assert(shared[offset] == value);
     edges(1);
     assert_read_report(site, 1);
+    assert(munmap(replaced, page_bytes) == 0);
     assert(munmap(shrunk, page_bytes) == 0);
+    assert(munmap(truncated, 2 * page_bytes) == 0);
+    assert(close(truncated_fd) == 0);
+}
+
+static void unmap_during_page_watch(void)
+{
+    unsigned char *watched = shared_pages(1);
+    sig_atomic_t faults = foreign_faults;
+
+    hold_target = watched;
+    (void)land(8, 3);
+    hold_target = NULL;
+    assert(munmap(watched, page_bytes) == 0);
+    if (sigsetjmp(foreign_return, 1) == 0)
+        (void)*(volatile unsigned char *)watched;
+    assert(foreign_faults == faults + 1);
+    edges(HARMONY_FAULT_WATCH_EDGES);
+}
+
+static void replace_during_page_watch(void)
+{
+    unsigned char *watched = shared_pages(1);
+    sig_atomic_t faults = foreign_faults;
+
+    hold_target = watched;
+    (void)land(8, 3);
+    hold_target = NULL;
+    assert(((volatile unsigned char *)watched)[100] == 1);
+    assert(mmap(watched, page_bytes, PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1,
+                0) == watched);
+    edges(1);
+    assert(*(volatile unsigned char *)watched == 0);
+    assert(foreign_faults == faults);
+    edges(HARMONY_FAULT_WATCH_EDGES);
+    if (sigsetjmp(foreign_return, 1) == 0)
+        *(volatile unsigned char *)watched = 1;
+    assert(foreign_faults == faults + 1);
+    assert(munmap(watched, page_bytes) == 0);
 }
 
 static void read_mapped_and_unmapped(void)
@@ -166,6 +236,8 @@ static void read_mapped_and_unmapped(void)
     assert(got[0] == 0x5a && got[sizeof(got) - 1] == 0x5a);
     assert(harmony_fault_watch_read(got, (uintptr_t)(pair + page_bytes), sizeof(got)) != 0);
     assert(harmony_fault_watch_read(got, (uintptr_t)(pair + page_bytes - 16), 32) != 0);
+    assert(harmony_fault_watch_read(got, (uintptr_t)pair, sizeof(got)) == 0);
+    harmony_fault_watch_pipe_close();
     assert(munmap(pair, page_bytes) == 0);
 }
 
@@ -302,12 +374,15 @@ int main(void)
 
     page_bytes = page;
     read_mapped_and_unmapped();
-    hold_over_replaced_mappings(700, 4);
-    assert(harmony_fault_watch.self_read_refused == 0);
+    hold_over_changed_mappings(700, 4);
+    assert(sigaction(SIGSEGV, &catcher, &before) == 0);
+    unmap_during_page_watch();
+    replace_during_page_watch();
+    assert(sigaction(SIGSEGV, &before, NULL) == 0);
     refuse_self_reads();
     read_mapped_and_unmapped();
     assert(harmony_fault_watch.self_read_refused == 1);
-    hold_over_replaced_mappings(800, 5);
+    hold_over_changed_mappings(800, 5);
     return 0;
 }
 #else

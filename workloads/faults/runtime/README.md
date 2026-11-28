@@ -67,46 +67,65 @@ hold. Before the hold, the runtime copies every `rw-s` mapping listed in
 `/proc/self/maps`, up to 16 mappings and 1 MiB in total. After the hold it
 reads `/proc/self/maps` again and keeps only the mappings whose start, end,
 file offset, device and inode are unchanged; another thread can unmap, shrink
-or replace a mapping while the parked thread sleeps. It compares each kept
+or replace a mapping while the parked thread sleeps. Changing a page's
+protection splits its mapping into several lines of the file, so the check
+joins adjacent shared lines of the same file at consecutive offsets into one
+mapping before comparing. It compares each kept
 mapping with its copy and removes all access to the pages that changed, up to
-256 pages, then installs a `SIGSEGV` handler. A dropped mapping reports
+256 pages, then installs a `SIGSEGV` handler with `SA_ONSTACK`, so it runs on
+the thread's signal stack where Go requires it. A dropped mapping reports
 nothing: its changed bytes do not count as changes, and a hold whose mappings
-are all dropped is not watched.
+are all dropped is not watched. Two mappings that share an inode and offset,
+such as an io_uring ring unmapped and mapped again at the same address, pass
+the identity check, so differences between them count as changes.
 
-The copy and the comparison never touch a recorded mapping through a pointer.
-A thread can unmap a mapping between the second read of `/proc/self/maps` and
-the comparison, and a load from an unmapped address raises `SIGSEGV` inside
-the instrumented thread, which ends the node as if the program had crashed.
-The runtime instead reads mapped memory with `process_vm_readv` on its own
-process ID, which returns `EFAULT` or a short count for an unmapped range. The
-kernel always allows a thread group to read itself, whatever the Yama ptrace
-scope or the no-new-privileges flag, so only a seccomp filter or a kernel
-without the call can refuse it. When the call does not read the whole range,
-the runtime writes the range into a fresh pipe and reads it back, 4096 bytes
-at a time; `write` from an unmapped address returns `EFAULT` instead of
-faulting. After an error other than `EFAULT` the runtime stops calling
-`process_vm_readv` for the rest of the process and uses the pipe alone. A
-range that the pipe cannot carry in full is dropped as above. The x86_64 KVM
-guest kernel starts from `allnoconfig` without `CONFIG_CROSS_MEMORY_ATTACH`,
-so `process_vm_readv` returns `ENOSYS` there and guest nodes use the pipe from
-their first watched hold. When the released
-thread faults on one of those pages, the handler decodes whether the access
-is a read from the fault context. On arm64 the syndrome register also gives
-the access width; an access of unknown width, and every access on x86_64,
-counts as 16 bytes. A read that covers a changed byte marks the watch, and the
-handler restores access to the page so the access completes. The thread's
-next instrumented edge removes access again. If the thread reads a changed
-byte within its first 50 instrumented edges after release, the runtime writes
+When the released thread faults on one of those pages, the handler acts only
+on an access fault (`SEGV_ACCERR`) at a page the watch protected and has not
+released. It reads `/proc/self/maps` again; if the page's mapping no longer
+matches, or restoring access fails, the handler releases the page and passes
+the fault to the handler installed before the watch, because the fault then
+belongs to the program. Otherwise it decodes whether the access is a read from
+the fault context. On arm64 the syndrome register also gives the access width;
+an access of unknown width, and every access on x86_64, counts as 16 bytes. A
+read that covers a changed byte marks the watch, and the handler restores
+access to the page so the access completes. The thread's next instrumented
+edge removes access again from the pages it touched, after the same identity
+check. If the thread reads a changed byte within its first 50 instrumented
+edges after release, the runtime writes
 `{"harmony_park_read":{"site":S,"edges":N}}` through `fuzz_json_data`, where
 `S` is the park's site and `N` is the edge count at the read. The watch ends at
-that report or at the 50th edge, restoring every page and the previous
-handler. Faults from other threads restore their page and leave it
-unwatched. A fault outside the watched pages goes to the handler that was
-installed before the watch. One park at a time owns the watch; a park that
-lands while another hold or watch is in progress is not watched. A forked
-child ends any watch it inherits. A shared mapping names state that other
-processes can change, so a read of changed bytes right after release marks a
-stop placed between reading and using that state.
+that report or at the 50th edge, restoring access to every page whose mapping
+still matches and restoring the previous handler. Faults from other threads
+restore their page and leave it unwatched. A fault outside the watched pages,
+or a fault of any other kind, goes to the handler that was installed before
+the watch. One park at a time owns the watch; a park that lands while another
+hold or watch is in progress is not watched. A forked child ends any watch it
+inherits. A shared mapping names state that other processes can change, so a
+read of changed bytes right after release marks a stop placed between reading
+and using that state.
+
+The copy and the comparison never read a recorded mapping through a pointer.
+A thread can unmap a mapping between the second read of `/proc/self/maps` and
+the comparison, and a load from an unmapped address would raise `SIGSEGV` in
+the instrumented thread and end the node as if the program had crashed. The
+runtime reads memory with `process_vm_readv` on its own process ID, which
+returns `EFAULT` or a short count for an unmapped range. When the call does
+not read the whole range, the runtime writes the range into a pipe and reads
+it back, 4096 bytes at a time; `write` from an unmapped address returns
+`EFAULT` instead of faulting. Any error other than `EFAULT`, whatever its
+cause, makes the runtime stop calling `process_vm_readv` for the rest of the
+process and use the pipe alone. A range that the pipe cannot carry in full is
+dropped as above. The x86_64 KVM guest kernel starts from `allnoconfig`
+without `CONFIG_CROSS_MEMORY_ATTACH`, so `process_vm_readv` returns `ENOSYS`
+there and guest nodes use the pipe from their first watched hold. The copy and
+the comparison each open one pipe and close it when done, so a park on the
+pipe path makes at most 2 * (2 * 256 + 3) system calls to read memory: one
+write and one read per 4096 bytes of the 1 MiB limit, plus the pipe's
+creation and two closes. Each read of `/proc/self/maps` goes through a
+256-byte buffer, with no limit on the file's length. The runtime reads the
+file once before the hold, once after it, once at each instrumented edge that
+has pages to protect again, once per fault on a watched page, and once when
+the watch ends.
 
 ## Park page
 
