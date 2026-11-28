@@ -894,9 +894,11 @@ gives way to others, as AFLFast lowers an input's energy the more often it is
 chosen. A site that adds both weights gets their sum. Sites that never enter
 their first hit-count bucket in any process, because they share a counter slot
 with a hotter site, are never listed and get no weight. The weights are
-recomputed as each job record closes, so parks can aim from the second job.
-Once any site has a weight, half of the drawn parks aim at a site picked by
-weight. An aimed park has `edges` 1 and a target
+recomputed as each job record closes, a skipped job's record included, and a
+job draws with the weights current when it is dispatched. Parks can therefore
+aim from the first job dispatched after the first record closes; with W jobs in
+flight, the first W jobs draw with no weights. Once any site has a weight, half
+of the drawn parks aim at a site picked by weight. An aimed park has `edges` 1 and a target
 range that is the site alone or the site plus or minus `2^k` bytes for `k` from
 6 through 12, each of the eight widths equally likely.
 `park_aims` in `campaign-summary.json` and `report.json` covers only the

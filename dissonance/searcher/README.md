@@ -163,7 +163,7 @@ tables change only at a table update, every 64 records. Feedback enters the
 table hash when nonempty, keeps at most the 4,096 heaviest keys, and reaches each draw
 through `DrawView` with the table version the draw names. Keys tied at the
 cutoff are ordered by a hash of the key and the table's record count, so each
-update admits a different share of them instead of always the lowest keys. Workloads identify
+record admits a different share of them instead of always the lowest keys. Workloads identify
 their input policies and reject unknown or retired identifiers during replay.
 
 The worker pool starts before the bootstrap. The coordinator bootstraps while
