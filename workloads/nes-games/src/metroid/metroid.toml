@@ -168,7 +168,7 @@ latch = true
 
 [[stage]]
 name = "mother_brain"
-objective = "256 * zebetites_destroyed + boss_damage"
+objective = "if boss_damage == 0 then zebetites_destroyed else 5 + boss_damage"
 goal = "mother_brain_defeated and not dead"
 
 [[stage]]

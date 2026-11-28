@@ -608,6 +608,24 @@ mod tests {
     }
 
     #[test]
+    fn mother_brain_ranks_damage_above_columns_and_columns_before_the_first_hit() {
+        let at = |zebetites_destroyed: u8, hits: u16| MetroidMechanicalState {
+            zebetites_destroyed,
+            boss_health: (32 - hits) * 4,
+            ..at_cell(190_311, 300)
+        };
+        let named = |objective: i64| ("mother_brain".to_owned(), objective);
+        assert_eq!(
+            keys(
+                &stage_alone("mother_brain"),
+                &[at(2, 0), at(3, 0), at(5, 0), at(0, 1), at(4, 23), at(3, 24)]
+            )
+            .0,
+            [named(2), named(3), named(5), named(6), named(28), named(29)]
+        );
+    }
+
+    #[test]
     fn a_kraid_win_short_of_the_energy_target_ends_the_energy_stage_on_any_frame() {
         let lowered = strategy();
         let names = lowered.compiled.stage_names();
