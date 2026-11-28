@@ -348,6 +348,18 @@ runner which operation reads a node's change history, so any target whose
 system has a change feed can use the same checks by answering `watch` and
 `history`.
 
+`Register.Loads` set to N adds a `load` operation to about one operation in N.
+A load replaces the whole store in one operation. Its input is a fresh value
+token and it names no key. A load that succeeds sets every key `kI` to
+`LoadValue(token, "kI")`, `load-` followed by the token's 64-bit FNV-1a hash in
+hexadecimal, a hyphen and the key. The checks model it as one write of that
+value to every key at once: each key's linearizability check, the stale-read
+checks and the replica comparison see a load as a write of its value to that
+key, a load that ended indeterminately as a write that may or may not have
+taken effect, and a failed load as no write. Watches report changes by
+revision, which a load does not produce, so a target turns on loads or
+watches, not both.
+
 Apart from that log check, failed operations are dropped. Indeterminate
 operations never produce a violation.
 
@@ -727,6 +739,27 @@ it, one on rqlite v10.3.0 and v10.3.1 and one on v10.2.7, did not show it
 raising the rate of that repair, which is why it has its own bundle and the
 other bundles do not spend draws on it. Build the image with
 `--build-arg HARNESS_BUNDLE=bundle-stepdown-oldest` to select it.
+
+`bundle-stepdown-load` is `bundle-stepdown` with `HARNESS_RQLITE_LOAD=50` on
+the workload, which turns on the register family's loads (`Register.Loads`) at
+about one operation in 50. A load sends `POST /db/load` with a SQLite database
+file to the client's node without `redirect`, so a follower forwards it to the
+leader, and rqlite applies it as one Raft command that replaces every node's
+database. The file is `/opt/harmony/load-template.sqlite`, built in the image
+with the `kv`, `log` and `ready` tables, `ready` row 1 and one `kv` row per
+register key whose value is a placeholder of the same length as a load value,
+with `n` 1 and `h` 0. The client writes the load's value prefix over each
+placeholder, so the file stays valid. HTTP 503, a redirect and the refusals
+`append` treats as definite fail the load definitely; any other error leaves it
+indeterminate. A load resets each row's `n` and `h` to the template's on every
+node that applies it, so the replica comparison still sees equal metadata on
+correct nodes. After a load rqlite takes its next snapshot in full, which
+exercises the snapshot store's switch from incremental to full snapshots and
+the restores that follow. `HARNESS_RQLITE_LOAD` takes 0 to 65535, is unset by
+default, and is refused with `HARNESS_RQLITE_MODE=forward`. rqlite's other
+whole-database client operation, `POST /boot`, needs a single-node cluster, so
+no bundle drives it. Build the image with
+`--build-arg HARNESS_BUNDLE=bundle-stepdown-load` to select it.
 
 `bundle-leader` is `bundle` with a `role` line,
 `role /opt/harmony/rqlite-harness leader`, so every pause the search draws,

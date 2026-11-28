@@ -36,6 +36,24 @@ RUN mkdir -p /out \
     && ! grep -a -q antithesishq/antithesis-sdk-go/instrumentation /out/rqlite-harness \
     && test -x /out/rqlite-harness
 
+# A register load replaces the database with this file after the harness
+# writes one token into every key's placeholder value. The schema matches the
+# ready statements and the file stays in rollback journal mode.
+FROM ${DEBIAN_IMAGE} AS load-template
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /out \
+    && { echo "CREATE TABLE kv (k INTEGER PRIMARY KEY, v TEXT, n INTEGER NOT NULL DEFAULT 0, h INTEGER NOT NULL DEFAULT 0);"; \
+         echo "CREATE TABLE log (id INTEGER PRIMARY KEY, v TEXT);"; \
+         echo "CREATE TABLE ready (k INTEGER PRIMARY KEY, n INTEGER);"; \
+         echo "INSERT INTO ready(k, n) VALUES(1, 1);"; \
+         for k in 0 1 2 3 4; do echo "INSERT INTO kv(k, v, n, h) VALUES(${k}, 'load-PPPPPPPPPPPPPPPP-k${k}', 1, 0);"; done; } \
+       | sqlite3 /out/load-template.sqlite \
+    && test "$(sqlite3 /out/load-template.sqlite 'PRAGMA journal_mode;')" = delete \
+    && test "$(grep -a -o 'load-PPPPPPPPPPPPPPPP-' /out/load-template.sqlite | wc -l)" = 5
+
 FROM ${GO_IMAGE} AS instrumented-build
 
 ARG TARGETARCH
@@ -154,6 +172,7 @@ ARG RQLITE_VERSION=v10.6.2
 SHELL ["/bin/sh", "-euxc"]
 COPY --from=instrumented-build /out/rqlite/rqlited /opt/rqlite/rqlited
 COPY --from=harness-build /out/rqlite-harness /out/harness-net /opt/harmony/
+COPY --from=load-template /out/load-template.sqlite /opt/harmony/load-template.sqlite
 COPY --from=instrumented-build /out/symbols/*.sym.tsv /symbols/
 COPY --from=instrumented-build /out/stdlib /symbols/stdlib
 COPY --from=instrumented-build /out/harmony-instrumented-events /symbols/harmony-instrumented-events
@@ -163,6 +182,7 @@ COPY --from=instrumented-build /out/ANTITHESIS-SDK-GO-LICENSE /licenses/antithes
 RUN chmod 0755 /opt/rqlite/rqlited /opt/harmony/rqlite-harness /opt/harmony/harness-net /usr/lib/libvoidstar.so \
     && test -x /opt/rqlite/rqlited \
     && test -x /opt/harmony/rqlite-harness \
+    && test -s /opt/harmony/load-template.sqlite \
     && set -- /symbols/*.sym.tsv \
     && test -s "$1" \
     && test -s /symbols/harmony-instrumented-events \

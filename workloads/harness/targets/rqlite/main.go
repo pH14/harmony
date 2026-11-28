@@ -35,7 +35,12 @@ const (
 	fenceSQL  = "UPDATE ready SET n = n + 1 WHERE k = 1"
 	readLevel = "linearizable"
 	modeEnv   = "HARNESS_RQLITE_MODE"
+	loadEnv   = "HARNESS_RQLITE_LOAD"
 )
+
+const loadPlaceholder = "load-PPPPPPPPPPPPPPPP-"
+
+var loadTemplate = "/opt/harmony/load-template.sqlite"
 
 var nodes = []string{
 	"http://127.0.0.1:4001",
@@ -71,13 +76,14 @@ var readySQL = [][]any{
 
 type adapter struct {
 	forward bool
+	loads   uint64
 }
 
 func (a adapter) Family() family.Family {
 	if a.forward {
 		return family.Log{}
 	}
-	return family.Register{}
+	return family.Register{Loads: a.loads}
 }
 
 type client struct {
@@ -521,6 +527,9 @@ func key(k string) (int64, error) {
 }
 
 func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
+	if op.F == family.RegisterLoad {
+		return nil, c.load(ctx, op.V.(string))
+	}
 	if op.F == family.RegisterReplicas {
 		pinned, err := pinnedClient(ctx, op.Node)
 		if err != nil {
@@ -572,6 +581,59 @@ func (c *client) Invoke(ctx context.Context, op family.Op) (any, error) {
 		return value, nil
 	}
 	return nil, runner.Definite(fmt.Errorf("unknown operation %q", op.F))
+}
+
+// A load replaces the whole database through one Raft command. The template
+// holds every register key with a placeholder value of the same length as a
+// load value, so substituting the token keeps the SQLite file valid.
+func (c *client) load(ctx context.Context, token string) error {
+	template, err := os.ReadFile(loadTemplate)
+	if err != nil {
+		return runner.Definite(err)
+	}
+	marker := family.LoadValue(token, "")
+	if len(marker) != len(loadPlaceholder) {
+		return runner.Definite(fmt.Errorf("load: value prefix %q does not match the placeholder length", marker))
+	}
+	keys := len(family.Register{}.LoadKeys())
+	if count := bytes.Count(template, []byte(loadPlaceholder)); count != keys {
+		return runner.Definite(fmt.Errorf("load: template holds %d placeholders for %d keys", count, keys))
+	}
+	body := bytes.ReplaceAll(template, []byte(loadPlaceholder), []byte(marker))
+	status, text, _, err := c.send(ctx, c.base+"/db/load", body)
+	if err != nil {
+		return err
+	}
+	text = strings.TrimSpace(text)
+	switch {
+	case status == http.StatusServiceUnavailable || status == http.StatusMovedPermanently || refused(text):
+		return runner.Definite(fmt.Errorf("load: status %d: %s", status, text))
+	case status != http.StatusOK:
+		return fmt.Errorf("load: status %d: %s", status, text)
+	}
+	var resp response
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		return fmt.Errorf("load: decode %q: %w", text, err)
+	}
+	if resp.Error != "" {
+		if refused(resp.Error) {
+			return runner.Definite(fmt.Errorf("load: %s", resp.Error))
+		}
+		return fmt.Errorf("load: %s", resp.Error)
+	}
+	return nil
+}
+
+func loadRate() (uint64, error) {
+	text := os.Getenv(loadEnv)
+	if text == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(text, 10, 64)
+	if err != nil || n > sdk.MaxChoiceOptions {
+		return 0, fmt.Errorf("bad %s %q: want 0 to %d", loadEnv, text, sdk.MaxChoiceOptions)
+	}
+	return n, nil
 }
 
 func (c *client) read(ctx context.Context, k int64, level string) (any, error) {
@@ -1002,15 +1064,24 @@ func main() {
 			return
 		}
 	}
+	loads, err := loadRate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	switch mode := os.Getenv(modeEnv); mode {
 	case "":
 		writes = newWriteFacts()
 		connections = newConnectionLog()
 		declareStatusProperties()
-		runner.Main(adapter{})
+		runner.Main(adapter{loads: loads})
 	case "forward":
 		if factsOn() {
 			fmt.Fprintf(os.Stderr, "%s needs the register mode\n", factsEnv)
+			os.Exit(2)
+		}
+		if loads > 0 {
+			fmt.Fprintf(os.Stderr, "%s needs the register mode\n", loadEnv)
 			os.Exit(2)
 		}
 		declareStatusProperties()

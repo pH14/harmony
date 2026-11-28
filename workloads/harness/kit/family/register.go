@@ -5,6 +5,7 @@ package family
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"time"
 
@@ -33,6 +34,7 @@ const (
 	RegisterWrite = "write"
 	RegisterReadF = "read"
 	RegisterCAS   = "cas"
+	RegisterLoad  = "load"
 )
 
 const (
@@ -49,6 +51,7 @@ type Register struct {
 	Pause   time.Duration
 	Reads   ReadConsistency
 	Watch   uint64
+	Loads   uint64
 }
 
 func (Register) Name() string { return "register" }
@@ -91,8 +94,22 @@ func registerKey(index int) string { return fmt.Sprintf("k%d", index) }
 
 func (r Register) Read() Op { return Op{F: RegisterReadF, K: registerKey(0)} }
 
+func (r Register) LoadKeys() []string {
+	keys := make([]string, r.keys())
+	for index := range keys {
+		keys[index] = registerKey(index)
+	}
+	return keys
+}
+
+func LoadValue(token, key string) string {
+	hash := fnv.New64a()
+	hash.Write([]byte(token))
+	return fmt.Sprintf("load-%016x-%s", hash.Sum64(), key)
+}
+
 func (r Register) Generator(int) Generator {
-	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, watch: r.Watch, known: map[string]string{}}
+	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, watch: r.Watch, loads: r.Loads, known: map[string]string{}}
 }
 
 func (Register) Recorder(*history.History) Recorder { return plainRecorder{} }
@@ -102,6 +119,7 @@ type registerGenerator struct {
 	cas      bool
 	reads    bool
 	watch    uint64
+	loads    uint64
 	revision uint64
 	known    map[string]string
 }
@@ -109,6 +127,9 @@ type registerGenerator struct {
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
 	if g.watch > 0 && draw("register.watch", g.watch) == 0 {
 		return Op{F: RegisterWatch, V: WatchQuery{From: g.watchFrom(draw)}}
+	}
+	if g.loads > 0 && draw("register.load", g.loads) == 0 {
+		return Op{F: RegisterLoad, V: value()}
 	}
 	key := registerKey(int(draw("register.key", uint64(g.keys))))
 	var choice uint64
@@ -145,6 +166,13 @@ func (g *registerGenerator) Observe(op Op, outcome history.Type, result any) {
 	case RegisterReadF:
 		if value, ok := result.(string); ok {
 			g.known[op.K] = value
+		}
+	case RegisterLoad:
+		if token, ok := op.V.(string); ok {
+			for index := range g.keys {
+				key := registerKey(index)
+				g.known[key] = LoadValue(token, key)
+			}
 		}
 	}
 }
@@ -193,6 +221,35 @@ func decodeRegister(op *history.Op) (registerOp, bool) {
 	}
 	decoded.output.unknown = op.Type == history.Info
 	return decoded, op.Type != history.Fail
+}
+
+type keyedOp struct {
+	key string
+	op  registerOp
+}
+
+func decodeRegisterKeys(op *history.Op, keys int) []keyedOp {
+	if op.F != RegisterLoad {
+		decoded, ok := decodeRegister(op)
+		if !ok {
+			return nil
+		}
+		return []keyedOp{{key: op.K, op: decoded}}
+	}
+	var token string
+	if op.Type == history.Fail || json.Unmarshal(op.Input, &token) != nil || token == "" {
+		return nil
+	}
+	expanded := make([]keyedOp, keys)
+	for index := range expanded {
+		key := registerKey(index)
+		expanded[index] = keyedOp{key: key, op: registerOp{
+			op:     op,
+			input:  registerInput{f: RegisterWrite, value: LoadValue(token, key)},
+			output: registerOutput{unknown: op.Type == history.Info},
+		}}
+	}
+	return expanded
 }
 
 type stepBudget struct {
@@ -252,21 +309,20 @@ func (r Register) Check(h *history.History) Report {
 	var keys []string
 	for index := range h.Ops {
 		op := &h.Ops[index]
-		decoded, ok := decodeRegister(op)
-		if !ok {
-			continue
-		}
-		if _, seen := byKey[op.K]; !seen {
-			keys = append(keys, op.K)
-			byKey[op.K] = nil
+		expanded := decodeRegisterKeys(op, r.keys())
+		for _, keyed := range expanded {
+			if _, seen := byKey[keyed.key]; !seen {
+				keys = append(keys, keyed.key)
+				byKey[keyed.key] = nil
+			}
+			if op.Node != "" && op.F == RegisterReadF {
+				pinned[keyed.key] = append(pinned[keyed.key], keyed.op)
+			} else {
+				byKey[keyed.key] = append(byKey[keyed.key], keyed.op)
+			}
 		}
 		onNode := op.Node != "" && op.F == RegisterReadF
-		if onNode {
-			pinned[op.K] = append(pinned[op.K], decoded)
-		} else {
-			byKey[op.K] = append(byKey[op.K], decoded)
-		}
-		if op.Type != history.OK {
+		if len(expanded) == 0 || op.Type != history.OK {
 			continue
 		}
 		switch {
