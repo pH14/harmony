@@ -235,9 +235,12 @@ static int harmony_fault_event_rarity_allows(uint64_t before, uint8_t rarity)
 static int harmony_fault_park_spend(uint64_t before)
 {
     uint64_t visits = before == UINT64_MAX ? before : before + 1;
-    uint64_t weight = harmony_fault_events.park_from_arm != 0
-                          ? UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT
-                          : (UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT) / visits;
+    int full = harmony_fault_events.park_from_arm != 0 ||
+               harmony_fault_events.park_target_end -
+                       harmony_fault_events.park_target_start ==
+                   1;
+    uint64_t weight = full ? UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT
+                           : (UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT) / visits;
 
     if (weight == 0)
         weight = 1;

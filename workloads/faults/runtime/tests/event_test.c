@@ -518,7 +518,7 @@ int main(void)
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 9);
     assert(strcmp(json_report, "{\"harmony_park\":{\"site\":12,\"edges\":1}}\n") == 0);
-    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 12, 13, response);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 12, 14, response);
     harmony_instrumentation_event(12);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 9);
@@ -595,6 +595,16 @@ int main(void)
     assert(get_word(response, 24) == 18);
     assert(get_word(response, 32) == 14);
     store_word(HARMONY_FAULT_PAGE_NODE_PID, (uint64_t)getpid(), __ATOMIC_RELAXED);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 11, 13, response);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 10);
+    exchange_target(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, 12, 13, response);
+    harmony_instrumentation_event(12);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 11);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":12,\"edges\":1}}\n") == 0);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 0, response);
 
     {
         struct sigaction action;

@@ -44,7 +44,8 @@ visit to a site past its millionth visit counts 2^-20. A park command's fourth
 and fifth words give an optional target: a half-open range of module offsets,
 with `(0, 0)` for none. With a target, only edges whose site falls in the range
 count toward `k`, and an empty range makes the command invalid. A park armed
-by the command keeps the visit share. A park adopted from the park page,
+by the command keeps the visit share, except under a target one offset wide,
+where each visit counts one. A park adopted from the park page,
 described below, counts from its arming instead: each counted edge counts one
 whatever its site's visit count, so the `k`-th counted edge after the resume is
 held. Before the hold the runtime writes one JSON line through `fuzz_json_data`:
