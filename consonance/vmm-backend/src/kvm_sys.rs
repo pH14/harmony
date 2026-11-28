@@ -3020,6 +3020,11 @@ mod xsave_diagnostic {
                         ebx: 0x240,
                         ..Default::default()
                     },
+                    CpuidEntry {
+                        leaf: 0x8000_0001,
+                        edx: 1 << 29,
+                        ..Default::default()
+                    },
                 ],
                 ..Default::default()
             },
