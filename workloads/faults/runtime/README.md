@@ -64,48 +64,59 @@ priority over a park on the same edge.
 On Linux on x86_64 and arm64, a park also records whether the held thread,
 once released, reads shared memory that another process changed during the
 hold. Before the hold, the runtime copies every `rw-s` mapping listed in
-`/proc/self/maps`, up to 16 mappings and 1 MiB in total. After the hold it
-reads `/proc/self/maps` again and keeps only the mappings whose start, end,
-file offset, device and inode are unchanged; another thread can unmap, shrink
-or replace a mapping while the parked thread sleeps. Changing a page's
-protection splits its mapping into several lines of the file, so the check
-joins adjacent shared lines of the same file at consecutive offsets into one
-mapping before comparing. It compares each kept
-mapping with its copy and removes all access to the pages that changed, up to
-256 pages, then installs a `SIGSEGV` handler with `SA_ONSTACK`, so it runs on
-the thread's signal stack where Go requires it. A dropped mapping reports
-nothing: its changed bytes do not count as changes, and a hold whose mappings
-are all dropped is not watched. Two mappings that share an inode and offset,
-such as an io_uring ring unmapped and mapped again at the same address, pass
-the identity check, so differences between them count as changes.
+`/proc/self/maps`, up to 16 mappings and 1 MiB in total. Another thread can
+unmap, shrink, replace or change the protection of a mapping while the parked
+thread sleeps or after it is released, so the runtime decides page by page
+whether a recorded page is still the one it copied. A page is still recorded
+when the line of `/proc/self/maps` that contains it is shared, names the same
+device and inode, and maps the page at the same file offset as when it was
+copied. After the hold the line must be `rw-s`; while the watch holds the
+page, `---s` also counts, since the watch itself sets that protection. Any
+other protection on the line means the program changed it, and the watch
+leaves the page alone. A page that is no longer recorded is dropped. If
+`/proc/self/maps` cannot be opened, the comparison drops every page, the
+handler and the end of the watch treat every page as still recorded, and the
+re-protection at an edge releases every page. The runtime compares each
+still-recorded page with its copy and removes all access to the pages that
+changed, up to 256 pages, then installs a `SIGSEGV` handler with `SA_ONSTACK`,
+so it runs on the thread's signal stack where Go requires it. A dropped page
+reports nothing: its changed bytes do not count as changes, and a hold whose
+changed pages are all dropped is not watched. Two mappings that share an inode
+and offset, such as an io_uring ring unmapped and mapped again at the same
+address, pass the identity check, so differences between them count as
+changes.
 
 When the released thread faults on one of those pages, the handler acts only
 on an access fault (`SEGV_ACCERR`) at a page the watch protected and has not
-released. It reads `/proc/self/maps` again; if the page's mapping no longer
-matches, or restoring access fails, the handler releases the page and passes
-the fault to the handler installed before the watch, because the fault then
-belongs to the program. Otherwise it decodes whether the access is a read from
-the fault context. On arm64 the syndrome register also gives the access width;
-an access of unknown width, and every access on x86_64, counts as 16 bytes. A
-read that covers a changed byte marks the watch, and the handler restores
-access to the page so the access completes. The thread's next instrumented
-edge removes access again from the pages it touched, after the same identity
-check. If the thread reads a changed byte within its first 50 instrumented
-edges after release, the runtime writes
+released. It reads `/proc/self/maps` again; if the page is no longer recorded
+by the rule above, or restoring access fails, the handler releases the page
+and passes the fault to the handler installed before the watch, because the
+fault then belongs to the program. Otherwise it decodes whether the access is
+a read from the fault context. On arm64 the syndrome register also gives the
+access width; an access of unknown width, and every access on x86_64, counts
+as 16 bytes. A read that covers a changed byte marks the watch, and the
+handler restores access to the page so the access completes. The thread's next
+instrumented edge removes access again from the pages it touched that are
+still recorded, and releases the rest. If the thread reads a changed byte
+within its first 50 instrumented edges after release, the runtime writes
 `{"harmony_park_read":{"site":S,"edges":N}}` through `fuzz_json_data`, where
-`S` is the park's site and `N` is the edge count at the read. The watch ends at
-that report or at the 50th edge, restoring access to every page whose mapping
-still matches and restoring the previous handler. Faults from other threads
-restore their page and leave it unwatched. A fault outside the watched pages,
-or a fault of any other kind, goes to the handler that was installed before
-the watch. One park at a time owns the watch; a park that lands while another
-hold or watch is in progress is not watched. A forked child ends any watch it
-inherits. A shared mapping names state that other processes can change, so a
-read of changed bytes right after release marks a stop placed between reading
-and using that state.
+`S` is the park's site and `N` is the edge count at the read. The watch ends
+at that report or at the 50th edge, restoring access to every unreleased page
+that is still recorded and restoring the previous handler. Faults from other
+threads restore their page and leave it unwatched. A fault outside the watched
+pages, or a fault of any other kind, goes to the handler that was installed
+before the watch. The runtime calls that handler with the handler's own signal
+mask applied. When the earlier disposition is the default and the signal was
+sent rather than raised by a fault, it restores the default and raises the
+signal again so the process ends as it would have. One park at a time owns the
+watch; a park that lands while another hold or watch is in progress is not
+watched. A forked child ends any watch it inherits and closes any pipe it
+inherits from a copy or comparison in progress. A shared mapping names state
+that other processes can change, so a read of changed bytes right after
+release marks a stop placed between reading and using that state.
 
-The copy and the comparison never read a recorded mapping through a pointer.
-A thread can unmap a mapping between the second read of `/proc/self/maps` and
+The copy and the comparison never read a recorded mapping through a pointer. A
+thread can unmap a mapping between the second read of `/proc/self/maps` and
 the comparison, and a load from an unmapped address would raise `SIGSEGV` in
 the instrumented thread and end the node as if the program had crashed. The
 runtime reads memory with `process_vm_readv` on its own process ID, which
@@ -115,17 +126,20 @@ it back, 4096 bytes at a time; `write` from an unmapped address returns
 `EFAULT` instead of faulting. Any error other than `EFAULT`, whatever its
 cause, makes the runtime stop calling `process_vm_readv` for the rest of the
 process and use the pipe alone. A range that the pipe cannot carry in full is
+not recorded, and a page that the pipe cannot carry in full after the hold is
 dropped as above. The x86_64 KVM guest kernel starts from `allnoconfig`
 without `CONFIG_CROSS_MEMORY_ATTACH`, so `process_vm_readv` returns `ENOSYS`
-there and guest nodes use the pipe from their first watched hold. The copy and
-the comparison each open one pipe and close it when done, so a park on the
-pipe path makes at most 2 * (2 * 256 + 3) system calls to read memory: one
-write and one read per 4096 bytes of the 1 MiB limit, plus the pipe's
-creation and two closes. Each read of `/proc/self/maps` goes through a
-256-byte buffer, with no limit on the file's length. The runtime reads the
-file once before the hold, once after it, once at each instrumented edge that
-has pages to protect again, once per fault on a watched page, and once when
-the watch ends.
+there and guest nodes use the pipe from their first watched hold. The pipe is
+opened on first use, closed after any failed transfer, opened again for the
+next one, and closed at the end of the copy and of the comparison. Each 4096
+bytes therefore costs at most five system calls: a `process_vm_readv` attempt,
+a pipe creation, a write, and either a read or the two closes after a failure.
+With two closes at the end of each pass, a park makes at most 2 * (5 * 256 +
+2) = 2,564 system calls to read memory for the 1 MiB limit. Each read of
+`/proc/self/maps` goes through a 256-byte buffer, with no limit on the file's
+length. The runtime reads the file once before the hold, once after it, once
+at each instrumented edge that has pages to protect again, once per access
+fault on an unreleased watched page, and once when the watch ends.
 
 ## Park page
 
