@@ -64,8 +64,11 @@ func (r Register) Disagree(h *history.History, journal string, round int) bool {
 	writes := map[string][]registerOp{}
 	for index := range h.Ops {
 		op := &h.Ops[index]
-		if decoded, ok := decodeRegister(op); ok && op.F != RegisterReadF {
-			writes[op.K] = append(writes[op.K], decoded)
+		if op.F == RegisterReadF {
+			continue
+		}
+		for _, keyed := range decodeRegisterKeys(op, r.keys()) {
+			writes[keyed.key] = append(writes[keyed.key], keyed.op)
 		}
 	}
 	return len(at.disagreements(writes)) > 0

@@ -4,6 +4,7 @@ package family
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"harmony.local/harness/kit/history"
@@ -281,4 +282,184 @@ func TestRegisterMonotonicKeepsNodeCheck(t *testing.T) {
 	b.write(0, "k0", "a", 1, history.OK, 2)
 	b.readKeyOn(1, "n3", "k0", nil, 3, 4)
 	expectKinds(t, Register{Reads: MonotonicReads}.Check(b.build()), RegisterNodeStale)
+}
+
+func (b *builder) load(p int, token string, invoke int64, outcome history.Type, complete int64) {
+	b.op(drive, p, RegisterLoad, "", token, invoke, outcome, nil, complete)
+}
+
+func TestRegisterLoadSetsEveryKey(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.write(0, "k3", "b", 3, history.OK, 4)
+	b.load(1, "t", 5, history.OK, 6)
+	for index := range registerKeys {
+		key := registerKey(index)
+		b.read(2, key, LoadValue("t", key), 7+int64(2*index), 8+int64(2*index))
+	}
+	report := Register{}.Check(b.build())
+	expectKinds(t, report)
+	if !report.Facts[RegisterWriteAcked] {
+		t.Fatalf("report %+v", report)
+	}
+}
+
+func TestRegisterReadBeforeAcknowledgedLoadIsStale(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 4)
+	b.read(2, "k0", "a", 5, 6)
+	expectKinds(t, Register{}.Check(b.build()), RegisterStale, RegisterLinearizable)
+}
+
+func TestRegisterIndeterminateLoadMayOrMayNotApply(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.load(1, "t", 3, history.Info, 0)
+	b.read(2, "k0", "a", 5, 6)
+	b.read(2, "k0", LoadValue("t", "k0"), 7, 8)
+	expectKinds(t, Register{}.Check(b.build()))
+}
+
+func TestRegisterFailedLoadChangesNothing(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.load(1, "t", 3, history.Fail, 4)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	expectKinds(t, Register{}.Check(b.build()), RegisterLinearizable)
+}
+
+func TestRegisterGeneratorDrawsLoadsAndLearnsTheirValues(t *testing.T) {
+	generator := Register{Loads: 8}.Generator(0)
+	op := generator.Next(func(site string, n uint64) uint64 {
+		if site == "register.load" && n == 8 {
+			return 0
+		}
+		return 1
+	}, func() string { return "t" })
+	if op.F != RegisterLoad || op.V != "t" {
+		t.Fatalf("op %+v", op)
+	}
+	generator.Observe(op, history.OK, nil)
+	next := generator.Next(func(site string, n uint64) uint64 {
+		if site == "register.op" {
+			return 3
+		}
+		return 1
+	}, func() string { return "u" })
+	if next.F != RegisterCAS || next.V.([]string)[0] != LoadValue("t", next.K) {
+		t.Fatalf("op %+v", next)
+	}
+}
+
+func TestRegisterReadMissingAShownLoadOnAnotherKeyIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterIndeterminateLoadShownOnOneKeyAndMissedOnAnotherIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.load(1, "t", 3, history.Info, 0)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	b.read(3, "k1", "b", 9, 10)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterWriteAfterOrDuringALoadOverwritesItsValue(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.OK, 2)
+	b.write(4, "k2", "c", 2, history.OK, 9)
+	b.load(1, "t", 3, history.OK, 4)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.write(0, "k1", "d", 7, history.OK, 8)
+	b.read(3, "k1", "d", 10, 11)
+	b.read(3, "k2", "c", 12, 13)
+	report := Register{Loads: 8}.Check(b.build())
+	expectKinds(t, report)
+	if _, undecided := report.Undecided[RegisterLoadAtomic]; undecided || !report.Decided {
+		t.Fatalf("report %+v", report)
+	}
+	if !slices.Contains(Register{Loads: 8}.Kinds(), RegisterLoadAtomic) {
+		t.Fatal("loads add no cross-key kind")
+	}
+}
+
+func TestRegisterCASExpectingThePreLoadValueAcrossALoadFails(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k0", "a", 1, history.OK, 2)
+	b.cas(2, "k0", "a", "x", 3, history.Fail, 8)
+	b.load(1, "t", 4, history.OK, 5)
+	b.read(3, "k0", LoadValue("t", "k0"), 9, 10)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
+}
+
+func TestRegisterLoadsAndWatchesAreRefusedTogether(t *testing.T) {
+	if err := Validate(Register{Watch: 4, Loads: 8}); err == nil {
+		t.Fatal("loads with watches validated")
+	}
+	for _, r := range []Register{{}, {Watch: 4}, {Loads: 8}} {
+		if err := Validate(r); err != nil {
+			t.Fatalf("%+v: %v", r, err)
+		}
+	}
+}
+
+func TestRegisterGeneratorWithoutLoadsDrawsNoLoadSite(t *testing.T) {
+	var sites []string
+	state := uint64(1)
+	generator := Register{}.Generator(0)
+	for range 200 {
+		op := generator.Next(func(site string, n uint64) uint64 {
+			sites = append(sites, site)
+			state = state*6364136223846793005 + 1442695040888963407
+			return (state >> 33) % n
+		}, func() string { return fmt.Sprintf("v%d", len(sites)) })
+		generator.Observe(op, history.OK, nil)
+	}
+	for _, site := range sites {
+		if site != "register.key" && site != "register.op" {
+			t.Fatalf("draw sites %v", sites)
+		}
+	}
+}
+
+func TestRegisterReadWithNoValueAfterAShownLoadIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "t", 1, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 3, 4)
+	b.read(3, "k1", nil, 5, 6)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterReadOfTheEarlierOfTwoLoadsAfterTheLaterIsShownIsNotAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "s", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", LoadValue("s", "k1"), 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()), RegisterLoadAtomic)
+}
+
+func TestRegisterReadOfTheLaterOfTwoLoadsIsAtomic(t *testing.T) {
+	b := newBuilder(t)
+	b.load(1, "s", 1, history.OK, 2)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", LoadValue("t", "k1"), 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
+}
+
+func TestRegisterValueOfAnIndeterminateWriteIsNotCountedAgainstALoad(t *testing.T) {
+	b := newBuilder(t)
+	b.write(0, "k1", "b", 1, history.Info, 0)
+	b.load(1, "t", 3, history.OK, 20)
+	b.read(2, "k0", LoadValue("t", "k0"), 5, 6)
+	b.read(3, "k1", "b", 7, 8)
+	expectKinds(t, Register{Loads: 8}.Check(b.build()))
 }

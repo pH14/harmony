@@ -4,7 +4,9 @@ package family
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"time"
 
@@ -20,6 +22,7 @@ const (
 	RegisterWritesLinear = "register: each key's writes and compare-and-swaps are linearizable"
 	RegisterMonotonic    = "register: no client reads a value older than one it read before"
 	RegisterWriteAcked   = "register: a write was acknowledged"
+	RegisterLoadAtomic   = "register: no read misses a load that a completed read of another key showed"
 )
 
 type ReadConsistency int
@@ -33,6 +36,7 @@ const (
 	RegisterWrite = "write"
 	RegisterReadF = "read"
 	RegisterCAS   = "cas"
+	RegisterLoad  = "load"
 )
 
 const (
@@ -49,6 +53,7 @@ type Register struct {
 	Pause   time.Duration
 	Reads   ReadConsistency
 	Watch   uint64
+	Loads   uint64
 }
 
 func (Register) Name() string { return "register" }
@@ -61,7 +66,17 @@ func (r Register) Kinds() []string {
 	if r.Watch > 0 {
 		kinds = append(kinds, watchKinds()...)
 	}
+	if r.Loads > 0 && r.Reads == LinearizableReads {
+		kinds = append(kinds, RegisterLoadAtomic)
+	}
 	return kinds
+}
+
+func (r Register) Validate() error {
+	if r.Watch > 0 && r.Loads > 0 {
+		return errors.New("register: loads and watches cannot both be on")
+	}
+	return nil
 }
 
 func (r Register) linearKind() string {
@@ -91,8 +106,22 @@ func registerKey(index int) string { return fmt.Sprintf("k%d", index) }
 
 func (r Register) Read() Op { return Op{F: RegisterReadF, K: registerKey(0)} }
 
+func (r Register) LoadKeys() []string {
+	keys := make([]string, r.keys())
+	for index := range keys {
+		keys[index] = registerKey(index)
+	}
+	return keys
+}
+
+func LoadValue(token, key string) string {
+	hash := fnv.New64a()
+	hash.Write([]byte(token))
+	return fmt.Sprintf("load-%016x-%s", hash.Sum64(), key)
+}
+
 func (r Register) Generator(int) Generator {
-	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, watch: r.Watch, known: map[string]string{}}
+	return &registerGenerator{keys: r.keys(), cas: !r.NoCAS, reads: !r.NoReads, watch: r.Watch, loads: r.Loads, known: map[string]string{}}
 }
 
 func (Register) Recorder(*history.History) Recorder { return plainRecorder{} }
@@ -102,6 +131,7 @@ type registerGenerator struct {
 	cas      bool
 	reads    bool
 	watch    uint64
+	loads    uint64
 	revision uint64
 	known    map[string]string
 }
@@ -109,6 +139,9 @@ type registerGenerator struct {
 func (g *registerGenerator) Next(draw Draw, value func() string) Op {
 	if g.watch > 0 && draw("register.watch", g.watch) == 0 {
 		return Op{F: RegisterWatch, V: WatchQuery{From: g.watchFrom(draw)}}
+	}
+	if g.loads > 0 && draw("register.load", g.loads) == 0 {
+		return Op{F: RegisterLoad, V: value()}
 	}
 	key := registerKey(int(draw("register.key", uint64(g.keys))))
 	var choice uint64
@@ -145,6 +178,13 @@ func (g *registerGenerator) Observe(op Op, outcome history.Type, result any) {
 	case RegisterReadF:
 		if value, ok := result.(string); ok {
 			g.known[op.K] = value
+		}
+	case RegisterLoad:
+		if token, ok := op.V.(string); ok {
+			for index := range g.keys {
+				key := registerKey(index)
+				g.known[key] = LoadValue(token, key)
+			}
 		}
 	}
 }
@@ -193,6 +233,35 @@ func decodeRegister(op *history.Op) (registerOp, bool) {
 	}
 	decoded.output.unknown = op.Type == history.Info
 	return decoded, op.Type != history.Fail
+}
+
+type keyedOp struct {
+	key string
+	op  registerOp
+}
+
+func decodeRegisterKeys(op *history.Op, keys int) []keyedOp {
+	if op.F != RegisterLoad {
+		decoded, ok := decodeRegister(op)
+		if !ok {
+			return nil
+		}
+		return []keyedOp{{key: op.K, op: decoded}}
+	}
+	var token string
+	if op.Type == history.Fail || json.Unmarshal(op.Input, &token) != nil || token == "" {
+		return nil
+	}
+	expanded := make([]keyedOp, keys)
+	for index := range expanded {
+		key := registerKey(index)
+		expanded[index] = keyedOp{key: key, op: registerOp{
+			op:     op,
+			input:  registerInput{f: RegisterWrite, value: LoadValue(token, key)},
+			output: registerOutput{unknown: op.Type == history.Info},
+		}}
+	}
+	return expanded
 }
 
 type stepBudget struct {
@@ -252,21 +321,20 @@ func (r Register) Check(h *history.History) Report {
 	var keys []string
 	for index := range h.Ops {
 		op := &h.Ops[index]
-		decoded, ok := decodeRegister(op)
-		if !ok {
-			continue
-		}
-		if _, seen := byKey[op.K]; !seen {
-			keys = append(keys, op.K)
-			byKey[op.K] = nil
+		expanded := decodeRegisterKeys(op, r.keys())
+		for _, keyed := range expanded {
+			if _, seen := byKey[keyed.key]; !seen {
+				keys = append(keys, keyed.key)
+				byKey[keyed.key] = nil
+			}
+			if op.Node != "" && op.F == RegisterReadF {
+				pinned[keyed.key] = append(pinned[keyed.key], keyed.op)
+			} else {
+				byKey[keyed.key] = append(byKey[keyed.key], keyed.op)
+			}
 		}
 		onNode := op.Node != "" && op.F == RegisterReadF
-		if onNode {
-			pinned[op.K] = append(pinned[op.K], decoded)
-		} else {
-			byKey[op.K] = append(byKey[op.K], decoded)
-		}
-		if op.Type != history.OK {
+		if len(expanded) == 0 || op.Type != history.OK {
 			continue
 		}
 		switch {
@@ -324,12 +392,114 @@ func (r Register) Check(h *history.History) Report {
 			})
 		}
 	}
+	if r.Loads > 0 && r.Reads == LinearizableReads {
+		r.checkLoadAtomic(h, byKey, &report, &found)
+	}
 	r.checkReplicas(h, byKey, &report, &found)
 	if r.Watch > 0 {
 		r.checkWatches(h, &report, &found)
 	}
 	report.Violations = found.result()
 	return report
+}
+
+// A read that completed with a load's value on one key shows the load took
+// effect before that read returned, so every read of another key that starts
+// afterwards must see the load or a write that took effect after it. A value
+// whose write was acknowledged before the load was invoked took effect before
+// the load, so such a read missed the load on its key.
+func (r Register) checkLoadAtomic(h *history.History, byKey map[string][]registerOp, report *Report, found *collector) {
+	type shown struct {
+		key      string
+		complete int64
+	}
+	type load struct {
+		op      *history.Op
+		witness []shown
+	}
+	var loads []*load
+	byToken := map[string]*load{}
+	for index := range h.Ops {
+		op := &h.Ops[index]
+		var token string
+		if op.F != RegisterLoad || op.Type == history.Fail || json.Unmarshal(op.Input, &token) != nil || token == "" {
+			continue
+		}
+		l := &load{op: op}
+		loads = append(loads, l)
+		for key := range byKey {
+			byToken[LoadValue(token, key)] = l
+		}
+	}
+	if len(loads) == 0 {
+		return
+	}
+	for key, ops := range byKey {
+		for _, op := range ops {
+			if op.input.f != RegisterReadF || op.op.Type != history.OK {
+				continue
+			}
+			if l, ok := byToken[op.output.value]; ok && op.output.value == LoadValue(tokenOf(l.op), key) {
+				l.witness = append(l.witness, shown{key: key, complete: op.op.Complete})
+			}
+		}
+	}
+	for _, l := range loads {
+		if len(l.witness) > 0 {
+			report.Decided = true
+			delete(report.Undecided, RegisterLoadAtomic)
+			break
+		}
+	}
+	for _, key := range sortedKeys(byKey) {
+		ops := byKey[key]
+		acknowledged := map[string]*history.Op{}
+		for _, op := range ops {
+			if op.input.f != RegisterReadF && op.op.Type == history.OK {
+				acknowledged[op.input.value] = op.op
+			}
+		}
+	reads:
+		for _, read := range ops {
+			if read.input.f != RegisterReadF || read.op.Type != history.OK {
+				continue
+			}
+			before := int64(-1 << 63)
+			if read.output.value != "" {
+				source, ok := acknowledged[read.output.value]
+				if !ok {
+					continue
+				}
+				before = source.Complete
+			}
+			for _, l := range loads {
+				if before >= l.op.Invoke {
+					continue
+				}
+				for _, w := range l.witness {
+					if w.key == key || w.complete >= read.op.Invoke {
+						continue
+					}
+					found.add(RegisterLoadAtomic, func() map[string]any {
+						details := map[string]any{"key": key, "read": describe(read.op), "load": describe(l.op), "shown_on": w.key}
+						if read.output.value == "" {
+							details["value"] = nil
+						} else {
+							details["value"] = read.output.value
+						}
+						return details
+					})
+					continue reads
+				}
+			}
+		}
+	}
+}
+
+func tokenOf(op *history.Op) string {
+	var token string
+	_ = json.Unmarshal(op.Input, &token)
+	return token
 }
 
 func withoutReads(ops []registerOp) []registerOp {

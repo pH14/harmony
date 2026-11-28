@@ -11,12 +11,15 @@ import (
 	"math/bits"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"harmony.local/harness/kit/family"
 	"harmony.local/harness/kit/runner"
 )
 
@@ -521,5 +524,103 @@ func TestRaftViewReadsTheStoreTrailingLogs(t *testing.T) {
 	without := raftViewOf(context.Background(), nodes[1])
 	if !without.answered || without.trailing != 0 || without.compactedThrough() != 832 {
 		t.Fatalf("view %+v compacted through %d, want trailing 0 and 832", without, without.compactedThrough())
+	}
+}
+
+func loadTemplateWith(t *testing.T, placeholders int) []byte {
+	t.Helper()
+	var template []byte
+	template = append(template, "SQLite format 3\x00"...)
+	for index := range placeholders {
+		template = append(template, fmt.Sprintf("\x00row%s%s\x00", loadPlaceholder, fmt.Sprintf("k%d", index))...)
+	}
+	path := filepath.Join(t.TempDir(), "load-template.sqlite")
+	if err := os.WriteFile(path, template, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := loadTemplate
+	loadTemplate = path
+	t.Cleanup(func() { loadTemplate = previous })
+	return template
+}
+
+func TestLoadSendsTheTemplateWithTheTokenInEveryKey(t *testing.T) {
+	keys := family.Register{}.LoadKeys()
+	template := loadTemplateWith(t, len(keys))
+	server, requests := leaderServer(t, answer(http.StatusOK, `{"results":[]}`))
+	c := newClient(server.URL)
+	defer c.Close()
+	if err := c.load(context.Background(), "token-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := requests()
+	if len(got) != 1 || got[0].method != http.MethodPost || got[0].path != "/db/load" || got[0].query != "" {
+		t.Fatalf("requests %+v, want one POST to /db/load without redirect", got)
+	}
+	body := got[0].body
+	if len(body) != len(template) || strings.Contains(body, loadPlaceholder) {
+		t.Fatalf("body %q keeps a placeholder or changes length", body)
+	}
+	for _, key := range keys {
+		if !strings.Contains(body, family.LoadValue("token-1", key)) {
+			t.Fatalf("body %q lacks the load value of %s", body, key)
+		}
+	}
+}
+
+func TestLoadAnswersThatApplyNothingAreDefinite(t *testing.T) {
+	loadTemplateWith(t, len(family.Register{}.LoadKeys()))
+	for _, tc := range []struct {
+		name     string
+		answer   func(http.ResponseWriter)
+		definite bool
+	}{
+		{"leader not found", answer(http.StatusServiceUnavailable, "leader not found\n"), true},
+		{"redirect", answer(http.StatusMovedPermanently, ""), true},
+		{"refused forward", answer(http.StatusInternalServerError, "dial tcp 10.77.0.1:4002: connect: connection refused"), true},
+		{"store error", answer(http.StatusInternalServerError, "context deadline exceeded"), false},
+		{"error after apply", answer(http.StatusOK, `{"error":"timeout"}`), false},
+		{"undecodable", answer(http.StatusOK, "results"), false},
+	} {
+		server, _ := leaderServer(t, tc.answer)
+		c := newClient(server.URL)
+		err := c.load(context.Background(), "token-1")
+		c.Close()
+		if err == nil || runner.IsDefinite(err) != tc.definite {
+			t.Fatalf("%s: error %v, want definite %v", tc.name, err, tc.definite)
+		}
+	}
+}
+
+func TestLoadRefusesATemplateWithoutOnePlaceholderPerKey(t *testing.T) {
+	loadTemplateWith(t, len(family.Register{}.LoadKeys())-1)
+	server, requests := leaderServer(t)
+	c := newClient(server.URL)
+	defer c.Close()
+	if err := c.load(context.Background(), "token-1"); err == nil || !runner.IsDefinite(err) {
+		t.Fatalf("error %v, want a definite refusal", err)
+	}
+	if got := requests(); len(got) != 0 {
+		t.Fatalf("requests %+v, want none", got)
+	}
+}
+
+func TestLoadRateIsOffUnlessSet(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  uint64
+		ok    bool
+	}{
+		{"", 0, true},
+		{"20", 20, true},
+		{"65535", 65535, true},
+		{"65536", 0, false},
+		{"x", 0, false},
+	} {
+		t.Setenv(loadEnv, tc.value)
+		got, err := loadRate()
+		if got != tc.want || (err == nil) != tc.ok {
+			t.Fatalf("%q: got %d, %v; want %d, ok %v", tc.value, got, err, tc.want, tc.ok)
+		}
 	}
 }
