@@ -274,10 +274,11 @@ missile into a column shares a slot with the state that did not fire, and the
 preferences keep the one with more missiles. A column healing or respawning
 moves the state to another place without ranking it above or below the rest of
 Tourian. A broken column does rank: the zebetites objective, and the mother_brain
-objective before the first hit on her, count the slots reading 2 or 3, so a
+objective while she reads no damage, count the slots reading 2 or 3, so a
 slot the game reuses for a new column lowers the objective by that column.
-After the first hit the mother_brain objective is boss damage alone, because
-columns grow back while Samus fights her. The game keeps five Zebetite slots at
+Once she reads damage the mother_brain objective is 5 plus boss damage and
+leaves the columns out, because they grow back while Samus fights her. She
+reads no damage before the first hit and also while she is out of view. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
 alive, 2 on the frames the column breaks, 3 once its tiles are cleared) and
 its missile hit count at offset 3; a column dies at eight hits while healing
